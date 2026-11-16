@@ -29,23 +29,23 @@ The platform answers below were read on 2026-11-15 from the owner's own channels
 
 | | How | Cost, freshness |
 |---|---|---|
-| Title, category, tags, language, content labels, branded content, delay | `GET channels` | One request; pushed by EventSub `channel.update` (already subscribed) |
+| Title, category, tags, language, content labels, branded content, delay | `GET channels` | One request; pushed by EventSub `channel.update` (title, category, language, labels) |
 | Live, started at, viewers, thumbnail | `GET streams` (empty off air) | One request; `stream.online`/`offline` pushed; viewers polled (no push) |
-| Ads: next, last, length, snoozes, pre-roll free time | `GET channels/ads` (`channel:read:ads`) | Owner only; all zeros off air |
+| Ads: next, last, length, snoozes, pre-roll free time | `GET channels/ads` (`channel:read:ads`) | Owner only (Affiliates and Partners); `channel.ad_break.begin` pushed immediately; all zeros off air |
 | Followers, subscribers, goals, hype train | `channels/followers`, `subscriptions`, `goals` | Not on this page (Chat and overlays) |
-| Change | `PATCH channels` (title, game, tags, language, labels, branded), commercial, snooze, marker, clip | Owner only; ads, snooze, marker and clip need a live |
+| Change | One `PATCH channels` (title, game, tags, language, delay, labels, branded), commercial, snooze, marker, clip | Owner only; ads, snooze, marker and clip need a live |
 
-Limits: title 140 characters, 10 tags of up to 25 letters and digits. 800 requests a minute.
+Limits: title 140 characters, 10 tags of up to 25 letters and digits, delay 0 to 900 seconds (Partners). 800 requests a minute.
 
 ## Kick (official API and Pusher)
 
 | | How | Cost, freshness |
 |---|---|---|
-| Title, category, live, start, viewers | `GET /channels` (the `stream` object) | Title and category come back **empty off air** (seen); pushed by Pusher `LivestreamUpdated`, `StreamerIsLive`, `StopStreamBroadcast` |
+| Title, category, live, start, viewers, mature flag, language | `GET /channels` (the `stream` object) | Title and category come back **empty off air** (seen); pushed by Pusher `LivestreamUpdated`, `StreamerIsLive`, `StopStreamBroadcast` |
 | Tags | `GET /livestreams?broadcaster_user_id=` (`custom_tags`) | Only while live (to verify live) |
-| Ads | `GET /ads/ad-break-status` (`ads:read`) | A login from before 1.x lacks the scope: 401 |
-| Category search | `GET /categories?q=` | Returns ids, names and thumbnails |
-| Change | `PATCH /channels` (title, category id, custom tags), `POST /ads/ad-break` (7 to 90 s) | Owner only |
+| Ads | `GET /ads/ad-break-status` (`ads:read`) | A login from before 1.x lacks the scope: 401; `opted_in: false` disables ad controls |
+| Category lookup | `GET public/v2/categories?name=` with fallback `GET /categories?q=` | Resolves category id before one batched `PATCH /channels` |
+| Change | One `PATCH /channels` (title, category id, custom tags), `POST /ads/ad-break` (7 to 90 s) | Owner only |
 
 Kick's webhooks (`livestream.status.updated`, `livestream.metadata.updated`) need a public HTTPS
 address, which a desktop app doesn't have; Pusher covers the same.
@@ -56,58 +56,92 @@ address, which a desktop app doesn't have; Pusher covers the same.
 
 | | How | Cost |
 |---|---|---|
-| The live, else the next broadcast; its state, privacy, start | `liveBroadcasts.list mine=true` | 1 |
-| Title, description, tags, category, privacy, made for kids, viewers | `videos.list part=snippet,status,liveStreamingDetails` | 1 |
-| Stream health (good, ok, bad, no data) and what's wrong (bitrate, resolution...) | `liveStreams.list part=status` on the bound stream | 1, only while live |
-| Change title, description, tags, category, privacy | `videos.update` | 50 |
-| Thumbnail | `thumbnails.set` | 50 |
-| Latency, DVR, auto start and stop | `liveBroadcasts.update` | 50 (not on this page) |
-| Ad | `liveBroadcasts.cuepoint` | Monetized channels, while live |
+| The live, testing or next broadcast; state, privacy, scheduled start, latency, DVR, auto-start/stop | `liveBroadcasts.list part=snippet,status,contentDetails mine=true` | 1 |
+| Title, description, tags, category, privacy, made for kids, viewers, likes | `videos.list part=snippet,status,liveStreamingDetails,statistics` | 1 |
+| Stream health (good, ok, bad, no data), issues, and CDN resolution/frame rate | `liveStreams.list part=status,cdn` on the bound stream | 1, during `live`, `liveStarting`, `testing`, and `testStarting` |
+| Change title, description, tags, category, privacy | `videos.update` (with cached broadcast id) | 50 |
+| Thumbnail | `thumbnails.set` (with cached broadcast id) | 50 |
+| Latency, DVR, auto start and stop | Read from `contentDetails` | Displayed on card; `liveBroadcasts.update` stays separate |
+| Ad | `liveBroadcasts.cuepoint` (with cached broadcast id) | Monetized channels, while live |
 
-There is no push: the chat reader notices a live starting and ending. Someone else's channel has no
-API access: its title and viewers come from the watch page, as before.
+There is no push: the chat reader notices a live starting and ending. YouTube cooldown (`300s`,
+plus `30s` open cooldown) is recorded only on a successful read so transient errors retry on next view,
+and cached `broadcast_id` avoids extra lookups during updates, thumbnails, and cuepoints. Someone
+else's channel has no API access: its title and viewers come from the watch page, as before.
 
 ## TikTok (no public API)
 
 | | How | Notes |
 |---|---|---|
-| Title, start, viewers | `api-live/user/room` (the chat's room lookup), `roomUser` events | Only while live (to verify live) |
+| Title, start, viewers, paused state, likes, gift coins | `api-live/user/room` (the chat's room lookup), live event counters | Paused state updates immediately from `streamPaused`/`streamResumed` |
 | Change the title | Browser extension, `webcast/room/update_room` | Only while live, as the account logged in there |
 
 Category and tags have no API at all.
 
+## OBS Studio (zero-cost output status)
+
+Already-connected OBS instances are queried with `GetStreamStatus` when the Stream page refreshes (no
+extra connections or background timers) and woken by `StreamStateChanged` / `Disconnected`. The summary
+shows standby, streaming, dropped frames, congestion warnings, reconnecting, or stopped while a platform
+is live.
+
 ## What changed in 1.9.0
 
-- Each card says Live (since when, how many watch: the chat's count, else the platform's), Not live, or
-  why it can't change anything. Viewer counts are polled while the Stream page is open, as on Chat.
-- Ads, snooze, marker and clip are off with "Only while live." when a platform is off air (buttons, the
-  top Run ad, the ad form's platform boxes and the requests behind them). The ad line says "Ads run only
-  while live." off air, and shows Twitch's pre-roll free time.
-- Twitch `channel.update` and Kick `LivestreamUpdated` update the card at once, with no request; a live
-  starting or ending does too, and the read that follows confirms it. Twitch and Kick are read every
-  minute while the page is open (was 30 seconds), YouTube every 5 minutes unless the page is opened,
-  Refresh is pressed, something changes or a live starts or ends.
-- Platforms are read side by side, and a change on several platforms runs on each at once.
-- YouTube is read through the Data API (2 units, 3 while live) instead of the watch page: title,
-  description, tags, category, privacy (Private and Unlisted are said on the card), viewers and stream
-  health with YouTube's own complaint. The edit form starts with the description and tags.
-- Kick reads its tags from the live and says when its login lacks the ads permission.
-- TikTok shows the live's title and start from the room lookup.
+- Each card says Live (since when, how many watch: the chat's count, else the platform's), Testing
+  (YouTube pre-live ingest check), Paused (TikTok), Not live, or why it can't change anything. Viewer
+  counts are polled while the Stream page is open, as on Chat.
+- Ads, snooze, marker and clip are off with "Checking accounts and stream..." before the initial read
+  finishes, "Only while live." when a platform is off air, and channel ineligibility reasons when Twitch
+  is not Affiliate/Partner or Kick has `opted_in: false`. The ad line shows pre-roll free time, last ad
+  time and duration, and immediate EventSub `channel.ad_break.begin` status.
+- Twitch `channel.update` (including language and content labels) and Kick `LivestreamUpdated` update the
+  card at once, with no request; a live starting or ending and TikTok pause/resume do too. Twitch and
+  Kick are read every minute while the page is open, YouTube every 5 minutes (with a 30-second tab-reopen
+  cooldown; recorded only on success) unless Refresh is pressed, something changes, or a live starts or ends.
+- Platforms are read side by side, and Twitch/Kick metadata + category + tags changes batch into a single
+  `PATCH` per platform instead of three sequential calls.
+- YouTube is read through the Data API (2 units off air, 3 while testing or live) instead of the watch
+  page: title, description, tags, category, privacy, scheduled start, Made for Kids, latency, DVR,
+  auto-start/stop, likes, viewers, stream health and CDN video format. The cached `broadcast_id` is
+  reused for `videos.update`, `thumbnails.set`, and `liveBroadcasts.cuepoint`.
+- Kick reads its tags from the live, surfaces mature-audience and language metadata, and says when its
+  login lacks the ads permission.
+- TikTok shows the live's title, start, paused state, likes, and coins from already-tracked room/stream state.
+- OBS connected output health (`GetStreamStatus`) is summarized cleanly when OBS is already connected.
 - A value the platform already shows isn't sent again; a form that changes nothing says so.
 
 ## Testing
 
-- Unit tests parse real (trimmed) answers from each platform, check the off-air guards, pushes, quota
-  pacing and that unchanged values aren't sent (`core::stream::tests`).
+- Unit tests parse real (trimmed) answers from each platform, check initial-read and off-air guards,
+  batched Twitch/Kick updates, EventSub/Kick/TikTok/OBS hooks, YouTube quota pacing and cached broadcast
+  IDs, and that unchanged values aren't sent (`core::stream::tests`).
 - `platform_api` (MCP, dev mode) and the `StreamerzPlatformApi` request make one raw platform call
   through Streamerz's own login, so a test sees what the platform says without copying a token.
 - `node dev/stream-check.mjs` reads the page and each platform directly (GETs only) and fails where
-  they disagree: title, category, tags, live, the off-air buttons and YouTube's privacy. Run it with the
+  they disagree: title, category, tags, live/testing state, delay, and YouTube's privacy. Run it with the
   platforms connected on a dev instance, off air and again while live.
 
-## Open questions
+## Expanded editors
 
-- Editing more from the page: YouTube's category and privacy (`videos.update`), Twitch's language,
-  content labels and branded content (`PATCH channels`). All are readable now.
-- A combined line on top (live on 2 of 4, total viewers).
-- Re-login prompt for Kick's ads permission from the card.
+The owner approved the additional supported fields. Twitch's card editor offers language, partner stream
+delay (0 to 900 seconds, shown for partners or when non-zero), branded content and the six content
+labels Helix can change. Twitch assigns MatureGame from the category; that label is read (and shown in
+the card summary) but never sent in a change. Only changed labels are enabled or disabled. YouTube's
+editor and the combined form offer category and privacy. These changes share one `videos.update` with
+title, description and tags. Current writable snippet and status fields are preserved; read-only fields
+are excluded. Switching to public or unlisted clears a publishing schedule, which is explained on the
+privacy field. An unchanged save still sends no write. The page also summarizes live, not-live and
+unknown platforms, adds viewer counts only when every live platform has one, shows connected OBS stream
+status, and offers Accounts beside Kick's ads permission notice.
+
+Sources checked for these additions on 2026-11-15:
+[Twitch channel updates](https://dev.twitch.tv/docs/api/reference/channels),
+[Twitch content labels](https://dev.twitch.tv/docs/api/reference/ccls),
+[YouTube video updates](https://developers.google.com/youtube/v3/docs/videos/update).
+
+## Live acceptance
+
+Live testing is deferred at the owner's request. The implementation and fixture tests do not count as
+live acceptance. The owner will fill in the platform checklist in [TESTING.md](TESTING.md) after testing.
+Kick live tags, TikTok's room title/paused/title writes, YouTube's testing/live stream health and
+live-only actions remain unverified against a live broadcast.

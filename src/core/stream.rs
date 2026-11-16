@@ -7,7 +7,7 @@
 //! |---|---|---|---|---|---|
 //! | Twitch | yes | yes | yes | yes (affiliates and partners) | marker, clip, snooze the next ad |
 //! | Kick | yes | yes | yes | yes (opted in to Kick ads) | |
-//! | YouTube | yes | shown, not changed | yes (search keywords) | yes (cue point, while live) | description, thumbnail, privacy and health shown |
+//! | YouTube | yes | yes | yes (search keywords) | yes (cue point, while live) | description, thumbnail, privacy and health |
 //! | TikTok | yes (browser extension, while live; read from the room) | no | no | no | |
 //!
 //! Twitch and Kick let only the channel owner change these: a moderator sees them, can't change them.
@@ -24,6 +24,7 @@ use crate::{
     engine::Engine,
     i18n::{tr, trf},
     model::Obj,
+    youtube::VideoUpdate,
 };
 use serde_json::{json, Value};
 use std::{
@@ -68,6 +69,8 @@ const INFO_FIELDS: &[F] = &[
     ("category", "Category", W::Text),
     ("tags", "Tags", W::Lines),
     ("description", "Description", W::Multi),
+    ("youtube_category", "YouTube category", W::Text),
+    ("privacy", "YouTube privacy", W::Text),
     ("clear_tags", "Remove every tag", W::Bool),
     ("twitch", "Twitch", W::Bool),
     ("kick", "Kick", W::Bool),
@@ -81,10 +84,70 @@ const CHANNEL_FIELDS: &[F] = &[
     ("tags", "Tags", W::Lines),
     ("clear_tags", "Remove every tag", W::Bool),
 ];
+const TWITCH_FIELDS: &[F] = &[
+    ("title", "Title", W::Text),
+    ("category", "Category", W::Text),
+    ("tags", "Tags", W::Lines),
+    ("clear_tags", "Remove every tag", W::Bool),
+    ("language", "Language", W::Text),
+    ("delay", "Stream delay (seconds)", W::Int),
+    ("branded", "Branded content", W::Bool),
+    ("label_politics", "Politics and sensitive social issues", W::Bool),
+    ("label_drugs", "Drugs, intoxication or tobacco", W::Bool),
+    ("label_gambling", "Gambling", W::Bool),
+    ("label_profanity", "Significant profanity or vulgarity", W::Bool),
+    ("label_sexual", "Sexual themes", W::Bool),
+    ("label_violence", "Violent or graphic depictions", W::Bool),
+];
+// MatureGame is applied by Twitch from the category and cannot be changed through Helix.
+const TWITCH_LABELS: &[(&str, &str)] = &[
+    ("label_politics", "DebatedSocialIssuesAndPolitics"),
+    ("label_drugs", "DrugsIntoxication"),
+    ("label_gambling", "Gambling"),
+    ("label_profanity", "ProfanityVulgarity"),
+    ("label_sexual", "SexualThemes"),
+    ("label_violence", "ViolentGraphic"),
+];
+const TWITCH_LANGUAGES: &[(&str, &str)] = &[
+    ("ar", "العربية"),
+    ("bg", "Български"),
+    ("cs", "Čeština"),
+    ("da", "Dansk"),
+    ("de", "Deutsch"),
+    ("el", "Ελληνικά"),
+    ("en", "English"),
+    ("es", "Español"),
+    ("fi", "Suomi"),
+    ("fr", "Français"),
+    ("hu", "Magyar"),
+    ("id", "Bahasa Indonesia"),
+    ("it", "Italiano"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("ms", "Bahasa Melayu"),
+    ("nl", "Nederlands"),
+    ("no", "Norsk"),
+    ("pl", "Polski"),
+    ("pt", "Português"),
+    ("ro", "Română"),
+    ("ru", "Русский"),
+    ("sk", "Slovenčina"),
+    ("sv", "Svenska"),
+    ("th", "ไทย"),
+    ("tl", "Tagalog"),
+    ("tr", "Türkçe"),
+    ("uk", "Українська"),
+    ("vi", "Tiếng Việt"),
+    ("zh", "中文"),
+    ("asl", "American Sign Language"),
+];
+
 const YOUTUBE_FIELDS: &[F] = &[
     ("title", "Title", W::Text),
     ("tags", "Tags", W::Lines),
     ("description", "Description", W::Multi),
+    ("youtube_category", "YouTube category", W::Text),
+    ("privacy", "YouTube privacy", W::Text),
     ("clear_tags", "Remove every tag", W::Bool),
 ];
 const TIKTOK_FIELDS: &[F] = &[("title", "Title", W::Text)];
@@ -138,8 +201,17 @@ struct Info {
     title: String,
     category: String,
     tags: Vec<String>,
+    language: String,
+    labels: Vec<String>,
+    branded: Option<bool>,
+    mature: Option<bool>,
+    delay: Option<u64>,
+    category_id: String,
     /// Ads in words: the next one, the breaks left ("" when unknown).
     ads: String,
+    ads_login: bool,
+    /// Ads are unavailable on this channel (non-affiliate Twitch, Kick not opted in).
+    ads_unavailable: bool,
     /// It answered (TikTok only while connected to a live; YouTube only says a title for a broadcast).
     known: bool,
     /// Live now (Some(true)), not live (Some(false)), or not known (None).
@@ -148,18 +220,43 @@ struct Info {
     since: Option<i64>,
     /// Viewers now, as the platform said when it was read (the chat's count, fresher, wins).
     viewers: Option<u64>,
+    /// YouTube: broadcast id, lifecycle, scheduled start, broadcast options and stats.
+    broadcast_id: String,
+    lifecycle: String,
+    scheduled_at: Option<i64>,
+    latency: String,
+    dvr: Option<bool>,
+    auto_start: Option<bool>,
+    auto_stop: Option<bool>,
+    made_for_kids: Option<bool>,
+    likes: Option<u64>,
+    coins: Option<u64>,
+    paused: bool,
     /// YouTube: the description, privacy (public, unlisted, private) and the stream's health (good,
     /// ok, bad, noData) with what YouTube says is wrong with it.
     description: String,
     privacy: String,
     health: String,
     issue: String,
+    stream_status: String,
+    stream_video: String,
     /// YouTube: not live, but changes go to its next broadcast (scheduled, or the ready one).
     upcoming: bool,
     /// YouTube: neither live nor anything to come, so there is nothing to change.
     nothing: bool,
     /// Why it couldn't be read.
     error: String,
+}
+
+/// What a connected OBS instance says about its stream output right now.
+#[derive(Default, Clone, PartialEq, Debug)]
+struct ObsState {
+    name: String,
+    streaming: bool,
+    reconnecting: bool,
+    congestion: f64,
+    skipped_frames: u64,
+    total_frames: u64,
 }
 
 /// Which platforms are set up (listed), which can be changed now, and why not.
@@ -177,6 +274,9 @@ struct Access {
 struct Seen {
     access: Access,
     info: [Info; 4],
+    obs: Vec<ObsState>,
+    obs_inventories: Vec<(String, crate::core::outputs::Inventory)>,
+    obs_prefs: Vec<crate::core::outputs::ObsOutputPref>,
     note: String,
     /// Something asked last didn't go through (the note says what).
     trouble: bool,
@@ -185,6 +285,31 @@ struct Seen {
     busy: bool,
     /// Viewers by the chat's count, when it has one (set on each read of the page).
     viewers: [Option<u64>; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct YouTubePreflight {
+    pub nothing: bool,
+    pub privacy: String,
+}
+
+pub fn youtube_preflight_snapshot() -> YouTubePreflight {
+    SEEN.with_borrow(|seen| YouTubePreflight {
+        nothing: seen.info[YOUTUBE].nothing,
+        privacy: seen.info[YOUTUBE].privacy.clone(),
+    })
+}
+
+#[cfg(test)]
+pub fn set_youtube_preflight_for_test(nothing: bool, privacy: &str) {
+    SEEN.with_borrow_mut(|seen| {
+        seen.info[YOUTUBE].nothing = nothing;
+        seen.info[YOUTUBE].privacy = privacy.to_owned();
+    });
+}
+
+pub fn cached_obs_inventories() -> Vec<(String, crate::core::outputs::Inventory)> {
+    SEEN.with_borrow(|seen| seen.obs_inventories.clone())
 }
 
 impl Seen {
@@ -208,17 +333,23 @@ impl Seen {
     fn can(&self, takes: [bool; 4]) -> [bool; 4] {
         std::array::from_fn(|i| self.access.ready[i] && takes[i])
     }
-    /// The ready platforms that take this and aren't known to be off air (ads, markers, clips).
+    /// The ready platforms that take this and aren't known to be off air (markers, clips).
     fn can_live(&self, takes: [bool; 4]) -> [bool; 4] {
         let can = self.can(takes);
-        std::array::from_fn(|i| can[i] && self.info[i].live != Some(false))
+        std::array::from_fn(|i| can[i] && self.received > 0 && self.info[i].live != Some(false))
+    }
+    /// The ready platforms that take ads, are live, and are eligible to run ads.
+    fn can_ads(&self, takes: [bool; 4]) -> [bool; 4] {
+        let live = self.can_live(takes);
+        std::array::from_fn(|i| live[i] && !self.info[i].ads_unavailable)
     }
 }
 
 thread_local! {
     static SEEN: RefCell<Seen> = RefCell::default();
     static ASKED: Cell<Option<Instant>> = const { Cell::new(None) };
-    /// When YouTube was last read (it costs quota).
+    static OPENED: Cell<bool> = const { Cell::new(false) };
+    /// When YouTube was last successfully read (it costs quota).
     static YOUTUBE_ASKED: Cell<Option<Instant>> = const { Cell::new(None) };
     /// What the page depended on when it last asked (see `situation`).
     static SITUATION: Cell<Option<u64>> = const { Cell::new(None) };
@@ -358,15 +489,21 @@ fn status_line(seen: &Seen) -> (&'static str, String) {
 /// One change on one platform.
 #[derive(Clone, Debug, PartialEq)]
 enum Job {
+    /// TikTok live title.
     Title(String),
-    Category(String),
-    Tags(Vec<String>),
-    /// YouTube's title, description and tags, in one update (each costs quota).
-    Video {
+    /// Twitch channel changes in one PATCH (resolving category name -> game_id first when given).
+    Twitch {
+        category: Option<String>,
+        body: Value,
+    },
+    /// Kick channel changes in one PATCH (resolving category name -> category_id first when given).
+    Kick {
         title: Option<String>,
-        description: Option<String>,
+        category: Option<String>,
         tags: Option<Vec<String>>,
     },
+    /// YouTube metadata in one update (each costs quota).
+    Video(VideoUpdate),
     Ad(u64),
     Thumbnail(String),
     Marker,
@@ -375,26 +512,69 @@ enum Job {
 }
 
 fn video(title: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Job {
-    Job::Video {
+    Job::Video(VideoUpdate {
         title,
         description,
         tags,
-    }
+        ..VideoUpdate::default()
+    })
+}
+
+fn twitch_job(category: Option<String>, body: Value) -> Job {
+    Job::Twitch { category, body }
+}
+
+fn kick_job(title: Option<String>, category: Option<String>, tags: Option<Vec<String>>) -> Job {
+    Job::Kick { title, category, tags }
 }
 
 impl Job {
     fn what(&self, platform: usize) -> String {
         let key = match self {
             Job::Title(_) => "stream.job_title",
-            Job::Category(_) => "stream.job_category",
-            Job::Tags(tags) if tags.is_empty() => "stream.job_clear_tags",
-            Job::Tags(_) => "stream.job_tags",
-            Job::Video {
-                tags: Some(tags),
-                title: None,
-                description: None,
-            } if tags.is_empty() => "stream.job_clear_tags",
-            Job::Video { .. } => "stream.job_video",
+            Job::Twitch { category, body } => {
+                let map = body.as_object();
+                let count = map.map_or(0, serde_json::Map::len) + usize::from(category.is_some());
+                if count == 1 && category.is_some() {
+                    "stream.job_category"
+                } else if count == 1 && map.is_some_and(|m| m.contains_key("title")) {
+                    "stream.job_title"
+                } else if count == 1
+                    && map.is_some_and(|m| m.get("tags").and_then(Value::as_array).is_some_and(Vec::is_empty))
+                {
+                    "stream.job_clear_tags"
+                } else if count == 1 && map.is_some_and(|m| m.contains_key("tags")) {
+                    "stream.job_tags"
+                } else if map.is_some_and(|m| {
+                    m.keys().all(|k| {
+                        matches!(
+                            k.as_str(),
+                            "broadcaster_language" | "delay" | "is_branded_content" | "content_classification_labels"
+                        )
+                    })
+                }) {
+                    "stream.job_channel"
+                } else {
+                    "stream.job_video"
+                }
+            }
+            Job::Kick { title, category, tags } => match (title, category, tags) {
+                (Some(_), None, None) => "stream.job_title",
+                (None, Some(_), None) => "stream.job_category",
+                (None, None, Some(t)) if t.is_empty() => "stream.job_clear_tags",
+                (None, None, Some(_)) => "stream.job_tags",
+                _ => "stream.job_video",
+            },
+            Job::Video(update)
+                if update.tags.as_ref().is_some_and(Vec::is_empty)
+                    && update.title.is_none()
+                    && update.description.is_none()
+                    && update.category.is_none()
+                    && update.privacy.is_none() =>
+            {
+                "stream.job_clear_tags"
+            }
+            Job::Video(_) => "stream.job_video",
             Job::Ad(_) => "stream.job_ad",
             Job::Thumbnail(_) => "stream.job_thumbnail",
             Job::Marker => "stream.job_marker",
@@ -411,17 +591,46 @@ fn twitch_error(error: String) -> String {
     crate::twitch::plain_error(&error)
 }
 
+fn find_kick_category_id(data: &Value, name: &str) -> Option<u64> {
+    let list = data["data"].as_array()?;
+    let picked = list
+        .iter()
+        .find(|c| c["name"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(name)))
+        .or_else(|| list.first())?;
+    picked["id"].as_u64().filter(|id| *id > 0)
+}
+
 /// Runs one change through the platform's own client (only ever a running one); what it made, in
 /// words, when there is something to say (a clip's link).
-async fn run(e: &Rc<Engine>, platform: usize, job: &Job) -> Result<String, String> {
+async fn run(e: &Rc<Engine>, platform: usize, job: &Job, youtube_id: &str) -> Result<String, String> {
     let who = || vec![("broadcaster_id", "{broadcaster_id}")];
     let off = || seen().access.why[platform].clone();
     match (platform, job) {
-        (TWITCH, Job::Title(_) | Job::Tags(_) | Job::Ad(_) | Job::Marker | Job::Clip | Job::Snooze) => {
+        (TWITCH, Job::Twitch { category, body }) => {
+            let twitch = e.twitch().ok_or_else(off)?;
+            let mut patch = body.as_object().cloned().unwrap_or_default();
+            if let Some(name) = category {
+                let games = twitch
+                    .helix("GET", "games", vec![("name", name.as_str())], None, false, true)
+                    .await
+                    .map_err(twitch_error)?;
+                let id = games["data"][0]["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| trf("stream.no_category", &[("name", name)]))?;
+                patch.insert("game_id".into(), Value::String(id.to_owned()));
+            }
+            if !patch.is_empty() {
+                twitch
+                    .helix("PATCH", "channels", who(), Some(Value::Object(patch)), false, true)
+                    .await
+                    .map_err(twitch_error)?;
+            }
+            Ok(String::new())
+        }
+        (TWITCH, Job::Ad(_) | Job::Marker | Job::Clip | Job::Snooze) => {
             let twitch = e.twitch().ok_or_else(off)?;
             let (method, path, query, body) = match job {
-                Job::Title(title) => ("PATCH", "channels", who(), json!({"title": title})),
-                Job::Tags(tags) => ("PATCH", "channels", who(), json!({"tags": tags})),
                 Job::Ad(length) => (
                     "POST",
                     "channels/commercial",
@@ -452,51 +661,51 @@ async fn run(e: &Rc<Engine>, platform: usize, job: &Job) -> Result<String, Strin
                 _ => String::new(),
             })
         }
-        // A category is found by name first: the sub-actions do it and say how it went.
-        (TWITCH | KICK, Job::Category(name)) => {
-            let (code, settings, flag) = if platform == TWITCH {
-                (16, json!({"source": 0, "game": name}), "gameSuccess")
-            } else {
-                (
-                    35031,
-                    json!({"categoryName": name, "categoryId": 0}),
-                    "category.success",
-                )
-            };
-            if platform == KICK && e.kick().is_none() || platform == TWITCH && e.twitch().is_none() {
-                return Err(off());
-            }
-            let settings = settings.as_object().cloned().unwrap_or_default();
-            let done = e.run_one(code, settings).await;
-            match done.get(flag).and_then(Value::as_bool) {
-                Some(true) => Ok(String::new()),
-                _ => Err(trf("stream.no_category", &[("name", name)])),
-            }
-        }
-        (KICK, _) => {
+        (KICK, Job::Kick { title, category, tags }) => {
             let kick = e.kick().ok_or_else(off)?;
-            match job {
-                Job::Title(title) => kick.set_channel_title(title).await,
-                Job::Tags(tags) => kick.set_channel_tags(tags.clone()).await,
-                Job::Ad(length) => kick.start_ad_break(*length).await.map(drop),
-                _ => Err(tr("stream.not_here").into()),
+            let mut patch = serde_json::Map::new();
+            if let Some(name) = category {
+                let encoded = crate::commands::url_encode(name);
+                let v2 = kick
+                    .api(
+                        "GET",
+                        &format!("https://api.kick.com/public/v2/categories?name={encoded}"),
+                        None,
+                    )
+                    .await;
+                let id = match v2.ok().and_then(|v| find_kick_category_id(&v, name)) {
+                    Some(id) => Some(id),
+                    None => kick
+                        .api("GET", &format!("/categories?q={encoded}"), None)
+                        .await
+                        .ok()
+                        .and_then(|v| find_kick_category_id(&v, name)),
+                }
+                .ok_or_else(|| trf("stream.no_category", &[("name", name)]))?;
+                patch.insert("category_id".into(), id.into());
             }
-            .map(|()| String::new())
+            if let Some(title) = title {
+                patch.insert("stream_title".into(), title.clone().into());
+            }
+            if let Some(tags) = tags {
+                let capped: Vec<String> = tags.iter().take(10).cloned().collect();
+                patch.insert("custom_tags".into(), json!(capped));
+            }
+            if !patch.is_empty() {
+                kick.api("PATCH", "/channels", Some(Value::Object(patch))).await?;
+            }
+            Ok(String::new())
+        }
+        (KICK, Job::Ad(length)) => {
+            let kick = e.kick().ok_or_else(off)?;
+            kick.start_ad_break(*length).await.map(|_| String::new())
         }
         (YOUTUBE, _) => {
             let youtube = e.youtube().ok_or_else(off)?;
             match job {
-                Job::Video {
-                    title,
-                    description,
-                    tags,
-                } => {
-                    youtube
-                        .update_video("", title.clone(), description.clone(), tags.clone())
-                        .await
-                }
-                Job::Ad(length) => youtube.run_commercial("", *length).await,
-                Job::Thumbnail(file) => youtube.set_thumbnail("", file).await,
+                Job::Video(update) => youtube.update_video(youtube_id, update.clone()).await,
+                Job::Ad(length) => youtube.run_commercial(youtube_id, *length).await,
+                Job::Thumbnail(file) => youtube.set_thumbnail(youtube_id, file).await,
                 _ => Err(tr("stream.not_here").into()),
             }
             .map(|()| String::new())
@@ -537,10 +746,24 @@ fn twitch_ads(data: &Value, live: Option<bool>) -> String {
         return tr("stream.ads_live_only").into();
     }
     let now = crate::oauth::now() as i64;
-    let mut words = vec![match unix_time(&data["next_ad_at"]) {
+    let next = unix_time(&data["next_ad_at"]);
+    let mut words = vec![match next {
         Some(at) if at > now => trf("stream.ads_next", &[("time", &crate::fmt::shown_clock(at))]),
         _ => tr("stream.ads_ready").into(),
     }];
+    if let Some(duration) = data["duration"].as_u64().filter(|secs| *secs > 0) {
+        if let Some(last) = unix_time(&data["last_ad_at"]) {
+            words.push(trf(
+                "stream.ads_last",
+                &[
+                    ("seconds", &duration.to_string()),
+                    ("time", &crate::fmt::shown_clock(last)),
+                ],
+            ));
+        } else if next.is_some_and(|at| at > now) {
+            words.push(trf("stream.ads_length_planned", &[("seconds", &duration.to_string())]));
+        }
+    }
     if let Some(left) = data["snooze_count"].as_u64() {
         words.push(trf("stream.snoozes_left", &[("count", &left.to_string())]));
     }
@@ -571,6 +794,10 @@ fn twitch_channel(info: &mut Info, data: &Value) {
     info.title = data["title"].as_str().unwrap_or_default().into();
     info.category = data["game_name"].as_str().unwrap_or_default().into();
     info.tags = texts(data.get("tags"));
+    info.language = data["broadcaster_language"].as_str().unwrap_or_default().into();
+    info.labels = texts(data.get("content_classification_labels"));
+    info.branded = data["is_branded_content"].as_bool();
+    info.delay = data["delay"].as_u64();
     info.known = data.is_object();
 }
 
@@ -595,6 +822,10 @@ fn kick_channel(info: &mut Info, data: &Value) {
         info.live = Some(live);
         info.since = live.then(|| unix_time(&stream["start_time"])).flatten();
         info.viewers = stream["viewer_count"].as_u64().filter(|_| live);
+        info.mature = stream["is_mature"].as_bool();
+        if let Some(language) = stream["language"].as_str().filter(|s| !s.is_empty()) {
+            info.language = language.into();
+        }
     }
 }
 
@@ -611,6 +842,11 @@ fn kick_livestream(info: &mut Info, data: &Value) {
         info.title = data["stream_title"].as_str().unwrap_or_default().into();
     }
     info.since = info.since.or_else(|| unix_time(&data["started_at"]));
+    if info.language.is_empty() {
+        if let Some(language) = data["language"].as_str().filter(|s| !s.is_empty()) {
+            info.language = language.into();
+        }
+    }
 }
 
 /// YouTube's own names for its video categories (they never change), by id.
@@ -648,19 +884,20 @@ fn youtube_pick(items: &[Value]) -> Option<&Value> {
 
 /// YouTube's broadcast and its video (videos.list) into `info`.
 fn youtube_broadcast(info: &mut Info, broadcast: &Value, video: &Value) {
-    let live = matches!(
-        broadcast["status"]["lifeCycleStatus"].as_str(),
-        Some("live" | "liveStarting")
-    );
+    let lifecycle = broadcast["status"]["lifeCycleStatus"].as_str().unwrap_or_default();
+    let live = matches!(lifecycle, "live" | "liveStarting");
     let snippet = if video["snippet"].is_object() {
         &video["snippet"]
     } else {
         &broadcast["snippet"]
     };
+    info.broadcast_id = broadcast["id"].as_str().unwrap_or_default().into();
+    info.lifecycle = lifecycle.into();
     info.title = snippet["title"].as_str().unwrap_or_default().into();
     info.description = snippet["description"].as_str().unwrap_or_default().into();
     info.tags = texts(snippet.get("tags"));
     let category = snippet["categoryId"].as_str().unwrap_or_default();
+    info.category_id = category.into();
     info.category = YOUTUBE_CATEGORIES
         .iter()
         .find(|(id, _)| *id == category)
@@ -671,10 +908,20 @@ fn youtube_broadcast(info: &mut Info, broadcast: &Value, video: &Value) {
         .or(broadcast["status"]["privacyStatus"].as_str())
         .unwrap_or_default()
         .into();
+    info.made_for_kids = video["status"]["madeForKids"]
+        .as_bool()
+        .or_else(|| video["status"]["selfDeclaredMadeForKids"].as_bool());
     info.known = true;
     info.live = Some(live);
     info.upcoming = !live;
     let details = &video["liveStreamingDetails"];
+    info.scheduled_at =
+        unix_time(&broadcast["snippet"]["scheduledStartTime"]).or_else(|| unix_time(&details["scheduledStartTime"]));
+    let content = &broadcast["contentDetails"];
+    info.latency = content["latencyPreference"].as_str().unwrap_or_default().into();
+    info.dvr = content["enableDvr"].as_bool();
+    info.auto_start = content["enableAutoStart"].as_bool();
+    info.auto_stop = content["enableAutoStop"].as_bool();
     info.since = live
         .then(|| unix_time(&details["actualStartTime"]).or_else(|| unix_time(&broadcast["snippet"]["actualStartTime"])))
         .flatten();
@@ -682,11 +929,17 @@ fn youtube_broadcast(info: &mut Info, broadcast: &Value, video: &Value) {
         .as_str()
         .and_then(|n| n.parse().ok())
         .filter(|_| live);
+    info.likes = video["statistics"]["likeCount"]
+        .as_str()
+        .and_then(|n| n.parse().ok())
+        .or_else(|| video["statistics"]["likeCount"].as_u64())
+        .filter(|n| *n > 0);
 }
 
-/// The health of the stream feeding a live broadcast (liveStreams.list), and YouTube's worst
-/// complaint about it.
+/// The health of the stream feeding a live broadcast (liveStreams.list), its worst complaint, and
+/// its CDN video format when known.
 fn youtube_health(info: &mut Info, stream: &Value) {
+    info.stream_status = stream["status"]["streamStatus"].as_str().unwrap_or_default().into();
     let health = &stream["status"]["healthStatus"];
     info.health = health["status"].as_str().unwrap_or_default().into();
     let rank = |issue: &Value| match issue["severity"].as_str() {
@@ -702,6 +955,14 @@ fn youtube_health(info: &mut Info, stream: &Value) {
         .and_then(|issue| issue["description"].as_str().or(issue["reason"].as_str()))
         .unwrap_or_default()
         .into();
+    let cdn = &stream["cdn"];
+    let res = cdn["resolution"].as_str().unwrap_or_default();
+    let fps = cdn["frameRate"].as_str().unwrap_or_default();
+    let parts: Vec<&str> = [res, fps]
+        .into_iter()
+        .filter(|s| !s.is_empty() && *s != "variable" && *s != "unknown")
+        .collect();
+    info.stream_video = parts.join(" ");
 }
 
 /// What a platform says the live is now. Twitch and Kick are read for the channel read (a moderator
@@ -717,9 +978,10 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                     return Ok(());
                 }
                 let who = || vec![("broadcaster_id", "{broadcaster_id}")];
-                // The schedule needs channel:read:ads; an older login without it reads as unknown.
+                let ads_allowed = crate::twitch::commercials_possible();
+                // The schedule needs channel:read:ads and Affiliate/Partner status.
                 let ads = async {
-                    if ready {
+                    if ready && ads_allowed {
                         Some(twitch.helix("GET", "channels/ads", who(), None, false, true).await)
                     } else {
                         None
@@ -741,8 +1003,23 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                 if let Ok(stream) = stream {
                     twitch_stream(&mut info, &stream["data"][0]);
                 }
-                if let Some(Ok(ads)) = ads {
-                    info.ads = twitch_ads(&ads["data"][0], info.live);
+                if !ads_allowed {
+                    info.ads_unavailable = true;
+                    info.ads = tr("stream.ads_twitch_ineligible").into();
+                } else {
+                    match ads {
+                        Some(Ok(ads)) => info.ads = twitch_ads(&ads["data"][0], info.live),
+                        Some(Err(err))
+                            if err.contains("affiliate")
+                                || err.contains("partner")
+                                || err.contains("monetized")
+                                || err.contains("HTTP 403") =>
+                        {
+                            info.ads_unavailable = true;
+                            info.ads = tr("stream.ads_twitch_ineligible").into();
+                        }
+                        _ => {}
+                    }
                 }
                 remember(KNOWN_CATEGORIES, [info.category.clone()]);
                 remember(KNOWN_TAGS, info.tags.clone());
@@ -798,9 +1075,15 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                     }
                 }
                 info.ads = match ads {
-                    Some(Ok(status)) => kick_ads(&status["data"], info.live),
+                    Some(Ok(status)) => {
+                        if status["data"]["opted_in"].as_bool() == Some(false) {
+                            info.ads_unavailable = true;
+                        }
+                        kick_ads(&status["data"], info.live)
+                    }
                     // An older login lacks the ads permission.
                     Some(Err(error)) if error.contains("HTTP 401") || error.contains("HTTP 403") => {
+                        info.ads_login = true;
                         tr("stream.ads_kick_login").into()
                     }
                     _ => String::new(),
@@ -823,7 +1106,9 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                     };
                     let id = broadcast["id"].as_str().unwrap_or_default();
                     let video = youtube
-                        .api(&format!("videos?part=snippet,status,liveStreamingDetails&id={id}"))
+                        .api(&format!(
+                            "videos?part=snippet,status,liveStreamingDetails,statistics&id={id}"
+                        ))
                         .await
                         .map(|v| v["items"][0].clone())
                         .unwrap_or_default();
@@ -831,8 +1116,12 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                     let bound = broadcast["contentDetails"]["boundStreamId"]
                         .as_str()
                         .unwrap_or_default();
-                    if info.live == Some(true) && !bound.is_empty() {
-                        if let Ok(streams) = youtube.api(&format!("liveStreams?part=status&id={bound}")).await {
+                    if matches!(
+                        info.lifecycle.as_str(),
+                        "live" | "liveStarting" | "testing" | "testStarting"
+                    ) && !bound.is_empty()
+                    {
+                        if let Ok(streams) = youtube.api(&format!("liveStreams?part=status,cdn&id={bound}")).await {
                             youtube_health(&mut info, &streams["items"][0]);
                         }
                     }
@@ -852,10 +1141,17 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
             _ => {
                 if e.tiktok_connected() {
                     let room = crate::webcast::room_facts();
+                    let (paused, likes, coins) = crate::tiktok::live_metrics();
                     info.title = room.title;
                     info.since = room.since;
                     info.known = !info.title.is_empty();
                     info.live = Some(true);
+                    info.paused = paused;
+                    info.likes = (likes > 0).then_some(likes);
+                    info.coins = (coins > 0).then_some(coins);
+                } else {
+                    // The chat joins a TikTok live when there is one: not connected means not live.
+                    info.live = Some(false);
                 }
             }
         }
@@ -868,8 +1164,62 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
     info
 }
 
+/// Reads already-connected OBS Studio instances without opening new connections or background timers.
+async fn look_obs(e: &Rc<Engine>) -> (Vec<ObsState>, Vec<(String, crate::core::outputs::Inventory)>) {
+    let Some(obs) = e.obs() else {
+        return (Vec::new(), Vec::new());
+    };
+    let conns: Vec<_> = e
+        .config()
+        .obs
+        .connections
+        .iter()
+        .map(crate::obs::ObsConnInfo::from_obj)
+        .collect();
+    let targets: Vec<(Option<String>, String)> = if conns.is_empty() {
+        if obs.is_connected(None) {
+            vec![(None, "OBS".to_string())]
+        } else {
+            Vec::new()
+        }
+    } else {
+        conns
+            .into_iter()
+            .filter(|c| obs.is_connected(Some(&c.id)))
+            .map(|c| (Some(c.id), c.name))
+            .collect()
+    };
+    let prefs = e.config().obs_output_prefs.clone();
+    let mut out = Vec::with_capacity(targets.len());
+    let mut inventories = Vec::with_capacity(targets.len());
+    for (id, name) in targets {
+        let conn_id = id.as_deref().unwrap_or("default");
+        if let Ok(mut inv) = crate::core::outputs::discover(obs.as_ref(), conn_id).await {
+            crate::core::outputs::apply_prefs(&mut inv, &prefs);
+            inventories.push((name.clone(), inv));
+        }
+        if let Ok(status) = obs.send_request(id.as_deref(), "GetStreamStatus", json!({})).await {
+            out.push(ObsState {
+                name,
+                streaming: status["outputActive"].as_bool() == Some(true),
+                reconnecting: status["outputReconnecting"].as_bool() == Some(true),
+                congestion: status["outputCongestion"].as_f64().unwrap_or(0.0),
+                skipped_frames: status["outputSkippedFrames"].as_u64().unwrap_or(0),
+                total_frames: status["outputTotalFrames"].as_u64().unwrap_or(0),
+            });
+        }
+    }
+    (out, inventories)
+}
+
 /// Runs one platform's changes in order: what each said, and whether one failed.
-async fn run_steps(e: &Rc<Engine>, access: &Access, platform: usize, jobs: Vec<Job>) -> (Vec<String>, bool) {
+async fn run_steps(
+    e: &Rc<Engine>,
+    access: &Access,
+    platform: usize,
+    jobs: Vec<Job>,
+    youtube_id: &str,
+) -> (Vec<String>, bool) {
     let mut notes = Vec::new();
     let mut trouble = false;
     for job in jobs {
@@ -882,7 +1232,7 @@ async fn run_steps(e: &Rc<Engine>, access: &Access, platform: usize, jobs: Vec<J
             trouble = true;
             continue;
         }
-        match run(e, platform, &job).await {
+        match run(e, platform, &job, youtube_id).await {
             Ok(made) => {
                 // TikTok never says its title back: what was set here is what it is.
                 if let (TIKTOK, Job::Title(title)) = (platform, &job) {
@@ -904,9 +1254,11 @@ async fn run_steps(e: &Rc<Engine>, access: &Access, platform: usize, jobs: Vec<J
     (notes, trouble)
 }
 
-/// YouTube is read at most this often unless asked (opened, Refresh, a change, a live starting or
-/// ending): each read costs quota, 2 or 3 units of the 10,000 a day.
+/// YouTube is read at most this often unless asked (Refresh, a change, a live starting or ending,
+/// or opening the page after the cooldown): each read costs quota, 2 or 3 units of the 10,000 a day.
 const YOUTUBE_EVERY: Duration = Duration::from_secs(300);
+/// Minimum gap before re-opening the Stream tab forces another YouTube Data API read.
+const YOUTUBE_OPEN_COOLDOWN: Duration = Duration::from_secs(30);
 /// Twitch and Kick are read this often while the page is open; titles, categories and lives arrive
 /// by themselves in between (EventSub, Pusher).
 const READ_EVERY: Duration = Duration::from_secs(60);
@@ -925,25 +1277,25 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
     let e = engine.clone();
     tokio::task::spawn_local(async move {
         let access = access(&e);
+        let prev = seen();
+        let youtube_id = prev.info[YOUTUBE].broadcast_id.clone();
         let mut jobs: [Vec<Job>; 4] = Default::default();
         for (platform, job) in steps {
             jobs[platform].push(job);
         }
         let [twitch, kick, youtube, tiktok] = jobs;
         let ((n0, t0), (n1, t1), (n2, t2), (n3, t3)) = tokio::join!(
-            run_steps(&e, &access, TWITCH, twitch),
-            run_steps(&e, &access, KICK, kick),
-            run_steps(&e, &access, YOUTUBE, youtube),
-            run_steps(&e, &access, TIKTOK, tiktok),
+            run_steps(&e, &access, TWITCH, twitch, &youtube_id),
+            run_steps(&e, &access, KICK, kick, &youtube_id),
+            run_steps(&e, &access, YOUTUBE, youtube, &youtube_id),
+            run_steps(&e, &access, TIKTOK, tiktok, &youtube_id),
         );
         let notes: Vec<String> = [n0, n1, n2, n3].concat();
         let trouble = t0 || t1 || t2 || t3;
         let youtube_due = force
             || !YOUTUBE_ASKED.get().is_some_and(|at| at.elapsed() < YOUTUBE_EVERY)
-            || seen().info[YOUTUBE] == Info::default();
-        if youtube_due && access.shown[YOUTUBE] {
-            YOUTUBE_ASKED.set(Some(Instant::now()));
-        }
+            || prev.info[YOUTUBE] == Info::default()
+            || !prev.info[YOUTUBE].error.is_empty();
         let read = |platform: usize| {
             let e = &e;
             let on = access.shown[platform] && (platform != YOUTUBE || youtube_due);
@@ -956,7 +1308,9 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
                 }
             }
         };
-        let (i0, i1, i2, i3) = tokio::join!(read(TWITCH), read(KICK), read(YOUTUBE), read(TIKTOK));
+        let (i0, i1, i2, i3, (obs, obs_inventories)) =
+            tokio::join!(read(TWITCH), read(KICK), read(YOUTUBE), read(TIKTOK), look_obs(&e));
+        let obs_prefs = e.config().obs_output_prefs.clone();
         let applied = SEEN.with(|seen| {
             let mut seen = seen.borrow_mut();
             if !seen.finish(sequence) {
@@ -964,12 +1318,24 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
             }
             for (platform, found) in [i0, i1, i2, i3].into_iter().enumerate() {
                 match found {
-                    Some(found) => seen.info[platform] = found,
+                    Some(found) => {
+                        if platform == YOUTUBE {
+                            if found.error.is_empty() {
+                                YOUTUBE_ASKED.set(Some(Instant::now()));
+                            } else {
+                                YOUTUBE_ASKED.set(None);
+                            }
+                        }
+                        seen.info[platform] = found;
+                    }
                     // YouTube, read lately: what it said then stands.
                     None if platform == YOUTUBE && access.shown[platform] => {}
                     None => seen.info[platform] = Info::default(),
                 }
             }
+            seen.obs = obs;
+            seen.obs_inventories = obs_inventories;
+            seen.obs_prefs = obs_prefs;
             seen.access = access;
             nothing_to_change(&mut seen);
             if !notes.is_empty() {
@@ -981,6 +1347,10 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
             true
         });
         if applied {
+            let inventories = cached_obs_inventories();
+            if !inventories.is_empty() {
+                let _ = crate::core::preflight::evaluate_inventories(&e, &inventories, None, None);
+            }
             crate::host::changed();
         }
     });
@@ -990,6 +1360,10 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
 /// A platform said its live changed by itself (Twitch's EventSub, Kick's Pusher): the page shows it
 /// at once, with no read. Empty values leave what is there.
 pub fn pushed(platform: &str, title: Option<&str>, category: Option<&str>) {
+    if platform == "twitch" {
+        pushed_twitch(title, category, None, None);
+        return;
+    }
     let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
         return;
     };
@@ -1014,6 +1388,95 @@ pub fn pushed(platform: &str, title: Option<&str>, category: Option<&str>) {
     }
 }
 
+/// Twitch EventSub `channel.update` pushed new metadata (title, category, language, content labels).
+pub fn pushed_twitch(title: Option<&str>, category: Option<&str>, language: Option<&str>, labels: Option<Vec<String>>) {
+    let changed = SEEN.with_borrow_mut(|seen| {
+        if seen.received == 0 || !seen.access.shown[TWITCH] {
+            return false;
+        }
+        let info = &mut seen.info[TWITCH];
+        let before = (
+            info.title.clone(),
+            info.category.clone(),
+            info.language.clone(),
+            info.labels.clone(),
+        );
+        if let Some(title) = title {
+            info.title = title.trim().to_owned();
+            info.known = true;
+        }
+        if let Some(category) = category {
+            info.category = category.trim().to_owned();
+        }
+        if let Some(language) = language {
+            info.language = language.trim().to_owned();
+        }
+        if let Some(labels) = labels {
+            info.labels = labels;
+        }
+        before
+            != (
+                info.title.clone(),
+                info.category.clone(),
+                info.language.clone(),
+                info.labels.clone(),
+            )
+    });
+    if changed {
+        remember(KNOWN_CATEGORIES, category.map(str::to_owned));
+        crate::host::changed();
+    }
+}
+
+/// An ad break just started on `platform`: show it right away and refresh on next read when open.
+pub fn ad_started(platform: &str, length: u64) {
+    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
+        return;
+    };
+    let changed = SEEN.with_borrow_mut(|seen| {
+        if seen.received == 0 || !seen.access.shown[i] {
+            return false;
+        }
+        let info = &mut seen.info[i];
+        info.ads = if length > 0 {
+            trf("stream.ad_running", &[("seconds", &length.to_string())])
+        } else {
+            tr("stream.ads_ready").into()
+        };
+        true
+    });
+    ASKED.set(None);
+    if changed {
+        crate::host::changed();
+    }
+}
+
+/// TikTok reported its live stream paused or resumed.
+pub fn tiktok_paused(paused: bool) {
+    let changed = SEEN.with_borrow_mut(|seen| {
+        if seen.received == 0 || !seen.access.shown[TIKTOK] {
+            return false;
+        }
+        let info = &mut seen.info[TIKTOK];
+        if info.paused == paused {
+            return false;
+        }
+        info.paused = paused;
+        true
+    });
+    if changed {
+        crate::host::changed();
+    }
+}
+
+/// OBS connected, disconnected, or changed stream state: refresh OBS status next time the page reads.
+pub fn obs_changed() {
+    ASKED.set(None);
+    if seen().received > 0 {
+        crate::host::changed();
+    }
+}
+
 /// A live started or ended on `platform`: the page says so at once (a read follows, with the rest).
 pub fn live_changed(platform: &str, live: bool) {
     let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
@@ -1028,6 +1491,7 @@ pub fn live_changed(platform: &str, live: bool) {
         info.since = live.then(|| crate::oauth::now() as i64);
         if !live {
             info.viewers = None;
+            info.paused = false;
         }
     });
     // The next read asks YouTube too: its live is a new broadcast.
@@ -1073,16 +1537,23 @@ fn situation(e: &Engine) -> u64 {
 fn refresh_if_due(engine: &Rc<Engine>) {
     let now = situation(engine);
     let changed = SITUATION.get() != Some(now);
-    let opened = ASKED.get().is_none();
-    if changed || opened || ASKED.get().is_some_and(|at| at.elapsed() > READ_EVERY) {
+    let just_opened = OPENED.take();
+    let due = ASKED.get().is_none_or(|at| at.elapsed() > READ_EVERY);
+    if changed || just_opened || due {
         SITUATION.set(Some(now));
         ASKED.set(Some(Instant::now()));
-        ask(engine, Vec::new(), changed || opened);
+        let force_youtube = changed
+            || (just_opened
+                && !YOUTUBE_ASKED
+                    .get()
+                    .is_some_and(|at| at.elapsed() < YOUTUBE_OPEN_COOLDOWN));
+        ask(engine, Vec::new(), force_youtube);
     }
 }
 
 /// The page was opened: what it shows is read again at once.
 pub fn opened() {
+    OPENED.set(true);
     ASKED.set(None);
 }
 
@@ -1132,12 +1603,35 @@ fn none_why(seen: &Seen, takes: [bool; 4], needs_live: bool) -> String {
         return String::new();
     }
     if needs_live && seen.can(takes).iter().any(|on| *on) {
+        if seen.received == 0 {
+            return tr("stream.checking").into();
+        }
         return tr("stream.needs_live").into();
     }
     (0..4)
         .find(|i| takes[*i] && seen.access.shown[*i])
         .map(|i| seen.access.why[i].clone())
         .unwrap_or_else(|| tr("stream.accounts_needed").into())
+}
+
+fn none_why_ads(seen: &Seen) -> String {
+    if seen.busy {
+        return tr("stream.working").into();
+    }
+    if seen.can_ads(ADS).iter().any(|on| *on) {
+        return String::new();
+    }
+    if seen.received == 0 && seen.can(ADS).iter().any(|on| *on) {
+        return tr("stream.checking").into();
+    }
+    if seen.can_live(ADS).iter().any(|on| *on) {
+        return (0..4)
+            .find(|i| ADS[*i] && seen.can_live(ADS)[*i] && seen.info[*i].ads_unavailable)
+            .map(|i| seen.info[i].ads.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| tr("stream.ads_unavailable").into());
+    }
+    none_why(seen, ADS, true)
 }
 
 /// The Accounts page, where a platform is connected and logged in.
@@ -1160,6 +1654,112 @@ fn live_line(seen: &Seen, i: usize) -> String {
     words.join(" ")
 }
 
+fn language_name(code: &str) -> String {
+    if code == "other" {
+        return tr("stream.language_other").to_string();
+    }
+    TWITCH_LANGUAGES
+        .iter()
+        .find(|(id, _)| id.eq_ignore_ascii_case(code))
+        .map(|(_, name)| (*name).to_string())
+        .unwrap_or_else(|| code.to_uppercase())
+}
+
+fn label_name(id: &str) -> &'static str {
+    match id {
+        "DebatedSocialIssuesAndPolitics" => tr("stream.label_politics_short"),
+        "DrugsIntoxication" => tr("stream.label_drugs_short"),
+        "Gambling" => tr("stream.label_gambling_short"),
+        "ProfanityVulgarity" => tr("stream.label_profanity_short"),
+        "SexualThemes" => tr("stream.label_sexual_short"),
+        "ViolentGraphic" => tr("stream.label_violence_short"),
+        "MatureGame" => tr("stream.label_mature_game"),
+        _ => "",
+    }
+}
+
+/// Platform-specific metadata or live telemetry summary line, empty when nothing notable is set.
+fn details_line(info: &Info, i: usize) -> Option<(&'static str, String)> {
+    let mut parts = Vec::new();
+    match i {
+        TWITCH | KICK => {
+            if !info.language.is_empty() {
+                parts.push(trf(
+                    "stream.summary_language",
+                    &[("language", &language_name(&info.language))],
+                ));
+            }
+            if let Some(delay) = info.delay.filter(|d| *d > 0) {
+                parts.push(trf("stream.summary_delay", &[("seconds", &delay.to_string())]));
+            }
+            if info.branded == Some(true) {
+                parts.push(tr("stream.summary_branded").to_string());
+            }
+            if info.mature == Some(true) {
+                parts.push(tr("stream.summary_mature").to_string());
+            }
+            if !info.labels.is_empty() {
+                let names: Vec<String> = info
+                    .labels
+                    .iter()
+                    .map(|id| {
+                        let known = label_name(id);
+                        if known.is_empty() {
+                            id.clone()
+                        } else {
+                            known.to_string()
+                        }
+                    })
+                    .collect();
+                parts.push(trf("stream.summary_labels", &[("labels", &names.join(", "))]));
+            }
+            (!parts.is_empty()).then(|| ("sliders-horizontal", parts.join(" ")))
+        }
+        YOUTUBE => {
+            match info.latency.as_str() {
+                "ultraLow" => parts.push(tr("stream.latency_ultra_low").to_string()),
+                "low" => parts.push(tr("stream.latency_low").to_string()),
+                "normal" => parts.push(tr("stream.latency_normal").to_string()),
+                _ => {}
+            }
+            if let Some(dvr) = info.dvr {
+                parts.push(tr(if dvr { "stream.dvr_on" } else { "stream.dvr_off" }).to_string());
+            }
+            if info.auto_start == Some(true) {
+                parts.push(tr("stream.auto_start_on").to_string());
+            }
+            if info.auto_stop == Some(true) {
+                parts.push(tr("stream.auto_stop_on").to_string());
+            }
+            if let Some(likes) = info.likes {
+                parts.push(trf("stream.likes_count", &[("count", &likes.to_string())]));
+            }
+            (!parts.is_empty()).then(|| ("sliders-horizontal", parts.join(" ")))
+        }
+        TIKTOK => {
+            if info.live == Some(true) {
+                if let (Some(likes), Some(coins)) = (info.likes, info.coins) {
+                    return Some((
+                        "heart",
+                        trf(
+                            "stream.tiktok_metrics",
+                            &[("likes", &likes.to_string()), ("coins", &coins.to_string())],
+                        ),
+                    ));
+                }
+                if let Some(likes) = info.likes {
+                    return Some(("heart", trf("stream.tiktok_likes", &[("count", &likes.to_string())])));
+                }
+                if let Some(coins) = info.coins {
+                    return Some(("gift", trf("stream.tiktok_coins", &[("count", &coins.to_string())])));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// One platform's card: its state in a word (the reason on hover), what it shows now (the title, then
 /// the category and tags as chips, then the live, its ads and what's wrong), and its buttons.
 fn platform_card(seen: &Seen, i: usize) -> Value {
@@ -1177,8 +1777,21 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
     // Ads, markers, clips and snoozes need a live.
     let live_why = if !why.is_empty() {
         why.clone()
+    } else if seen.received == 0 {
+        tr("stream.checking").to_string()
     } else if info.live == Some(false) {
         tr("stream.needs_live").to_string()
+    } else {
+        String::new()
+    };
+    let ad_why = if !live_why.is_empty() {
+        live_why.clone()
+    } else if info.ads_unavailable {
+        if info.ads.is_empty() {
+            tr("stream.ads_unavailable").to_string()
+        } else {
+            info.ads.clone()
+        }
     } else {
         String::new()
     };
@@ -1186,8 +1799,20 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
         ("off", tr(access.state[i]), access.why[i].clone())
     } else if !info.error.is_empty() {
         ("down", tr("stream.state_read_failed"), info.error.clone())
+    } else if info.live == Some(true) && i == TIKTOK && info.paused {
+        (
+            "attention",
+            tr("stream.state_paused"),
+            tr("stream.state_paused_tip").to_string(),
+        )
     } else if info.live == Some(true) {
         ("up", tr("stream.state_live"), String::new())
+    } else if i == YOUTUBE && matches!(info.lifecycle.as_str(), "testing" | "testStarting") {
+        (
+            "busy",
+            tr("stream.state_testing"),
+            tr("stream.state_testing_tip").to_string(),
+        )
     } else if info.live == Some(false) {
         (
             "standby",
@@ -1233,14 +1858,24 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
     if info.live == Some(true) {
         lines.push(json!({"icon": "radio", "text": live_line(seen, i)}));
     }
+    if i == TIKTOK && info.live == Some(true) && info.paused {
+        lines.push(json!({"icon": "circle-pause", "text": tr("stream.tiktok_paused"), "muted": false}));
+    }
     if info.upcoming {
-        lines.push(json!({"icon": "calendar", "text": tr("stream.youtube_upcoming"), "muted": true}));
+        let text = match info.scheduled_at {
+            Some(at) => trf("stream.youtube_scheduled", &[("when", &crate::fmt::shown_when(at))]),
+            None => tr("stream.youtube_upcoming").to_string(),
+        };
+        lines.push(json!({"icon": "calendar", "text": text, "muted": true}));
     }
     // YouTube: who can watch, when it isn't everyone.
     match info.privacy.as_str() {
         "private" => lines.push(json!({"icon": "lock", "text": tr("stream.youtube_private")})),
         "unlisted" => lines.push(json!({"icon": "eye-off", "text": tr("stream.youtube_unlisted")})),
         _ => {}
+    }
+    if i == YOUTUBE && info.made_for_kids == Some(true) {
+        lines.push(json!({"icon": "shield", "text": tr("stream.youtube_kids"), "muted": true}));
     }
     if !info.health.is_empty() {
         let (key, quiet) = match info.health.as_str() {
@@ -1253,7 +1888,15 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
         if !info.issue.is_empty() {
             text = format!("{text} {}", info.issue);
         }
+        if !info.stream_video.is_empty() {
+            text = format!("{text} ({})", info.stream_video);
+        }
         lines.push(json!({"icon": "activity", "text": text, "muted": quiet}));
+    } else if !info.stream_video.is_empty() {
+        lines.push(json!({"icon": "video", "text": info.stream_video, "muted": true}));
+    }
+    if let Some((icon, text)) = details_line(info, i) {
+        lines.push(json!({"icon": icon, "text": text, "muted": true}));
     }
     if ADS[i] && ready && !info.ads.is_empty() {
         lines.push(json!({"icon": "megaphone", "text": info.ads, "muted": info.live != Some(true)}));
@@ -1275,13 +1918,13 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
             &format!("stream_ad.{slug}"),
             tr("btn.run_ad"),
             "megaphone",
-            &live_why,
+            &ad_why,
         ));
     }
     if i == TWITCH {
         list.push(off_unless(
             button(&key("snooze"), tr("btn.snooze_ad"), "clock"),
-            &live_why,
+            &ad_why,
         ));
         list.push(off_unless(
             button(&key("marker"), tr("btn.add_marker"), "pin"),
@@ -1301,8 +1944,222 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
             &why,
         ));
     }
+    if i == KICK && info.ads_login {
+        list.push(accounts_button(&key("accounts")));
+    }
     card["buttons"] = list.into();
     card
+}
+
+fn overview(seen: &Seen) -> Option<String> {
+    let mut live = 0u64;
+    let mut offline = 0;
+    let mut unknown = 0;
+    let mut viewers = Some(0u64);
+    for i in (0..4).filter(|i| seen.access.shown[*i]) {
+        let info = &seen.info[i];
+        match info.live.filter(|_| info.error.is_empty()) {
+            Some(true) => {
+                live += 1;
+                viewers = viewers
+                    .zip(seen.viewers[i].or(info.viewers))
+                    .map(|(sum, count)| sum.saturating_add(count));
+            }
+            Some(false) => offline += 1,
+            None => {
+                unknown += 1;
+                viewers = None;
+            }
+        }
+    }
+    if live + offline + unknown == 0 {
+        return None;
+    }
+    let mut text = trf(
+        "stream.overview",
+        &[
+            ("live", &live.to_string()),
+            ("offline", &offline.to_string()),
+            ("unknown", &unknown.to_string()),
+        ],
+    );
+    if let Some(count) = viewers.filter(|_| live > 0) {
+        text.push(' ');
+        text.push_str(&trf("stream.total_viewers", &[("count", &count.to_string())]));
+    }
+    Some(text)
+}
+
+fn obs_summary(seen: &Seen) -> Option<(&'static str, String)> {
+    if seen.obs.is_empty() {
+        return None;
+    }
+    let any_live = seen
+        .info
+        .iter()
+        .any(|info| info.live == Some(true) && info.error.is_empty());
+    let mut best = "standby";
+    let mut texts = Vec::with_capacity(seen.obs.len());
+    for obs in &seen.obs {
+        let (health, text) = if obs.reconnecting {
+            ("attention", trf("stream.obs_reconnecting", &[("name", &obs.name)]))
+        } else if obs.streaming {
+            let dropped_pct = if obs.total_frames >= 100 {
+                (obs.skipped_frames as f64 / obs.total_frames as f64) * 100.0
+            } else {
+                0.0
+            };
+            if obs.congestion > 0.25 || dropped_pct >= 2.0 {
+                (
+                    "attention",
+                    trf(
+                        "stream.obs_streaming_warn",
+                        &[
+                            ("name", &obs.name),
+                            ("dropped", &obs.skipped_frames.to_string()),
+                            ("total", &obs.total_frames.to_string()),
+                        ],
+                    ),
+                )
+            } else if obs.skipped_frames > 0 {
+                (
+                    "up",
+                    trf(
+                        "stream.obs_streaming_dropped",
+                        &[("name", &obs.name), ("dropped", &obs.skipped_frames.to_string())],
+                    ),
+                )
+            } else {
+                ("up", trf("stream.obs_streaming", &[("name", &obs.name)]))
+            }
+        } else if any_live {
+            (
+                "attention",
+                trf("stream.obs_stopped_while_live", &[("name", &obs.name)]),
+            )
+        } else {
+            ("standby", trf("stream.obs_standby", &[("name", &obs.name)]))
+        };
+        if health == "attention" || (health == "up" && best != "attention") {
+            best = health;
+        }
+        texts.push(text);
+    }
+    Some((best, texts.join("  ")))
+}
+
+fn companion_button() -> Value {
+    let mut b = button("obs_companion", tr("preflight.btn_companion"), "shield");
+    b["dialog"] = "obs_companion".into();
+    b
+}
+
+fn obs_outputs_section(seen: &Seen) -> Option<Value> {
+    if seen.obs_inventories.is_empty() {
+        return None;
+    }
+    let multi_conn = seen.obs_inventories.len() > 1;
+    let any_controllable = seen
+        .obs_inventories
+        .iter()
+        .flat_map(|(_, inv)| &inv.outputs)
+        .any(|o| o.required && o.controllable);
+    let control_why = if seen.busy {
+        tr("stream.working").to_owned()
+    } else if !any_controllable {
+        tr("preflight.state_ignored").to_owned()
+    } else {
+        String::new()
+    };
+    let mut rows = vec![json!({
+        "about": tr("preflight.outputs_hint"),
+        "control": buttons(vec![
+            off_unless(button("obs.start_all", tr("stream.obs_start_all"), "play"), &control_why),
+            off_unless(button("obs.stop_all", tr("stream.obs_stop_all"), "square"), &control_why),
+            companion_button(),
+        ]),
+    })];
+    let last = crate::core::preflight::last_report();
+    for (conn_name, inv) in &seen.obs_inventories {
+        for o in &inv.outputs {
+            let base_name = if o.source == "main" {
+                tr("stream.obs_main_output").to_owned()
+            } else {
+                o.name.clone()
+            };
+            let label = if multi_conn {
+                format!("{conn_name} — {base_name}")
+            } else {
+                base_name
+            };
+            let source_label = match o.source.as_str() {
+                "main" => "OBS Studio",
+                "aitum-stream-suite" => "Aitum Stream Suite",
+                "aitum-multistream" => "Aitum Multistream",
+                "aitum-vertical" => "Aitum Vertical",
+                "obs-multi-rtmp" => "Multiple RTMP",
+                other => other,
+            };
+            let active_label = match (o.active, o.reconnecting) {
+                (_, Some(true)) => tr("stream.state_paused"),
+                (Some(true), _) => tr("stream.state_live"),
+                (Some(false), _) => tr("preflight.state_standby"),
+                (None, _) => "",
+            };
+            let about = if active_label.is_empty() {
+                source_label.to_owned()
+            } else {
+                format!("{source_label} · {active_label}")
+            };
+            let matched = last
+                .as_ref()
+                .and_then(|r| r.outputs.iter().find(|item| item.id == o.id));
+            let (health, status_text, choice_index) = if let Some(m) = matched {
+                let h = match m.status.as_str() {
+                    "ready" => "up",
+                    "warning" => "attention",
+                    "blocked" => "down",
+                    _ => "off",
+                };
+                (h, m.detail.clone(), m.choice_index)
+            } else if !o.required {
+                ("off", tr("preflight.state_ignored").to_owned(), 5)
+            } else if let Some(plat) = o.platform.as_deref().filter(|p| !p.is_empty()) {
+                let idx = PLATFORMS.iter().position(|(slug, _)| *slug == plat);
+                let (h, detail) = match idx {
+                    Some(i) if seen.access.ready[i] => {
+                        ("up", trf("preflight.output_ready_on", &[("platform", PLATFORMS[i].1)]))
+                    }
+                    Some(i) => ("down", seen.access.why[i].clone()),
+                    None => ("attention", tr("preflight.state_unmapped").to_owned()),
+                };
+                (h, detail, 0)
+            } else {
+                ("attention", tr("preflight.state_unmapped").to_owned(), 0)
+            };
+            let auto_plat = if o.platform_source.as_deref() == Some("user") {
+                None
+            } else {
+                o.platform.as_deref()
+            };
+            rows.push(json!({
+                "key": format!("output.{}", o.id),
+                "label": label,
+                "about": about,
+                "status": state(health, &status_text),
+                "control": {
+                    "type": "select",
+                    "value": choice_index,
+                    "options": crate::core::preflight::option_labels(auto_plat),
+                },
+            }));
+        }
+    }
+    Some(json!({
+        "title": tr("preflight.outputs_title"),
+        "icon": "radio",
+        "rows": rows,
+    }))
 }
 
 fn model(seen: &Seen) -> Vec<Value> {
@@ -1320,20 +2177,30 @@ fn model(seen: &Seen) -> Vec<Value> {
             "stream_ad",
             tr("btn.run_ad"),
             "megaphone",
-            &none_why(seen, ADS, true),
+            &none_why_ads(seen),
         ),
+        companion_button(),
         button("refresh", tr("btn.refresh"), "refresh-cw"),
     ];
     if !seen.access.shown.iter().any(|shown| *shown) {
-        top = vec![accounts_button("accounts")];
+        top = vec![accounts_button("accounts"), companion_button()];
     }
     // The introduction beside the buttons for every platform; under them, what is going on, if anything.
     let mut rows = vec![json!({"about": tr("stream.hint"), "control": buttons(top)})];
     if !text.is_empty() {
         rows.push(json!({"status": state(health, &text)}));
     }
+    if let Some(text) = overview(seen) {
+        rows.push(json!({"status": state("", &text)}));
+    }
+    if let Some((obs_health, obs_text)) = obs_summary(seen) {
+        rows.push(json!({"status": state(obs_health, &obs_text)}));
+    }
     let mut sections = vec![json!({"title": "", "icon": "", "rows": rows})];
     sections.extend((0..4).filter(|i| seen.access.shown[*i]).map(|i| platform_card(seen, i)));
+    if let Some(obs_section) = obs_outputs_section(seen) {
+        sections.push(obs_section);
+    }
     sections
 }
 
@@ -1343,8 +2210,9 @@ fn clear_tags_steps(seen: &Seen) -> Vec<Step> {
     (0..4)
         .filter(|i| on[*i])
         .map(|i| match i {
-            YOUTUBE => (i, video(None, None, Some(Vec::new()))),
-            _ => (i, Job::Tags(Vec::new())),
+            TWITCH => (i, twitch_job(None, json!({"tags": []}))),
+            KICK => (i, kick_job(None, None, Some(Vec::new()))),
+            _ => (i, video(None, None, Some(Vec::new()))),
         })
         .collect()
 }
@@ -1361,6 +2229,35 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
             Err(tr("stream.working").to_string())
         }
     };
+    if matches!(action, "obs.start_all" | "obs.stop_all") {
+        let op = if action == "obs.start_all" { "start" } else { "stop" };
+        let targets: Vec<(String, Vec<String>)> = now
+            .obs_inventories
+            .iter()
+            .filter_map(|(_, inv)| {
+                let ids: Vec<String> = inv
+                    .outputs
+                    .iter()
+                    .filter(|o| o.required && o.controllable)
+                    .map(|o| o.id.clone())
+                    .collect();
+                (!ids.is_empty()).then(|| (inv.connection_id.clone(), ids))
+            })
+            .collect();
+        if targets.is_empty() {
+            return Err(tr("preflight.state_ignored").into());
+        }
+        let e = engine.clone();
+        tokio::task::spawn_local(async move {
+            for (conn_id, ids) in targets {
+                let _ = crate::core::outputs::request(&e, &json!({"op": op, "connectionId": conn_id, "outputs": ids}))
+                    .await;
+            }
+            ASKED.set(None);
+            ask(&e, Vec::new(), false);
+        });
+        return Ok(json!({"accepted": true}));
+    }
     let action = action.strip_prefix("twitch.").unwrap_or(action);
     match action {
         "refresh" => {
@@ -1375,18 +2272,24 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
             }
             go(steps)
         }
-        "marker" | "clip" | "snooze" => {
+        "snooze" => {
+            if !now.can_ads(ONLY_TWITCH)[TWITCH] {
+                if now.can_live(ONLY_TWITCH)[TWITCH] && now.info[TWITCH].ads_unavailable {
+                    return Err(if now.info[TWITCH].ads.is_empty() {
+                        tr("stream.ads_twitch_ineligible").into()
+                    } else {
+                        now.info[TWITCH].ads.clone()
+                    });
+                }
+                return Err(none_why(&now, ONLY_TWITCH, true));
+            }
+            go(vec![(TWITCH, Job::Snooze)])
+        }
+        "marker" | "clip" => {
             if !now.can_live(ONLY_TWITCH)[TWITCH] {
                 return Err(none_why(&now, ONLY_TWITCH, true));
             }
-            go(vec![(
-                TWITCH,
-                match action {
-                    "marker" => Job::Marker,
-                    "clip" => Job::Clip,
-                    _ => Job::Snooze,
-                },
-            )])
+            go(vec![(TWITCH, if action == "marker" { Job::Marker } else { Job::Clip })])
         }
         _ => Err(tr("stream.use_form").into()),
     }
@@ -1417,6 +2320,7 @@ pub fn external_fields(kind: &str) -> Option<&'static [F]> {
     Some(match kind_of(kind)? {
         ("stream_info", None) => INFO_FIELDS,
         ("stream_info", Some(YOUTUBE)) => YOUTUBE_FIELDS,
+        ("stream_info", Some(TWITCH)) => TWITCH_FIELDS,
         ("stream_info", Some(TIKTOK)) => TIKTOK_FIELDS,
         ("stream_info", Some(_)) => CHANNEL_FIELDS,
         ("stream_ad", None) => AD_FIELDS,
@@ -1437,6 +2341,17 @@ fn form_json(kind: &str, title: &str, ok: &str, fields: &[(&F, String)], item: V
                 "category" => tr("stream.category"),
                 "tags" => tr("stream.tags_field"),
                 "description" => tr("stream.description"),
+                "youtube_category" => tr("stream.youtube_category"),
+                "privacy" => tr("stream.privacy"),
+                "language" => tr("stream.language"),
+                "delay" => tr("stream.delay"),
+                "branded" => tr("stream.branded"),
+                "label_politics" => tr("stream.label_politics"),
+                "label_drugs" => tr("stream.label_drugs"),
+                "label_gambling" => tr("stream.label_gambling"),
+                "label_profanity" => tr("stream.label_profanity"),
+                "label_sexual" => tr("stream.label_sexual"),
+                "label_violence" => tr("stream.label_violence"),
                 "clear_tags" => tr("stream.clear_tags_field"),
                 "duration" => tr("stream.ad_length"),
                 "file" => tr("stream.thumbnail_file"),
@@ -1457,6 +2372,24 @@ fn form_json(kind: &str, title: &str, ok: &str, fields: &[(&F, String)], item: V
                     field["choices"] = picks(KNOWN_CATEGORIES);
                     field["other"] = true.into();
                 }
+                "youtube_category" | "privacy" | "language" => {
+                    let options = match key {
+                        "youtube_category" => json!(YOUTUBE_CATEGORIES.iter().map(|(id, name)| json!({"id": id, "label": name})).collect::<Vec<_>>()),
+                        "privacy" => json!([{"id": "public", "label": tr("stream.public")},
+                            {"id": "unlisted", "label": tr("stream.unlisted")}, {"id": "private", "label": tr("stream.private")}]),
+                        _ => {
+                            let mut options: Vec<Value> = TWITCH_LANGUAGES.iter().map(|(id, name)| json!({"id": id, "label": name})).collect();
+                            options.push(json!({"id": "other", "label": tr("stream.language_other")}));
+                            json!(options)
+                        }
+                    };
+                    field["choices"] = options;
+                    field["strict"] = true.into();
+                    if key == "privacy" { field["tip"] = tr("stream.privacy_tip").into(); }
+                    if key == "language" { field["section"] = tr("stream.twitch_options").into(); }
+                }
+                "delay" => field["tip"] = tr("stream.delay_tip").into(),
+                "label_politics" => field["section"] = tr("stream.content_labels").into(),
                 "tags" => field["suggest"] = picks(KNOWN_TAGS),
                 "file" => {
                     field["browse"] = "image".into();
@@ -1502,8 +2435,16 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
     let fields = external_fields(kind)?;
     let now = seen();
     let off = |i: usize| {
-        if now.access.ready[i] && base == "stream_ad" && now.info[i].live == Some(false) {
+        if now.access.ready[i] && base == "stream_ad" && now.received == 0 {
+            tr("stream.checking").into()
+        } else if now.access.ready[i] && base == "stream_ad" && now.info[i].live == Some(false) {
             tr("stream.needs_live").into()
+        } else if now.access.ready[i] && base == "stream_ad" && now.info[i].ads_unavailable {
+            if now.info[i].ads.is_empty() {
+                tr("stream.ads_unavailable").into()
+            } else {
+                now.info[i].ads.clone()
+            }
         } else if now.access.ready[i] {
             String::new()
         } else if now.access.shown[i] {
@@ -1516,6 +2457,8 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
         Some(i) => takes[i],
         None => now.can(takes).iter().any(|on| *on),
     };
+    let delay_shown =
+        platform == Some(TWITCH) && (crate::twitch::is_partner() || now.info[TWITCH].delay.is_some_and(|d| d > 0));
     // A box none of the platforms can take is hidden.
     let unused = |on: bool| if on { String::new() } else { "-".to_string() };
     let labelled: Vec<(&F, String)> = fields
@@ -1524,7 +2467,8 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
             let why = match field.0 {
                 "category" => unused(any(CATEGORY)),
                 "tags" | "clear_tags" => unused(any(TAGS)),
-                "description" => unused(any(ONLY_YOUTUBE)),
+                "description" | "youtube_category" | "privacy" => unused(any(ONLY_YOUTUBE)),
+                "delay" => unused(delay_shown),
                 key => PLATFORMS
                     .iter()
                     .position(|(slug, _)| *slug == key)
@@ -1548,6 +2492,23 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
                 Some(_) => String::new(),
             }
             .into();
+            item["youtube_category"] = now.info[YOUTUBE].category_id.clone().into();
+            item["privacy"] = now.info[YOUTUBE].privacy.clone().into();
+            if platform == Some(TWITCH) {
+                let info = &now.info[TWITCH];
+                item["language"] = info.language.clone().into();
+                if delay_shown {
+                    item["delay"] = info.delay.unwrap_or(0).into();
+                }
+                if let Some(branded) = info.branded {
+                    item["branded"] = branded.into();
+                }
+                if info.known && info.error.is_empty() {
+                    for (key, id) in TWITCH_LABELS {
+                        item[*key] = info.labels.iter().any(|label| label == id).into();
+                    }
+                }
+            }
             item["clear_tags"] = false.into();
             let note = if platform.is_some() {
                 tr("stream.one_note")
@@ -1558,7 +2519,11 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
                 Some(_) => trf("stream.edit_on", &[("where", name)]),
                 None => tr("btn.edit_stream").to_string(),
             };
-            (title, tr("btn.save"), vec![note.to_string()])
+            let mut notes = vec![note.to_string()];
+            if platform == Some(YOUTUBE) || platform.is_none() && now.access.ready[YOUTUBE] {
+                notes.push(tr("stream.privacy_tip").into());
+            }
+            (title, tr("btn.save"), notes)
         }
         "stream_ad" => {
             item["duration"] = 0.into();
@@ -1581,7 +2546,7 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
         Some(i) => item[PLATFORMS[i].0] = true.into(),
         None => {
             let (takes, can) = if base == "stream_ad" {
-                (ADS, now.can_live(ADS))
+                (ADS, now.can_ads(ADS))
             } else {
                 (TITLE, now.can(TITLE))
             };
@@ -1595,10 +2560,10 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
     Some(Ok(form_json(kind, &title, ok, &labelled, item, notes)))
 }
 
-/// The platforms a form picked, among the ready ones that take it (and are live, for an ad).
+/// The platforms a form picked, among the ready ones that take it (and are live/eligible, for an ad).
 fn picked(item: &Obj, seen: &Seen, takes: [bool; 4]) -> [bool; 4] {
     let can = if takes == ADS {
-        seen.can_live(takes)
+        seen.can_ads(takes)
     } else {
         seen.can(takes)
     };
@@ -1631,7 +2596,56 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     let (categorised, tagged) = (takes(CATEGORY), takes(TAGS));
     let any = |on: [bool; 4]| on.iter().any(|on| *on);
     let retag = (clear || !tags.is_empty()) && any(tagged);
-    let changes = !title.is_empty()
+    let mut twitch_body = serde_json::Map::new();
+    if on[TWITCH] {
+        let now = &seen.info[TWITCH];
+        let language = text("language");
+        if !language.is_empty() && language != now.language {
+            if language != "other" && !TWITCH_LANGUAGES.iter().any(|(id, _)| *id == language) {
+                return Err(tr("stream.language_bad").into());
+            }
+            twitch_body.insert("broadcaster_language".into(), language.into());
+        }
+        if let Some(delay_val) = item.get("delay").filter(|v| !v.is_null()) {
+            let delay = delay_val
+                .as_i64()
+                .or_else(|| delay_val.as_str().and_then(|s| s.trim().parse().ok()))
+                .filter(|d| (0..=900).contains(d))
+                .ok_or_else(|| tr("stream.delay_bad").to_string())? as u64;
+            if now.delay.map_or(delay > 0, |prev| delay != prev) {
+                twitch_body.insert("delay".into(), delay.into());
+            }
+        }
+        if let Some(branded) = item.get("branded").and_then(Value::as_bool) {
+            if Some(branded) != now.branded {
+                twitch_body.insert("is_branded_content".into(), branded.into());
+            }
+        }
+        let labels: Vec<Value> = TWITCH_LABELS
+            .iter()
+            .filter_map(|(key, id)| {
+                let enabled = item.get(*key)?.as_bool()?;
+                (enabled != now.labels.iter().any(|label| label == id))
+                    .then(|| json!({"id": id, "is_enabled": enabled}))
+            })
+            .collect();
+        if !labels.is_empty() {
+            twitch_body.insert("content_classification_labels".into(), labels.into());
+        }
+    }
+    let youtube_category = text("youtube_category");
+    let privacy = text("privacy");
+    if on[YOUTUBE] {
+        if !youtube_category.is_empty() && !YOUTUBE_CATEGORIES.iter().any(|(id, _)| *id == youtube_category) {
+            return Err(tr("stream.youtube_category_bad").into());
+        }
+        if !privacy.is_empty() && !["public", "unlisted", "private"].contains(&privacy.as_str()) {
+            return Err(tr("stream.privacy_bad").into());
+        }
+    }
+    let changes = !twitch_body.is_empty()
+        || on[YOUTUBE] && (!youtube_category.is_empty() || !privacy.is_empty())
+        || !title.is_empty()
         || !category.is_empty() && any(categorised)
         || retag
         || !description.is_empty() && on[YOUTUBE];
@@ -1684,21 +2698,49 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
         let title = given(&title).filter(|title| !known || *title != now.title);
         let category = given(&category).filter(|category| !known || !category.eq_ignore_ascii_case(&now.category));
         let tags = new_tags.clone().filter(|tags| !known || *tags != now.tags);
-        if i == YOUTUBE {
-            let description = given(&description).filter(|text| !known || *text != now.description);
-            if title.is_some() || description.is_some() || tags.is_some() {
-                steps.push((i, video(title, description, tags)));
+        match i {
+            TWITCH => {
+                if let Some(title) = title {
+                    twitch_body.insert("title".into(), title.into());
+                }
+                if let (true, Some(tags)) = (tagged[i], tags) {
+                    twitch_body.insert("tags".into(), json!(tags));
+                }
+                let category = categorised[i].then_some(category).flatten();
+                if category.is_some() || !twitch_body.is_empty() {
+                    steps.push((i, twitch_job(category, Value::Object(std::mem::take(&mut twitch_body)))));
+                }
             }
-            continue;
-        }
-        if let Some(title) = title {
-            steps.push((i, Job::Title(title)));
-        }
-        if let (true, Some(category)) = (categorised[i], category) {
-            steps.push((i, Job::Category(category)));
-        }
-        if let (true, Some(tags)) = (tagged[i], tags) {
-            steps.push((i, Job::Tags(tags)));
+            KICK => {
+                let category = categorised[i].then_some(category).flatten();
+                let tags = tagged[i].then_some(tags).flatten();
+                if title.is_some() || category.is_some() || tags.is_some() {
+                    steps.push((i, kick_job(title, category, tags)));
+                }
+            }
+            YOUTUBE => {
+                let description = given(&description).filter(|text| !known || *text != now.description);
+                let category = given(&youtube_category).filter(|id| !known || *id != now.category_id);
+                let privacy = given(&privacy).filter(|privacy| !known || *privacy != now.privacy);
+                if title.is_some() || description.is_some() || tags.is_some() || category.is_some() || privacy.is_some()
+                {
+                    steps.push((
+                        i,
+                        Job::Video(VideoUpdate {
+                            title,
+                            description,
+                            tags,
+                            category,
+                            privacy,
+                        }),
+                    ));
+                }
+            }
+            _ => {
+                if let Some(title) = title {
+                    steps.push((i, Job::Title(title)));
+                }
+            }
         }
     }
     if steps.is_empty() {
@@ -1876,12 +2918,21 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                (TWITCH, Job::Title("Hello".into())),
-                (TWITCH, Job::Category("Just Chatting".into())),
-                (TWITCH, Job::Tags(vec!["English".into()])),
-                (KICK, Job::Title("Hello".into())),
-                (KICK, Job::Category("Just Chatting".into())),
-                (KICK, Job::Tags(vec!["English".into()])),
+                (
+                    TWITCH,
+                    twitch_job(
+                        Some("Just Chatting".into()),
+                        json!({"title": "Hello", "tags": ["English"]})
+                    )
+                ),
+                (
+                    KICK,
+                    kick_job(
+                        Some("Hello".into()),
+                        Some("Just Chatting".into()),
+                        Some(vec!["English".into()])
+                    )
+                ),
                 // YouTube's in one update, tags included.
                 (YOUTUBE, video(Some("Hello".into()), None, Some(vec!["English".into()]))),
             ]
@@ -1895,13 +2946,13 @@ mod tests {
         assert_eq!(
             described,
             vec![
-                (TWITCH, Job::Category("Art".into())),
+                (TWITCH, twitch_job(Some("Art".into()), json!({}))),
                 (YOUTUBE, video(None, Some("About".into()), None)),
             ]
         );
         // An empty field keeps what is there.
         let only_title = info_steps(&item(json!({"title": "Hi", "kick": true})), &seen).unwrap();
-        assert_eq!(only_title, vec![(KICK, Job::Title("Hi".into()))]);
+        assert_eq!(only_title, vec![(KICK, kick_job(Some("Hi".into()), None, None))]);
         // Remove every tag: whatever the tags box says.
         let cleared = info_steps(
             &item(json!({"tags": ["Kept"], "clear_tags": true, "kick": true, "youtube": true})),
@@ -1910,7 +2961,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             cleared,
-            vec![(KICK, Job::Tags(vec![])), (YOUTUBE, video(None, None, Some(vec![])))]
+            vec![
+                (KICK, kick_job(None, None, Some(vec![]))),
+                (YOUTUBE, video(None, None, Some(vec![])))
+            ]
         );
     }
 
@@ -2046,8 +3100,8 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                (TWITCH, Job::Tags(vec![])),
-                (KICK, Job::Tags(vec![])),
+                (TWITCH, twitch_job(None, json!({"tags": []}))),
+                (KICK, kick_job(None, None, Some(vec![]))),
                 (YOUTUBE, video(None, None, Some(vec![]))),
             ]
         );
@@ -2123,6 +3177,7 @@ mod tests {
 
     #[test]
     fn every_platform_set_up_is_a_card_with_what_it_shows_and_why_it_cant_change() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let mut seen = ready([false, true, false, false]);
         seen.access.shown = [true, true, true, true];
         seen.access.why[TWITCH] = "moderator".into();
@@ -2182,8 +3237,9 @@ mod tests {
         let tiktok = card(&sections, "tiktok");
         assert_eq!(tiktok["state"]["text"], tr("stream.state_offline"));
         assert_eq!(tiktok["headline"], tr("stream.not_live"));
-        // The top: the buttons for every platform, and no status while each card says its own.
-        assert_eq!(sections[0]["rows"].as_array().unwrap().len(), 1);
+        // The top: the buttons for every platform and the combined overview.
+        assert_eq!(sections[0]["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(sections[0]["rows"][1]["status"]["text"], overview(&seen).unwrap());
         assert!(find_button(&sections, "edit")["enabled"].is_null());
         // Nothing set up: no card, and the way to Accounts.
         let none = model(&Seen {
@@ -2282,7 +3338,17 @@ mod tests {
         assert_eq!(kick["item"]["kick"], true);
         assert_eq!(kick["title"], trf("stream.edit_on", &[("where", "Kick")]));
         let youtube = external_form("stream_info.youtube").unwrap().unwrap();
-        assert_eq!(keys(&youtube), ["title", "tags", "description", "clear_tags"]);
+        assert_eq!(
+            keys(&youtube),
+            [
+                "title",
+                "tags",
+                "description",
+                "youtube_category",
+                "privacy",
+                "clear_tags"
+            ]
+        );
         assert_eq!(keys(&external_form("stream_info.tiktok").unwrap().unwrap()), ["title"]);
         let ad = external_form("stream_ad").unwrap().unwrap();
         assert_eq!(
@@ -2385,7 +3451,7 @@ mod tests {
                         {"id": "v2", "snippet": {"title": "Next live"},
                          "status": {"lifeCycleStatus": "ready", "privacyStatus": "private"},
                          "contentDetails": {"boundStreamId": "s1"}}]},
-                    "GET videos?part=snippet,status,liveStreamingDetails&id=v2": {"items": [{
+                    "GET videos?part=snippet,status,liveStreamingDetails,statistics&id=v2": {"items": [{
                         "snippet": {"title": "Next live", "description": "Old about", "tags": ["Old"], "categoryId": "20"},
                         "status": {"privacyStatus": "private"}}]}}}),
                 None,
@@ -2412,6 +3478,7 @@ mod tests {
             let youtube = seen().info[YOUTUBE].clone();
             assert!(youtube.upcoming);
             assert_eq!(youtube.live, Some(false));
+            assert_eq!(youtube.broadcast_id, "v2");
             assert_eq!(
                 youtube.title, "Next live",
                 "the broadcast still to come, not the finished one"
@@ -2437,15 +3504,55 @@ mod tests {
             settle().await;
             let calls = asked(&fakes);
             for wanted in [
-                r#"twitch PATCH channels {"title":"New title"}"#,
-                r#"twitch PATCH channels {"tags":["Rust"]}"#,
-                r#"kick title title="New title""#,
-                r#"kick tags tags=["Rust"]"#,
+                r#"twitch PATCH channels {"title":"New title","tags":["Rust"]}"#,
+                r#"kick PATCH /channels {"stream_title":"New title","custom_tags":["Rust"]}"#,
                 r#"youtube updateVideo title="New title" tags=["Rust"] description="About""#,
             ] {
                 assert!(calls.iter().any(|call| call == wanted), "{wanted} not in {calls:#?}");
             }
+            let yt_call = fakes
+                .calls
+                .borrow()
+                .iter()
+                .find(|call| call["platform"] == "youtube" && call["call"] == "updateVideo")
+                .cloned()
+                .unwrap();
+            assert_eq!(yt_call["broadcast"], "v2");
             assert!(!seen().trouble, "{}", seen().note);
+            fakes.calls.borrow_mut().clear();
+            assert!(save_external(
+                &engine,
+                "stream_info.youtube",
+                item(json!({"youtube_category": "10", "privacy": "unlisted"}))
+            )
+            .unwrap()
+            .is_ok());
+            settle().await;
+            let call = fakes
+                .calls
+                .borrow()
+                .iter()
+                .find(|call| call["call"] == "updateVideo")
+                .cloned()
+                .unwrap();
+            assert_eq!(call["category"], "10");
+            assert_eq!(call["privacy"], "unlisted");
+            fakes.calls.borrow_mut().clear();
+            assert!(save_external(
+                &engine,
+                "stream_info.twitch",
+                item(json!({"language": "en", "branded": false, "label_gambling": true}))
+            )
+            .unwrap()
+            .is_ok());
+            settle().await;
+            let calls = asked(&fakes);
+            assert!(
+                calls.iter().any(|call| call.contains("broadcaster_language")
+                    && call.contains("is_branded_content")
+                    && call.contains("Gambling")),
+                "{calls:?}"
+            );
             // One platform's form changes that platform only, whatever its item says.
             fakes.calls.borrow_mut().clear();
             let kick_only = item(json!({"title": "Only Kick", "twitch": true}));
@@ -2453,7 +3560,9 @@ mod tests {
             settle().await;
             let calls = asked(&fakes);
             assert!(
-                calls.iter().any(|call| call == r#"kick title title="Only Kick""#),
+                calls
+                    .iter()
+                    .any(|call| call == r#"kick PATCH /channels {"stream_title":"Only Kick"}"#),
                 "{calls:#?}"
             );
             assert!(!calls.iter().any(|call| call.starts_with("twitch PATCH")), "{calls:#?}");
@@ -2517,6 +3626,142 @@ mod tests {
     }
 
     #[test]
+    fn overview_keeps_unknown_counts_and_kick_login_has_an_accounts_route() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut now = ready([true, true, true, false]);
+        now.access.shown[TIKTOK] = false;
+        now.info[TWITCH].live = Some(true);
+        now.info[TWITCH].viewers = Some(10);
+        now.info[KICK].live = Some(false);
+        now.info[YOUTUBE].live = Some(true);
+        now.info[YOUTUBE].viewers = Some(20);
+        now.viewers[TWITCH] = Some(15);
+        let text = overview(&now).unwrap();
+        assert!(text.contains(&trf("stream.total_viewers", &[("count", "35")])));
+        now.info[YOUTUBE].viewers = None;
+        assert!(!overview(&now).unwrap().contains("35"));
+        now.info[KICK].ads_login = true;
+        let card = platform_card(&now, KICK);
+        assert!(card["buttons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|button| button["go"] == "Accounts"));
+        assert_eq!(overview(&Seen::default()), None);
+    }
+
+    #[test]
+    fn a_tiktok_chat_not_joined_to_a_live_counts_as_not_live() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let info = look(&engine, TIKTOK, false).await;
+            assert_eq!(info.live, Some(false), "not unknown: the card says Not live too");
+            let mut now = ready([false; 4]);
+            for i in [TWITCH, KICK, YOUTUBE] {
+                now.info[i].live = Some(false);
+            }
+            now.info[TIKTOK] = info;
+            assert_eq!(
+                overview(&now).unwrap(),
+                trf("stream.overview", &[("live", "0"), ("offline", "4"), ("unknown", "0")])
+            );
+        });
+    }
+
+    #[test]
+    fn platform_options_are_prefilled_validated_and_only_changed_values_are_sent() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut now = ready([true, true, true, false]);
+        twitch_channel(
+            &mut now.info[TWITCH],
+            &json!({"title": "Same", "broadcaster_language": "pt",
+            "content_classification_labels": ["Gambling", "MatureGame"], "is_branded_content": true}),
+        );
+        now.info[YOUTUBE] = Info {
+            known: true,
+            category_id: "20".into(),
+            privacy: "private".into(),
+            ..Info::default()
+        };
+        reset(now.clone());
+        let form = external_form("stream_info.twitch").unwrap().unwrap();
+        assert_eq!(form["item"]["language"], "pt");
+        assert_eq!(form["item"]["branded"], true);
+        assert_eq!(form["item"]["label_gambling"], true);
+        assert_eq!(form["item"]["label_drugs"], false);
+        let mut unchanged = item(form["item"].clone());
+        unchanged.insert("twitch".into(), true.into());
+        assert!(info_steps(&unchanged, &now).is_err());
+        let edits = item(json!({"twitch": true, "language": "en", "branded": false,
+            "label_gambling": false, "label_drugs": true}));
+        assert_eq!(
+            info_steps(&edits, &now).unwrap(),
+            vec![(
+                TWITCH,
+                twitch_job(
+                    None,
+                    json!({
+                        "broadcaster_language": "en",
+                        "is_branded_content": false,
+                        "content_classification_labels": [
+                            {"id": "DrugsIntoxication", "is_enabled": true},
+                            {"id": "Gambling", "is_enabled": false}
+                        ]
+                    })
+                )
+            )]
+        );
+        // An omitted label, including Twitch's automatic MatureGame label, is never disabled.
+        assert_eq!(
+            info_steps(&item(json!({"twitch": true, "language": "xx"})), &now).unwrap_err(),
+            tr("stream.language_bad")
+        );
+        let form = external_form("stream_info.youtube").unwrap().unwrap();
+        assert_eq!(form["item"]["youtube_category"], "20");
+        assert_eq!(form["item"]["privacy"], "private");
+        assert!(form["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| matches!(f["key"].as_str(), Some("privacy" | "youtube_category")))
+            .all(|f| f["strict"] == true));
+        let edits = item(json!({"youtube": true, "title": "New", "youtube_category": "10", "privacy": "unlisted"}));
+        assert_eq!(
+            info_steps(&edits, &now).unwrap(),
+            vec![(
+                YOUTUBE,
+                Job::Video(VideoUpdate {
+                    title: Some("New".into()),
+                    category: Some("10".into()),
+                    privacy: Some("unlisted".into()),
+                    ..VideoUpdate::default()
+                })
+            )]
+        );
+        assert_eq!(
+            info_steps(
+                &item(json!({"youtube": true, "youtube_category": "20", "privacy": "private"})),
+                &now
+            )
+            .unwrap_err(),
+            tr("stream.unchanged")
+        );
+        for bad in [
+            json!({"youtube": true, "youtube_category": "999"}),
+            json!({"youtube": true, "privacy": "friends"}),
+        ] {
+            assert!(info_steps(&item(bad), &now).is_err());
+        }
+        // Platform-specific fields do not spill into a different selected platform.
+        assert!(info_steps(
+            &item(json!({"kick": true, "privacy": "public", "branded": false})),
+            &now
+        )
+        .is_err());
+    }
+
+    #[test]
     fn what_a_platform_already_says_is_not_sent_again() {
         let mut now = ready([true, true, true, false]);
         now.info[TWITCH] = Info {
@@ -2539,7 +3784,7 @@ mod tests {
         assert_eq!(
             info_steps(&form, &now).unwrap(),
             vec![
-                (TWITCH, Job::Title("New".into())),
+                (TWITCH, twitch_job(None, json!({"title": "New"}))),
                 (YOUTUBE, video(Some("New".into()), None, None)),
             ],
             "only the title changed, and YouTube's description stays out of its update"
@@ -2629,5 +3874,494 @@ mod tests {
             (youtube.health.as_str(), youtube.issue.as_str()),
             ("bad", "The bitrate is too low.")
         );
+    }
+
+    #[test]
+    fn batched_category_and_title_resolve_and_patch_once_per_platform() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let token = json!({"accessToken": "a", "refreshToken": "r", "expiresAt": u64::MAX / 2});
+            let config: crate::Config = serde_json::from_value(json!({
+                "twitch": {"broadcaster": {"userId": "1", "login": "me", "displayName": "Me", "token": token}},
+                "kick": {"channel": "me", "broadcaster": {"userId": 2, "username": "me", "token": token}}}))
+            .unwrap();
+            let engine = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+            let fakes = crate::scenario::fakes::install(
+                &engine,
+                &json!({
+                    "twitch": {
+                        "GET channels": {"data": [{"title": "Old", "game_name": "Art", "tags": ["English"]}]},
+                        "GET streams": {"data": []},
+                        "GET games": {"data": [{"id": "509658", "name": "Just Chatting"}]}
+                    },
+                    "kick": {
+                        "GET /channels?slug=me": {"data": [{"stream_title": "Old", "category": {"name": "Art"}, "stream": {"is_live": false}}]},
+                        "GET https://api.kick.com/public/v2/categories?name=Art+Game": {"data": []},
+                        "GET /categories?q=Art+Game": {"data": [{"id": 42, "name": "Art Game"}]}
+                    }
+                }),
+                None,
+            );
+            reset(Seen::default());
+            let settle = || async {
+                for _ in 0..40 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            ask(&engine, Vec::new(), true);
+            settle().await;
+            fakes.calls.borrow_mut().clear();
+
+            assert!(save_external(
+                &engine,
+                "stream_info.twitch",
+                item(json!({
+                    "title": "New Twitch",
+                    "category": "Just Chatting",
+                    "tags": ["Coding"],
+                    "language": "en",
+                    "delay": 15
+                }))
+            )
+            .unwrap()
+            .is_ok());
+            settle().await;
+            let twitch_patches: Vec<Value> = fakes
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c["platform"] == "twitch" && c["call"] == "PATCH channels")
+                .cloned()
+                .collect();
+            assert_eq!(twitch_patches.len(), 1, "batched into one Twitch PATCH");
+            let body = &twitch_patches[0]["body"];
+            assert_eq!(body["game_id"], "509658");
+            assert_eq!(body["title"], "New Twitch");
+            assert_eq!(body["tags"], json!(["Coding"]));
+            assert_eq!(body["broadcaster_language"], "en");
+            assert_eq!(body["delay"], 15);
+
+            fakes.calls.borrow_mut().clear();
+            assert!(save_external(
+                &engine,
+                "stream_info.kick",
+                item(json!({
+                    "title": "New Kick",
+                    "category": "Art Game",
+                    "tags": ["Chill"]
+                }))
+            )
+            .unwrap()
+            .is_ok());
+            settle().await;
+            let calls = asked(&fakes);
+            assert!(calls
+                .iter()
+                .any(|c| c == "kick GET https://api.kick.com/public/v2/categories?name=Art+Game"));
+            assert!(calls.iter().any(|c| c == "kick GET /categories?q=Art+Game"));
+            let kick_patches: Vec<Value> = fakes
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c["platform"] == "kick" && c["call"] == "PATCH /channels")
+                .cloned()
+                .collect();
+            assert_eq!(kick_patches.len(), 1, "batched into one Kick PATCH");
+            assert_eq!(
+                kick_patches[0]["body"],
+                json!({"category_id": 42, "stream_title": "New Kick", "custom_tags": ["Chill"]})
+            );
+            crate::scenario::fakes::uninstall();
+        });
+    }
+
+    #[test]
+    fn delay_field_prefills_when_positive_and_validates_bounds() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut now = ready([true, false, false, false]);
+        twitch_channel(&mut now.info[TWITCH], &json!({"title": "S", "delay": 0}));
+        reset(now.clone());
+        let form = external_form("stream_info.twitch").unwrap().unwrap();
+        let delay_field = form["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "delay")
+            .unwrap();
+        assert_eq!(delay_field["hidden"], true, "delay=0 hidden for non-partner");
+
+        now.info[TWITCH].delay = Some(30);
+        reset(now.clone());
+        let form = external_form("stream_info.twitch").unwrap().unwrap();
+        let delay_field = form["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "delay")
+            .unwrap();
+        assert!(delay_field["hidden"].is_null());
+        assert_eq!(form["item"]["delay"], 30);
+
+        assert_eq!(
+            info_steps(&item(json!({"twitch": true, "delay": 901})), &now).unwrap_err(),
+            tr("stream.delay_bad")
+        );
+        assert_eq!(
+            info_steps(&item(json!({"twitch": true, "delay": -1})), &now).unwrap_err(),
+            tr("stream.delay_bad")
+        );
+        assert_eq!(
+            info_steps(&item(json!({"twitch": true, "title": "S", "delay": 30})), &now).unwrap_err(),
+            tr("stream.unchanged")
+        );
+        assert_eq!(
+            info_steps(&item(json!({"twitch": true, "delay": 45})), &now).unwrap(),
+            vec![(TWITCH, twitch_job(None, json!({"delay": 45})))]
+        );
+    }
+
+    #[test]
+    fn youtube_quota_pacing_testing_state_and_cached_broadcast_id() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let token = json!({"accessToken": "a", "refreshToken": "r", "expiresAt": u64::MAX / 2});
+            let config: crate::Config = serde_json::from_value(json!({
+                "youtube": {"broadcaster": {"channelId": "UC1", "name": "Me", "token": token}}
+            }))
+            .unwrap();
+            let engine = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+            let scheduled = crate::oauth::now() as i64 + 3600;
+            let fakes = crate::scenario::fakes::install(
+                &engine,
+                &json!({
+                    "youtube": {
+                        "GET liveBroadcasts?part=snippet,status,contentDetails&mine=true&maxResults=10": {
+                            "$seq": [
+                                {"error": "HTTP 500"},
+                                {"items": [{
+                                    "id": "yt-test-1",
+                                    "snippet": {"title": "Testing stream", "scheduledStartTime": "2026-11-15T20:00:00Z"},
+                                    "status": {"lifeCycleStatus": "testing", "privacyStatus": "unlisted"},
+                                    "contentDetails": {
+                                        "boundStreamId": "s-test",
+                                        "latencyPreference": "ultraLow",
+                                        "enableDvr": false,
+                                        "enableAutoStart": true,
+                                        "enableAutoStop": false
+                                    }
+                                }]}
+                            ]
+                        },
+                        "GET videos?part=snippet,status,liveStreamingDetails,statistics&id=yt-test-1": {"items": [{
+                            "snippet": {"title": "Testing stream", "description": "Desc", "tags": ["rust"], "categoryId": "28"},
+                            "status": {"privacyStatus": "unlisted", "madeForKids": true},
+                            "liveStreamingDetails": {"scheduledStartTime": scheduled},
+                            "statistics": {"likeCount": "42"}
+                        }]},
+                        "GET liveStreams?part=status,cdn&id=s-test": {"items": [{
+                            "status": {"streamStatus": "active", "healthStatus": {"status": "good"}},
+                            "cdn": {"resolution": "1080p", "frameRate": "60fps"}
+                        }]}
+                    }
+                }),
+                None,
+            );
+            let settle = || async {
+                for _ in 0..40 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            reset(Seen::default());
+            YOUTUBE_ASKED.set(None);
+            SITUATION.set(None);
+
+            // Initial read fails: YOUTUBE_ASKED must remain None so re-opening retries immediately.
+            refresh_if_due(&engine);
+            settle().await;
+            assert!(
+                YOUTUBE_ASKED.get().is_none(),
+                "error must not set YOUTUBE_ASKED cooldown"
+            );
+            assert!(!seen().info[YOUTUBE].error.is_empty());
+
+            // Re-opening after an error retries YouTube immediately and populates YOUTUBE_ASKED on success.
+            opened();
+            refresh_if_due(&engine);
+            settle().await;
+            assert!(YOUTUBE_ASKED.get().is_some());
+            let yt = seen().info[YOUTUBE].clone();
+            assert_eq!(yt.broadcast_id, "yt-test-1");
+            assert_eq!(yt.lifecycle, "testing");
+            assert_eq!(yt.latency, "ultraLow");
+            assert_eq!(yt.dvr, Some(false));
+            assert_eq!(yt.auto_start, Some(true));
+            assert_eq!(yt.auto_stop, Some(false));
+            assert_eq!(yt.made_for_kids, Some(true));
+            assert_eq!(yt.likes, Some(42));
+            assert_eq!(yt.stream_video, "1080p 60fps");
+            assert_eq!(yt.health, "good");
+
+            let page = model(&seen());
+            let yt_card = card(&page, "youtube");
+            assert_eq!(yt_card["state"]["health"], "busy");
+            assert_eq!(yt_card["state"]["text"], tr("stream.state_testing"));
+            let lines_text = yt_card["lines"].to_string();
+            assert!(lines_text.contains(tr("stream.youtube_kids")));
+            assert!(lines_text.contains("1080p 60fps"));
+            assert!(lines_text.contains(tr("stream.latency_ultra_low")));
+            assert!(lines_text.contains(tr("stream.dvr_off")));
+            assert!(lines_text.contains(tr("stream.auto_start_on")));
+            assert!(lines_text.contains(&trf("stream.likes_count", &[("count", "42")])));
+
+            // Re-opening within YOUTUBE_OPEN_COOLDOWN (30s) does NOT hit YouTube Data API again.
+            fakes.calls.borrow_mut().clear();
+            opened();
+            refresh_if_due(&engine);
+            settle().await;
+            assert!(
+                !fakes
+                    .calls
+                    .borrow()
+                    .iter()
+                    .any(|c| c["platform"] == "youtube" && c["call"].as_str().is_some_and(|s| s.starts_with("GET"))),
+                "rapid opened() must respect YOUTUBE_OPEN_COOLDOWN"
+            );
+
+            // Pressing Refresh DOES force a YouTube read.
+            assert!(act(&engine, "refresh").is_ok());
+            settle().await;
+            assert!(fakes.calls.borrow().iter().any(|c| c["platform"] == "youtube"
+                && c["call"].as_str().is_some_and(|s| s.starts_with("GET liveBroadcasts"))));
+
+            // Cached broadcast_id is passed into setThumbnail and runCommercial (no extra lookup).
+            fakes.calls.borrow_mut().clear();
+            let dir = std::env::temp_dir().join(format!("streamerz-yt-thumb-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let thumb = dir.join("t.png");
+            std::fs::write(&thumb, [0u8; 8]).unwrap();
+            assert!(save_external(
+                &engine,
+                "stream_thumbnail",
+                item(json!({"file": thumb.display().to_string()}))
+            )
+            .unwrap()
+            .is_ok());
+            settle().await;
+            let thumb_call = fakes
+                .calls
+                .borrow()
+                .iter()
+                .find(|c| c["platform"] == "youtube" && c["call"] == "setThumbnail")
+                .cloned()
+                .unwrap();
+            assert_eq!(thumb_call["broadcast"], "yt-test-1");
+            std::fs::remove_dir_all(dir).ok();
+
+            fakes.calls.borrow_mut().clear();
+            live_changed("youtube", true);
+            assert!(YOUTUBE_ASKED.get().is_none(), "live_changed clears YouTube cooldown");
+            assert!(
+                save_external(&engine, "stream_ad.youtube", item(json!({"duration": 0})))
+                    .unwrap()
+                    .is_ok()
+            );
+            settle().await;
+            let ad_call = fakes
+                .calls
+                .borrow()
+                .iter()
+                .find(|c| c["platform"] == "youtube" && c["call"] == "runCommercial")
+                .cloned()
+                .unwrap();
+            assert_eq!(ad_call["broadcast"], "yt-test-1");
+            assert_eq!(ad_call["duration"], 30);
+
+            crate::scenario::fakes::uninstall();
+        });
+    }
+
+    #[test]
+    fn initial_guard_eventsub_kick_tiktok_and_obs_status() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+
+        // Before initial read (received == 0), live-only actions & ads must be disabled.
+        let mut initial = ready([true, true, true, true]);
+        initial.received = 0;
+        reset(initial.clone());
+        let page = model(&initial);
+        for id in [
+            "twitch.ad",
+            "twitch.snooze",
+            "twitch.marker",
+            "twitch.clip",
+            "kick.ad",
+            "youtube.ad",
+            "run_ad",
+        ] {
+            let btn = find_button(&page, id);
+            assert_eq!(btn["enabled"], false, "{id} disabled before initial read");
+            assert_eq!(btn["tooltip"], tr("stream.checking"));
+        }
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            assert_eq!(act(&engine, "twitch.clip").unwrap_err(), tr("stream.checking"));
+            assert_eq!(act(&engine, "twitch.snooze").unwrap_err(), tr("stream.checking"));
+        });
+
+        // EventSub pushed_twitch + ad_started + twitch_ads with duration/last_ad_at.
+        let mut now = ready([true, true, false, true]);
+        now.info[TWITCH].live = Some(true);
+        now.info[KICK].live = Some(true);
+        now.info[TIKTOK].live = Some(true);
+        now.info[TIKTOK].paused = true;
+        now.info[TIKTOK].likes = Some(500);
+        now.info[TIKTOK].coins = Some(25);
+        reset(now.clone());
+
+        pushed_twitch(
+            Some("EventSub Title"),
+            Some("Music"),
+            Some("es"),
+            Some(vec!["Gambling".into()]),
+        );
+        assert_eq!(seen().info[TWITCH].title, "EventSub Title");
+        assert_eq!(seen().info[TWITCH].category, "Music");
+        assert_eq!(seen().info[TWITCH].language, "es");
+        assert_eq!(seen().info[TWITCH].labels, vec!["Gambling".to_string()]);
+
+        ad_started("twitch", 90);
+        assert_eq!(seen().info[TWITCH].ads, trf("stream.ad_running", &[("seconds", "90")]));
+
+        let past = crate::oauth::now() as i64 - 120;
+        let future = crate::oauth::now() as i64 + 600;
+        let ads_text = twitch_ads(
+            &json!({"next_ad_at": future, "last_ad_at": past, "duration": 60, "snooze_count": 1}),
+            Some(true),
+        );
+        assert!(ads_text.contains(&trf(
+            "stream.ads_last",
+            &[("seconds", "60"), ("time", &crate::fmt::shown_clock(past))]
+        )));
+
+        // Ineligible Twitch & Kick opted_out disable ad/snooze even while live.
+        let mut ineligible = seen();
+        ineligible.info[TWITCH].ads_unavailable = true;
+        ineligible.info[TWITCH].ads = tr("stream.ads_twitch_ineligible").into();
+        ineligible.info[KICK].ads_unavailable = true;
+        ineligible.info[KICK].ads = tr("stream.ads_kick_out").into();
+        ineligible.info[KICK].mature = Some(true);
+        ineligible.info[KICK].language = "pt".into();
+        reset(ineligible.clone());
+        let page = model(&ineligible);
+        assert_eq!(find_button(&page, "twitch.ad")["enabled"], false);
+        assert_eq!(find_button(&page, "twitch.snooze")["enabled"], false);
+        assert_eq!(find_button(&page, "kick.ad")["enabled"], false);
+        assert_eq!(find_button(&page, "run_ad")["enabled"], false);
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            assert_eq!(
+                act(&engine, "twitch.snooze").unwrap_err(),
+                tr("stream.ads_twitch_ineligible")
+            );
+        });
+        let kick_lines = card(&page, "kick")["lines"].to_string();
+        assert!(kick_lines.contains(tr("stream.summary_mature")));
+        assert!(kick_lines.contains("Português"));
+
+        // TikTok paused state & likes/coins details.
+        let tt_card = card(&page, "tiktok");
+        assert_eq!(tt_card["state"]["health"], "attention");
+        assert_eq!(tt_card["state"]["text"], tr("stream.state_paused"));
+        let tt_lines = tt_card["lines"].to_string();
+        assert!(tt_lines.contains(tr("stream.tiktok_paused")));
+        assert!(tt_lines.contains(&trf("stream.tiktok_metrics", &[("likes", "500"), ("coins", "25")])));
+        tiktok_paused(false);
+        assert!(!seen().info[TIKTOK].paused);
+        assert_eq!(
+            card(&model(&seen()), "tiktok")["state"]["text"],
+            tr("stream.state_live")
+        );
+
+        // OBS summary variants.
+        let mut s = ready([true, false, false, false]);
+        s.info[TWITCH].live = Some(false);
+        s.obs = vec![ObsState {
+            name: "Studio".into(),
+            streaming: false,
+            reconnecting: false,
+            congestion: 0.0,
+            skipped_frames: 0,
+            total_frames: 0,
+        }];
+        assert_eq!(
+            obs_summary(&s),
+            Some(("standby", trf("stream.obs_standby", &[("name", "Studio")])))
+        );
+        s.info[TWITCH].live = Some(true);
+        assert_eq!(
+            obs_summary(&s),
+            Some(("attention", trf("stream.obs_stopped_while_live", &[("name", "Studio")])))
+        );
+        s.obs[0].streaming = true;
+        s.obs[0].skipped_frames = 3;
+        s.obs[0].total_frames = 1000;
+        assert_eq!(
+            obs_summary(&s),
+            Some((
+                "up",
+                trf("stream.obs_streaming_dropped", &[("name", "Studio"), ("dropped", "3")])
+            ))
+        );
+        s.obs[0].congestion = 0.5;
+        assert_eq!(
+            obs_summary(&s),
+            Some((
+                "attention",
+                trf(
+                    "stream.obs_streaming_warn",
+                    &[("name", "Studio"), ("dropped", "3"), ("total", "1000")]
+                )
+            ))
+        );
+        s.obs[0].reconnecting = true;
+        assert_eq!(
+            obs_summary(&s),
+            Some(("attention", trf("stream.obs_reconnecting", &[("name", "Studio")])))
+        );
+
+        // Connected OBS queried during ask() via fake ObsPort.
+        crate::engine::tests::run(async {
+            let config: crate::Config = serde_json::from_value(json!({
+                "obs": {"connections": [{"id": "main", "name": "Main OBS"}]}
+            }))
+            .unwrap();
+            let engine = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+            let _fakes = crate::scenario::fakes::install(
+                &engine,
+                &json!({
+                    "obs": {
+                        "GetStreamStatus": {
+                            "outputActive": true,
+                            "outputReconnecting": false,
+                            "outputCongestion": 0.0,
+                            "outputSkippedFrames": 0,
+                            "outputTotalFrames": 600
+                        }
+                    }
+                }),
+                None,
+            );
+            reset(Seen::default());
+            ask(&engine, Vec::new(), true);
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(seen().obs.len(), 1);
+            assert_eq!(seen().obs[0].name, "Main OBS");
+            assert!(seen().obs[0].streaming);
+            obs_changed();
+            assert!(ASKED.get().is_none());
+            crate::scenario::fakes::uninstall();
+        });
     }
 }
