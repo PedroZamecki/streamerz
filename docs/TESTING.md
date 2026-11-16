@@ -631,3 +631,18 @@ Failure-fix verification:
 - `python3 -P -m unittest discover -s dev -p 'test_*.py'`: fourteen passed after the final harness
   changes. `python3 -P -m py_compile dev/scan_secrets.py dev/test_scan_secrets.py
   dev/test-obs-outputs.py` and `git diff --check` passed.
+
+## Version 1.9.0 local verification
+
+Linux, 2026-11-16, `python3 -P dev/check.py --windows`:
+
+- Passed: `cargo fmt --check`, `cargo test --profile ci-test --locked` (703 passed, 10 ignored), clippy with
+  `-D warnings`, ignored-test listing, locale check, the Node tests (TikTok extension, stream check, subathon
+  overlay), the Python tests, the secrets scan (current tree and history) and extension packaging.
+- First run failed `git diff --check` (a blank line at the end of `twitch-moderation.md`) and
+  `cargo xwin check` (`sandbox::app_id` does not exist on Windows, used by the OBS companion launch line).
+  Both were fixed; `git diff --check`, `cargo fmt --check` and `cargo xwin check --locked --target
+  x86_64-pc-windows-msvc` pass.
+- Not run: `cargo audit` and `actionlint` (not installed here), release packaging, the UI smoke, live checks
+  on Twitch, Kick, YouTube and TikTok (deferred to the owner), Windows runtime, and the hidden RSS and idle
+  CPU measurement with Twitch and OBS connected.
