@@ -7,6 +7,10 @@
 use super::emotes::{EmotePicker, Picked};
 use super::sections::Sections;
 use crate::send;
+use crate::theme::{
+    CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, FONT_MICRO, HEADER_ROW_HEIGHT, LINE_BODY, LINE_CAPTION, LINE_MICRO,
+    SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
@@ -26,6 +30,19 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The type roles of docs/UI.md as builder calls, so no size or line height is written by hand here.
+trait Type: Styled + Sized {
+    /// Body: 13 on an 18 line.
+    fn body(self) -> Self {
+        self.text_size(px(FONT_BODY)).line_height(px(LINE_BODY))
+    }
+    /// Caption: 12 on a 16 line (times, hints, notes, chips).
+    fn caption(self) -> Self {
+        self.text_size(px(FONT_CAPTION)).line_height(px(LINE_CAPTION))
+    }
+}
+impl<T: Styled> Type for T {}
 
 /// The names of our accounts, from the page's model.
 fn value_me(model: &Value) -> Vec<String> {
@@ -96,7 +113,7 @@ pub struct ChatView {
     asking_images: bool,
     reading: bool,
     read_again: bool,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
     /// A header or account picture is on its way: the page is read again when pictures land.
     wants_pictures: bool,
     /// The names of our own accounts (lower case): a tag of one is a mention of us.
@@ -172,7 +189,7 @@ impl ChatView {
             asking_images: false,
             reading: false,
             read_again: false,
-            error: String::new(),
+            error: None,
             wants_pictures: false,
             me: Vec::new(),
             suggest: None,
@@ -604,7 +621,7 @@ impl ChatView {
         let owner = cx.entity().downgrade();
         let platforms = self.model["chat"]["platforms"].as_array().cloned().unwrap_or_default();
         input.update(cx, |input, cx| input.focus(window, cx));
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let owner = owner.clone();
             let theme = cx.theme().clone();
             let texts = owner.upgrade().map(|o| o.read(cx).texts().clone()).unwrap_or_default();
@@ -627,7 +644,7 @@ impl ChatView {
                     .id(SharedString::from(format!("msg-all-wrap-{id}")))
                     .flex()
                     .items_center()
-                    .gap_1();
+                    .gap(px(SPACE_XS));
                 if !tip.is_empty() {
                     let tip = tip.clone();
                     wrap = wrap.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
@@ -656,7 +673,7 @@ impl ChatView {
             let send_owner = owner.clone();
             let buttons = div()
                 .flex()
-                .gap_2()
+                .gap(px(SPACE_SM))
                 .child(
                     Button::new("message-all-cancel")
                         .label(crate::i18n::tr("dialogs.cancel").to_owned())
@@ -672,20 +689,20 @@ impl ChatView {
                         }),
                 );
             let footer = crate::controls::dialog::footer(None, buttons, cx);
-            crate::controls::dialog::shell(dialog, title.clone(), 520., cx)
+            crate::controls::dialog::shell(dialog, title.clone(), 520., window, cx)
                 .footer(footer)
                 .child(crate::controls::dialog::body(
                     div()
                         .flex()
                         .flex_col()
-                        .gap_3()
+                        .gap(px(SPACE_MD))
                         .when_some(reply.clone(), |column, (_, who, said)| {
                             column.child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap_1()
-                                    .text_xs()
+                                    .gap(px(SPACE_XS))
+                                    .caption()
                                     .text_color(theme.muted_foreground)
                                     .child({
                                         let rep = format!("@{who}: {said}");
@@ -701,13 +718,20 @@ impl ChatView {
                                     }),
                             )
                         })
-                        .child(div().flex().flex_wrap().items_center().gap_3().children(plat_checks))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(SPACE_MD))
+                                .children(plat_checks),
+                        )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .child(
                                     Checkbox::new("msg-all-bot")
                                         .small()
@@ -737,14 +761,15 @@ impl ChatView {
     /// An answer to one of this page's requests (ids `chat:...`).
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let failed = value["status"] == "error";
+        let err = crate::error::StreamerzError::from_response(&value);
         match operation {
             "read" => {
                 if failed {
                     self.reading = false;
-                    self.error = value["error"].as_str().unwrap_or_default().to_owned();
+                    self.error = err;
                     cx.notify();
                 } else {
-                    self.error.clear();
+                    self.error = None;
                     self.update_model(value, window, cx);
                 }
             }
@@ -773,9 +798,9 @@ impl ChatView {
             }
             "card" => {
                 if failed {
-                    self.error = value["error"].as_str().unwrap_or_default().to_owned();
+                    self.error = err;
                 } else {
-                    self.error.clear();
+                    self.error = None;
                     self.show_card(value["card"].clone(), window, cx);
                 }
                 cx.notify();
@@ -786,16 +811,16 @@ impl ChatView {
                     self.options = Some(sections.clone());
                     let owner = cx.entity().downgrade();
                     let title = self.texts()["options"].as_str().unwrap_or_default().to_owned();
-                    window.open_dialog(cx, move |dialog, _, cx| {
+                    window.open_dialog(cx, move |dialog, window, cx| {
                         let owner = owner.clone();
                         let close = crate::controls::dialog::close_footer(cx);
-                        crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                        crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
                             .child(crate::controls::dialog::body(
                                 div()
                                     .id("chat-options")
-                                    .max_h(px(520.))
+                                    .max_h(px(crate::controls::dialog::fit_height(180., 160., 560., window)))
                                     .overflow_y_scroll()
-                                    .pr_2()
+                                    .pr(px(SPACE_SM))
                                     .child(sections.clone()),
                             ))
                             .footer(close)
@@ -870,20 +895,12 @@ impl ChatView {
                 }
             }
             "history" => {
-                self.error = if failed {
-                    value["error"].as_str().unwrap_or_default().to_owned()
-                } else {
-                    String::new()
-                };
+                self.error = if failed { err } else { None };
                 self.refresh();
                 cx.notify();
             }
             "send" | "act" | "show" | "clear" | "sender" | "card-open" | "prefetch" | "reconnect" => {
-                self.error = if failed {
-                    value["error"].as_str().unwrap_or_default().to_owned()
-                } else {
-                    String::new()
-                };
+                self.error = if failed { err } else { None };
                 cx.notify();
             }
             _ => {}
@@ -988,7 +1005,7 @@ impl ChatView {
             details: false,
         });
         self.card = Some(body.clone());
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let owner_close = owner.clone();
             let owner_cancel = owner.clone();
             dialog
@@ -999,7 +1016,7 @@ impl ChatView {
                 .pb(px(0.))
                 .pl(px(0.))
                 .pr(px(0.))
-                .width(px(520.))
+                .width(px(crate::controls::dialog::fit_width(520., window)))
                 .child(body.clone())
                 .on_cancel(move |_, _, cx| {
                     let _ = owner_cancel.update(cx, |view, _| view.card = None);
@@ -1249,8 +1266,8 @@ pub(super) fn card_body(
                 .size_full()
                 .flex()
                 .items_center()
-                .gap_3()
-                .px_4()
+                .gap(px(SPACE_MD))
+                .px(px(SPACE_LG))
                 .child(match face {
                     Some(file) => img(file.clone())
                         .id("card-picture")
@@ -1279,13 +1296,13 @@ pub(super) fn card_body(
                     div()
                         .flex()
                         .flex_col()
-                        .gap_1()
+                        .gap(px(SPACE_XS))
                         .min_w_0()
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .child(
                                     img(format!("brands/{}.svg", card["platform"].as_str().unwrap_or("twitch")))
                                         .id("card-platform")
@@ -1314,7 +1331,7 @@ pub(super) fn card_body(
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap_1()
+                                        .gap(px(SPACE_XS))
                                         .text_color(on_banner)
                                         .child(Icon::empty().path("icons/calendar.svg").size(px(14.)))
                                         .child(text.to_owned()),
@@ -1326,10 +1343,10 @@ pub(super) fn card_body(
         .child(
             div()
                 .absolute()
-                .top(px(8.))
-                .right(px(8.))
+                .top(px(SPACE_SM))
+                .right(px(SPACE_SM))
                 .flex()
-                .gap_1()
+                .gap(px(SPACE_XS))
                 .child(
                     Button::new("card-profile")
                         .small()
@@ -1365,7 +1382,11 @@ pub(super) fn card_body(
                 ),
         );
     // Their badges, and the groups they are in.
-    let mut badges = div().flex().items_center().gap_1().min_h(px(24.));
+    let mut badges = div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_XS))
+        .min_h(px(HEADER_ROW_HEIGHT));
     for (at, badge) in card["badges"].as_array().into_iter().flatten().enumerate() {
         badges = badges.child(badge_icon(
             badge,
@@ -1394,7 +1415,7 @@ pub(super) fn card_body(
         .flex()
         .items_center()
         .justify_between()
-        .gap_2()
+        .gap(px(SPACE_SM))
         .child(div().min_w_0().truncate().text_color(muted).child(in_groups))
         .when(!groups.is_empty(), |row| {
             row.child(
@@ -1431,15 +1452,15 @@ pub(super) fn card_body(
         .border_1()
         .border_color(theme.border)
         .bg(theme.table)
-        .px_3()
-        .py_1();
+        .px(px(SPACE_MD))
+        .py(px(SPACE_XS));
     let list = card["facts"].as_array().cloned().unwrap_or_default();
     for fact in &list {
         facts = facts.child(
             div()
                 .flex()
-                .gap_2()
-                .h(px(28.))
+                .gap(px(SPACE_SM))
+                .h(px(CONTROL_HEIGHT))
                 .items_center()
                 .child(
                     div()
@@ -1464,8 +1485,8 @@ pub(super) fn card_body(
         .overflow_y_scroll()
         .flex()
         .flex_col()
-        .gap_1()
-        .p_2()
+        .gap(px(SPACE_XS))
+        .p(px(SPACE_SM))
         .rounded(theme.radius)
         .border_1()
         .border_color(theme.border)
@@ -1488,7 +1509,7 @@ pub(super) fn card_body(
         .overflow_y_scroll()
         .flex()
         .flex_col()
-        .px_2()
+        .px(px(SPACE_SM))
         .rounded(theme.radius)
         .border_1()
         .border_color(theme.border)
@@ -1500,8 +1521,8 @@ pub(super) fn card_body(
             div()
                 .id(("card-detail", at))
                 .flex()
-                .gap_2()
-                .min_h(px(26.))
+                .gap(px(SPACE_SM))
+                .min_h(px(CONTROL_HEIGHT))
                 .items_center()
                 .cursor_pointer()
                 .child(
@@ -1518,7 +1539,7 @@ pub(super) fn card_body(
                 }),
         );
     }
-    let mut actions = div().flex().flex_wrap().gap_2();
+    let mut actions = div().flex().flex_wrap().gap(px(SPACE_SM));
     for act in card["acts"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         let (icon, secs) = match act {
             "delete" => ("trash-2", 0),
@@ -1567,8 +1588,8 @@ pub(super) fn card_body(
             div()
                 .flex()
                 .flex_col()
-                .gap_3()
-                .p_4()
+                .gap(px(SPACE_MD))
+                .p(px(SPACE_LG))
                 .child(badges)
                 .child(group_row)
                 .child(facts)
@@ -1648,8 +1669,8 @@ impl Render for PictureTip {
             .flex()
             .flex_col()
             .items_center()
-            .gap_1()
-            .p_2()
+            .gap(px(SPACE_XS))
+            .p(px(SPACE_SM))
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
@@ -1661,7 +1682,7 @@ impl Render for PictureTip {
             .when_some(self.art.clone(), |tip, art| {
                 tip.child(img(format!("badges/{art}.svg")).size(px(self.height)))
             })
-            .child(div().text_xs().child(self.name.clone()))
+            .child(div().caption().child(self.name.clone()))
     }
 }
 
@@ -1680,7 +1701,8 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
         .flex()
         .flex_wrap()
         .items_center()
-        .gap_x_1()
+        .body()
+        .gap_x(px(SPACE_XS))
         .flex_1()
         .min_w_0();
     if let Some(orig) = line["original"].as_str().filter(|_| deleted) {
@@ -1755,7 +1777,7 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
         let mut price = div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap(px(SPACE_XS))
             .text_color(tint)
             .font_weight(FontWeight::BOLD);
         match line["costIcon"].as_str().filter(|icon| !icon.is_empty()) {
@@ -1812,8 +1834,8 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
                         .when(action, |word| word.italic())
                         .when(deleted, |word| word.line_through())
                         .when(ours, |word| {
-                            word.px_1()
-                                .rounded(px(4.))
+                            word.px(px(SPACE_XS))
+                                .rounded(theme.radius)
                                 .bg(theme.muted)
                                 .border_1()
                                 .border_color(theme.border)
@@ -1867,10 +1889,10 @@ impl ChatView {
             return div()
                 .flex()
                 .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .text_xs()
+                .gap(px(SPACE_SM))
+                .px(px(SPACE_SM))
+                .py(px(SPACE_XS))
+                .caption()
                 .text_color(muted)
                 .child(div().flex_1().h(px(1.)).bg(theme.border))
                 .child(rule.to_owned())
@@ -1881,12 +1903,20 @@ impl ChatView {
         if line["note"] == true {
             return div()
                 .flex()
-                .gap_2()
-                .px_2()
-                .py_0p5()
+                .gap(px(SPACE_SM))
+                .px(px(SPACE_SM))
+                .py(px(SPACE_XS))
+                .body()
                 .text_color(muted)
                 .when_some(line["time"].as_str(), |row, time| {
-                    row.child(div().flex_shrink_0().text_xs().child(time.to_owned()))
+                    // A caption centred on the body line beside it.
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .caption()
+                            .line_height(px(LINE_BODY))
+                            .child(time.to_owned()),
+                    )
                 })
                 .child(
                     div()
@@ -1899,11 +1929,11 @@ impl ChatView {
         let accent = line["accent"].as_str().map(|hex| color(hex, theme.border));
         let line_id = if seq > 0 { seq as usize } else { at };
         let body = line_content(line, &self.images, line_id, &self.me, cx);
-        let mut column = div().flex().flex_col().flex_1().min_w_0().gap_0p5();
+        let mut column = div().flex().flex_col().flex_1().min_w_0().gap(px(SPACE_XS));
         if let Some(tag) = line["tag"].as_str() {
             column = column.child(
                 div()
-                    .text_xs()
+                    .caption()
                     .text_color(accent.unwrap_or(muted))
                     .child(tag.to_owned()),
             );
@@ -1913,8 +1943,8 @@ impl ChatView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .text_xs()
+                    .gap(px(SPACE_XS))
+                    .caption()
                     .text_color(muted)
                     .child(Icon::empty().path("icons/corner-up-left.svg").size_3().flex_shrink_0())
                     .child(div().truncate().child(format!(
@@ -1926,12 +1956,14 @@ impl ChatView {
         }
         column = column.child(body);
         // A column of one chat has its logo in the header; the chats together tell them apart by it.
+        // The logo sits centred on the first body line.
         let logo = self.panes[pane].platform.is_none().then(|| {
-            img(format!("brands/{}.svg", line["platform"].as_str().unwrap_or("twitch")))
-                .id(("logo", at))
-                .size_4()
-                .flex_shrink_0()
-                .mt(px(2.))
+            div().h(px(LINE_BODY)).flex().items_center().flex_shrink_0().child(
+                img(format!("brands/{}.svg", line["platform"].as_str().unwrap_or("twitch")))
+                    .id(("logo", at))
+                    .size_4()
+                    .flex_shrink_0(),
+            )
         });
         let acts: Vec<String> = line["acts"]
             .as_array()
@@ -1956,12 +1988,12 @@ impl ChatView {
         let group = SharedString::from(format!("line-{at}"));
         let mut bar = div()
             .absolute()
-            .top(px(-6.))
-            .right(px(8.))
+            .top(px(-SPACE_XS))
+            .right(px(SPACE_SM))
             .flex()
             .items_center()
-            .gap_0p5()
-            .p_0p5()
+            .gap(px(SPACE_XS))
+            .p(px(SPACE_XS))
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
@@ -2030,12 +2062,21 @@ impl ChatView {
             .group(group)
             .hover(move |style| style.bg(hover))
             .flex()
-            .gap_2()
-            .px_2()
-            .py_0p5()
+            .gap(px(SPACE_SM))
+            .px(px(SPACE_SM))
+            .py(px(SPACE_XS))
+            .body()
             .when_some(accent, |row, accent| row.border_l_2().border_color(accent))
             .when_some(line["time"].as_str(), |row, time| {
-                row.child(div().flex_shrink_0().text_xs().text_color(muted).mt(px(3.)).child(time.to_owned()))
+                // A caption centred on the first body line.
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .caption()
+                        .line_height(px(LINE_BODY))
+                        .text_color(muted)
+                        .child(time.to_owned()),
+                )
             })
             .children(logo)
             .child(column)
@@ -2243,26 +2284,26 @@ impl ChatView {
         div()
             .flex()
             .items_center()
-            .gap_2()
-            .h(px(24.))
+            .gap(px(SPACE_SM))
+            .h(px(HEADER_ROW_HEIGHT))
             .flex_shrink_0()
             .child(
                 img(format!("brands/{id}.svg"))
                     .id(SharedString::from(format!("head-logo-{id}")))
-                    .size(px(18.))
+                    .size_4()
                     .flex_shrink_0(),
             )
             .child(match face {
                 Some(file) => img(file)
                     .id(SharedString::from(format!("head-face-{id}")))
-                    .size(px(22.))
+                    .size(px(HEADER_ROW_HEIGHT))
                     .rounded_full()
                     .flex_shrink_0()
                     .object_fit(ObjectFit::Cover)
                     .into_any_element(),
                 None => Icon::empty()
                     .path("icons/circle-user-round.svg")
-                    .size(px(18.))
+                    .size_4()
                     .text_color(cx.theme().muted_foreground)
                     .into_any_element(),
             })
@@ -2274,7 +2315,7 @@ impl ChatView {
                         div()
                             .ml_auto()
                             .flex_shrink_0()
-                            .text_xs()
+                            .caption()
                             .text_color(cx.theme().muted_foreground)
                             .child(viewers.to_owned()),
                     )
@@ -2297,7 +2338,14 @@ impl ChatView {
                 .border_color(theme.border)
                 .bg(theme.table)
         };
-        let mut column = div().relative().flex().flex_col().gap_1().flex_1().min_w_0().min_h_0();
+        let mut column = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(SPACE_SM))
+            .flex_1()
+            .min_w_0()
+            .min_h_0();
         if let Some(platform) = &platform {
             column = column.child(self.head(platform, cx));
         }
@@ -2312,14 +2360,14 @@ impl ChatView {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap_2()
-                .px_4()
+                .gap(px(SPACE_SM))
+                .px(px(SPACE_LG))
                 .text_color(theme.muted_foreground);
             if empty {
                 state = state.child(super::notice::info(&text("empty"), cx)).child(
                     Button::new(SharedString::from(format!("chat-accounts-{pane}")))
                         .small()
-                        .h(px(26.))
+                        .h(px(CONTROL_HEIGHT))
                         .icon(Icon::empty().path("icons/user.svg"))
                         .label(text("accounts"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(Go("Accounts".into())))),
@@ -2376,10 +2424,10 @@ impl ChatView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap_1()
-                    .h(px(36.))
+                    .gap(px(SPACE_XS))
+                    .h(px(CONTROL_HEIGHT))
                     .flex_shrink_0()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(text("disconnected")))
+                    .child(div().caption().text_color(theme.muted_foreground).child(text("disconnected")))
                     .child(
                         Button::new(SharedString::from(format!("chat-reconnect-{pane}")))
                             .small()
@@ -2415,9 +2463,9 @@ impl ChatView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .text_xs()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_SM))
+                    .caption()
                     .text_color(theme.muted_foreground)
                     .child({
                         let rep = format!("@{who}: {said}");
@@ -2451,7 +2499,7 @@ impl ChatView {
         let composer = div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .flex_shrink_0()
             .child(self.sender_button(&platform, &texts, cx))
             .child(
@@ -2533,13 +2581,12 @@ impl ChatView {
             let mut popup = div()
                 .absolute()
                 .left_0()
-                .bottom(px(40.))
+                .bottom(px(CONTROL_HEIGHT + SPACE_SM))
                 .w(px(420.))
                 .max_w_full()
                 .flex()
                 .flex_col()
-                .gap_0p5()
-                .p_2()
+                .p(px(SPACE_SM))
                 .rounded(theme.radius_lg)
                 .border_1()
                 .border_color(theme.border)
@@ -2547,8 +2594,9 @@ impl ChatView {
                 .occlude()
                 .child(
                     div()
-                        .px_2()
-                        .text_size(px(11.))
+                        .px(px(SPACE_SM))
+                        .text_size(px(FONT_MICRO))
+                        .line_height(px(LINE_MICRO))
                         .font_weight(FontWeight::BOLD)
                         .text_color(theme.muted_foreground)
                         .child(open.header.clone()),
@@ -2559,8 +2607,8 @@ impl ChatView {
                         .id(("suggest", pane * 16 + index))
                         .flex()
                         .flex_col()
-                        .px_2()
-                        .py_1()
+                        .px(px(SPACE_SM))
+                        .py(px(SPACE_XS))
                         .rounded(theme.radius)
                         .cursor_pointer()
                         .when(index == open.at, |row| row.bg(theme.muted))
@@ -2568,7 +2616,7 @@ impl ChatView {
                         .child(
                             div()
                                 .flex()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .child(
                                     div()
                                         .font_weight(FontWeight::BOLD)
@@ -2582,7 +2630,7 @@ impl ChatView {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .caption()
                                 .text_color(theme.muted_foreground)
                                 .child(row["about"].as_str().unwrap_or_default().to_owned()),
                         )
@@ -2619,7 +2667,7 @@ impl Render for ChatView {
         let mut shows = div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .min_w_0()
             .when(narrow, |shows| shows.w_full())
             .child(div().child(text("show")));
@@ -2655,11 +2703,11 @@ impl Render for ChatView {
                     .id("chat-total-viewers")
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_1p5()
-                    .py_0p5()
+                    .gap(px(SPACE_XS))
+                    .px(px(SPACE_SM))
+                    .py(px(SPACE_XS))
                     .rounded(theme.radius)
-                    .text_xs()
+                    .caption()
                     .text_color(theme.muted_foreground)
                     .tooltip(move |window, cx| Tooltip::new(viewers_tip.clone()).build(window, cx))
                     .child(Icon::empty().path("icons/users.svg").size_3().flex_shrink_0())
@@ -2669,7 +2717,7 @@ impl Render for ChatView {
         let action = |id: &'static str, label: String, icon: &'static str| {
             Button::new(id)
                 .small()
-                .h(px(26.))
+                .h(px(CONTROL_HEIGHT))
                 .min_w(px(if id == "message-all" { 135. } else { 84. }))
                 .icon(Icon::empty().path(format!("icons/{icon}.svg")))
                 .label(label.clone())
@@ -2679,10 +2727,8 @@ impl Render for ChatView {
         let bar = div()
             .flex()
             .items_center()
-            .gap_2()
-            .mt(px(2.))
-            .mb(px(-4.))
-            .when(narrow, |bar| bar.flex_wrap().gap_1().mb(px(-2.)))
+            .gap(px(SPACE_SM))
+            .when(narrow, |bar| bar.flex_wrap())
             .flex_shrink_0()
             .child(shows)
             .when(!narrow, |bar| {
@@ -2693,7 +2739,7 @@ impl Render for ChatView {
                         .truncate()
                         .text_right()
                         .text_color(theme.muted_foreground)
-                        .text_xs()
+                        .caption()
                         .child(text("hint")),
                 )
             })
@@ -2708,14 +2754,14 @@ impl Render for ChatView {
             .child(
                 Button::new("chat-options")
                     .small()
-                    .h(px(26.))
+                    .h(px(CONTROL_HEIGHT))
                     .min_w(px(84.))
                     .accessibility_label(text("options"))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_1()
+                            .gap(px(SPACE_XS))
                             .child(text("options"))
                             .child(Icon::empty().path("icons/chevron-down.svg").size_3()),
                     )
@@ -2726,23 +2772,23 @@ impl Render for ChatView {
             .child(action("chat-clear", text("clear"), "eraser").on_click(|_, _, _| {
                 send(json!({"request": "StreamerzChat", "op": "clear", "id": "chat:clear"}));
             }));
-        let mut page = div().size_full().flex().flex_col().gap_2().child(bar);
-        if !self.error.is_empty() {
-            page = page.child(super::notice::error(&self.error, cx));
+        let mut page = div().size_full().flex().flex_col().gap(px(SPACE_SM)).body().child(bar);
+        if let Some(err) = &self.error {
+            page = page.child(super::notice::error(err, cx));
         }
         if history_off && chat["connected"] == true {
             page = page.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_MD))
+                    .py(px(SPACE_SM))
                     .rounded(theme.radius)
                     .bg(theme.muted.opacity(0.4))
                     .border_1()
                     .border_color(theme.border)
-                    .text_xs()
+                    .caption()
                     .text_color(theme.muted_foreground)
                     .child(Icon::empty().path("icons/eye-off.svg").size_3p5().flex_shrink_0())
                     .child(div().child(text("off"))),
@@ -2763,7 +2809,7 @@ impl Render for ChatView {
             } else {
                 "icons/vote.svg"
             };
-            let mut choices_col = div().flex().flex_col().gap_1();
+            let mut choices_col = div().flex().flex_col().gap(px(SPACE_XS));
             for choice in poll["choices"].as_array().into_iter().flatten() {
                 let label = choice["label"].as_str().unwrap_or_default().to_owned();
                 let votes = choice["votes"].as_u64().unwrap_or(0);
@@ -2777,8 +2823,8 @@ impl Render for ChatView {
                 choices_col = choices_col.child(
                     div()
                         .relative()
-                        .h(px(22.))
-                        .rounded(px(4.))
+                        .h(px(HEADER_ROW_HEIGHT))
+                        .rounded(theme.radius)
                         .bg(theme.muted.opacity(0.5))
                         .overflow_hidden()
                         .child(
@@ -2787,9 +2833,9 @@ impl Render for ChatView {
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .px_2()
+                                .px(px(SPACE_SM))
                                 .size_full()
-                                .text_xs()
+                                .caption()
                                 .child(
                                     div()
                                         .min_w_0()
@@ -2810,16 +2856,16 @@ impl Render for ChatView {
                 div()
                     .id(SharedString::from(format!("poll-card-{poll_idx}")))
                     .flex()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_MD))
+                    .py(px(SPACE_SM))
                     .rounded(theme.radius)
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.table)
                     .child(
                         div()
-                            .w(px(3.))
+                            .w(px(SPACE_XS))
                             .rounded(px(2.))
                             .bg(brand_color(platform))
                             .flex_shrink_0(),
@@ -2829,26 +2875,26 @@ impl Render for ChatView {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_1p5()
+                            .gap(px(SPACE_SM))
                             .min_w_0()
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .text_xs()
+                                    .caption()
                                     .text_color(theme.muted_foreground)
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap_1p5()
+                                            .gap(px(SPACE_XS))
                                             .child(Icon::empty().path(icon_path).size_3p5().flex_shrink_0())
                                             .child(div().font_weight(FontWeight::BOLD).child(kind)),
                                     )
                                     .when(!when.is_empty(), |header| header.child(div().child(when))),
                             )
-                            .child(div().font_weight(FontWeight::BOLD).text_sm().child(title))
+                            .child(div().font_weight(FontWeight::BOLD).body().child(title))
                             .child(choices_col),
                     ),
             );
@@ -2866,16 +2912,16 @@ impl Render for ChatView {
                 div()
                     .id(SharedString::from(format!("pin-card-{pin_idx}")))
                     .flex()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_MD))
+                    .py(px(SPACE_SM))
                     .rounded(theme.radius)
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.table)
                     .child(
                         div()
-                            .w(px(3.))
+                            .w(px(SPACE_XS))
                             .rounded(px(2.))
                             .bg(brand_color(platform))
                             .flex_shrink_0(),
@@ -2885,20 +2931,20 @@ impl Render for ChatView {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap(px(SPACE_XS))
                             .min_w_0()
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .text_xs()
+                                    .caption()
                                     .text_color(theme.muted_foreground)
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap_1()
+                                            .gap(px(SPACE_XS))
                                             .child(Icon::empty().path("icons/pin.svg").size_3().flex_shrink_0())
                                             .child(div().child(by)),
                                     )
@@ -2906,7 +2952,7 @@ impl Render for ChatView {
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap_2()
+                                            .gap(px(SPACE_SM))
                                             .when(!when.is_empty(), |header| header.child(div().child(when)))
                                             .when(can_unpin && !msg_id.is_empty(), |header| {
                                                 header.child(
@@ -2933,8 +2979,8 @@ impl Render for ChatView {
                             .child(
                                 div()
                                     .flex()
-                                    .gap_1p5()
-                                    .text_xs()
+                                    .gap(px(SPACE_XS))
+                                    .caption()
                                     .child(div().font_weight(FontWeight::BOLD).child(format!("{user}:")))
                                     .child(div().flex_1().min_w_0().truncate().child(text_val)),
                             ),
@@ -2946,9 +2992,9 @@ impl Render for ChatView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .text_xs()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_SM))
+                    .caption()
                     .text_color(theme.muted_foreground)
                     .child(Icon::empty().path("icons/info.svg").size_3().flex_shrink_0())
                     .child(
@@ -2968,7 +3014,7 @@ impl Render for ChatView {
         };
         let body = match view {
             "side" if !present.is_empty() => {
-                let mut row = div().flex().gap_2().flex_1().min_h_0();
+                let mut row = div().flex().gap(px(SPACE_SM)).flex_1().min_h_0();
                 for platform in present {
                     let pane = at_of(platform["id"].as_str().unwrap_or_default());
                     row = row.child(self.column(pane, Some(platform), cx));
@@ -2993,6 +3039,44 @@ impl Render for ChatView {
 mod tests {
     use super::emote_spans;
     use serde_json::json;
+
+    /// The live pages follow docs/UI.md: type and gaps come from the theme tokens, never from a size or
+    /// a half step written in place.
+    #[test]
+    fn the_live_pages_use_theme_tokens_for_type_and_spacing() {
+        let banned = [
+            ".text_xs(",
+            ".text_sm(",
+            ".text_lg(",
+            "text_size(px(1",
+            "line_height(px(1",
+            "px(12.5)",
+            "px(13.5)",
+            "px(11.5)",
+            ".gap_1(",
+            ".gap_2(",
+            ".gap_3(",
+            "_0p5(",
+            "_1p5(",
+            ".h(px(26.))",
+            ".min_h(px(26.))",
+        ];
+        for (name, source) in [
+            ("chat.rs", include_str!("chat.rs")),
+            ("log.rs", include_str!("log.rs")),
+            ("tree.rs", include_str!("tree.rs")),
+            ("actions.rs", include_str!("actions.rs")),
+        ] {
+            let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+            for word in banned {
+                // A token name such as FONT_BODY has no digits: only a written size matches.
+                assert!(
+                    !code.contains(word),
+                    "{name} writes `{word}` by hand: use the theme tokens"
+                );
+            }
+        }
+    }
 
     fn url(name: &str) -> String {
         format!("https://e/{name}")

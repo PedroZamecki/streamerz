@@ -6,6 +6,7 @@
 //! (Shift keeps the picker open to pick several), a right-click keeps or drops a favorite. Animated
 //! pictures play.
 use crate::send;
+use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_SM};
 use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     scroll::{Scrollbar, ScrollbarMode},
@@ -54,7 +55,7 @@ pub struct EmotePicker {
     images: HashMap<String, PathBuf>,
     missing: HashSet<String>,
     asking: bool,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -79,7 +80,7 @@ impl EmotePicker {
             images: HashMap::new(),
             missing: HashSet::new(),
             asking: false,
-            error: String::new(),
+            error: None,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
@@ -106,14 +107,14 @@ impl EmotePicker {
 
     /// The core's answer: tabs and sections, laid out in rows.
     pub fn apply(&mut self, value: Value, cx: &mut Context<Self>) {
-        if value["status"] == "error" {
-            self.error = value["error"].as_str().unwrap_or_default().to_owned();
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+            self.error = Some(err);
             self.data = Value::Null;
             self.rows.clear();
             cx.notify();
             return;
         }
-        self.error.clear();
+        self.error = None;
         let data = value["emotes"].clone();
         // A search that is no longer what is typed is an old answer.
         if data["query"].as_str().unwrap_or_default() != self.input.read(cx).value().trim().to_lowercase() {
@@ -248,7 +249,8 @@ impl EmotePicker {
                     .object_fit(ObjectFit::Contain)
                     .into_any_element(),
                 None => div()
-                    .text_xs()
+                    .text_size(px(FONT_CAPTION))
+.line_height(px(LINE_CAPTION))
                     .text_color(theme.muted_foreground)
                     .child(name.chars().take(3).collect::<String>())
                     .into_any_element(),
@@ -305,7 +307,11 @@ impl Render for EmotePicker {
         let searching = !self.input.read(cx).value().trim().is_empty();
         let active = tabs.iter().position(|(id, _)| *id == self.provider).unwrap_or(0);
         let ids: Vec<String> = tabs.iter().map(|(id, _)| id.clone()).collect();
-        let mut body = div().flex().flex_col().gap_2().w(px(CELL * COLUMNS as f32 + 20.));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(px(SPACE_SM))
+            .w(px(CELL * COLUMNS as f32 + 20.));
         if !tabs.is_empty() {
             body = body.child(
                 TabBar::new("emote-tabs")
@@ -330,12 +336,10 @@ impl Render for EmotePicker {
                     .on_click(cx.listener(move |view, index: &usize, window, cx| {
                         if let Some(id) = ids.get(*index) {
                             view.provider = id.clone();
-                            // Clearing a search asks by itself; otherwise ask for the tab.
-                            if view.input.read(cx).value().is_empty() {
-                                view.request(cx);
-                            } else {
+                            if !view.input.read(cx).value().is_empty() {
                                 view.input.update(cx, |input, cx| input.set_value("", window, cx));
                             }
+                            view.request(cx);
                         }
                     })),
             );
@@ -343,16 +347,18 @@ impl Render for EmotePicker {
         body = body.child(
             Input::new(&self.input)
                 .small()
+                .min_h(px(CONTROL_HEIGHT))
                 .aria_label(self.data["search"].as_str().unwrap_or_default().to_owned()),
         );
         body = body.child(
             div()
-                .text_xs()
+                .text_size(px(FONT_CAPTION))
+                .line_height(px(LINE_CAPTION))
                 .text_color(theme.muted_foreground)
                 .child(self.data["help"].as_str().unwrap_or_default().to_owned()),
         );
-        if !self.error.is_empty() {
-            body = body.child(super::notice::error(&self.error, cx));
+        if let Some(err) = &self.error {
+            body = body.child(super::notice::error(err, cx));
         }
         if self.data == Value::Null {
             return body.into_any_element();
@@ -375,7 +381,8 @@ impl Render for EmotePicker {
                 .border_b_1()
                 .border_color(theme.border)
                 .when(frequent.is_empty(), |line| {
-                    line.text_xs()
+                    line.text_size(px(FONT_CAPTION))
+                        .line_height(px(LINE_CAPTION))
                         .text_color(theme.muted_foreground)
                         .child(self.data["frequentEmpty"].as_str().unwrap_or_default().to_owned())
                 })
@@ -415,7 +422,7 @@ impl Render for EmotePicker {
                                 .h(px(CELL))
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     if !view.folded.remove(&folded) {
@@ -437,14 +444,16 @@ impl Render for EmotePicker {
                                 .child(div().font_weight(FontWeight::BOLD).child(title.clone()))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(FONT_CAPTION))
+                                        .line_height(px(LINE_CAPTION))
                                         .text_color(theme.muted_foreground)
                                         .child(count.to_string()),
                                 )
                                 .when_some(note.clone(), |head, note| {
                                     head.child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(FONT_CAPTION))
+                                            .line_height(px(LINE_CAPTION))
                                             .min_w_0()
                                             .truncate()
                                             .text_color(theme.muted_foreground)
@@ -478,5 +487,145 @@ impl Render for EmotePicker {
             ),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::{EmotePicker, Row};
+    use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+    use serde_json::json;
+
+    struct EmoteHost(Entity<EmotePicker>);
+    impl Render for EmoteHost {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().p_4().child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn search_rejects_stale_replies_and_tab_click_clears_query(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<EmotePicker>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(520.), px(560.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let picker = cx.new(|cx| EmotePicker::new("twitch", "Search emotes".into(), window, cx));
+                    *s.borrow_mut() = Some(picker.clone());
+                    cx.new(|_| EmoteHost(picker))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let picker = slot.borrow().clone().expect("picker created");
+
+        cx.update_window(window.into(), |_, window, cx| {
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "platform",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "Channel", "emotes": [["Kappa", "https://example.com/kappa.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            window.render_frame(cx);
+            picker.update(cx, |picker, cx| picker.focus(window, cx));
+            window.input("pog", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            // Stale answer for "" must be ignored while "pog" is typed.
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "platform",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "Stale", "emotes": [["LUL", "https://example.com/lul.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "Channel");
+
+            // Matching answer for "pog" applies cleanly (trimmed & lowercased comparison).
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "pog",
+                            "active": "platform",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "Matches", "emotes": [["PogChamp", "https://example.com/pog.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "Matches");
+            window.render_frame(cx);
+
+            // Clicking the 7TV tab clears the search box and selects provider "7tv".
+            let tab_bounds = window.find_by_label("7TV").bounds();
+            window.pointer_down(tab_bounds.center(), gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(tab_bounds.center(), gpui_kit::MouseButton::Left, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, _, cx| {
+            assert_eq!(picker.read(cx).provider, "7tv");
+            assert_eq!(picker.read(cx).input.read(cx).value(), "");
+        })
+        .unwrap();
     }
 }

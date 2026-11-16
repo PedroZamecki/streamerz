@@ -5,6 +5,7 @@
 use super::form::Form;
 use super::tree::{Node, Options, PaneEvent, TreePane};
 use crate::i18n::tr;
+use crate::theme::{CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     ActiveTheme, Disableable, Icon,
@@ -90,7 +91,7 @@ impl Picker {
 
     /// The width the dialog takes in this window.
     pub fn width(window: &Window) -> f32 {
-        (f32::from(window.viewport_size().width) - 32.).clamp(320., 780.)
+        super::dialog::fit_width(780., window)
     }
 
     /// The buttons as their own view, for the dialog's footer.
@@ -120,10 +121,11 @@ impl Picker {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap_2()
-                .p_4()
+                .gap(px(SPACE_SM))
+                .p(px(SPACE_LG))
                 .text_center()
-                .text_size(px(13.))
+                .text_size(px(FONT_BODY))
+                .line_height(px(LINE_BODY))
                 .text_color(theme.muted_foreground)
                 .child(Icon::empty().path("icons/info.svg").size_5())
                 .child(self.hint.clone())
@@ -151,12 +153,12 @@ impl Picker {
             .id("picker-description")
             .size_full()
             .overflow_y_scroll()
-            .p_3()
+            .p(px(SPACE_MD))
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(px(SPACE_MD))
             .child(
-                div().flex().items_center().gap_3().child(badge).child(
+                div().flex().items_center().gap(px(SPACE_MD)).child(badge).child(
                     div()
                         .min_w_0()
                         .flex()
@@ -168,16 +170,22 @@ impl Picker {
                                 .child(text("title")),
                         )
                         .when(!path.is_empty(), |column| {
-                            column.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(path))
+                            column.child(
+                                div()
+                                    .text_size(px(FONT_CAPTION))
+                                    .line_height(px(LINE_CAPTION))
+                                    .text_color(theme.muted_foreground)
+                                    .child(path),
+                            )
                         }),
                 ),
             )
             .child(
                 div()
-                    .text_size(px(13.))
-                    .line_height(px(19.))
+                    .text_size(px(FONT_BODY))
+                    .line_height(px(LINE_BODY))
                     .text_color(theme.foreground)
-                    .child(text("text")),
+                    .child(super::markdown::inline("picker-text", text("text"))),
             )
             .when_some(detail["values"].as_str(), |panel, values| {
                 panel.child(super::notice::info(values, cx))
@@ -200,20 +208,26 @@ impl Render for Picker {
             div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap(px(SPACE_SM))
                 .h(px(height))
                 .child(div().h(px(150.)).flex_shrink_0().child(self.pane.clone()))
                 .child(panel.flex_1().min_h_0())
         } else {
             div()
                 .flex()
-                .gap_3()
+                .gap(px(SPACE_MD))
                 .h(px(height))
                 .child(div().w(px(280.)).flex_shrink_0().h_full().child(self.pane.clone()))
                 // Lined up with the tree, under the search row.
-                .child(div().flex_1().min_w_0().pt(px(30.)).child(panel.size_full()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pt(px(CONTROL_HEIGHT + SPACE_SM))
+                        .child(panel.size_full()),
+                )
         };
-        div().id("picker").test_support().role(Role::Group).pt_2().child(layout)
+        div().id("picker").test_support().role(Role::Group).child(layout)
     }
 }
 
@@ -230,14 +244,16 @@ impl Render for PickerButtons {
         let picked = picker.read(cx).chosen.is_some();
         let right = div()
             .flex()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .child(
                 Button::new("cancel-picker")
+                    .h(px(CONTROL_HEIGHT))
                     .label(tr("dialogs.cancel"))
                     .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
             )
             .child(
                 Button::new("pick")
+                    .h(px(CONTROL_HEIGHT))
                     .primary()
                     .label(tr("btn.add"))
                     .disabled(!picked || picker.read(cx).authoring)

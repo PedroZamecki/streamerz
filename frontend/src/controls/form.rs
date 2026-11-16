@@ -1,5 +1,6 @@
 //! Shared schema-driven forms. Validation and type conversion stay in the core.
 use super::gallery::Gallery;
+use crate::theme::{CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_MD, SPACE_SM, SPACE_XS};
 use crate::{i18n::tr, send};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
@@ -7,13 +8,31 @@ use gpui_kit::component::{
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
-    select::{SearchableVec, Select, SelectEvent, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     slider::{Slider, SliderEvent, SliderState},
     ActiveTheme, Disableable, IndexPath, Sizable,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
+
+#[derive(Clone, Debug, PartialEq)]
+struct ChoiceItem {
+    index: usize,
+    label: String,
+}
+
+impl SelectItem for ChoiceItem {
+    type Value = usize;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.index
+    }
+}
 
 enum Field {
     Text(Entity<InputState>),
@@ -23,7 +42,7 @@ enum Field {
     /// A field that names something else: its ids and names come from the core. With an input it
     /// also takes typed text; without one it takes only an id of the list (or none).
     Choice {
-        select: Entity<SelectState<Vec<String>>>,
+        select: Entity<SelectState<SearchableVec<ChoiceItem>>>,
         input: Option<Entity<InputState>>,
         ids: Vec<String>,
         /// The list ends with "Other": the box to type a new one shows only when it is picked.
@@ -32,7 +51,7 @@ enum Field {
     /// Lines of text with a list to add from: picking a name adds it as a line.
     Lines {
         area: Entity<TextareaState>,
-        select: Entity<SelectState<Vec<String>>>,
+        select: Entity<SelectState<SearchableVec<ChoiceItem>>>,
     },
     /// A field picked by its picture (TikTok's gifts): see `gallery.rs`.
     Gallery(Entity<Gallery>),
@@ -49,8 +68,40 @@ enum Field {
     /// A few boxes to tick on one line (the platforms): its value is the list of the ticked ones' ids.
     Checks {
         ids: Vec<String>,
+        labels: Vec<String>,
+        brands: Vec<Option<String>>,
         on: Vec<bool>,
     },
+}
+
+fn finite_f32(value: Option<f64>, default: f32) -> f32 {
+    match value {
+        Some(n) if n.is_finite() => {
+            let v = n as f32;
+            if v.is_finite() {
+                v
+            } else {
+                default
+            }
+        }
+        _ => default,
+    }
+}
+
+/// Normalizes slider bounds, step, and initial value so `SliderState` never panics on `min > 100`,
+/// `min > max`, non-positive steps, or out-of-range/non-finite numbers.
+pub(crate) fn sanitize_slider(
+    min: Option<f64>,
+    max: Option<f64>,
+    step: Option<f64>,
+    value: Option<f64>,
+) -> (f32, f32, f32, f32) {
+    let lo = finite_f32(min, 0.0);
+    let hi = finite_f32(max, 100.0).max(lo);
+    let raw_step = finite_f32(step, 1.0);
+    let step = if raw_step > 0.0 { raw_step } else { 1.0 };
+    let val = finite_f32(value, lo).clamp(lo, hi);
+    (lo, hi, step, val)
 }
 
 /// A colour as the core keeps it: `#rrggbb`, with `aa` only when it is see-through.
@@ -94,7 +145,7 @@ pub struct Form {
     fields: Vec<Field>,
     route: String,
     json_editor: Option<Entity<TextareaState>>,
-    pub error: String,
+    pub error: Option<crate::error::StreamerzError>,
     pub pending: bool,
     buttons_view: Entity<FormButtons>,
     /// A file picked with Browse, for its field (set into the box on the next draw, which has the window).
@@ -152,7 +203,17 @@ impl Form {
                         .map(IndexPath::new);
                     // A list that also takes typed text (TikTok's gifts, OBS scenes) or a long one can be searched.
                     let searchable = !strict || names.len() > 8;
-                    let select = cx.new(|cx| SelectState::new(names, selected, window, cx).searchable(searchable));
+                    let items = SearchableVec::new(
+                        names
+                            .iter()
+                            .enumerate()
+                            .map(|(index, label)| ChoiceItem {
+                                index,
+                                label: label.clone(),
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    let select = cx.new(|cx| SelectState::new(items, selected, window, cx).searchable(searchable));
                     let hint = field["placeholder"].as_str().unwrap_or_default().to_owned();
                     let input = (!strict).then(|| {
                         cx.new(|cx| {
@@ -172,9 +233,15 @@ impl Form {
                                     return;
                                 }
                                 let typed = input.read(cx).value().trim().to_owned();
-                                let at = chosen.iter().position(|id| *id == typed).map(IndexPath::new);
-                                if list.read(cx).selected_index(cx) != at {
-                                    list.update(cx, |list, cx| list.set_selected_index(at, window, cx));
+                                let at = chosen
+                                    .iter()
+                                    .position(|id| *id == typed && !(other && id.is_empty()))
+                                    .or_else(|| (other && !chosen.is_empty()).then(|| chosen.len() - 1));
+                                if list.read(cx).selected_value().copied() != at {
+                                    list.update(cx, |list, cx| match at {
+                                        Some(at) => list.set_selected_value(&at, window, cx),
+                                        None => list.set_selected_index(None, window, cx),
+                                    });
                                 }
                             },
                         ));
@@ -184,18 +251,21 @@ impl Form {
                         subscriptions.push(cx.subscribe_in(
                             &select,
                             window,
-                            move |_, select, event: &SelectEvent<Vec<String>>, window, cx| {
-                                if let SelectEvent::Confirm(Some(_)) = event {
-                                    let id = select
-                                        .read(cx)
-                                        .selected_index(cx)
-                                        .and_then(|at| chosen.get(at.row).cloned());
-                                    if let Some(id) = id {
+                            move |_, _, event: &SelectEvent<SearchableVec<ChoiceItem>>, window, cx| {
+                                if let SelectEvent::Confirm(Some(idx)) = event {
+                                    if let Some(id) = chosen.get(*idx).cloned() {
                                         input.update(cx, |input, cx| input.set_value(id, window, cx));
                                     }
+                                    cx.notify();
                                 }
                             },
                         ));
+                    } else {
+                        subscriptions.push(
+                            cx.subscribe(&select, |_, _, _: &SelectEvent<SearchableVec<ChoiceItem>>, cx| {
+                                cx.notify()
+                            }),
+                        );
                     }
                     let _ = index;
                     return Field::Choice {
@@ -243,25 +313,35 @@ impl Form {
                         Field::Color(state)
                     }
                     "slider" => {
-                        let end = |key: &str, or: f64| field["widget"][key].as_f64().unwrap_or(or) as f32;
+                        let (lo, hi, step, val) = sanitize_slider(
+                            field["widget"]["min"].as_f64(),
+                            field["widget"]["max"].as_f64(),
+                            field["widget"]["step"].as_f64(),
+                            value.as_f64(),
+                        );
                         let state = cx.new(|_| {
                             SliderState::new()
-                                .min(end("min", 0.))
-                                .max(end("max", 100.))
-                                .step(end("step", 1.))
-                                .default_value(value.as_f64().unwrap_or(0.) as f32)
+                                .max(hi.max(100.))
+                                .min(lo)
+                                .max(hi)
+                                .step(step)
+                                .default_value(val)
                         });
                         subscriptions.push(cx.subscribe(&state, |_, _, _: &SliderEvent, cx| cx.notify()));
                         Field::Slider(state)
                     }
                     "bool" | "bit" => Field::Bool(value.as_bool().unwrap_or(false)),
                     "checks" => {
-                        let ids: Vec<String> = field["widget"]["options"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|option| option["id"].as_str().map(str::to_owned))
-                            .collect();
+                        let mut ids = Vec::new();
+                        let mut labels = Vec::new();
+                        let mut brands = Vec::new();
+                        for option in field["widget"]["options"].as_array().into_iter().flatten() {
+                            if let Some(id) = option["id"].as_str() {
+                                ids.push(id.to_owned());
+                                labels.push(option["label"].as_str().unwrap_or_default().to_owned());
+                                brands.push(option["brand"].as_str().map(str::to_owned));
+                            }
+                        }
                         let ticked: Vec<&str> = value
                             .as_array()
                             .into_iter()
@@ -269,7 +349,12 @@ impl Form {
                             .filter_map(Value::as_str)
                             .collect();
                         let on = ids.iter().map(|id| ticked.contains(&id.as_str())).collect();
-                        Field::Checks { ids, on }
+                        Field::Checks {
+                            ids,
+                            labels,
+                            brands,
+                            on,
+                        }
                     }
                     "pick" => {
                         let options = field["widget"]["options"]
@@ -305,18 +390,24 @@ impl Form {
                         if names.is_empty() {
                             return Field::Multi(area);
                         }
-                        let select = cx.new(|cx| SelectState::new(names.clone(), None, window, cx).searchable(true));
-                        let (target, list) = (area.clone(), names.clone());
+                        let items = SearchableVec::new(
+                            names
+                                .iter()
+                                .enumerate()
+                                .map(|(index, label)| ChoiceItem {
+                                    index,
+                                    label: label.clone(),
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                        let select = cx.new(|cx| SelectState::new(items, None, window, cx).searchable(true));
+                        let (target, list) = (area.clone(), names);
                         subscriptions.push(cx.subscribe_in(
                             &select,
                             window,
-                            move |_, select, event: &SelectEvent<Vec<String>>, window, cx| {
-                                let SelectEvent::Confirm(Some(_)) = event else { return };
-                                let Some(name) = select
-                                    .read(cx)
-                                    .selected_index(cx)
-                                    .and_then(|at| list.get(at.row).cloned())
-                                else {
+                            move |_, select, event: &SelectEvent<SearchableVec<ChoiceItem>>, window, cx| {
+                                let SelectEvent::Confirm(Some(idx)) = event else { return };
+                                let Some(name) = list.get(*idx).cloned() else {
                                     return;
                                 };
                                 let text = target.read(cx).value().to_string();
@@ -342,14 +433,15 @@ impl Form {
                                 .masked(kind == "secret")
                                 .placeholder(hint)
                         });
-                        // A picked image shows as it's typed.
-                        if field["browse"] == "image" {
-                            subscriptions.push(cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
-                                if matches!(event, InputEvent::Change) {
-                                    cx.notify();
-                                }
-                            }));
-                        }
+                        let browse_image = field["browse"] == "image";
+                        subscriptions.push(cx.subscribe(&input, move |form, _, event: &InputEvent, cx| {
+                            match event {
+                                // A picked image shows as it's typed.
+                                InputEvent::Change if browse_image => cx.notify(),
+                                InputEvent::PressEnter { .. } if !form.pending => form.submit(false, cx),
+                                _ => {}
+                            }
+                        }));
                         Field::Text(input)
                     }
                 }
@@ -366,7 +458,7 @@ impl Form {
             fields,
             route,
             json_editor,
-            error: String::new(),
+            error: None,
             pending: false,
             buttons_view: {
                 let weak = cx.entity().downgrade();
@@ -382,7 +474,7 @@ impl Form {
         self.json_editor = Some(cx.new(|cx| TextareaState::new(window, cx).default_value(text.to_owned())));
         self.autofocus = true;
         self.pending = false;
-        self.error.clear();
+        self.error = None;
         cx.notify();
     }
     pub(super) fn submit(&mut self, preview: bool, cx: &mut Context<Self>) {
@@ -406,7 +498,7 @@ impl Form {
         }
         send(request);
         self.pending = true;
-        self.error.clear();
+        self.error = None;
         cx.notify();
     }
     /// What a field holds now, as the core takes it (none: a list with nothing picked).
@@ -420,7 +512,7 @@ impl Form {
             Field::Gallery(gallery) => json!(gallery.read(cx).selected),
             Field::Color(state) => json!(hex(state.read(cx).value()?)),
             Field::Slider(state) => json!(tidy(state.read(cx).value().start())),
-            Field::Checks { ids, on } => json!(ids
+            Field::Checks { ids, on, .. } => json!(ids
                 .iter()
                 .zip(on)
                 .filter(|(_, on)| **on)
@@ -431,8 +523,10 @@ impl Form {
                 _ => json!(""),
             },
             Field::Choice { select, ids, .. } => {
-                json!(ids
-                    .get(select.read(cx).selected_index(cx)?.row)
+                json!(select
+                    .read(cx)
+                    .selected_value()
+                    .and_then(|&idx| ids.get(idx))
                     .cloned()
                     .unwrap_or_default())
             }
@@ -497,7 +591,7 @@ impl Form {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 Ok(Err(error)) => {
                     let _ = form.update(cx, |form, cx| {
-                        form.error = error.to_string();
+                        form.error = Some(crate::error::StreamerzError::from_message(&error.to_string()));
                         cx.notify();
                     });
                     None
@@ -539,6 +633,11 @@ impl Render for Form {
                                 && self.model["fields"][index]["value"].as_str().is_some_and(str::is_empty)
                                 && matches!(field, Field::Text(_) | Field::Multi(_))
                         })
+                    })
+                    .or_else(|| {
+                        self.fields.iter().enumerate().position(|(index, field)| {
+                            self.shown(index, cx) && matches!(field, Field::Text(_) | Field::Multi(_))
+                        })
                     });
                 match index.and_then(|index| self.fields.get(index)) {
                     Some(Field::Text(input)) => input.update(cx, |input, cx| input.focus(window, cx)),
@@ -557,8 +656,9 @@ impl Render for Form {
                     ids,
                     ..
                 }) => {
-                    let last = ids.len().checked_sub(1).map(IndexPath::new);
-                    select.update(cx, |select, cx| select.set_selected_index(last, window, cx));
+                    if let Some(last) = ids.len().checked_sub(1) {
+                        select.update(cx, |select, cx| select.set_selected_value(&last, window, cx));
+                    }
                     input.update(cx, |input, cx| input.set_value(path, window, cx));
                 }
                 _ => {}
@@ -568,25 +668,37 @@ impl Render for Form {
             .id("form-fields")
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(px(SPACE_SM))
             .overflow_y_scroll()
-            .flex_1()
-            .min_h_0();
+            .min_h_0()
+            // The JSON editor fills the form; fields take the room they need and scroll past the cap.
+            .when(self.json_editor.is_some(), |body| body.flex_1());
         let note_width = (f32::from(window.viewport_size().width).min(560.) - 80.).max(100.);
-        let mut wanted = 16.;
+        let mut wanted = 0.;
         if let Some(hint) = self.model["hint"].as_str().filter(|hint| !hint.is_empty()) {
             body = body.child(
                 div()
                     .flex_shrink_0()
-                    .text_size(px(12.))
+                    .text_size(px(FONT_CAPTION))
+                    .line_height(px(LINE_CAPTION))
                     .text_color(cx.theme().muted_foreground)
                     .child(hint.to_owned()),
             );
-            wanted += wrapped(hint, 18., note_width) + 8.;
+            wanted += wrapped(hint, LINE_CAPTION, note_width) + SPACE_SM;
         }
-        if !self.error.is_empty() {
-            body = body.child(super::notice::error(&self.error, cx));
-            wanted += 40.;
+        if let Some(err) = &self.error {
+            body = body.child(super::notice::error(err, cx));
+            wanted += super::notice::estimated_error_height(err, note_width) + 8.;
+        }
+        for (i, warning) in self.model["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .enumerate()
+        {
+            body = body.child(super::notice::warn(("form-warning", i), warning, cx));
+            wanted += wrapped(warning, 18., note_width) + 18.;
         }
         // Why part of the form is unavailable, in quiet text.
         for note in self.model["notes"]
@@ -612,7 +724,9 @@ impl Render for Form {
                     body = body.child(
                         Button::new(("form-section", index))
                             .small()
+                            .h(px(CONTROL_HEIGHT))
                             .ghost()
+                            .when(index > 0, |button| button.mt(px(SPACE_SM)))
                             .w_full()
                             .justify_start()
                             .icon(gpui_kit::component::Icon::empty().path(if collapsed {
@@ -628,7 +742,7 @@ impl Render for Form {
                                 cx.notify();
                             })),
                     );
-                    wanted += 30.;
+                    wanted += CONTROL_HEIGHT + SPACE_SM + if index > 0 { SPACE_SM } else { 0. };
                     if collapsed {
                         index += 1;
                         while index < self.fields.len() && !self.model["fields"][index]["section"].is_string() {
@@ -645,7 +759,12 @@ impl Render for Form {
                     let long = self.model["fields"][index]["label"]
                         .as_str()
                         .is_some_and(|label| label.chars().count() > 28);
-                    let mut row = div().flex().items_center().gap_2().min_h(px(26.)).flex_shrink_0();
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .gap(px(SPACE_SM))
+                        .min_h(px(CONTROL_HEIGHT))
+                        .flex_shrink_0();
                     for place in 0..2 {
                         let Some(Field::Bool(checked)) = self.fields.get(index) else {
                             break;
@@ -714,7 +833,7 @@ impl Render for Form {
                         index += 1;
                     }
                     body = body.child(row);
-                    wanted += 30.;
+                    wanted += CONTROL_HEIGHT + SPACE_SM;
                     continue;
                 }
                 let label = self.model["fields"][index]["label"]
@@ -722,19 +841,17 @@ impl Render for Form {
                     .unwrap_or_default()
                     .to_owned();
                 let (editor, height): (AnyElement, f32) = match &self.fields[index] {
-                    Field::Gallery(gallery) => (Gallery::field(gallery, label.clone(), self.pending, cx), 26.),
+                    Field::Gallery(gallery) => {
+                        (Gallery::field(gallery, label.clone(), self.pending, cx), CONTROL_HEIGHT)
+                    }
                     Field::Choice {
                         select,
                         input,
                         ids,
                         other,
                     } => {
-                        let mut row = div().flex().gap_2().items_center();
-                        let typing = !*other
-                            || select
-                                .read(cx)
-                                .selected_index(cx)
-                                .is_some_and(|at| at.row + 1 == ids.len());
+                        let mut row = div().flex().gap(px(SPACE_SM)).items_center();
+                        let typing = !*other || select.read(cx).selected_value().is_some_and(|&at| at + 1 == ids.len());
                         // With "Other" in the list, the box shows only once it is picked.
                         if let Some(input) = input.as_ref().filter(|_| typing || ids.len() <= 1) {
                             row = row.child(
@@ -744,7 +861,7 @@ impl Render for Form {
                                         .appearance(false)
                                         .aria_label(label.clone())
                                         .disabled(self.pending),
-                                    26.,
+                                    CONTROL_HEIGHT,
                                     cx,
                                 )),
                             );
@@ -753,6 +870,7 @@ impl Render for Form {
                         if (input.is_none() || !ids.is_empty()) && !(*other && ids.len() <= 1) {
                             let picker = Select::new(select)
                                 .small()
+                                .h(px(CONTROL_HEIGHT))
                                 .placeholder(tr("forms.pick_from_list"))
                                 .search_placeholder(tr("lists.search"))
                                 .disabled(self.pending);
@@ -764,30 +882,36 @@ impl Render for Form {
                             row = row.child(
                                 Button::new(("browse", index))
                                     .small()
-                                    .h(px(26.))
+                                    .h(px(CONTROL_HEIGHT))
                                     .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
                                     .label(tr("btn.browse"))
                                     .disabled(self.pending)
                                     .on_click(cx.listener(move |form, _, _, cx| form.browse(field_index, cx))),
                             );
                         }
-                        (row.into_any_element(), 26.)
+                        (row.into_any_element(), CONTROL_HEIGHT)
                     }
-                    Field::Checks { ids, on } => {
-                        let options = &self.model["fields"][index]["widget"]["options"];
+                    Field::Checks {
+                        ids,
+                        labels,
+                        brands,
+                        on,
+                    } => {
                         let field_index = index;
                         // Action and permission lists can contain any number of long names.
                         let width = (f32::from(window.viewport_size().width).min(560.) - 230.).max(90.);
                         let mut height = 0.;
-                        let mut row = div().w_full().min_w_0().flex().flex_col().gap_1();
+                        let mut row = div().w_full().min_w_0().flex().flex_col().gap(px(SPACE_XS));
                         if ids.is_empty() {
                             row = row.child(tr("forms.none"));
-                            height = 26.;
+                            height = CONTROL_HEIGHT;
                         }
                         for (at, _) in ids.iter().enumerate() {
-                            let name = options[at]["label"].as_str().unwrap_or_default().to_owned();
-                            let brand = options[at]["brand"].as_str().map(str::to_owned);
-                            height += wrapped(&name, 26., width - 24.) + 4.;
+                            let name = labels.get(at).cloned().unwrap_or_default();
+                            let brand = brands.get(at).cloned().flatten();
+                            let checked = on.get(at).copied().unwrap_or(false);
+                            let check_id = (index << 16) + at;
+                            height += wrapped(&name, CONTROL_HEIGHT, width - 24.) + SPACE_XS;
                             row = row.child(
                                 div()
                                     .w_full()
@@ -795,27 +919,30 @@ impl Render for Form {
                                     .flex()
                                     .flex_shrink_0()
                                     .items_center()
-                                    .gap(px(3.))
+                                    .gap(px(SPACE_XS))
+                                    .min_h(px(CONTROL_HEIGHT))
                                     .when_some(brand, |box_, brand| {
                                         box_.child(
                                             img(format!("brands/{brand}.svg"))
-                                                .id(("check-brand", index * 16 + at))
+                                                .id(("check-brand", check_id))
                                                 .size_4()
                                                 .flex_shrink_0(),
                                         )
                                     })
                                     .child(
-                                        Checkbox::new(("check", index * 16 + at))
+                                        Checkbox::new(("check", check_id))
                                             .small()
                                             .w_full()
                                             .min_w_0()
                                             .label(name)
-                                            .checked(on[at])
+                                            .checked(checked)
                                             .disabled(self.pending)
                                             .on_click(cx.listener(move |form, checked: &bool, _, cx| {
                                                 if let Some(Field::Checks { on, .. }) = form.fields.get_mut(field_index)
                                                 {
-                                                    on[at] = *checked;
+                                                    if let Some(slot) = on.get_mut(at) {
+                                                        *slot = *checked;
+                                                    }
                                                 }
                                                 cx.notify();
                                             })),
@@ -837,18 +964,18 @@ impl Render for Form {
                         };
                         let browse = self.model["fields"][index]["browse"].as_str().unwrap_or_default();
                         if browse.is_empty() {
-                            (boxed(input, 26., cx), 26.)
+                            (boxed(input, CONTROL_HEIGHT, cx), CONTROL_HEIGHT)
                         } else {
                             // A file's box with Browse beside it; an image shows under it once it's found.
                             let field_index = index;
                             let line = div()
                                 .flex()
-                                .gap_2()
-                                .child(div().flex_1().min_w_0().child(boxed(input, 26., cx)))
+                                .gap(px(SPACE_SM))
+                                .child(div().flex_1().min_w_0().child(boxed(input, CONTROL_HEIGHT, cx)))
                                 .child(
                                     Button::new(("browse", index))
                                         .small()
-                                        .h(px(26.))
+                                        .h(px(CONTROL_HEIGHT))
                                         .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
                                         .label(tr("btn.browse"))
                                         .disabled(self.pending)
@@ -874,7 +1001,7 @@ impl Render for Form {
                                     160.,
                                 )
                             } else {
-                                (line.into_any_element(), 26.)
+                                (line.into_any_element(), CONTROL_HEIGHT)
                             }
                         }
                     }
@@ -893,6 +1020,7 @@ impl Render for Form {
                     Field::Lines { area, select, .. } => {
                         let picker = Select::new(select)
                             .small()
+                            .h(px(CONTROL_HEIGHT))
                             .placeholder(tr("forms.pick_from_list"))
                             .search_placeholder(tr("lists.search"))
                             .disabled(self.pending);
@@ -909,27 +1037,33 @@ impl Render for Form {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .child(picker)
                                 .child(area)
                                 .into_any_element(),
-                            114.,
+                            CONTROL_HEIGHT + SPACE_SM + 80.,
                         )
                     }
                     Field::Pick(input) => (
                         Select::new(input)
                             .small()
+                            .h(px(CONTROL_HEIGHT))
                             .when_some(
                                 self.model["fields"][index]["placeholder"].as_str().map(str::to_owned),
                                 |select, hint| select.placeholder(hint),
                             )
                             .disabled(self.pending)
                             .into_any_element(),
-                        26.,
+                        CONTROL_HEIGHT,
                     ),
                     Field::Font { select, .. } => (
-                        Select::new(select).small().disabled(self.pending).into_any_element(),
-                        26.,
+                        Select::new(select)
+                            .small()
+                            .h(px(CONTROL_HEIGHT))
+                            .search_placeholder(tr("lists.search"))
+                            .disabled(self.pending)
+                            .into_any_element(),
+                        CONTROL_HEIGHT,
                     ),
                     Field::Color(state) => {
                         let shown = state.read(cx).value().map(hex).unwrap_or_default();
@@ -941,13 +1075,17 @@ impl Render for Form {
                                 .child(ColorPicker::new(state).small())
                                 .child(div().text_color(crate::theme::quiet(cx)).child(shown))
                                 .into_any_element(),
-                            26.,
+                            CONTROL_HEIGHT,
                         )
                     }
                     Field::Slider(state) => {
                         let shown = tidy(state.read(cx).value().start()).to_string();
                         (
                             div()
+                                .id(("slider-field", index))
+                                .test_support()
+                                .role(Role::Slider)
+                                .aria_label(label.clone())
                                 .flex()
                                 .items_center()
                                 .gap_3()
@@ -965,7 +1103,7 @@ impl Render for Form {
                                         .child(shown),
                                 )
                                 .into_any_element(),
-                            26.,
+                            CONTROL_HEIGHT,
                         )
                     }
                     Field::Bool(_) => unreachable!(),
@@ -981,7 +1119,7 @@ impl Render for Form {
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
+                        .gap(px(SPACE_SM))
                         .h(px(height))
                         .flex_shrink_0()
                         .child({
@@ -992,7 +1130,7 @@ impl Render for Form {
                                 .flex_shrink_0()
                                 .flex()
                                 .flex_col()
-                                .gap_1()
+                                .gap(px(SPACE_XS))
                                 .child(div().truncate().child(label))
                                 .when(insertable, |label| {
                                     label.child(
@@ -1039,21 +1177,26 @@ impl Render for Form {
                         })
                         .child(div().flex_1().min_w_0().child(editor)),
                 );
-                wanted += height + 4.;
+                wanted += height + SPACE_SM;
                 index += 1;
             }
         }
-        let height = wanted.min((f32::from(window.viewport_size().height) - 220.).clamp(120., 560.));
+        let cap = (f32::from(window.viewport_size().height) - 220.).clamp(120., 560.);
+        // Every field counted the gap under it, and the last one has none.
+        let height = (wanted - SPACE_SM).max(0.).min(cap);
+        let json = self.json_editor.is_some();
         div()
             .id("editor-form")
             .test_support()
             .role(Role::Group)
             .aria_label(self.model["title"].as_str().unwrap_or_default().to_owned())
-            .text_size(px(14.))
+            .text_size(px(FONT_BODY))
+            .line_height(px(LINE_BODY))
             .flex()
             .flex_col()
-            .gap_3()
-            .h(px(height))
+            .gap(px(SPACE_MD))
+            .when(json, |form| form.h(px(height)))
+            .when(!json, |form| form.max_h(px(cap)))
             .child(body)
     }
 }
@@ -1063,6 +1206,7 @@ impl Form {
     pub fn buttons(&self, cx: &mut Context<Self>) -> Div {
         let left = (self.json_editor.is_none() && self.model["json"] != false).then(|| {
             Button::new("edit-json")
+                .h(px(CONTROL_HEIGHT))
                 .ghost()
                 .icon(gpui_kit::component::Icon::empty().path("icons/braces.svg"))
                 .label(tr("btn.edit_json"))
@@ -1072,9 +1216,10 @@ impl Form {
         });
         let right = div()
             .flex()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .child(
                 Button::new("cancel-form")
+                    .h(px(CONTROL_HEIGHT))
                     .label(tr("dialogs.cancel"))
                     .disabled(self.pending)
                     .on_click(cx.listener(|_, _, window, cx| super::dialog::dismiss(window, cx))),
@@ -1083,6 +1228,7 @@ impl Form {
                 (self.json_editor.is_none() && self.model["alternateSubmit"].is_object()).then(|| {
                     let action = self.model["alternateSubmit"].clone();
                     Button::new("alternate-submit")
+                        .h(px(CONTROL_HEIGHT))
                         .label(action["label"].as_str().unwrap_or_default().to_owned())
                         .disabled(self.pending)
                         .on_click(cx.listener(move |form, _, _, cx| form.submit_action(false, &action["changes"], cx)))
@@ -1090,6 +1236,7 @@ impl Form {
             )
             .child(
                 Button::new("save-form")
+                    .h(px(CONTROL_HEIGHT))
                     .primary()
                     .label(
                         if self.json_editor.is_some() {
@@ -1133,4 +1280,452 @@ fn boxed(field: impl IntoElement, height: f32, cx: &App) -> AnyElement {
         .rounded(px(4.))
         .child(field)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_slider;
+    use gpui_kit::component::slider::SliderState;
+
+    #[test]
+    fn slider_sanitization_prevents_min_above_hundred_or_inverted_range_panics() {
+        for (min, max, step, val) in [
+            (Some(200.0), Some(400.0), Some(10.0), Some(250.0)),
+            (Some(500.0), Some(100.0), Some(5.0), Some(50.0)),
+            (Some(f64::NAN), Some(f64::INFINITY), Some(0.0), Some(f64::NEG_INFINITY)),
+            (Some(-50.0), Some(-10.0), Some(-2.0), Some(99.0)),
+            (None, None, None, None),
+        ] {
+            let (lo, hi, step, val) = sanitize_slider(min, max, step, val);
+            assert!(lo.is_finite() && hi.is_finite() && lo <= hi);
+            assert!(step.is_finite() && step > 0.0);
+            assert!(val.is_finite() && val >= lo && val <= hi);
+            let _state = SliderState::new()
+                .max(hi.max(100.))
+                .min(lo)
+                .max(hi)
+                .step(step)
+                .default_value(val);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    mod ui {
+        use super::super::{Field, Form};
+        use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+        use gpui_kit::{
+            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+            Window, WindowBounds, WindowOptions,
+        };
+        use serde_json::json;
+
+        struct FormHost(Entity<Form>);
+        impl Render for FormHost {
+            fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+                div().size_full().p_4().child(self.0.clone())
+            }
+        }
+
+        fn open_form(
+            model: serde_json::Value,
+            cx: &mut TestAppContext,
+        ) -> (gpui_kit::WindowHandle<gpui_kit::base::Root>, Entity<Form>) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let form_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Form>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let slot = form_slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(640.), px(720.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let form = cx.new(|cx| Form::new(model, "test:form".into(), window, cx));
+                        *slot.borrow_mut() = Some(form.clone());
+                        cx.new(|_| FormHost(form))
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let form = form_slot.borrow().clone().expect("form created");
+            (window, form)
+        }
+
+        #[gpui_kit::test]
+        fn choice_search_filters_dropdown_and_selects_filtered_item(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Edit stream on Twitch",
+                "fields": [
+                    {
+                        "key": "category",
+                        "label": "Category",
+                        "value": "Art",
+                        "other": true,
+                        "choices": [
+                            {"id": "ACE COMBAT 8: WINGS OF THEVE", "label": "ACE COMBAT 8: WINGS OF THEVE"},
+                            {"id": "AION 2", "label": "AION 2"},
+                            {"id": "Albion Online", "label": "Albion Online"},
+                            {"id": "Art", "label": "Art"},
+                            {"id": "ASMR", "label": "ASMR"},
+                            {"id": "Battlefield 6", "label": "Battlefield 6"},
+                            {"id": "Just Chatting", "label": "Just Chatting"},
+                            {"id": "Music", "label": "Music"},
+                            {"id": "Software and Game Development", "label": "Software and Game Development"}
+                        ]
+                    },
+                    {
+                        "key": "language",
+                        "label": "Language",
+                        "value": "en",
+                        "strict": true,
+                        "choices": [
+                            {"id": "en", "label": "English"},
+                            {"id": "es", "label": "Spanish"},
+                            {"id": "fr", "label": "French"},
+                            {"id": "de", "label": "German"},
+                            {"id": "it", "label": "Italian"},
+                            {"id": "ja", "label": "Japanese"},
+                            {"id": "ko", "label": "Korean"},
+                            {"id": "pt", "label": "Portuguese"},
+                            {"id": "ru", "label": "Russian"},
+                            {"id": "zh", "label": "Chinese"}
+                        ]
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find_all_by_role(gpui_kit::Role::TextInput).len(), 0);
+                let cat_id = match &form.read(cx).fields[0] {
+                    Field::Choice { select, .. } => select.entity_id(),
+                    _ => unreachable!(),
+                };
+
+                // Click the Category select trigger to open its searchable dropdown.
+                window.within(("select", cat_id)).click("input", cx);
+                window.render_frame(cx);
+                let open_text_inputs = window.find_all_by_role(gpui_kit::Role::TextInput).len();
+                assert_eq!(
+                    open_text_inputs, 1,
+                    "dropdown search input should appear when Select opens"
+                );
+
+                // Typing into the open dropdown's search input should filter items to only "Just Chatting",
+                // so clicking the first row below the search box selects "Just Chatting" rather than
+                // the unfiltered first item ("ACE COMBAT 8: WINGS OF THEVE").
+                window.input("Just", cx);
+                window.render_frame(cx);
+                let inputs = window.find_all_by_role(gpui_kit::Role::TextInput);
+                assert_eq!(inputs[0].value(), Some("Just"));
+                let search_bounds = inputs[0].bounds();
+                let first_row = gpui_kit::point(search_bounds.center().x, search_bounds.bottom() + px(16.));
+                use gpui_kit::test::TestEventExt;
+                window.pointer_down(first_row, gpui_kit::MouseButton::Left, cx);
+                window.pointer_up(first_row, gpui_kit::MouseButton::Left, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("Just Chatting")));
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn lines_suggest_search_filters_dropdown_and_adds_filtered_tag(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Edit stream on Twitch",
+                "fields": [
+                    {
+                        "key": "tags",
+                        "label": "Tags, one per line",
+                        "value": "English",
+                        "widget": {"kind": "lines"},
+                        "suggest": [
+                            {"id": "English", "label": "English"},
+                            {"id": "Art", "label": "Art"},
+                            {"id": "Cozy", "label": "Cozy"},
+                            {"id": "Portuguese", "label": "Portuguese"},
+                            {"id": "Speedrun", "label": "Speedrun"}
+                        ]
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let tags_select_id = match &form.read(cx).fields[0] {
+                    Field::Lines { select, .. } => select.entity_id(),
+                    _ => unreachable!(),
+                };
+
+                // Open the Tags suggestion dropdown, search for "Port", and click the first row.
+                window.within(("select", tags_select_id)).click("input", cx);
+                window.render_frame(cx);
+                window.input("Port", cx);
+                window.render_frame(cx);
+                let inputs = window.find_all_by_role(gpui_kit::Role::TextInput);
+                let search_bounds = inputs
+                    .into_iter()
+                    .find(|el| el.value() == Some("Port"))
+                    .expect("dropdown search input should hold typed 'Port'")
+                    .bounds();
+                let first_row = gpui_kit::point(search_bounds.center().x, search_bounds.bottom() + px(16.));
+                use gpui_kit::test::TestEventExt;
+                window.pointer_down(first_row, gpui_kit::MouseButton::Left, cx);
+                window.pointer_up(first_row, gpui_kit::MouseButton::Left, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("English\nPortuguese")));
+                // Select resets after adding the tag so another tag can be picked cleanly.
+                let selected = match &form.read(cx).fields[0] {
+                    Field::Lines { select, .. } => select.read(cx).selected_value().copied(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(selected, None);
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn strict_long_choice_search_filters_and_selects_original_id(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Edit stream on Twitch",
+                "fields": [
+                    {
+                        "key": "language",
+                        "label": "Language",
+                        "value": "en",
+                        "strict": true,
+                        "choices": [
+                            {"id": "en", "label": "English"},
+                            {"id": "es", "label": "Spanish"},
+                            {"id": "fr", "label": "French"},
+                            {"id": "de", "label": "German"},
+                            {"id": "it", "label": "Italian"},
+                            {"id": "ja", "label": "Japanese"},
+                            {"id": "ko", "label": "Korean"},
+                            {"id": "pt", "label": "Portuguese"},
+                            {"id": "ru", "label": "Russian"},
+                            {"id": "zh", "label": "Chinese"}
+                        ]
+                    },
+                    {
+                        "key": "only_pt",
+                        "label": "Portuguese hint",
+                        "value": false,
+                        "widget": {"kind": "bool"},
+                        "showIf": {"field": 0, "equals": "pt"}
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(!form.read(cx).shown(1, cx));
+                let lang_id = match &form.read(cx).fields[0] {
+                    Field::Choice { select, .. } => select.entity_id(),
+                    _ => unreachable!(),
+                };
+                window.within(("select", lang_id)).click("input", cx);
+                window.render_frame(cx);
+                window.input("Port", cx);
+                window.render_frame(cx);
+                let search_bounds = window
+                    .find_all_by_role(gpui_kit::Role::TextInput)
+                    .into_iter()
+                    .find(|el| el.value() == Some("Port"))
+                    .expect("dropdown search input should hold 'Port'")
+                    .bounds();
+                let first_row = gpui_kit::point(search_bounds.center().x, search_bounds.bottom() + px(16.));
+                use gpui_kit::test::TestEventExt;
+                window.pointer_down(first_row, gpui_kit::MouseButton::Left, cx);
+                window.pointer_up(first_row, gpui_kit::MouseButton::Left, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("pt")));
+                assert!(
+                    form.read(cx).shown(1, cx),
+                    "showIf dependent field should become visible when strict choice confirms"
+                );
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn choice_other_and_non_strict_input_sync_properly(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Test",
+                "fields": [
+                    {
+                        "key": "category",
+                        "label": "Category",
+                        "value": "Art",
+                        "other": true,
+                        "choices": [
+                            {"id": "Art", "label": "Art"},
+                            {"id": "Music", "label": "Music"}
+                        ]
+                    },
+                    {
+                        "key": "scene",
+                        "label": "Scene",
+                        "value": "Intro",
+                        "choices": [
+                            {"id": "Intro", "label": "Intro"},
+                            {"id": "Main", "label": "Main"}
+                        ]
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                // Only "Scene" input is visible initially because Category is "Art" (not "Other").
+                assert_eq!(window.find_all_by_role(gpui_kit::Role::TextInput).len(), 1);
+                let cat_id = match &form.read(cx).fields[0] {
+                    Field::Choice { select, .. } => select.entity_id(),
+                    _ => unreachable!(),
+                };
+                window.within(("select", cat_id)).click("input", cx);
+                window.render_frame(cx);
+                window.input("other", cx);
+                window.render_frame(cx);
+                let search_bounds = window
+                    .find_all_by_role(gpui_kit::Role::TextInput)
+                    .into_iter()
+                    .find(|el| el.value() == Some("other"))
+                    .expect("dropdown search input should hold 'other'")
+                    .bounds();
+                let first_row = gpui_kit::point(search_bounds.center().x, search_bounds.bottom() + px(16.));
+                use gpui_kit::test::TestEventExt;
+                window.pointer_down(first_row, gpui_kit::MouseButton::Left, cx);
+                window.pointer_up(first_row, gpui_kit::MouseButton::Left, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                // Choosing "Other" reveals Category's text input alongside Scene's.
+                let inputs = window.find_all_by_role(gpui_kit::Role::TextInput);
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "Category custom input should appear when Other is picked"
+                );
+                let cat_input = match &form.read(cx).fields[0] {
+                    Field::Choice { input: Some(input), .. } => input.clone(),
+                    _ => unreachable!(),
+                };
+                cat_input.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                window.input("Indie Game", cx);
+                window.render_frame(cx);
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("Indie Game")));
+                // Custom text keeps "Other" selected so the box remains visible.
+                assert_eq!(window.find_all_by_role(gpui_kit::Role::TextInput).len(), 2);
+
+                // Typing an existing choice in non-strict "Scene" syncs its Select state.
+                let scene_input = match &form.read(cx).fields[1] {
+                    Field::Choice { input: Some(input), .. } => input.clone(),
+                    _ => unreachable!(),
+                };
+                scene_input.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                window.input("Main", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let scene_val = match &form.read(cx).fields[1] {
+                    Field::Choice { select, .. } => select.read(cx).selected_value().copied(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(scene_val, Some(1));
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn font_search_filters_dropdown_and_selects_filtered_font(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Font form",
+                "fields": [
+                    {
+                        "key": "font",
+                        "label": "Font",
+                        "value": "",
+                        "widget": {"kind": "font"}
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            let target_font = cx
+                .update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    let (font_id, sample) = match &form.read(cx).fields[0] {
+                        Field::Font { select, system } => {
+                            let names = cx.text_system().all_font_names();
+                            let sample = names
+                                .into_iter()
+                                .find(|n| !n.starts_with('.') && n != system && n.len() >= 4);
+                            (select.entity_id(), sample)
+                        }
+                        _ => unreachable!(),
+                    };
+                    let sample = sample?;
+                    let query = sample.chars().take(4).collect::<String>();
+                    window.within(("select", font_id)).click("input", cx);
+                    window.render_frame(cx);
+                    window.input(&query, cx);
+                    window.render_frame(cx);
+                    let search_bounds = window
+                        .find_all_by_role(gpui_kit::Role::TextInput)
+                        .into_iter()
+                        .find(|el| el.value() == Some(query.as_str()))
+                        .expect("font dropdown search input should hold query")
+                        .bounds();
+                    let first_row = gpui_kit::point(search_bounds.center().x, search_bounds.bottom() + px(16.));
+                    use gpui_kit::test::TestEventExt;
+                    window.pointer_down(first_row, gpui_kit::MouseButton::Left, cx);
+                    window.pointer_up(first_row, gpui_kit::MouseButton::Left, cx);
+                    Some(query)
+                })
+                .unwrap();
+            if let Some(query) = target_font {
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    let val = form.read(cx).value(0, cx).and_then(|v| v.as_str().map(str::to_owned));
+                    assert!(
+                        val.as_deref()
+                            .is_some_and(|s| s.to_lowercase().contains(&query.to_lowercase())),
+                        "expected selected font matching '{query}', got {val:?}"
+                    );
+                })
+                .unwrap();
+            }
+        }
+    }
 }

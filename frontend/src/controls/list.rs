@@ -5,7 +5,15 @@ use super::{
     rows::{Action, Rows},
     sections::Sections,
 };
-use crate::{i18n::tr, send};
+use crate::{
+    i18n::tr,
+    send,
+    theme::{
+        CONTROL_HEIGHT, DENSE_CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_MD, SPACE_SM,
+        SPACE_XS,
+    },
+};
+use gpui_kit::base::ElementExt;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
@@ -43,9 +51,15 @@ pub struct List {
     /// The page's tabs (label, options, selected): drawn as a "Show" combo before the search.
     show: Option<Value>,
     lead_outside: bool,
+    /// The title of the page this list is on, and whether it is the page's only section (the page's
+    /// header then stands for it: no heading of its own, its page-wide buttons in the header).
+    page_title: String,
+    page_single: bool,
+    /// The first list of the page: with no heading of its own, the page's header stands for it.
+    page_lead: bool,
     selected_id: String,
     form: Option<Entity<Form>>,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
     route: String,
     /// A list in a dialog (a group's members): its entity and the request that fills it.
     dialog_list: Option<Entity<List>>,
@@ -55,11 +69,79 @@ pub struct List {
     /// Fields drawn in place of a settings row (the MCP connection's address, port and route).
     inline: Option<Entity<Sections>>,
     rows_view: Entity<ButtonRows>,
+    actions_view: Entity<HeaderActions>,
     _subscriptions: Vec<Subscription>,
+}
+/// The height of a table's header row, and how many rows a table sized to its rows shows at least and at most.
+const TABLE_HEAD: f32 = 24.;
+const FEWEST_ROWS: usize = 3;
+const MOST_ROWS: usize = 8;
+/// The height of a table sized to its `shown` rows: at least a few rows, `most` at most (it scrolls then).
+fn table_height(shown: usize, most: usize) -> f32 {
+    TABLE_HEAD + CONTROL_HEIGHT * shown.clamp(FEWEST_ROWS, most.max(FEWEST_ROWS)) as f32 + 1.
 }
 /// About how wide a button with `label` is (icon, padding and text at the small size).
 fn label_width(label: &str) -> f32 {
     52. + 7. * label.chars().count() as f32
+}
+/// A small rounded tag of a row (a lock, a retry time, the default star): an optional icon and a short text.
+fn pill(id: impl Into<ElementId>, icon: Option<&str>, text: Option<String>, cx: &App) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(SPACE_XS))
+        .flex_shrink_0()
+        .h(px(crate::theme::LINE_MICRO))
+        .px(px(SPACE_XS))
+        .rounded(px(4.))
+        .bg(crate::theme::badge_bg(cx))
+        .text_color(crate::theme::quiet(cx))
+        .when_some(icon, |tag, icon| {
+            tag.child(
+                Icon::empty()
+                    .path(format!("icons/{icon}.svg"))
+                    .size(px(crate::theme::FONT_MICRO)),
+            )
+        })
+        .when_some(text, |tag, text| {
+            tag.child(
+                div()
+                    .text_size(px(crate::theme::FONT_MICRO))
+                    .line_height(px(crate::theme::LINE_MICRO))
+                    .child(text),
+            )
+        })
+}
+
+/// The blocks of a page's list from top to bottom. The gap under each block is the one docs/UI.md
+/// ("Anatomy") names for it, and none is drawn for a block that is not there.
+struct Stack {
+    items: Vec<AnyElement>,
+    after: f32,
+}
+impl Stack {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            after: 0.,
+        }
+    }
+    /// Adds a block, with `after` px between it and the next one.
+    fn add(&mut self, block: impl IntoElement, after: f32) {
+        if !self.items.is_empty() && self.after > 0. {
+            self.items
+                .push(div().h(px(self.after)).flex_shrink_0().into_any_element());
+        }
+        self.items.push(block.into_any_element());
+        self.after = after;
+    }
+    /// What was added so far, as a column of its own.
+    fn column(&mut self) -> Div {
+        let items = std::mem::take(&mut self.items);
+        self.after = 0.;
+        div().flex().flex_col().children(items)
+    }
 }
 impl List {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -135,21 +217,29 @@ impl List {
             let weak = cx.entity().downgrade();
             cx.new(|_| ButtonRows(weak))
         };
+        let actions_view = {
+            let weak = cx.entity().downgrade();
+            cx.new(|_| HeaderActions(weak))
+        };
         let mut this = Self {
             model,
             table,
             search,
             show: None,
             lead_outside: false,
+            page_title: String::new(),
+            page_single: false,
+            page_lead: false,
             selected_id: String::new(),
             form: None,
-            error: String::new(),
+            error: None,
             route,
             dialog_list: None,
             dialog_request: Value::Null,
             card: None,
             inline,
             rows_view,
+            actions_view,
             _subscriptions: subscriptions,
         };
         this.refresh(cx);
@@ -196,35 +286,47 @@ impl List {
     pub fn buttons_last(&self) -> bool {
         self.model["buttonsLast"] == true
     }
-    pub fn has_actions(&self) -> bool {
-        !Action::base_actions(&self.model).is_empty()
+    /// Leave room for a section's own introduction and status as well as its empty-state actions.
+    /// Multi-section pages scroll when these minimums do not fit.
+    pub fn section_min_height(&self) -> f32 {
+        if !self.lead_outside && self.model["intro"].is_string() && self.model["status"].is_object() {
+            240.
+        } else if !self.lead_outside && (self.model["intro"].is_string() || self.model["status"].is_object()) {
+            200.
+        } else {
+            140.
+        }
+    }
+    /// Whether the list is as tall as its table needs, not as the page lets it: a table that shares its
+    /// page with other sections. The page then lets the section take no more room than that.
+    pub fn hugs(&self) -> bool {
+        !self.page_single
+            && self.table.is_some()
+            && !self.is_settings()
+            && !self.is_connections()
+            && !self.is_cards()
+            && !self.has_inline()
+            && !self.has_connection()
     }
     pub fn has_inline(&self) -> bool {
         self.model["inline"].is_object()
     }
     /// A page's introduction and its state line (above the first table).
     pub fn intro_block(&self, cx: &App) -> Option<AnyElement> {
+        self.intro_with(false, cx)
+    }
+    /// The introduction as the page's guide (13/18), or, under a section's own heading, as its note (12/16).
+    fn intro_with(&self, note: bool, cx: &App) -> Option<AnyElement> {
         if self.model["intro"].is_null() && !self.model["status"].is_object() {
             return None;
         }
-        let mut block = div().flex().flex_col().gap(px(8.)).mb(px(-5.));
+        let mut block = div().flex().flex_col().gap(px(SPACE_SM));
         if let Some(intro) = self.model["intro"].as_str() {
-            block = block.child(
-                div()
-                    .min_h(px(36.))
-                    .flex()
-                    .items_start()
-                    .pt(px(5.))
-                    .px(px(3.))
-                    .text_color(crate::theme::quiet(cx))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_size(px(13.4))
-                            .line_height(px(17.))
-                            .child(intro.to_owned()),
-                    ),
-            );
+            block = block.child(if note {
+                super::notice::note(intro, cx)
+            } else {
+                super::page::guide(intro, cx)
+            });
         }
         if self.model["status"].is_object() {
             let (icon, color) =
@@ -237,7 +339,9 @@ impl List {
                     .aria_label(self.model["status"]["text"].as_str().unwrap_or_default().to_owned())
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(px(SPACE_SM))
+                    .text_size(px(FONT_BODY))
+                    .line_height(px(LINE_BODY))
                     .text_color(color)
                     .child(
                         gpui_kit::component::Icon::empty()
@@ -253,9 +357,80 @@ impl List {
     pub fn draw_intro_outside(&mut self) {
         self.lead_outside = true;
     }
+    /// The page this list is on: its title, and whether the list is its only section. The page sets it
+    /// on every frame, before the list draws.
+    pub fn set_page(&mut self, title: String, single: bool, lead: bool) {
+        if self.page_title != title {
+            self.page_title = title;
+        }
+        self.page_single = single;
+        self.page_lead = lead;
+        self.lead_outside = false;
+    }
+    /// Whether the list's title is the page's own (the page's header stands for it).
+    fn is_page_title(&self) -> bool {
+        let title = self.model["title"].as_str().unwrap_or_default();
+        !title.is_empty() && title.to_lowercase() == self.page_title.to_lowercase()
+    }
+    /// Whether the list draws its own heading (H2). Only a page with more than one section has headings,
+    /// never one that repeats the page's title, except a connection's, which carries its state.
+    fn heading_visible(&self) -> bool {
+        let guide = self.model["guide"].as_str().unwrap_or_default();
+        let title = self.model["title"].as_str().unwrap_or_default();
+        let wanted = !title.is_empty()
+            && ((!guide.is_empty() && self.model["titleless"] != true) || self.model["showTitle"] == true);
+        let same = self.is_page_title();
+        let carries_state = self.model["headerAdd"] == true && self.has_connection();
+        wanted && !same && (!self.page_single || carries_state)
+    }
+    /// The page-wide buttons: Add when the model asks for it in the header, else the top buttons, when
+    /// nothing else (search, filter, tabs) shares their line.
+    fn header_add(&self) -> bool {
+        self.model["headerAdd"] == true
+    }
+    fn top_in_header(&self, cx: &App) -> bool {
+        !self.header_add()
+            && self.search.is_none()
+            && self.model["filter"]["options"].as_array().is_none_or(Vec::is_empty)
+            && self.show.is_none()
+            && !self.empty_state(cx)
+            && !self.top_actions().is_empty()
+    }
+    /// Whether the page's header carries this list's page-wide buttons: it is the page's only section
+    /// and has no heading of its own to hold them.
+    pub fn hosts_actions(&self, cx: &App) -> bool {
+        (self.page_single || self.page_lead || self.is_page_title())
+            && !self.heading_visible()
+            && !self.empty_state(cx)
+            && (self.header_add() || self.top_in_header(cx))
+    }
+    /// The page-wide buttons as their own view, for the page's header.
+    pub fn header_actions_view(&self) -> Entity<HeaderActions> {
+        self.actions_view.clone()
+    }
     pub fn set_show(&mut self, tabs: Option<Value>, cx: &mut Context<Self>) {
         if self.show != tabs {
             self.show = tabs;
+            cx.notify();
+        }
+    }
+    /// Sizes the table's columns to `width` before layout so the first frame and resizes match it.
+    pub fn set_fit(&mut self, width: f32, cx: &mut Context<Self>) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        let target = if self.model["detailSide"] == true && width >= 600. {
+            260.
+        } else {
+            width
+        };
+        if target > 1. && (target - table.read(cx).delegate().fit).abs() > 1. {
+            table.update(cx, |table, cx| {
+                table.delegate_mut().fit = target;
+                table.delegate_mut().layout();
+                table.refresh(cx);
+                cx.notify();
+            });
             cx.notify();
         }
     }
@@ -274,6 +449,10 @@ impl List {
         }
         self.model = model;
         self.refresh(cx);
+    }
+    /// Whether the list shows its empty state (what to do first) instead of a table.
+    fn empty_state(&self, cx: &App) -> bool {
+        !self.is_connections() && !self.is_cards() && self.truly_empty(cx)
     }
     fn truly_empty(&self, cx: &App) -> bool {
         self.model["rows"].as_array().is_some_and(Vec::is_empty)
@@ -296,6 +475,15 @@ impl List {
                         cell.as_str()
                             .or_else(|| cell["text"].as_str())
                             .is_some_and(|text| text.to_lowercase().contains(&query))
+                            || cell["platforms"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .any(|platform| platform.to_lowercase().contains(&query))
+                            || cell["brand"]
+                                .as_str()
+                                .is_some_and(|brand| brand.to_lowercase().contains(&query))
                     })
                 });
             }
@@ -319,6 +507,7 @@ impl List {
                 table.delegate_mut().model = model;
                 table.delegate_mut().layout();
                 table.refresh(cx);
+                cx.notify();
                 if let Some(row) = selection {
                     if table.selected_row() != Some(row) {
                         table.set_selected_row(row, cx);
@@ -409,7 +598,7 @@ impl List {
                         let question = question.to_owned();
                         let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
                         let danger = spec["danger"] == true;
-                        window.open_dialog(cx, move |dialog, _, cx| {
+                        window.open_dialog(cx, move |dialog, window, cx| {
                             let request = request.clone();
                             let confirm =
                                 Button::new("confirm-action")
@@ -425,7 +614,7 @@ impl List {
                                 .aria_label(label.clone())
                                 .flex()
                                 .justify_end()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .child(
                                     Button::new("cancel-action")
                                         .label(tr("dialogs.cancel"))
@@ -433,7 +622,7 @@ impl List {
                                 )
                                 .child(if danger { confirm.danger() } else { confirm });
                             let footer = crate::controls::dialog::footer(None, buttons, cx);
-                            crate::controls::dialog::shell(dialog, label.clone(), 448., cx)
+                            crate::controls::dialog::shell(dialog, label.clone(), 448., window, cx)
                                 .child(crate::controls::dialog::body(question.clone()))
                                 .footer(footer)
                         });
@@ -473,13 +662,13 @@ impl List {
                     .and_then(|row| row["name"].as_str())
                     .unwrap_or_default();
                 let confirm_label = tr("btn.delete_named").replace("{name}", name);
-                window.open_dialog(cx, move |dialog, _, cx| {
+                window.open_dialog(cx, move |dialog, window, cx| {
                     let kind = kind.clone(); let id = id.clone(); let route = route.clone();
-                    let buttons = div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
+                    let buttons = div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap(px(SPACE_SM))
                         .child(Button::new("cancel-delete").label(tr("dialogs.cancel")).on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)))
                         .child(Button::new("confirm-delete").danger().label(tr("btn.delete")).accessibility_label(confirm_label.clone()).on_click(move |_, window, cx| { send(json!({"request": "StreamerzDelete", "what": kind, "itemId": id, "id": format!("{route}:delete")})); window.close_dialog(cx); }));
                     let footer = crate::controls::dialog::footer(None, buttons, cx);
-                    crate::controls::dialog::shell(dialog, tr("btn.delete"), 448., cx)
+                    crate::controls::dialog::shell(dialog, tr("btn.delete"), 448., window, cx)
                         .child(crate::controls::dialog::body(question.clone()))
                         .footer(footer)
                 });
@@ -488,22 +677,22 @@ impl List {
     }
     /// Returns whether the page should query the core again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if value["status"] == "error" {
-            let error = value["error"].as_str().unwrap_or_default().to_owned();
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             if matches!(operation, "save" | "json") {
                 if let Some(form) = &self.form {
                     form.update(cx, |form, cx| {
                         form.pending = false;
-                        form.error = error;
+                        form.error = Some(err);
                         cx.notify();
                     });
                 }
             } else {
-                self.error = error;
+                self.error = Some(err);
             }
             cx.notify();
             return false;
         }
+        self.error = None;
         if let (Some(rest), Some(inline)) = (operation.strip_prefix("inline:"), self.inline.clone()) {
             return inline.update(cx, |inline, cx| inline.apply(rest, value, window, cx));
         }
@@ -524,7 +713,7 @@ impl List {
                 let card = cx.new(|_| Card::new(value["card"].clone(), self.route.clone()));
                 self.card = Some(card.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, _| {
+                window.open_dialog(cx, move |dialog, window, _| {
                     let owner = owner.clone();
                     dialog
                         .centered()
@@ -534,7 +723,7 @@ impl List {
                         .pb(px(0.))
                         .pl(px(0.))
                         .pr(px(0.))
-                        .width(px(520.))
+                        .width(px(crate::controls::dialog::fit_width(520., window)))
                         .child(card.clone())
                         .on_cancel(move |_, _, cx| {
                             let _ = owner.update(cx, |list, _| list.card = None);
@@ -565,7 +754,13 @@ impl List {
             "dialog-view" => {
                 let model = value["tables"][0].clone();
                 let title = model["title"].as_str().unwrap_or_default().to_owned();
-                let nested = cx.new(|cx| List::new(model, format!("{}:dlist", self.route), window, cx));
+                let width = model["dialogWidth"].as_f64().unwrap_or(560.) as f32;
+                let nested = cx.new(|cx| {
+                    let mut list = List::new(model, format!("{}:dlist", self.route), window, cx);
+                    let fit = crate::controls::dialog::fit_width(width, window) - 2. * crate::theme::SPACE_LG - 2.;
+                    list.set_fit(fit, cx);
+                    list
+                });
                 self._subscriptions.push(cx.subscribe_in(
                     &nested,
                     window,
@@ -576,10 +771,18 @@ impl List {
                 ));
                 self.dialog_list = Some(nested.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, cx| {
+                window.open_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone();
-                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
-                        .child(crate::controls::dialog::body(div().h(px(360.)).child(nested.clone())))
+                    let max_body = crate::controls::dialog::fit_height(180., 180., 680., window);
+                    crate::controls::dialog::shell(dialog, title.clone(), width, window, cx)
+                        .child(crate::controls::dialog::body(
+                            div()
+                                .id("dialog-list")
+                                .w_full()
+                                .max_h(px(max_body))
+                                .overflow_y_scroll()
+                                .child(nested.clone()),
+                        ))
                         .footer(crate::controls::dialog::close_footer(cx))
                         .on_cancel(move |_, _, cx| {
                             let _ = owner.update(cx, |list, _| list.dialog_list = None);
@@ -606,8 +809,8 @@ impl List {
                 let form = cx.new(|cx| Form::new(value, route, window, cx));
                 self.form = Some(form.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, cx| {
-                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
                         .child(crate::controls::dialog::body(form.clone()))
                         .footer(form.read(cx).buttons_view())
                         .on_cancel({
@@ -672,16 +875,19 @@ impl List {
     }
     /// The buttons of the line above the list, at the right of the search. They show their words
     /// (one marked `iconOnly` never does) and fold to icons together when the line is short.
-    fn top_buttons(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Button> {
+    fn top_actions(&self) -> Vec<Action> {
         let header_add = self.model["headerAdd"] == true;
-        let actions: Vec<Action> = Action::base_actions(&self.model)
+        Action::base_actions(&self.model)
             .into_iter()
             .filter(|action| {
                 self.on_top(*action)
                     && !(header_add && matches!(action, Action::Add))
                     && (!self.hide_disabled(*action) || action.enabled(&self.model, None))
             })
-            .collect();
+            .collect()
+    }
+    fn top_buttons(&self, reserved: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<Button> {
+        let actions = self.top_actions();
         let icon_only = |action: Action| matches!(action, Action::Custom(index) if self.model["actions"][index]["iconOnly"] == true);
         let wanted: f32 = actions
             .iter()
@@ -698,7 +904,7 @@ impl List {
             room
         } else {
             f32::from(window.viewport_size().width) - 200.
-        };
+        } - reserved;
         // The search keeps room to type in.
         let fold = wanted + 8. * actions.len() as f32 + 180. > room;
         actions
@@ -713,7 +919,7 @@ impl List {
                 let tip = action.tip(&self.model);
                 Button::new(SharedString::from(format!("top-{}", action.id(&self.model))))
                     .small()
-                    .h(px(26.))
+                    .h(px(CONTROL_HEIGHT))
                     .flex_shrink_0()
                     .when(words, |button| button.label(label.clone()))
                     .when(!words, |button| {
@@ -727,6 +933,80 @@ impl List {
                     .on_click(cx.listener(move |list, _, window, cx| list.action(action, None, window, cx)))
             })
             .collect()
+    }
+    /// The buttons at the right of a heading or of the page's header: Add (with Connect all on a
+    /// connection list) when the model puts it there, else the top buttons given.
+    fn heading_actions(&self, header_add: bool, top: Vec<Button>, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let gap = px(crate::theme::SPACE_SM);
+        let size = px(crate::theme::CONTROL_HEIGHT);
+        if header_add {
+            let add_label = Action::Add.label(&self.model);
+            if self.is_connections() || self.is_cards() {
+                let mut actions = div().flex().items_center().gap(gap).flex_shrink_0();
+                if self.is_connections() && self.model["rows"].as_array().map_or(0, Vec::len) > 1 {
+                    let can_connect = self.model["connection"]["canConnect"] == true;
+                    let conn_icon = if can_connect { "plug" } else { "unplug" };
+                    let conn_label = tr(if can_connect {
+                        "btn.connect_all"
+                    } else {
+                        "btn.disconnect_all"
+                    });
+                    let conn_color = if can_connect {
+                        crate::theme::quiet(cx)
+                    } else {
+                        super::health::appearance("up", cx).1
+                    };
+                    actions = actions.child(
+                        Button::new("header-connect-all")
+                            .small()
+                            .w(size)
+                            .h(size)
+                            .icon(
+                                Icon::empty()
+                                    .path(format!("icons/{conn_icon}.svg"))
+                                    .size(px(13.))
+                                    .text_color(conn_color),
+                            )
+                            .tooltip(conn_label.to_owned())
+                            .accessibility_label(conn_label)
+                            .on_click(
+                                cx.listener(|list, _, window, cx| list.action(Action::Connect, None, window, cx)),
+                            ),
+                    );
+                }
+                actions = actions.child(
+                    Button::new("header-add")
+                        .small()
+                        .w(size)
+                        .h(size)
+                        .icon(Icon::empty().path("icons/plus.svg").size(px(13.)))
+                        .tooltip(add_label.clone())
+                        .accessibility_label(add_label)
+                        .on_click(cx.listener(|list, _, window, cx| list.action(Action::Add, None, window, cx))),
+                );
+                return Some(actions.into_any_element());
+            }
+            return Some(
+                Button::new("header-add")
+                    .small()
+                    .h(size)
+                    .flex_shrink_0()
+                    .label(add_label.clone())
+                    .accessibility_label(add_label)
+                    .icon(Action::Add.icon(&self.model))
+                    .on_click(cx.listener(|list, _, window, cx| list.action(Action::Add, None, window, cx)))
+                    .into_any_element(),
+            );
+        }
+        (!top.is_empty()).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(gap)
+                .flex_shrink_0()
+                .children(top)
+                .into_any_element()
+        })
     }
     /// The grid of buttons under the table (a page may draw it later, after another section).
     pub fn button_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
@@ -742,7 +1022,7 @@ impl List {
             .filter(|action| !self.on_top(*action))
             .collect();
         let per_row = self.model["perRow"].as_u64().unwrap_or(4).max(1) as usize;
-        let mut buttons = div().flex().flex_col().gap(px(6.)).w_full().mt(px(2.));
+        let mut buttons = div().flex().flex_col().gap(px(SPACE_SM)).w_full();
         if self.model["headerAdd"] == true && self.has_connection() {
             if self.model["rows"].as_array().is_none_or(Vec::is_empty) {
                 return None;
@@ -754,7 +1034,7 @@ impl List {
                 f32::from(window.viewport_size().width) - 200.
             };
             let fold = room < 360.;
-            let mut line = div().flex().flex_wrap().items_center().gap_2().w_full();
+            let mut line = div().flex().flex_wrap().items_center().gap(px(SPACE_SM)).w_full();
             for action in actions.iter().copied() {
                 if matches!(action, Action::Delete) {
                     line = line.child(div().flex_1());
@@ -763,7 +1043,7 @@ impl List {
                 line = line.child(
                     Button::new(SharedString::from(format!("conn-{}", action.id(&self.model))))
                         .small()
-                        .h(px(26.))
+                        .h(px(CONTROL_HEIGHT))
                         .when(!fold, |button| button.label(label.clone()))
                         .when(fold, |button| button.w(px(34.)).tooltip(label.clone()))
                         .accessibility_label(label)
@@ -782,7 +1062,7 @@ impl List {
                 .filter(|action| !self.hide_disabled(*action) || action.enabled(&self.model, selected))
                 .collect();
             // More buttons than fit on a narrow window go on a second line instead of past its edge.
-            let mut line = div().flex().flex_wrap().items_center().gap(px(6.)).w_full();
+            let mut line = div().flex().flex_wrap().items_center().gap(px(SPACE_SM)).w_full();
             let mut apart = false;
             for action in visible.iter().copied() {
                 let danger = matches!(action, Action::Delete)
@@ -796,7 +1076,7 @@ impl List {
                     Button::new(SharedString::from(format!("strip-{}", action.id(&self.model))))
                         .small()
                         .w(px(40.))
-                        .h(px(28.))
+                        .h(px(CONTROL_HEIGHT))
                         .flex_shrink_0()
                         .tooltip(action.tip(&self.model).unwrap_or_else(|| label.clone()))
                         .accessibility_label(label)
@@ -808,11 +1088,19 @@ impl List {
             return (!visible.is_empty()).then_some(buttons.child(line));
         }
         // Buttons fold to their icons when a label no longer fits (docs/UI.md): all of them together.
-        let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-        let room = if room > 0. {
-            room
+        let room = if self.model["detailSide"] == true {
+            if let Some(dw) = self.model["dialogWidth"].as_f64() {
+                super::dialog::fit_width(dw as f32, window) - 2. * crate::theme::SPACE_LG
+            } else {
+                f32::from(window.viewport_size().width) - 200.
+            }
         } else {
-            f32::from(window.viewport_size().width) - 200.
+            let fit = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
+            if fit > 0. {
+                fit
+            } else {
+                f32::from(window.viewport_size().width) - 200.
+            }
         };
         let fold = actions.chunks(per_row).any(|chunk| {
             let wanted: f32 = chunk.iter().map(|action| label_width(&action.label(&self.model))).sum();
@@ -821,7 +1109,7 @@ impl List {
         // Folded to icons, they all fit on one line.
         let per_row = if fold { actions.len().max(1) } else { per_row };
         for chunk in actions.chunks(per_row) {
-            let mut line = div().flex().gap_2().w_full();
+            let mut line = div().flex().gap(px(SPACE_SM)).w_full();
             for action in chunk.iter().copied() {
                 let id = match action {
                     Action::Custom(index) => SharedString::from(format!("custom-{index}")),
@@ -832,7 +1120,7 @@ impl List {
                     div().flex_1().min_w_0().child(
                         Button::new(id)
                             .small()
-                            .h(px(28.))
+                            .h(px(CONTROL_HEIGHT))
                             .w_full()
                             .when(!fold, |button| button.label(action.label(&self.model)))
                             .when_some(
@@ -874,67 +1162,147 @@ impl Render for ButtonRows {
         }
     }
 }
+/// A list's page-wide buttons, drawn in the page's header.
+pub struct HeaderActions(WeakEntity<List>);
+impl Render for HeaderActions {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = self.0.upgrade();
+        match list.and_then(|list| {
+            list.update(cx, |list, cx| {
+                let top = if list.header_add() {
+                    Vec::new()
+                } else {
+                    list.top_buttons(0., window, cx)
+                };
+                list.heading_actions(list.header_add(), top, cx)
+            })
+        }) {
+            Some(actions) => actions,
+            None => div().into_any_element(),
+        }
+    }
+}
+impl List {
+    /// What pressing `F2` triggers on the selected row: an explicit `rename` action first, or `Edit`.
+    fn f2_action(shown: &Value, row: usize) -> Option<Action> {
+        let actions = Action::base_actions(shown);
+        let rename = actions
+            .iter()
+            .copied()
+            .find(|action| matches!(action, Action::Custom(index) if shown["actions"][*index]["id"] == "rename"))
+            .filter(|action| action.enabled(shown, Some(row)));
+        rename.or_else(|| {
+            actions
+                .into_iter()
+                .find(|action| matches!(action, Action::Edit))
+                .filter(|action| action.enabled(shown, Some(row)))
+        })
+    }
+}
 impl Render for List {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Columns follow the width the table really has (known after its first layout).
-        if let Some(table) = &self.table {
-            let seen = f32::from(table.read(cx).horizontal_scroll_handle.bounds().size.width);
-            if seen > 1. && (seen - table.read(cx).delegate().fit).abs() > 1. {
-                table.update(cx, |table, cx| {
-                    table.delegate_mut().fit = seen;
-                    table.delegate_mut().layout();
-                    table.refresh(cx);
-                });
-            }
-        }
+        let hugs = self.hugs();
         let mut body = div()
             .w_full()
-            .when(!self.is_connections() && !self.is_cards(), |el| el.h_full())
+            .when(!self.is_connections() && !self.is_cards() && !hugs, |el| el.h_full())
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .pt(px(2.));
+            .gap(px(SPACE_SM))
+            .on_key_down(cx.listener(|list, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key != "f2"
+                    || event.keystroke.modifiers.control
+                    || event.keystroke.modifiers.alt
+                    || event.keystroke.modifiers.platform
+                    || window.has_active_dialog(cx)
+                {
+                    return;
+                }
+                let typing = list
+                    .search
+                    .as_ref()
+                    .is_some_and(|search| search.read(cx).focus_handle(cx).contains_focused(window, cx));
+                if typing || list.selected_id.is_empty() {
+                    return;
+                }
+                let shown = match &list.table {
+                    Some(table) => table.read(cx).delegate().model.clone(),
+                    None => list.model.clone(),
+                };
+                let Some(row) = shown["rows"]
+                    .as_array()
+                    .and_then(|rows| rows.iter().position(|row| row["id"] == list.selected_id))
+                else {
+                    return;
+                };
+                if let Some(action) = Self::f2_action(&shown, row) {
+                    list.action(action, Some(row), window, cx);
+                    cx.stop_propagation();
+                }
+            }));
+        let mut stack = Stack::new();
         let guide = self.model["guide"].as_str().unwrap_or_default();
-        // A page's introduction and its state line, above the first table.
-        if !self.lead_outside {
-            if let Some(lead) = self.intro_block(cx) {
-                body = body.child(lead);
-            }
-        }
         let options = self.model["filter"]["options"].as_array().cloned().unwrap_or_default();
-        let truly_empty = !self.is_connections() && !self.is_cards() && self.truly_empty(cx);
+        let truly_empty = self.empty_state(cx);
+        // The "Show" bar goes on the toolbar's line when it fits beside what else is there.
+        let reserved = self.show.as_ref().map_or(0., |tabs| {
+            let table_width = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
+            let room = if table_width > 0. {
+                table_width
+            } else {
+                f32::from(window.viewport_size().width) - 200.
+            };
+            let wanted = super::tabs::inline_width(tabs) + SPACE_SM;
+            let buttons = if truly_empty { 0 } else { self.top_actions().len() };
+            let others =
+                if self.search.is_some() { 180. } else { 0. } + (buttons + options.len()) as f32 * (34. + SPACE_SM);
+            if wanted + others <= room {
+                wanted
+            } else {
+                0.
+            }
+        });
         let mut top = if truly_empty {
             Vec::new()
         } else {
-            self.top_buttons(window, cx)
+            self.top_buttons(reserved, window, cx)
         };
-        let titled = !self.model["title"].as_str().unwrap_or_default().is_empty();
-        let show_heading =
-            titled && ((!guide.is_empty() && self.model["titleless"] != true) || self.model["showTitle"] == true);
-        let header_add = self.model["headerAdd"] == true;
+        let show_heading = self.heading_visible();
+        let header_add = self.header_add();
         let header_top = show_heading
             && !header_add
             && self.search.is_none()
             && options.is_empty()
             && self.show.is_none()
             && !top.is_empty();
+        // The page's header carries these buttons instead of the toolbar.
+        if self.hosts_actions(cx) && !header_add {
+            top.clear();
+        }
         if show_heading {
             let row_count = self.model["rows"].as_array().map_or(0, Vec::len);
             let has_rows = row_count > 0;
             let mut heading = div()
+                .id("list-heading")
+                .test_support()
+                .role(Role::Heading)
+                .aria_label(self.model["title"].as_str().unwrap_or_default().to_owned())
                 .flex()
                 .items_center()
-                .gap_2()
-                .min_h(px(if header_add || header_top { 28. } else { 24. }))
-                .pl(px(2.))
+                .gap(px(SPACE_SM))
+                .min_h(px(if header_add || header_top {
+                    CONTROL_HEIGHT
+                } else {
+                    crate::theme::LINE_SECTION_TITLE
+                }))
                 .when(header_add || header_top, |row| row.justify_between().w_full());
             let mut left = div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(px(crate::theme::SPACE_SM))
                 .min_w_0()
                 .font_weight(FontWeight::BOLD)
-                .text_size(px(15.))
+                .text_size(px(crate::theme::FONT_SECTION_TITLE))
+                .line_height(px(crate::theme::LINE_SECTION_TITLE))
                 .text_color(crate::theme::strong(cx))
                 .when_some(self.model["brand"].as_str(), |title, brand| {
                     title.child(super::body::brand_logo("title-brand", brand, px(16.), cx))
@@ -954,14 +1322,15 @@ impl Render for List {
                     div()
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .px(px(7.))
-                        .py(px(2.))
+                        .gap(px(SPACE_XS))
+                        .px(px(SPACE_SM))
+                        .py(px(SPACE_XS))
                         .rounded(px(99.))
                         .bg(cx.theme().sidebar)
                         .border_1()
                         .border_color(cx.theme().border)
-                        .text_size(px(12.))
+                        .text_size(px(FONT_CAPTION))
+                        .line_height(px(LINE_CAPTION))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(color)
                         .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(12.)))
@@ -969,101 +1338,40 @@ impl Render for List {
                 );
             }
             heading = heading.child(left);
-            if header_add {
-                let add_label = Action::Add.label(&self.model);
-                if self.is_connections() || self.is_cards() {
-                    let mut actions = div().flex().items_center().gap(px(6.)).flex_shrink_0();
-                    if self.is_connections() && row_count > 1 {
-                        let can_connect = self.model["connection"]["canConnect"] == true;
-                        let conn_icon = if can_connect { "plug" } else { "unplug" };
-                        let conn_label = tr(if can_connect {
-                            "btn.connect_all"
-                        } else {
-                            "btn.disconnect_all"
-                        });
-                        let conn_color = if can_connect {
-                            crate::theme::quiet(cx)
-                        } else {
-                            super::health::appearance("up", cx).1
-                        };
-                        actions = actions.child(
-                            Button::new("header-connect-all")
-                                .small()
-                                .w(px(26.))
-                                .h(px(24.))
-                                .icon(
-                                    Icon::empty()
-                                        .path(format!("icons/{conn_icon}.svg"))
-                                        .size(px(13.))
-                                        .text_color(conn_color),
-                                )
-                                .tooltip(conn_label.to_owned())
-                                .accessibility_label(conn_label)
-                                .on_click(
-                                    cx.listener(|list, _, window, cx| list.action(Action::Connect, None, window, cx)),
-                                ),
-                        );
-                    }
-                    actions = actions.child(
-                        Button::new("header-add")
-                            .small()
-                            .w(px(26.))
-                            .h(px(24.))
-                            .icon(Icon::empty().path("icons/plus.svg").size(px(13.)))
-                            .tooltip(add_label.clone())
-                            .accessibility_label(add_label)
-                            .on_click(cx.listener(|list, _, window, cx| list.action(Action::Add, None, window, cx))),
-                    );
-                    heading = heading.child(actions);
-                } else {
-                    heading = heading.child(
-                        Button::new("header-add")
-                            .small()
-                            .h(px(26.))
-                            .flex_shrink_0()
-                            .label(add_label.clone())
-                            .accessibility_label(add_label)
-                            .icon(Action::Add.icon(&self.model))
-                            .on_click(cx.listener(|list, _, window, cx| list.action(Action::Add, None, window, cx))),
-                    );
-                }
-            } else if header_top {
-                heading = heading.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .flex_shrink_0()
-                        .children(std::mem::take(&mut top)),
-                );
+            if let Some(actions) = self.heading_actions(header_add, std::mem::take(&mut top), cx) {
+                heading = heading.child(actions);
             }
-            body = body.child(heading);
+            // A section's own note goes straight under its heading, 4px; with none, 8px to its content.
+            let has_note = (!self.lead_outside && self.intro_with(true, cx).is_some())
+                || (!guide.is_empty() && self.model["guideBelow"] != true);
+            stack.add(heading, if has_note { SPACE_XS } else { SPACE_SM });
+        }
+        // A page's introduction and its state line, under its section heading when not hoisted above sections.
+        // The page's own guide has 12 under it; a section's note, 8.
+        let after_guide = if show_heading { SPACE_SM } else { SPACE_MD };
+        if !self.lead_outside {
+            if let Some(lead) = self.intro_with(show_heading, cx) {
+                stack.add(lead, after_guide);
+            }
         }
         let guide_below = self.model["guideBelow"] == true;
         if !guide.is_empty() && !guide_below {
-            body = body.child(
-                div()
-                    .min_h(px(36.))
-                    .flex()
-                    .items_center()
-                    .px(px(3.))
-                    .text_color(crate::theme::quiet(cx))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_size(px(13.4))
-                            .line_height(px(19.))
-                            .child(guide.to_owned()),
-                    ),
+            stack.add(
+                if show_heading {
+                    super::notice::note(guide, cx)
+                } else {
+                    super::page::guide(guide, cx)
+                },
+                after_guide,
             );
         }
-        if !self.error.is_empty() {
-            body = body.child(super::notice::error(&self.error, cx));
+        if let Some(err) = &self.error {
+            stack.add(super::notice::error(err, cx), SPACE_SM);
         }
         if let (true, Some(inline)) = (self.is_settings(), self.inline.clone()) {
-            body = body.child(inline);
+            stack.add(inline, SPACE_SM);
         } else if self.is_settings() {
-            body = body.gap_1();
+            body = body.child(stack.column());
             for (index, row) in self.model["rows"].as_array().into_iter().flatten().enumerate() {
                 let health_str = row["health"].as_str().unwrap_or("off");
                 let name = row["name"].as_str().unwrap_or_default().to_owned();
@@ -1087,24 +1395,24 @@ impl Render for List {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .h(px(32.))
-                        .px(px(10.))
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(SPACE_MD))
                         .rounded(px(6.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(crate::theme::row_surface(cx))
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
+                        .border_color(crate::theme::row_border(cx))
                         .hover(|style| style.bg(cx.theme().muted))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.))
+                                .gap(px(SPACE_SM))
                                 .min_w_0()
                                 .flex_1()
                                 .child(
                                     Icon::empty()
                                         .path(format!("icons/{proto_icon}.svg"))
-                                        .size(px(15.))
+                                        .size(px(14.))
                                         .text_color(if enabled {
                                             cx.theme().foreground
                                         } else {
@@ -1113,7 +1421,7 @@ impl Render for List {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(13.))
+                                        .text_size(px(FONT_BODY))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(if enabled {
                                             cx.theme().foreground
@@ -1125,9 +1433,9 @@ impl Render for List {
                                 .when(!location.is_empty(), |row_el| {
                                     row_el.child(
                                         div()
-                                            .text_size(px(12.5))
+                                            .text_size(px(FONT_CAPTION))
                                             .text_color(if enabled {
-                                                rgb(if cx.theme().is_dark() { 0x93c5fd } else { 0x1d4ed8 }).into()
+                                                crate::theme::link_color(cx)
                                             } else {
                                                 crate::theme::quiet(cx)
                                             })
@@ -1135,33 +1443,24 @@ impl Render for List {
                                     )
                                 })
                                 .when(has_auth, |row_el| {
-                                    row_el.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(3.))
-                                            .px(px(5.))
-                                            .py(px(1.))
-                                            .rounded(px(3.))
-                                            .bg(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                                            .text_color(crate::theme::quiet(cx))
-                                            .child(Icon::empty().path("icons/lock.svg").size(px(11.)))
-                                            .child(div().text_size(px(11.)).child(
-                                                tr("lists.servers.password_tag").trim_start_matches(", ").to_owned(),
-                                            )),
-                                    )
+                                    row_el.child(pill(
+                                        ("setting-secret", index),
+                                        Some("lock"),
+                                        Some(tr("lists.servers.password_tag").trim_start_matches(", ").to_owned()),
+                                        cx,
+                                    ))
                                 }),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(px(SPACE_SM))
                                 .child(
                                     Button::new(("toggle-setting", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .text_color(status_color)
                                         .icon(
                                             Icon::empty()
@@ -1182,8 +1481,8 @@ impl Render for List {
                                 .child(
                                     Button::new(("edit-setting", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .icon(Icon::empty().path("icons/pencil.svg").size(px(13.)))
                                         .tooltip(tr("btn.edit"))
                                         .accessibility_label(format!("{}: {name}", tr("btn.edit")))
@@ -1217,21 +1516,21 @@ impl Render for List {
             }
             return body.into_any_element();
         } else if self.is_connections() {
-            body = body.gap_1();
+            body = body.child(stack.column());
             let rows = self.model["rows"].as_array().cloned().unwrap_or_default();
             if rows.is_empty() {
                 body = body.child(
                     div()
-                        .h(px(36.))
-                        .px(px(10.))
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(SPACE_MD))
                         .rounded(px(6.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(crate::theme::row_surface(cx))
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
+                        .border_color(crate::theme::row_border(cx))
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .text_size(px(13.))
+                        .gap(px(SPACE_SM))
+                        .text_size(px(FONT_BODY))
                         .text_color(crate::theme::quiet(cx))
                         .child(Icon::empty().path("icons/plug.svg").size(px(14.)))
                         .child(self.model["empty"].as_str().unwrap_or_default().to_owned()),
@@ -1292,20 +1591,20 @@ impl Render for List {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap_2()
-                        .h(px(34.))
-                        .px(px(10.))
+                        .gap(px(SPACE_SM))
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(SPACE_MD))
                         .rounded(px(6.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(crate::theme::row_surface(cx))
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                        .hover(|style| style.bg(rgb(if cx.theme().is_dark() { 0x222226 } else { 0xebebee })))
+                        .border_color(crate::theme::row_border(cx))
+                        .hover(|style| style.bg(crate::theme::row_surface_hover(cx)))
                         .child(
                             div()
                                 .id(("conn-info", index))
                                 .flex()
                                 .items_center()
-                                .gap(px(10.))
+                                .gap(px(SPACE_SM))
                                 .min_w_0()
                                 .flex_1()
                                 .on_click(cx.listener(move |list, event: &ClickEvent, window, cx| {
@@ -1313,14 +1612,14 @@ impl Render for List {
                                         list.action(Action::Edit, Some(index), window, cx);
                                     }
                                 }))
-                                .child(super::body::brand_logo(("conn-brand", index), &brand, px(15.), cx))
+                                .child(super::body::brand_logo(("conn-brand", index), &brand, px(16.), cx))
                                 .child(
                                     div()
                                         .min_w_0()
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .text_ellipsis()
-                                        .text_size(px(13.))
+                                        .text_size(px(FONT_BODY))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(cx.theme().foreground)
                                         .child(name.clone()),
@@ -1332,9 +1631,9 @@ impl Render for List {
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_ellipsis()
-                                            .text_size(px(12.5))
+                                            .text_size(px(FONT_CAPTION))
                                             .text_color(if connected {
-                                                rgb(if cx.theme().is_dark() { 0x93c5fd } else { 0x1d4ed8 }).into()
+                                                crate::theme::link_color(cx)
                                             } else {
                                                 crate::theme::quiet(cx)
                                             })
@@ -1342,79 +1641,49 @@ impl Render for List {
                                     )
                                 })
                                 .when(secret, |row_el| {
-                                    row_el.child(
-                                        div()
-                                            .id(("conn-secret", index))
-                                            .flex()
-                                            .items_center()
-                                            .flex_shrink_0()
-                                            .px(px(5.))
-                                            .py(px(2.))
-                                            .rounded(px(3.))
-                                            .bg(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                                            .text_color(crate::theme::quiet(cx))
-                                            .child(Icon::empty().path("icons/lock.svg").size(px(11.)))
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(secret_tip.clone())
-                                                    .build(window, cx)
-                                            }),
-                                    )
+                                    row_el.child(pill(("conn-secret", index), Some("lock"), None, cx).tooltip(
+                                        move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(secret_tip.clone())
+                                                .build(window, cx)
+                                        },
+                                    ))
                                 })
                                 .when(reconnect, |row_el| {
                                     let tip = retry_tip.clone();
                                     row_el.child(
-                                        div()
-                                            .id(("conn-retry", index))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(3.))
-                                            .flex_shrink_0()
-                                            .px(px(5.))
-                                            .py(px(1.))
-                                            .rounded(px(3.))
-                                            .bg(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                                            .text_color(crate::theme::quiet(cx))
-                                            .child(Icon::empty().path("icons/refresh-cw.svg").size(px(11.)))
-                                            .child(div().text_size(px(11.)).child(format!("{retry_interval}s")))
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                                    .build(window, cx)
-                                            }),
+                                        pill(
+                                            ("conn-retry", index),
+                                            Some("refresh-cw"),
+                                            Some(format!("{retry_interval}s")),
+                                            cx,
+                                        )
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                        }),
                                     )
                                 })
                                 .when(is_default, |row_el| {
-                                    row_el.child(
-                                        div()
-                                            .id(("conn-default", index))
-                                            .flex()
-                                            .items_center()
-                                            .flex_shrink_0()
-                                            .px(px(5.))
-                                            .py(px(2.))
-                                            .rounded(px(3.))
-                                            .bg(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                                            .text_color(crate::theme::quiet(cx))
-                                            .child(Icon::empty().path("icons/star-filled.svg").size(px(11.)))
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(
-                                                    tr("lists.default_badge").to_owned(),
-                                                )
-                                                .build(window, cx)
-                                            }),
-                                    )
+                                    row_el.child(pill(("conn-default", index), Some("star-filled"), None, cx).tooltip(
+                                        move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                tr("lists.default_badge").to_owned(),
+                                            )
+                                            .build(window, cx)
+                                        },
+                                    ))
                                 }),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(px(SPACE_SM))
                                 .flex_shrink_0()
                                 .child(
                                     Button::new(("conn-toggle", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .text_color(conn_color)
                                         .icon(
                                             Icon::empty()
@@ -1431,8 +1700,8 @@ impl Render for List {
                                 .child(
                                     Button::new(("conn-autostart", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .text_color(auto_color)
                                         .icon(
                                             Icon::empty()
@@ -1449,8 +1718,8 @@ impl Render for List {
                                 .child(
                                     Button::new(("conn-edit", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .icon(Icon::empty().path("icons/pencil.svg").size(px(13.)))
                                         .tooltip(tr("btn.edit"))
                                         .accessibility_label(format!("{}: {name}", tr("btn.edit")))
@@ -1461,8 +1730,8 @@ impl Render for List {
                                 .child(
                                     Button::new(("conn-delete", index))
                                         .small()
-                                        .w(px(26.))
-                                        .h(px(24.))
+                                        .w(px(DENSE_CONTROL_HEIGHT))
+                                        .h(px(DENSE_CONTROL_HEIGHT))
                                         .icon(
                                             Icon::empty()
                                                 .path("icons/trash-2.svg")
@@ -1521,7 +1790,7 @@ impl Render for List {
             }
             return body.into_any_element();
         } else if self.is_cards() {
-            body = body.gap_1();
+            body = body.child(stack.column());
             let rows = self.model["rows"].as_array().cloned().unwrap_or_default();
             if rows.is_empty() {
                 let empty_icon = self.model["icon"].as_str().unwrap_or("folder");
@@ -1530,16 +1799,16 @@ impl Render for List {
                 body = body.child(
                     div()
                         .id("cards-empty")
-                        .h(px(36.))
-                        .px(px(10.))
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(SPACE_MD))
                         .rounded(px(6.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(crate::theme::row_surface(cx))
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
+                        .border_color(crate::theme::row_border(cx))
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .text_size(px(13.))
+                        .gap(px(SPACE_SM))
+                        .text_size(px(FONT_BODY))
                         .text_color(crate::theme::quiet(cx))
                         .child(Icon::empty().path(format!("icons/{empty_icon}.svg")).size(px(14.)))
                         .child(self.model["empty"].as_str().unwrap_or_default().to_owned())
@@ -1604,7 +1873,7 @@ impl Render for List {
                     .id(("card-info", index))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(px(SPACE_SM))
                     .min_w_0()
                     .flex_1()
                     .on_click(cx.listener(move |list, event: &ClickEvent, window, cx| {
@@ -1622,7 +1891,7 @@ impl Render for List {
                         .child(
                             Icon::empty()
                                 .path(format!("icons/{h_icon}.svg"))
-                                .size(px(15.))
+                                .size(px(14.))
                                 .text_color(h_color),
                         );
                     if !health_tip.is_empty() {
@@ -1636,7 +1905,7 @@ impl Render for List {
                     info = info.child(
                         Icon::empty()
                             .path(format!("icons/{row_icon}.svg"))
-                            .size(px(15.))
+                            .size(px(14.))
                             .flex_shrink_0()
                             .text_color(if enabled {
                                 cx.theme().foreground
@@ -1653,8 +1922,8 @@ impl Render for List {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(FONT_BODY))
+                            .font_weight(FontWeight::BOLD)
                             .text_color(if enabled {
                                 cx.theme().foreground
                             } else {
@@ -1672,9 +1941,9 @@ impl Render for List {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .text_size(px(12.5))
+                                .text_size(px(FONT_CAPTION))
                                 .text_color(if enabled {
-                                    rgb(if cx.theme().is_dark() { 0x93c5fd } else { 0x1d4ed8 }).into()
+                                    crate::theme::link_color(cx)
                                 } else {
                                     crate::theme::quiet(cx)
                                 })
@@ -1691,32 +1960,21 @@ impl Render for List {
                     if b_icon.is_empty() && b_text.is_empty() {
                         continue;
                     }
-                    let mut pill = div()
-                        .id(("card-badge", index * 16 + b_idx))
-                        .flex()
-                        .items_center()
-                        .gap(px(3.))
-                        .flex_shrink_0()
-                        .px(px(5.))
-                        .py(px(if b_text.is_empty() { 2. } else { 1. }))
-                        .rounded(px(3.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                        .text_color(crate::theme::quiet(cx));
-                    if !b_icon.is_empty() {
-                        pill = pill.child(Icon::empty().path(format!("icons/{b_icon}.svg")).size(px(11.)));
-                    }
-                    if !b_text.is_empty() {
-                        pill = pill.child(div().text_size(px(11.)).child(b_text));
-                    }
+                    let mut tag = pill(
+                        ("card-badge", index * 16 + b_idx),
+                        (!b_icon.is_empty()).then_some(b_icon.as_str()),
+                        (!b_text.is_empty()).then_some(b_text),
+                        cx,
+                    );
                     if !b_tip.is_empty() {
                         let tip = b_tip.clone();
-                        pill = pill.tooltip(move |window, cx| {
+                        tag = tag.tooltip(move |window, cx| {
                             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                         });
                     }
-                    info = info.child(pill);
+                    info = info.child(tag);
                 }
-                let mut right = div().flex().items_center().gap(px(6.)).flex_shrink_0();
+                let mut right = div().flex().items_center().gap(px(SPACE_SM)).flex_shrink_0();
                 if switch_only {
                     right = right.child(
                         div()
@@ -1738,8 +1996,8 @@ impl Render for List {
                     right = right.child(
                         Button::new(("card-toggle", index))
                             .small()
-                            .w(px(26.))
-                            .h(px(24.))
+                            .w(px(DENSE_CONTROL_HEIGHT))
+                            .h(px(DENSE_CONTROL_HEIGHT))
                             .text_color(toggle_color)
                             .icon(
                                 Icon::empty()
@@ -1759,8 +2017,8 @@ impl Render for List {
                     right = right.child(
                         Button::new(("card-edit", index))
                             .small()
-                            .w(px(26.))
-                            .h(px(24.))
+                            .w(px(DENSE_CONTROL_HEIGHT))
+                            .h(px(DENSE_CONTROL_HEIGHT))
                             .icon(Icon::empty().path("icons/pencil.svg").size(px(13.)))
                             .tooltip(tr("btn.edit"))
                             .accessibility_label(tr("btn.edit"))
@@ -1774,8 +2032,8 @@ impl Render for List {
                     right = right.child(
                         Button::new(("card-delete", index))
                             .small()
-                            .w(px(26.))
-                            .h(px(24.))
+                            .w(px(DENSE_CONTROL_HEIGHT))
+                            .h(px(DENSE_CONTROL_HEIGHT))
                             .icon(
                                 Icon::empty()
                                     .path("icons/trash-2.svg")
@@ -1799,14 +2057,14 @@ impl Render for List {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap_2()
-                        .h(px(34.))
-                        .px(px(10.))
+                        .gap(px(SPACE_SM))
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(SPACE_MD))
                         .rounded(px(6.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(crate::theme::row_surface(cx))
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                        .hover(|style| style.bg(rgb(if cx.theme().is_dark() { 0x222226 } else { 0xebebee })))
+                        .border_color(crate::theme::row_border(cx))
+                        .hover(|style| style.bg(crate::theme::row_surface_hover(cx)))
                         .child(info)
                         .child(right)
                         .context_menu(move |menu, _, _| {
@@ -1828,22 +2086,34 @@ impl Render for List {
             return body.into_any_element();
         }
         if self.search.is_some() || !options.is_empty() || self.show.is_some() || !top.is_empty() {
-            let mut line = div().flex().items_center().gap_2().w_full();
+            let mut line = div()
+                .flex()
+                .items_center()
+                .gap(px(SPACE_SM))
+                .w_full()
+                .min_h(px(CONTROL_HEIGHT));
             if let Some(tabs) = self.show.clone() {
                 let owner = cx.entity().downgrade();
-                body = body.child(super::tabs::bar(&tabs, window, cx, move |id, _, cx| {
+                let tab_bar = super::tabs::bar(&tabs, window, cx, move |id, _, cx| {
                     let _ = owner.update(cx, |_, cx| cx.emit(ViewChange::Tab(id)));
-                }));
+                });
+                // The bar shares the toolbar's line when it fits beside the search (or the buttons), else
+                // it has a line of its own.
+                if reserved > 0. || (self.search.is_none() && top.is_empty() && options.is_empty()) {
+                    line = line.child(tab_bar);
+                } else {
+                    stack.add(tab_bar, SPACE_SM);
+                }
             }
             if let Some(search) = &self.search {
                 line = line.child(
-                    div().flex_1().min_w_0().h(px(26.)).child(
+                    div().flex_1().min_w_0().h(px(CONTROL_HEIGHT)).child(
                         Input::new(search)
                             .prefix(Icon::empty().path("icons/search.svg").size_3p5())
                             .small()
-                            .min_h(px(26.))
+                            .min_h(px(CONTROL_HEIGHT))
                             .bg(cx.theme().table)
-                            .text_size(px(13.))
+                            .text_size(px(FONT_BODY))
                             .aria_label(
                                 self.model["searchHint"]
                                     .as_str()
@@ -1859,6 +2129,7 @@ impl Render for List {
                 line = line.child(
                     Button::new(("filter", index))
                         .small()
+                        .h(px(CONTROL_HEIGHT))
                         .when(shown, |button| button.outline())
                         .when(!shown, |button| button.ghost().opacity(0.4))
                         .tooltip(label.clone())
@@ -1875,16 +2146,22 @@ impl Render for List {
             if self.search.is_none() && !top.is_empty() {
                 line = line.child(div().flex_1());
             }
-            body = body.child(line.children(top));
+            stack.add(line.children(top), SPACE_SM);
         }
+        let selected = self.model["rows"].as_array().and_then(|rows| {
+            rows.iter()
+                .position(|row| !self.selected_id.is_empty() && row["id"] == self.selected_id)
+        });
+        let detail_side = self.model["detailSide"] == true;
         if truly_empty {
             let actions = Action::base_actions(&self.model);
-            let mut choices = div().flex().flex_wrap().items_center().gap_2();
+            let mut choices = div().flex().flex_wrap().items_center().gap(px(SPACE_SM));
             for action in actions.into_iter().filter(|action| action.enabled(&self.model, None)) {
                 let label = action.label(&self.model);
                 choices = choices.child(
                     Button::new(SharedString::from(format!("empty-{}", action.id(&self.model))))
                         .small()
+                        .h(px(CONTROL_HEIGHT))
                         .icon(action.icon(&self.model))
                         .label(label)
                         .when(matches!(action, Action::Add)
@@ -1895,14 +2172,13 @@ impl Render for List {
             }
             let owner = cx.entity().downgrade();
             let model = self.model.clone();
-            body = body.child(
+            stack.add(
                 div()
                     .id("empty-list")
                     .test_support()
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .py_4()
+                    .gap(px(SPACE_SM))
                     .child(super::notice::info(
                         self.model["empty"].as_str().unwrap_or_default(),
                         cx,
@@ -1921,59 +2197,200 @@ impl Render for List {
                             )
                         })
                     }),
+                SPACE_SM,
             );
         } else if let Some(table) = &self.table {
-            body = body.child(
-                // The header is a quiet line above a rounded box (drawn over the rows, no fill).
-                div()
-                    .relative()
-                    .when_some(self.model["tableHeight"].as_f64(), |wrap, height| {
-                        wrap.h(px(height as f32)).flex_shrink_0()
-                    })
-                    .when(self.model["tableHeight"].is_null(), |wrap| wrap.flex_1().min_h_0())
-                    .child(
-                        DataTable::new(table)
-                            .accessibility_label(self.model["title"].as_str().unwrap_or_default().to_owned())
-                            .bordered(false)
-                            // Columns shrink to the table's width (rows::fit_widths): never a sideways bar.
-                            .scrollbar_visible(true, false)
-                            .header_row_height(px(23.))
-                            .with_size(gpui_kit::component::Size::Size(px(28.))),
+            // A table sized to its rows (a few at least, `tableRows` at most) when it shares the page
+            // with other sections or with a detail; the only one on its page takes what is left.
+            let shown = table.read(cx).delegate().model["rows"].as_array().map_or(0, Vec::len);
+            let available_w = if let Some(dw) = self.model["dialogWidth"].as_f64() {
+                super::dialog::fit_width(dw as f32, window) - 2. * crate::theme::SPACE_LG
+            } else {
+                f32::from(window.viewport_size().width) - 220.
+            };
+            let side_by_side = detail_side && available_w >= 600.;
+            let size_to_rows = hugs || self.model["tableRows"].is_u64();
+            let most = self.model["tableRows"]
+                .as_u64()
+                .unwrap_or(if detail_side && !side_by_side {
+                    5
+                } else {
+                    MOST_ROWS as u64
+                }) as usize;
+            let height = (!side_by_side && size_to_rows).then(|| table_height(shown, most));
+            let table_entity = table.clone();
+            let list_entity = cx.entity().downgrade();
+            let table_box = div()
+                .relative()
+                .when(!side_by_side, |wrap| wrap.w_full())
+                .when(side_by_side, |wrap| wrap.w(px(260.)).h_full().flex_shrink_0())
+                .min_w_0()
+                .when_some(height, |wrap, height| wrap.h(px(height)).flex_shrink_0())
+                .when(!side_by_side && height.is_none(), |wrap| wrap.flex_1().min_h_0())
+                .on_prepaint(move |bounds, window, cx| {
+                    let seen = f32::from(bounds.size.width);
+                    let fit = table_entity.read(cx).delegate().fit;
+                    if seen > 1. && (seen - fit).abs() > 1. {
+                        window.defer(cx, move |_, cx| {
+                            let changed = table_entity.update(cx, |table, cx| {
+                                if (seen - table.delegate().fit).abs() > 1. {
+                                    table.delegate_mut().fit = seen;
+                                    table.delegate_mut().layout();
+                                    table.refresh(cx);
+                                    cx.notify();
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
+                            if changed {
+                                let _ = list_entity.update(cx, |_, cx| cx.notify());
+                            }
+                        });
+                    }
+                })
+                .child(
+                    DataTable::new(table)
+                        .accessibility_label(self.model["title"].as_str().unwrap_or_default().to_owned())
+                        .bordered(false)
+                        // Columns shrink to the table's width (rows::fit_widths): never a sideways bar.
+                        .scrollbar_visible(true, false)
+                        .header_row_height(px(TABLE_HEAD))
+                        .with_size(gpui_kit::component::Size::Size(px(CONTROL_HEIGHT))),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(TABLE_HEAD))
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .border_1()
+                        .border_color(cx.theme().input)
+                        .rounded(px(6.)),
+                );
+            if detail_side {
+                let (foreground, danger, input, table_bg, border, muted_foreground) = {
+                    let theme = cx.theme();
+                    (
+                        theme.foreground,
+                        theme.danger,
+                        theme.input,
+                        theme.table,
+                        theme.border,
+                        theme.muted_foreground,
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(22.))
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .border_1()
-                            .border_color(cx.theme().input)
-                            .rounded(px(6.)),
-                    ),
-            );
-        }
-        if !guide.is_empty() && guide_below {
-            body = body.child(
-                div()
-                    .min_h(px(36.))
+                };
+                let row = selected.and_then(|row| self.model["rows"].get(row));
+                let mut detail_card = div()
+                    .id("detail")
+                    .w_full()
+                    .when(side_by_side, |card| card.h_full())
+                    .when(!side_by_side, |card| {
+                        card.min_h(px(88.)).max_h(px(180.)).flex_shrink_0()
+                    })
+                    .overflow_y_scroll()
+                    .p(px(SPACE_MD))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(input)
+                    .bg(table_bg)
                     .flex()
-                    .items_center()
-                    .px(px(3.))
-                    .text_color(crate::theme::quiet(cx))
-                    .child(
+                    .flex_col()
+                    .gap(px(SPACE_SM));
+                if let Some(row) = row {
+                    let title = row["detailTitle"]
+                        .as_str()
+                        .or_else(|| row["name"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let badge = row["detailBadge"].as_str().unwrap_or_default().to_owned();
+                    let body_text = row["detail"].as_str().unwrap_or_default().to_owned();
+                    let note_text = row["detailNote"].as_str().unwrap_or_default().to_owned();
+                    let ok = row["detailOk"] != false;
+                    if !title.is_empty() || !badge.is_empty() {
+                        detail_card = detail_card.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(SPACE_SM))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .text_size(px(crate::theme::FONT_SECTION_TITLE))
+                                        .line_height(px(crate::theme::LINE_SECTION_TITLE))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(crate::theme::strong(cx))
+                                        .child(title),
+                                )
+                                .when(!badge.is_empty(), |header| {
+                                    header.child(pill("detail-badge", None, Some(badge), cx))
+                                }),
+                        );
+                    }
+                    if !body_text.is_empty() {
+                        detail_card = detail_card.child(
+                            div()
+                                .text_size(px(FONT_BODY))
+                                .line_height(px(LINE_BODY))
+                                .text_color(if ok { foreground } else { danger })
+                                .child(body_text),
+                        );
+                    }
+                    if !note_text.is_empty() {
+                        detail_card = detail_card.child(
+                            div()
+                                .pt(px(SPACE_XS))
+                                .border_t_1()
+                                .border_color(border)
+                                .text_size(px(FONT_CAPTION))
+                                .line_height(px(LINE_CAPTION))
+                                .text_color(crate::theme::quiet(cx))
+                                .child(note_text),
+                        );
+                    }
+                } else {
+                    let hint = self.model["detail"].as_str().unwrap_or_default().to_owned();
+                    detail_card = detail_card
+                        .items_center()
+                        .justify_center()
+                        .text_center()
+                        .text_size(px(FONT_BODY))
+                        .line_height(px(LINE_BODY))
+                        .text_color(muted_foreground)
+                        .child(gpui_kit::component::Icon::empty().path("icons/info.svg").size_5())
+                        .when(!hint.is_empty(), |card| card.child(hint));
+                }
+                if side_by_side {
+                    let pane_h = super::dialog::fit_height(320., 220., 360., window);
+                    stack.add(
                         div()
-                            .min_w_0()
-                            .text_size(px(13.5))
-                            .line_height(px(19.))
-                            .child(guide.to_owned()),
-                    ),
-            );
+                            .w_full()
+                            .h(px(pane_h))
+                            .flex_shrink_0()
+                            .flex()
+                            .gap(px(SPACE_MD))
+                            .child(table_box)
+                            .child(div().flex_1().min_w_0().h_full().pt(px(TABLE_HEAD)).child(detail_card)),
+                        SPACE_SM,
+                    );
+                } else {
+                    stack.add(table_box, SPACE_SM);
+                    stack.add(detail_card, SPACE_SM);
+                }
+            } else {
+                stack.add(table_box, SPACE_SM);
+            }
         }
-        let selected = self.model["rows"].as_array().and_then(|rows| {
-            rows.iter()
-                .position(|row| !self.selected_id.is_empty() && row["id"] == self.selected_id)
-        });
+        // What the list is about, under its buttons when the model says so (a scope warning).
+        let note = (!guide.is_empty() && guide_below).then(|| super::notice::note(guide, cx));
+        let mut note = note;
+        if self.model["buttonsLast"] == true {
+            if let Some(note) = note.take() {
+                stack.add(note, SPACE_SM);
+            }
+        }
         if let (Some(table), Some(row)) = (&self.table, selected) {
             let table = table.read(cx);
             let rows = table.delegate();
@@ -1983,10 +2400,11 @@ impl Render for List {
                 .overflow_y_scroll()
                 .flex()
                 .flex_wrap()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .text_size(px(12.));
+                .gap(px(SPACE_SM))
+                .px(px(SPACE_MD))
+                .text_size(px(FONT_CAPTION))
+                .line_height(px(LINE_CAPTION))
+                .text_color(crate::theme::quiet(cx));
             let mut any = false;
             // Use the selected id because a search can change its position in the displayed model.
             let record = self.model["rows"].get(row).unwrap_or(&Value::Null);
@@ -2010,10 +2428,10 @@ impl Render for List {
                 details = details.child(div().min_w_0().child(format!("{label}: {value}")));
             }
             if any {
-                body = body.child(details);
+                stack.add(details, SPACE_SM);
             }
         }
-        if self.model["detail"].is_string() {
+        if self.model["detail"].is_string() && !detail_side {
             let row = selected.and_then(|row| self.model["rows"].get(row));
             let (text, ok) = match row {
                 Some(row) => (row["detail"].as_str().unwrap_or_default(), row["detailOk"] != false),
@@ -2025,14 +2443,14 @@ impl Render for List {
                     row.map_or("off", |row| row["detailHealth"].as_str().unwrap_or("off")),
                     cx,
                 );
-                body = body.child(
+                stack.add(
                     div()
                         .id("detail")
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .px_2()
-                        .min_h(px(28.))
+                        .gap(px(SPACE_SM))
+                        .px(px(SPACE_MD))
+                        .min_h(px(CONTROL_HEIGHT))
                         .flex_shrink_0()
                         .text_color(if row.is_none() {
                             cx.theme().muted_foreground
@@ -2045,25 +2463,33 @@ impl Render for List {
                                 .small(),
                         )
                         .child(div().min_w_0().child(text.to_owned())),
+                    SPACE_SM,
                 );
             } else if !text.is_empty() {
-                body = body.child(
+                let detail_max = self.model["detailHeight"].as_f64().unwrap_or(170.) as f32;
+                let detail_mono = self.model["detailMono"] == true;
+                stack.add(
                     div()
                         .id("detail")
                         .when(self.model["detailFill"] == true, |detail| detail.flex_1().min_h_0())
                         .when(self.model["detailFill"] != true, |detail| {
-                            detail
-                                .h(px(self.model["detailHeight"].as_f64().unwrap_or(170.) as f32))
-                                .flex_shrink_0()
+                            detail.min_h(px(36.)).max_h(px(detail_max)).flex_shrink_0()
                         })
                         .overflow_y_scroll()
-                        .p(px(4.))
+                        .p(px(SPACE_SM))
                         .bg(cx.theme().table)
                         .rounded(px(6.))
                         .border_1()
                         .border_color(cx.theme().input)
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
+                        .when(detail_mono, |detail| {
+                            detail
+                                .text_size(px(FONT_CAPTION))
+                                .line_height(px(LINE_CAPTION))
+                                .font_family(cx.theme().mono_font_family.clone())
+                        })
+                        .when(!detail_mono, |detail| {
+                            detail.text_size(px(FONT_BODY)).line_height(px(LINE_BODY))
+                        })
                         .text_color(if row.is_none() {
                             cx.theme().muted_foreground
                         } else if ok {
@@ -2072,12 +2498,17 @@ impl Render for List {
                             cx.theme().danger
                         })
                         .child(text.to_owned()),
+                    SPACE_SM,
                 );
             }
         }
         if self.model["buttonsLast"] != true {
             if let Some(buttons) = self.button_rows(window, cx) {
-                body = body.child(buttons);
+                // With a note under them, 8 between; the buttons are the last of the list otherwise.
+                stack.add(buttons, SPACE_SM);
+            }
+            if let Some(note) = note.take() {
+                stack.add(note, 0.);
             }
         }
         if self.model["connection"].is_object() && self.model["headerAdd"] != true {
@@ -2089,12 +2520,12 @@ impl Render for List {
             };
             let (icon, color) =
                 super::health::appearance(self.model["connection"]["health"].as_str().unwrap_or_default(), cx);
-            body = body.child(
+            stack.add(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .h(px(26.))
+                    .gap(px(SPACE_SM))
+                    .h(px(CONTROL_HEIGHT))
                     .text_color(color)
                     .child(
                         gpui_kit::component::Icon::empty()
@@ -2102,8 +2533,9 @@ impl Render for List {
                             .small(),
                     )
                     .child(self.model["connection"]["text"].as_str().unwrap_or_default().to_owned()),
+                SPACE_SM,
             );
-            let mut buttons = div().flex().gap_2().w_full();
+            let mut buttons = div().flex().gap(px(SPACE_SM)).w_full();
             // Like the other rows of buttons: labels fold to icons when they no longer fit.
             let wanted: f32 = Action::CONNECTIONS
                 .iter()
@@ -2114,7 +2546,7 @@ impl Render for List {
                 buttons = buttons.child(
                     Button::new(SharedString::from(action.id(&self.model)))
                         .small()
-                        .h(px(28.))
+                        .h(px(CONTROL_HEIGHT))
                         .flex_1()
                         .when(!fold_connections, |button| {
                             button.label(action.row_label(&self.model, selected))
@@ -2127,9 +2559,10 @@ impl Render for List {
                         .on_click(cx.listener(move |list, _, window, cx| list.action(action, None, window, cx))),
                 );
             }
-            body = body.child(buttons);
+            stack.add(buttons, 0.);
         }
-        body.into_any_element()
+        // Under its own spacers: the stack sets the gaps, the body none.
+        body.gap(px(0.)).children(stack.items).into_any_element()
     }
 }
 
@@ -2148,31 +2581,33 @@ pub(super) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
             )
         })
         .collect();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let close = crate::controls::dialog::close_footer(cx);
-        crate::controls::dialog::shell(dialog, title.clone(), 640., cx)
+        let max_h = crate::controls::dialog::fit_height(210., 140., 460., window);
+        let key_w = (crate::controls::dialog::fit_width(640., window) * 0.3).clamp(120., 200.);
+        crate::controls::dialog::shell(dialog, title.clone(), 640., window, cx)
             .footer(close)
             .child(crate::controls::dialog::body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap(px(SPACE_SM))
                     .child(div().text_color(cx.theme().muted_foreground).child(hint.clone()))
                     .child(
                         div()
                             .id("values")
-                            .max_h(px(360.))
+                            .max_h(px(max_h))
                             .overflow_y_scroll()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap(px(SPACE_XS))
                             .children(rows.iter().map(|(name, value)| {
                                 div()
                                     .flex()
-                                    .gap_2()
+                                    .gap(px(SPACE_SM))
                                     .child(
                                         div()
-                                            .w(px(200.))
+                                            .w(px(key_w))
                                             .flex_shrink_0()
                                             .font_weight(FontWeight::BOLD)
                                             .child(name.clone()),
@@ -2182,4 +2617,379 @@ pub(super) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
                     ),
             ))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{table_height, Action, List, Stack};
+    use crate::theme::{SPACE_MD, SPACE_SM};
+    use gpui_kit::div;
+    use serde_json::json;
+
+    #[test]
+    fn f2_prefers_explicit_rename_over_edit_and_respects_row_permissions() {
+        let overlay = json!({
+            "actions": [
+                {"id": "copy_url", "needs": "row"},
+                {"id": "rename", "needs": "row"},
+                {"id": "settings", "needs": "row"}
+            ],
+            "rows": [
+                {"id": "Clock:index.html", "can": {}},
+                {"id": "Locked:index.html", "can": {"rename": false}}
+            ]
+        });
+        assert!(matches!(List::f2_action(&overlay, 0), Some(Action::Custom(1))));
+        assert!(List::f2_action(&overlay, 1).is_none());
+
+        let queues = json!({
+            "actions": ["add", "edit", "delete"],
+            "rows": [
+                {"id": "default", "can": {"edit": false}},
+                {"id": "custom", "can": {"edit": true}}
+            ]
+        });
+        assert!(List::f2_action(&queues, 0).is_none());
+        assert!(matches!(List::f2_action(&queues, 1), Some(Action::Edit)));
+
+        let history = json!({
+            "actions": ["values_before", "values_after", "clear"],
+            "rows": [{"id": "h1"}]
+        });
+        assert!(List::f2_action(&history, 0).is_none());
+    }
+
+    #[test]
+    fn a_table_sized_to_its_rows_keeps_a_few_and_stops_at_its_most() {
+        // Header 24, rows of 28, one line for the box's bottom edge.
+        assert_eq!(table_height(0, 8), 24. + 3. * 28. + 1.);
+        assert_eq!(table_height(1, 8), 24. + 3. * 28. + 1.);
+        assert_eq!(table_height(5, 8), 24. + 5. * 28. + 1.);
+        assert_eq!(table_height(40, 8), 24. + 8. * 28. + 1.);
+        assert_eq!(table_height(9, 2), table_height(3, 3));
+    }
+
+    #[test]
+    fn the_gap_under_a_block_is_drawn_only_when_another_block_follows() {
+        let mut stack = Stack::new();
+        stack.add(div(), SPACE_MD);
+        assert_eq!(stack.items.len(), 1);
+        stack.add(div(), SPACE_SM);
+        assert_eq!(stack.items.len(), 3, "block, 12px gap, block");
+        stack.add(div(), 0.);
+        assert_eq!(stack.items.len(), 5, "an 8px gap, then the block");
+        stack.add(div(), SPACE_SM);
+        assert_eq!(stack.items.len(), 6, "no gap spacer under a block that wants none");
+        let column = stack.column();
+        let _ = column;
+        assert!(stack.items.is_empty());
+    }
+
+    #[cfg(feature = "test-support")]
+    mod ui {
+        use super::super::List;
+        use gpui_kit::test::{TestQueryExt, TestWindowExt};
+        use gpui_kit::{
+            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Role, Styled,
+            TestAppContext, Window, WindowBounds, WindowOptions,
+        };
+        use serde_json::json;
+
+        struct ListHost {
+            list: Entity<List>,
+            width: f32,
+        }
+
+        impl Render for ListHost {
+            fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+                div().w(px(self.width)).h(px(600.)).child(self.list.clone())
+            }
+        }
+
+        fn commands_model() -> serde_json::Value {
+            json!({
+                "kind": "command",
+                "title": "Command",
+                "columns": [
+                    {"key": "enabled", "label": "On", "width": 48},
+                    {"key": "name", "label": "Name", "width": 138},
+                    {"key": "commands", "label": "Commands", "width": 138},
+                    {"key": "who", "label": "Who", "width": 122},
+                    {"key": "sources", "label": "Sources", "width": 112},
+                    {"key": "cooldown", "label": "Cooldown", "width": 114},
+                    {"key": "group", "label": "Group", "width": 106}
+                ],
+                "rows": [
+                    {
+                        "id": "cmd-1",
+                        "cells": [
+                            true,
+                            "Manage commands",
+                            "!commands",
+                            {"icon": "users", "text": "Everyone"},
+                            {"platforms": ["twitch", "youtube", "kick", "tiktok"]},
+                            {"icon": "timer", "text": "10 s each"},
+                            {"icon": "folder", "text": "Built-in"}
+                        ]
+                    }
+                ]
+            })
+        }
+
+        fn open_list(
+            width: f32,
+            initial_fit: Option<f32>,
+            cx: &mut TestAppContext,
+        ) -> (
+            gpui_kit::WindowHandle<gpui_kit::base::Root>,
+            Entity<ListHost>,
+            Entity<List>,
+        ) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let list_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<List>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let host_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<ListHost>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let l_slot = list_slot.clone();
+            let h_slot = host_slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(1200.), px(700.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let list = cx.new(|cx| {
+                            let mut list = List::new(commands_model(), "test:list".into(), window, cx);
+                            if let Some(fit) = initial_fit {
+                                list.set_fit(fit, cx);
+                            }
+                            list
+                        });
+                        *l_slot.borrow_mut() = Some(list.clone());
+                        let host = cx.new(|_| ListHost {
+                            list: list.clone(),
+                            width,
+                        });
+                        *h_slot.borrow_mut() = Some(host.clone());
+                        host
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let host = host_slot.borrow().clone().expect("host created");
+            let list = list_slot.borrow().clone().expect("list created");
+            (window, host, list)
+        }
+
+        fn header_span(window: &Window) -> f32 {
+            let mut headers = window.find_all_by_role(Role::ColumnHeader);
+            headers.sort_by(|a, b| a.bounds().origin.x.partial_cmp(&b.bounds().origin.x).unwrap());
+            let first = headers.first().expect("column headers");
+            let last = headers.last().expect("column headers");
+            f32::from(last.bounds().right() - first.bounds().left())
+        }
+
+        #[gpui_kit::test]
+        fn table_fills_initial_width_on_first_frame_without_sitting_at_min_width(cx: &mut TestAppContext) {
+            let (window, _host, list) = open_list(1000., Some(1000.), cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let fit = list.read(cx).table.as_ref().expect("table").read(cx).delegate().fit;
+                assert!((fit - 1000.).abs() <= 1., "expected fit=1000 on frame 1, got {fit}");
+                let span = header_span(window);
+                assert!(
+                    (span - 1000.).abs() <= 2.,
+                    "first frame column span should fill 1000px container, got {span}"
+                );
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn table_expands_after_container_grows_without_table_interaction(cx: &mut TestAppContext) {
+            let (window, host, list) = open_list(500., Some(500.), cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let narrow_span = header_span(window);
+                assert!(
+                    (narrow_span - 500.).abs() <= 2.,
+                    "expected narrow span ~500, got {narrow_span}"
+                );
+
+                host.update(cx, |host, cx| {
+                    host.width = 1000.;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let fit = list.read(cx).table.as_ref().expect("table").read(cx).delegate().fit;
+                assert!((fit - 1000.).abs() <= 1., "expected resized fit=1000, got {fit}");
+                let wide_span = header_span(window);
+                assert!(
+                    (wide_span - 1000.).abs() <= 2.,
+                    "resized column span should fill 1000px container, got {wide_span}"
+                );
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn search_filters_rows_by_text_platforms_brand_and_preserves_or_clears_selection(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let model = json!({
+                "kind": "command",
+                "title": "Commands",
+                "search": true,
+                "searchHint": "Search commands",
+                "empty": "No commands yet.",
+                "columns": [
+                    {"key": "name", "label": "Name", "width": 200},
+                    {"key": "sources", "label": "Sources", "width": 160}
+                ],
+                "rows": [
+                    {
+                        "id": "cmd-1",
+                        "cells": [
+                            "Manage commands",
+                            {"platforms": ["twitch", "youtube"]}
+                        ]
+                    },
+                    {
+                        "id": "cmd-2",
+                        "cells": [
+                            {"icon": "film", "text": "Switch Scene"},
+                            {"brand": "obs"}
+                        ]
+                    }
+                ]
+            });
+            let list_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<List>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let l_slot = list_slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(900.), px(600.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let list = cx.new(|cx| {
+                            let mut list = List::new(model, "test:search".into(), window, cx);
+                            list.set_fit(800., cx);
+                            list
+                        });
+                        *l_slot.borrow_mut() = Some(list.clone());
+                        cx.new(|_| ListHost { list, width: 800. })
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let list = list_slot.borrow().clone().expect("list created");
+
+            let type_query = |text: &str, list: &Entity<List>, window: &mut Window, cx: &mut gpui_kit::App| {
+                use gpui_kit::test::TestEventExt;
+                let search = list.read(cx).search.clone().expect("search input");
+                search.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                if text.is_empty() {
+                    window.key_down("backspace", false, cx);
+                    window.key_up("backspace", cx);
+                } else {
+                    window.input(text, cx);
+                }
+            };
+
+            let shown_ids = |list: &Entity<List>, cx: &gpui_kit::App| -> Vec<String> {
+                list.read(cx).table.as_ref().expect("table").read(cx).delegate().model["rows"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|row| row["id"].as_str().map(str::to_owned))
+                    .collect()
+            };
+
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(shown_ids(&list, cx), vec!["cmd-1", "cmd-2"]);
+                // Select cmd-2 ("Switch Scene"), then search by text to ensure selection stays.
+                let table = list.read(cx).table.clone().expect("table");
+                table.update(cx, |table, cx| table.set_selected_row(1, cx));
+                type_query("Scene", &list, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(shown_ids(&list, cx), vec!["cmd-2"]);
+                assert_eq!(list.read(cx).selected_id, "cmd-2");
+
+                // Search by platform matches cmd-1 and clears hidden cmd-2 selection.
+                type_query("twitch", &list, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(shown_ids(&list, cx), vec!["cmd-1"]);
+                assert!(list.read(cx).selected_id.is_empty());
+
+                // Search by brand matches cmd-2.
+                type_query("OBS", &list, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(shown_ids(&list, cx), vec!["cmd-2"]);
+
+                // Non-matching search keeps table visible (truly_empty is false) with "No matches" text.
+                type_query("zzz-nomatch", &list, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(shown_ids(&list, cx).is_empty());
+                assert!(!list.read(cx).truly_empty(cx));
+                let empty_text = list.read(cx).table.as_ref().expect("table").read(cx).delegate().model["empty"]
+                    .as_str()
+                    .map(str::to_owned);
+                assert_eq!(empty_text.as_deref(), Some(crate::i18n::tr("lists.no_matches")));
+
+                // Clearing search restores both rows.
+                type_query("", &list, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(shown_ids(&list, cx), vec!["cmd-1", "cmd-2"]);
+            })
+            .unwrap();
+        }
+    }
 }
