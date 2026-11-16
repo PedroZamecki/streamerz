@@ -16,6 +16,10 @@ after the last sound ends, so a Streamerz that plays no sound costs nothing for 
 **Finish playing before continuing** is on by default: the action's next sub-action waits for the sound to
 end. Turn it off to show something while the sound plays.
 
+**At once or one after another.** Several sounds play together (up to 16, on every output together):
+turn **Finish playing before continuing** off on each Play Sound and they all start at once. Leave it on
+and each one starts when the one before ends. Any mix of the two works in one action.
+
 **Play Sound From Folder** picks a sound at random from a folder (and its folders, with **Include its
 folders**). It doesn't pick the same sound twice in a row while the folder has another.
 
@@ -47,3 +51,14 @@ On Linux, sounds need PulseAudio or PipeWire (with its PulseAudio service, as ev
 Play Sound, Play Sound From Folder, Stop Sound Playback and Stop All Sound Playback work as in Streamer.bot,
 with the same fields, so imported actions play their sounds. A Windows path (`C:\Sounds\boom.mp3`) in an
 action imported on Linux needs the file picked again.
+
+## Checking it here
+
+`node dev/test-sounds.mjs <a sound file>` drives a dev instance (WebSocket 8095) on this computer's real
+output: three copies of the file at once, one stopped by name, the rest faded out; two in a row through
+an action, the second starting when the first ends; four at once through the request, each answer with
+its own sound; and the output closed after each. With `STREAMERZ_PID` set it prints the memory, threads
+and CPU while they play and after. Done with an 18 s MP3 on PipeWire: four at once took 4% of a core in a
+dev build, and the memory after the first sound stays about 3 MB above the start (the PulseAudio library
+and what it loads), the same after every burst.
+

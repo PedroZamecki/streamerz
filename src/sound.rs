@@ -204,9 +204,26 @@ fn run(key: String, mixer: Arc<Mutex<Mixer>>, opener: Opener) {
             if p.devices.get(&key).is_some_and(|m| Arc::ptr_eq(m, &mixer)) {
                 p.devices.remove(&key);
             }
+            let last = p.devices.is_empty();
+            drop(p);
+            drop(out);
+            drop(buf);
+            if last {
+                give_back();
+            }
             return;
         }
         // A sound came while draining: keep the device.
+    }
+}
+
+/// The memory the decoders used goes back to the system once nothing plays: glibc keeps a thread's
+/// freed memory in its arena otherwise, for the life of the process.
+fn give_back() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only releases memory the allocator holds free.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -368,7 +385,8 @@ pub fn request(req: &serde_json::Value) -> Result<serde_json::Value, String> {
                 return Err("file is required".into());
             }
             let started = play(&resolve(&file), &name, &text("device"), volume(num("volume", 100.0)))?;
-            Ok(json!({"id": started.id, "durationMs": started.duration_ms}))
+            // Not `id`: a request's answer carries the request's own id.
+            Ok(json!({"soundId": started.id, "durationMs": started.duration_ms}))
         }
         "stop" => count(stop(named, fade)),
         "pause" => count(pause(named, true)),
@@ -577,6 +595,7 @@ mod tests {
         let file = path.to_string_lossy();
         let r = request(&serde_json::json!({"op": "play", "file": file, "name": "Req", "volume": 40})).unwrap();
         assert_eq!(r["durationMs"], 2000);
+        assert!(r.get("id").is_none() && r["soundId"].as_u64().is_some(), "{r}");
         let list = request(&serde_json::json!({})).unwrap();
         let mine: Vec<_> = list["playing"]
             .as_array()

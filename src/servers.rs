@@ -501,11 +501,16 @@ fn find_action(e: &Engine, a: &Value) -> Option<String> {
         .map(|x| x.id.clone())
 }
 
-/// Prefix `id`, then the fields, then status ok.
+/// Prefix `id`, then the fields, then status ok. A field named `id` never replaces the request's: the
+/// caller matches the answer by it.
 fn ok(id: &Value, fields: Value) -> Value {
     let mut out = json!({"id": id});
     if let (Some(o), Some(f)) = (out.as_object_mut(), fields.as_object()) {
-        o.extend(f.clone());
+        o.extend(
+            f.iter()
+                .filter(|(k, _)| *k != "id")
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
         o.insert("status".into(), "ok".into());
     }
     out
@@ -2341,6 +2346,12 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_answer_keeps_the_requests_id() {
+        let answer = ok(&json!("r7"), json!({"id": 3, "durationMs": 10}));
+        assert_eq!(answer, json!({"id": "r7", "durationMs": 10, "status": "ok"}));
+    }
+
     #[test]
     fn a_raw_platform_call_goes_through_the_running_client_in_dev_mode_only() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
