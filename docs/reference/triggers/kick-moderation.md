@@ -28,3 +28,27 @@ None.
 ### When
 
 When Kick reports a permanent ban. A timeout fires User Timed Out instead.
+
+## Message Deleted
+
+- Kind: trigger
+- Code: 35028
+- Type: KickMessageDeleted
+- Category: Kick/Moderation
+- Needs: a Kick channel and Kick connected
+
+Fires when a chat message is deleted on Kick.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `messageId`: the deleted message ID.
+- `deletedBy`: the moderator who deleted it, if reported.
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick's chatroom feed sends a `MessageDeletedEvent`.

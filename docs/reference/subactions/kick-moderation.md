@@ -114,3 +114,23 @@ Ends the timeout of a user on the Kick channel.
 
 - Kick has no separate call for this, so the unban call is used.
 - The change is made with the broadcaster account. The bot account is never used here.
+
+## Delete Message
+
+- Kind: sub-action
+- Code: 35044
+- Type: KickDeleteMessage
+- Category: Kick/Moderation
+- Needs: a Kick broadcaster login
+
+Deletes a message in Kick chat by message ID.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message ID | `messageId` | The Kick chat message ID to delete. |
+
+### Arguments
+
+- `deleteMessageResult`: true when Kick accepted the deletion.
