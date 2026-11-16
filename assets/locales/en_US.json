@@ -1760,5 +1760,6 @@
   "tools.cm_for": "For",
   "tools.yt_stage": "Move to",
   "tools.yt_testing": "Testing (the preview)",
-  "tools.yt_live": "Live"
+  "tools.yt_live": "Live",
+  "forms.checks_blank": "Nothing ticked: {meaning}."
 }

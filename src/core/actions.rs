@@ -939,6 +939,16 @@ fn form_fields(config: &crate::Config, fields: &[F], item: &Obj) -> Vec<Value> {
             let mut value = json!({"key": key, "label": label, "widget": widget, "holds": widget.about(),
                 "value": edits::shown(widget, item.get(*key))});
             if let Some(placeholder) = placeholder {
+                // A box of check boxes has no empty box to show what blank means: it goes in the tip.
+                if matches!(widget, W::Checks(_)) {
+                    let mut chars = placeholder.chars();
+                    let meaning: String = chars
+                        .next()
+                        .map(|c| c.to_lowercase().collect::<String>())
+                        .unwrap_or_default()
+                        + chars.as_str();
+                    value["tip"] = trf("forms.checks_blank", &[("meaning", &meaning)]).into();
+                }
                 value["placeholder"] = placeholder.into();
             }
             if let W::Pick(options) = widget {
@@ -3390,6 +3400,25 @@ mod tests {
             assert_eq!(cleared["status"], "ok", "{cleared}");
             assert!(engine.config().actions.actions[0].triggers[0].get("giftName").is_none());
         });
+    }
+
+    #[test]
+    fn an_empty_platform_list_says_what_it_means_in_its_tip() {
+        let engine = crate::engine::tests::engine(json!({"actions": []}));
+        let item = crate::edit::new_sub(99725);
+        let fields = form_fields(
+            &engine.config(),
+            crate::automation::schema::sub_fields(99725).unwrap(),
+            &item,
+        );
+        let platforms = fields.iter().find(|f| f["key"] == "platforms").unwrap();
+        assert_eq!(platforms["label"], "Platforms");
+        assert_eq!(platforms["tip"], "Nothing ticked: the one it came from.");
+        assert_eq!(platforms["widget"]["kind"], "checks");
+        assert_eq!(
+            platforms["widget"]["options"][0],
+            json!({"id": "twitch", "label": "Twitch", "brand": "twitch"})
+        );
     }
 
     #[test]

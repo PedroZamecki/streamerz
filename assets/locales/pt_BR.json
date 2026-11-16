@@ -1760,5 +1760,6 @@
   "tools.cm_for": "Por",
   "tools.yt_stage": "Mover para",
   "tools.yt_testing": "Teste (a prévia)",
-  "tools.yt_live": "Ao vivo"
+  "tools.yt_live": "Ao vivo",
+  "forms.checks_blank": "Nada marcado: {meaning}."
 }
