@@ -1745,5 +1745,20 @@
   "tools.td_style": "As",
   "tools.td_clock": "1:02:03",
   "tools.td_short": "1h 2m 3s",
-  "tools.td_words": "1 hour, 2 minutes, 3 seconds"
+  "tools.td_words": "1 hour, 2 minutes, 3 seconds",
+  "tools.video_kind": "Which",
+  "tools.video_past": "The last stream (past broadcast)",
+  "tools.video_upload": "The last upload",
+  "tools.video_highlight": "The last highlight",
+  "tools.cm_mode": "Mode",
+  "tools.cm_slow": "Slow mode",
+  "tools.cm_followers": "Followers only",
+  "tools.cm_subs": "Subscribers only",
+  "tools.cm_emotes": "Emote only",
+  "tools.cm_unique": "Unique chat",
+  "tools.cm_value": "Seconds (slow) or minutes (followers), blank: 30 or any follower",
+  "tools.cm_for": "For",
+  "tools.yt_stage": "Move to",
+  "tools.yt_testing": "Testing (the preview)",
+  "tools.yt_live": "Live"
 }

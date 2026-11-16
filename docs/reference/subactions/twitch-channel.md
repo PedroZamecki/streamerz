@@ -283,3 +283,66 @@ Sets the stream's delay (partners only). This sub-action is Streamerz only: Stre
 ### Arguments
 
 None set.
+
+## Get Shared Chat
+
+- Kind: sub-action
+- Code: 99541
+- Type: TwitchGetSharedChat
+- Category: Twitch/Channel
+- Needs: a Twitch login
+
+Says whether the channel is in a Shared Chat, and with which channels. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `sharedChatActive`: true while it is in one.
+- `sharedChatSessionId`, `sharedChatHostId`: the session and who started it.
+- `sharedChatParticipantCount`, `sharedChatParticipant0Id`...: the channels in it.
+
+## Get Channel Info
+
+- Kind: sub-action
+- Code: 99542
+- Type: TwitchGetChannelInfo
+- Category: Twitch/Channel
+- Needs: a Twitch login
+
+Reads a channel's title, game, language and tags: yours, or any channel's. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | The channel. Empty: yours. |
+
+### Arguments
+
+- `channelUser`, `channelUserName`, `channelUserId`: the channel.
+- `channelTitle`, `channelGame`, `channelGameId`, `channelLanguage`, `channelTags` (separated by commas).
+
+## Get Latest Video
+
+- Kind: sub-action
+- Code: 99543
+- Type: TwitchGetLatestVideo
+- Category: Twitch/Channel
+- Needs: a Twitch login
+
+Finds a channel's latest video: the last stream, upload or highlight. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | The channel. Empty: yours. |
+| kind | `kind` | The last stream (a past broadcast), the last upload or the last highlight. |
+
+### Arguments
+
+- `videoFound`: true when there is one.
+- `videoId`, `videoTitle`, `videoUrl`, `videoDuration` (as Twitch writes it, `1h2m3s`), `videoCreatedAt`, `videoViews`, `videoThumbnail`.

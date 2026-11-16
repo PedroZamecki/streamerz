@@ -980,6 +980,131 @@ impl Engine {
                     .await?;
                 crate::twitch::reward_removed(&id);
             }
+            // Check AutoMod Status: whether AutoMod would let this text through, before sending it.
+            99540 => {
+                let message = text("text");
+                let body = json!({"data": [{"msg_id": "check", "msg_text": message}]});
+                let q = [("broadcaster_id", "{broadcaster_id}")];
+                let got = self
+                    .helix_call("POST", "moderation/enforcements/status", &q, Some(body), false)
+                    .await?;
+                ctx.args
+                    .insert("autoModPermitted".into(), got["data"][0]["is_permitted"].clone());
+            }
+            // Get Shared Chat: whether the channel is in a shared chat, and with whom.
+            99541 => {
+                let q = [("broadcaster_id", "{broadcaster_id}")];
+                let tw = self.twitch().ok_or("Twitch isn't connected")?;
+                let session = match tw
+                    .helix("GET", "shared_chat/session", q.to_vec(), None, false, true)
+                    .await
+                {
+                    Ok(got) => got["data"][0].clone(),
+                    // Twitch answers 404 when there is no session.
+                    Err(e) if e.contains("HTTP 404") => Value::Null,
+                    Err(e) => return Err(crate::twitch::plain_error(&e)),
+                };
+                ctx.args.insert("sharedChatActive".into(), (!session.is_null()).into());
+                ctx.args
+                    .insert("sharedChatSessionId".into(), session["session_id"].clone());
+                ctx.args
+                    .insert("sharedChatHostId".into(), session["host_broadcaster_id"].clone());
+                let people: Vec<Vec<(&str, Value)>> = session["participants"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|p| vec![("Id", p["broadcaster_id"].clone())])
+                    .collect();
+                Self::put_list(ctx, "sharedChatParticipant", &people);
+            }
+            // Get Channel Info: any channel's title, game, language and tags.
+            99542 => {
+                let who = login(&text("userLogin"));
+                let uid = if who.is_empty() {
+                    "{broadcaster_id}".to_string()
+                } else {
+                    self.twitch_id(&who).await?
+                };
+                let got = self
+                    .helix_call("GET", "channels", &[("broadcaster_id", uid.as_str())], None, false)
+                    .await?;
+                let c = &got["data"][0];
+                if c.is_null() {
+                    return Err(format!("no Twitch channel {who}"));
+                }
+                for (arg, key) in [
+                    ("channelUser", "broadcaster_name"),
+                    ("channelUserName", "broadcaster_login"),
+                    ("channelUserId", "broadcaster_id"),
+                    ("channelTitle", "title"),
+                    ("channelGame", "game_name"),
+                    ("channelGameId", "game_id"),
+                    ("channelLanguage", "broadcaster_language"),
+                ] {
+                    ctx.args.insert(arg.into(), c[key].clone());
+                }
+                let tags: Vec<&str> = c["tags"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                ctx.args.insert("channelTags".into(), tags.join(", ").into());
+            }
+            // Get Latest Video: a channel's latest past broadcast, upload or highlight.
+            99543 => {
+                let who = login(&text("userLogin"));
+                let uid = if who.is_empty() {
+                    "{broadcaster_id}".to_string()
+                } else {
+                    self.twitch_id(&who).await?
+                };
+                let kind = ["archive", "upload", "highlight"][(n(o, "kind") as usize).min(2)];
+                let q = [("user_id", uid.as_str()), ("type", kind), ("first", "1")];
+                let got = self.helix_call("GET", "videos", &q, None, false).await?;
+                let v = &got["data"][0];
+                ctx.args.insert("videoFound".into(), (!v.is_null()).into());
+                for (arg, key) in [
+                    ("videoId", "id"),
+                    ("videoTitle", "title"),
+                    ("videoUrl", "url"),
+                    ("videoDuration", "duration"),
+                    ("videoCreatedAt", "created_at"),
+                    ("videoViews", "view_count"),
+                    ("videoThumbnail", "thumbnail_url"),
+                ] {
+                    ctx.args.insert(arg.into(), v[key].clone());
+                }
+            }
+            // Chat Mode for a While: turns a mode on, and puts the chat back as it was after the time.
+            99544 => {
+                let seconds = self.duration_number(ctx, o, "duration").max(0.0) as u64;
+                if seconds == 0 {
+                    return Err("give it a time: the mode would never end".into());
+                }
+                let value = crate::fmt::parse_number(&text("value"));
+                let mode = (n(o, "mode") as usize).min(4);
+                let (flag, extra, default) = [
+                    ("slow_mode", Some("slow_mode_wait_time"), 30.0),
+                    ("follower_mode", Some("follower_mode_duration"), 0.0),
+                    ("subscriber_mode", None, 0.0),
+                    ("emote_mode", None, 0.0),
+                    ("unique_chat_mode", None, 0.0),
+                ][mode];
+                if self.dev_out("twitch", &format!("/{flag} for {seconds}s"), false) {
+                    return Ok(());
+                }
+                let before = self.helix_mod("GET", "chat/settings", &[], None).await?;
+                let (on, back) = chat_mode_patches(&before["data"][0], flag, extra, value.unwrap_or(default));
+                self.helix_mod("PATCH", "chat/settings", &[], Some(on)).await?;
+                let engine = self.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+                    if let Err(e) = engine.helix_mod("PATCH", "chat/settings", &[], Some(back)).await {
+                        crate::error(format!("Twitch: chat mode not put back: {e}"));
+                    }
+                });
+            }
             // Add / Remove Blocked Term
             99530 | 99531 => {
                 let term = text("term").trim().to_string();
@@ -2079,6 +2204,15 @@ impl Engine {
                 yt.data("DELETE", "", &format!("liveChat/moderators?id={}", enc(&found)), None)
                     .await?;
             }
+            // Go Live: moves the broadcast to testing, or live.
+            99664 => {
+                let stage = ["testing", "live"][(n(o, "stage") as usize).min(1)];
+                if self.dev_out("youtube", &format!("/go {stage}"), false) {
+                    return Ok(());
+                }
+                let path = format!("liveBroadcasts/transition?broadcastStatus={stage}&part=status&id={{video}}");
+                yt.data("POST", &broadcast, &path, None).await?;
+            }
             // Tags: Set, Add, Remove, Clear.
             99654..=99657 => {
                 let mut tags: Vec<String> = if kind == 99655 || kind == 99656 {
@@ -2262,3 +2396,42 @@ pub const YOUTUBE_CATEGORIES: [(&str, &str); 14] = [
     ("15", "Pets & Animals"),
     ("19", "Travel & Events"),
 ];
+
+/// The two patches of Chat Mode for a While: turn the mode on, and put it back as it was (a mode that
+/// was already on stays on with its old value; Twitch needs the value to turn it on again).
+pub fn chat_mode_patches(was: &Value, flag: &str, extra: Option<&str>, value: f64) -> (Value, Value) {
+    let mut on = json!({ flag: true });
+    let mut back = json!({ flag: was[flag].as_bool().unwrap_or(false) });
+    if let Some(extra) = extra {
+        on[extra] = (value.max(0.0).round() as u64).into();
+        if was[flag].as_bool() == Some(true) && !was[extra].is_null() {
+            back[extra] = was[extra].clone();
+        }
+    }
+    (on, back)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chat_mode_goes_on_and_comes_back_as_it_was() {
+        let was = json!({"slow_mode": true, "slow_mode_wait_time": 10, "emote_mode": false});
+        let (on, back) = chat_mode_patches(&was, "slow_mode", Some("slow_mode_wait_time"), 45.4);
+        assert_eq!(on, json!({"slow_mode": true, "slow_mode_wait_time": 45}));
+        assert_eq!(
+            back,
+            json!({"slow_mode": true, "slow_mode_wait_time": 10}),
+            "it was on: it stays on, as it was"
+        );
+        let (on, back) = chat_mode_patches(&was, "emote_mode", None, 0.0);
+        assert_eq!((on, back), (json!({"emote_mode": true}), json!({"emote_mode": false})));
+        let (_, back) = chat_mode_patches(&json!({}), "slow_mode", Some("slow_mode_wait_time"), 30.0);
+        assert_eq!(
+            back,
+            json!({"slow_mode": false}),
+            "off before: off after, with no value"
+        );
+    }
+}

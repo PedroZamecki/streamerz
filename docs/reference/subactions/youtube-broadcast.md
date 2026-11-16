@@ -175,3 +175,28 @@ Says whether the YouTube broadcast is live, with its title, category, viewers, l
 - `startedAt`, `uptime`, `uptimeSeconds`: when it started, and for how long it's been live (`1:02:03`).
 - `streamPlatform`: the platform (`twitch`, `kick`).
 - `broadcastId`, `likeCount`, `viewCount`, `scheduledStart`: the rest YouTube gives.
+
+## Go Live
+
+- Kind: sub-action
+- Code: 99664
+- Type: YouTubeGoLive
+- Category: YouTube/Broadcast
+- Needs: the broadcaster's YouTube login (an owner or moderator of the chat)
+
+Moves the YouTube broadcast to testing (the preview) or live. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Broadcast | `broadcast` | Which broadcast: empty for the live one, or a video id. |
+| Move to | `stage` | Testing, or Live. |
+
+### Arguments
+
+None set.
+
+### Notes
+
+- The stream must already be coming in, as YouTube requires. Dev mode keeps it instead of going live.

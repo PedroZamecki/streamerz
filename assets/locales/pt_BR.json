@@ -1745,5 +1745,20 @@
   "tools.td_style": "Como",
   "tools.td_clock": "1:02:03",
   "tools.td_short": "1h 2m 3s",
-  "tools.td_words": "1 hora, 2 minutos, 3 segundos"
+  "tools.td_words": "1 hora, 2 minutos, 3 segundos",
+  "tools.video_kind": "Qual",
+  "tools.video_past": "A última live (transmissão passada)",
+  "tools.video_upload": "O último envio",
+  "tools.video_highlight": "O último destaque",
+  "tools.cm_mode": "Modo",
+  "tools.cm_slow": "Modo lento",
+  "tools.cm_followers": "Só seguidores",
+  "tools.cm_subs": "Só inscritos",
+  "tools.cm_emotes": "Só emotes",
+  "tools.cm_unique": "Chat único",
+  "tools.cm_value": "Segundos (lento) ou minutos (seguidores), vazio: 30 ou qualquer seguidor",
+  "tools.cm_for": "Por",
+  "tools.yt_stage": "Mover para",
+  "tools.yt_testing": "Teste (a prévia)",
+  "tools.yt_live": "Ao vivo"
 }

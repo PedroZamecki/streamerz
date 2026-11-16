@@ -390,6 +390,36 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         ],
         99601 | 99602 => &[("redemptionId", "tools.redemption", Text)],
         99607 => &[("tag", "tools.tag", Text)],
+        99540 => &[("text", "tools.text", Multi)],
+        99541 => &[],
+        99542 => &[("userLogin", "tools.channel_ours", Text)],
+        99543 => &[
+            ("userLogin", "tools.channel_ours", Text),
+            (
+                "kind",
+                "tools.video_kind",
+                Pick(&["tools.video_past", "tools.video_upload", "tools.video_highlight"]),
+            ),
+        ],
+        99544 => &[
+            (
+                "mode",
+                "tools.cm_mode",
+                Pick(&[
+                    "tools.cm_slow",
+                    "tools.cm_followers",
+                    "tools.cm_subs",
+                    "tools.cm_emotes",
+                    "tools.cm_unique",
+                ]),
+            ),
+            ("value", "tools.cm_value", Text),
+            ("duration", "tools.cm_for", Duration(1000)),
+        ],
+        99664 => &[
+            BROADCAST_FIELD,
+            ("stage", "tools.yt_stage", Pick(&["tools.yt_testing", "tools.yt_live"])),
+        ],
         99654 => &[BROADCAST_FIELD, ("tags", "tools.tags", Lines)],
         99655 | 99656 => &[BROADCAST_FIELD, ("tag", "tools.tag", Text)],
         99657 | 99660 | 99661 => &[BROADCAST_FIELD],

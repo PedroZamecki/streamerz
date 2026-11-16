@@ -3096,5 +3096,163 @@
         }
       ]
     }
+  },
+  {
+    "name": "twitch and youtube extras: AutoMod check, shared chat, channel info, latest video, a chat mode for a while, go live",
+    "fakes": {
+      "twitch": {
+        "POST moderation/enforcements/status": {
+          "data": [
+            {
+              "msg_id": "check",
+              "is_permitted": false
+            }
+          ]
+        },
+        "GET shared_chat/session": {
+          "error": "HTTP 404 not in a shared chat"
+        },
+        "GET channels": {
+          "data": [
+            {
+              "broadcaster_name": "Pal",
+              "broadcaster_login": "pal",
+              "broadcaster_id": "id-pal",
+              "title": "Chess night",
+              "game_name": "Chess",
+              "game_id": "743",
+              "broadcaster_language": "en",
+              "tags": [
+                "a",
+                "b"
+              ]
+            }
+          ]
+        },
+        "GET videos": {
+          "data": [
+            {
+              "id": "v9",
+              "title": "Last stream",
+              "url": "https://twitch.tv/videos/9",
+              "duration": "1h2m3s",
+              "view_count": 40
+            }
+          ]
+        },
+        "GET chat/settings": {
+          "data": [
+            {
+              "slow_mode": true,
+              "slow_mode_wait_time": 10,
+              "follower_mode": false,
+              "subscriber_mode": false
+            }
+          ]
+        }
+      },
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "extras",
+        "subActions": [
+          {
+            "type": 99540,
+            "text": "hello %user%"
+          },
+          {
+            "type": 99541
+          },
+          {
+            "type": 99542,
+            "userLogin": "pal"
+          },
+          {
+            "type": 99543,
+            "userLogin": "pal",
+            "kind": 0
+          },
+          {
+            "type": 99544,
+            "mode": 0,
+            "value": "45",
+            "duration": 1
+          },
+          {
+            "type": 99664,
+            "stage": 1
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "extras",
+        "args": {
+          "user": "ana"
+        },
+        "wait": 300
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/enforcements/status",
+          "body": {
+            "data": [
+              {
+                "msg_text": "hello ana"
+              }
+            ]
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET shared_chat/session"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET channels",
+          "query": {
+            "broadcaster_id": "id-pal"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET videos",
+          "query": {
+            "user_id": "id-pal",
+            "type": "archive",
+            "first": "1"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "extras",
+          "after": {
+            "autoModPermitted": false,
+            "sharedChatActive": false,
+            "channelTitle": "Chess night",
+            "channelTags": "a, b",
+            "videoFound": true,
+            "videoUrl": "https://twitch.tv/videos/9",
+            "videoViews": 40
+          }
+        }
+      ],
+      "chat": [
+        {
+          "platform": "twitch",
+          "text": "/slow_mode for 1s"
+        },
+        {
+          "platform": "youtube",
+          "text": "/go live"
+        }
+      ]
+    }
   }
 ]

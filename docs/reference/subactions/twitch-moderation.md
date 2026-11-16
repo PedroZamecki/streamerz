@@ -571,3 +571,54 @@ None.
 - `followerModeDuration`: the minutes a follower waits (follower mode).
 - `slowModeWaitTime`: the seconds between messages (slow mode).
 - `chatDelayDuration`: the seconds of the chat delay.
+
+## Check AutoMod Status
+
+- Kind: sub-action
+- Code: 99540
+- Type: TwitchCheckAutoMod
+- Category: Twitch/Moderation
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Asks Twitch whether AutoMod would let a text through, before it is sent (a reply, a text to speech line). This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message | `text` | The text to check. Variables are filled in first. |
+
+### Arguments
+
+- `autoModPermitted`: true when it would be allowed.
+
+### Notes
+
+- It checks against the channel's own AutoMod settings and blocked terms.
+
+## Chat Mode for a While
+
+- Kind: sub-action
+- Code: 99544
+- Type: TwitchChatModeFor
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Turns a chat mode on and puts it back as it was after a while: slow mode, followers only, subscribers only, emote only or unique chat. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| mode | `mode` | Which mode. |
+| Seconds (slow) or minutes (followers), blank: 30 or any follower | `value` | Slow mode: the seconds between messages (empty: 30). Followers only: how many minutes they must have followed (empty: any follower). |
+| Duration | `duration` | How long it stays on. It needs a time, or it would never end. |
+
+### Arguments
+
+None set.
+
+### Notes
+
+- The chat goes back to what it was when this started: a mode that was already on stays on, with its old value.
+- If Streamerz closes first, the chat isn't put back: turn it off by hand.
