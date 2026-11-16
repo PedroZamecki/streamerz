@@ -969,7 +969,7 @@ above need them.
 
 ### Approved from the second list (2026-11-15: "implement all of those")
 
-Done here:
+Done here (each with scenarios, reference pages and both languages):
 
 - [x] Fetch URL: POST, PUT, PATCH and DELETE with a body and content type; `httpStatus` and `httpOk`.
 - [x] Countdown: subtract, set, pause, resume, toggle and get (a pause survives a restart).
@@ -981,11 +981,15 @@ Done here:
 
 Kept for later in this version, in this order:
 
-- [ ] Create Clip's title and duration, Clip from a VOD, Shared Chat (read the session; send to this chat
-  only), Check AutoMod Status before sending, Get Channel Videos, Get Channel Info for any channel.
-- [ ] Core: regex match and replace, JSON query, list operations, atomic counter, a cooldown gate,
-  format duration and time, get and set the clipboard.
-- [ ] YouTube: go live and end (Transition Broadcast), add a stream to a playlist, poll results.
+- [x] Twitch: Check AutoMod Status, Get Shared Chat, Get Channel Info for any channel, Get Latest Video,
+  Chat Mode for a While (puts the chat back after the time).
+- [ ] Twitch: Create Clip's title and duration and a clip from a VOD (the Twitch change behind them isn't
+  confirmed in Twitch's docs yet: check first), sending to this chat only in a Shared Chat.
+- [x] Core / Text and Data: regex match and replace, change text, split, JSON value, counter, cooldown gate,
+  format duration.
+- [ ] Core: list operations and get and set the clipboard (the clipboard is the window's, not the core's).
+- [x] YouTube: Go Live (testing, live); End Stream was already in.
+- [ ] YouTube: add a stream to a playlist, poll results.
 - [ ] Spotify and song requests: enable, disable and toggle requests, move one next, clear a user's,
   block a user or artist, change the rules; fade Spotify's volume.
 - [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
