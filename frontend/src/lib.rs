@@ -5,6 +5,8 @@ mod capture;
 mod controls;
 #[cfg(feature = "test-support")]
 mod dev;
+mod diag;
+pub mod error;
 mod i18n;
 mod theme;
 
@@ -17,6 +19,7 @@ use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
 
 use app::Frontend;
+pub use error::{ActiveError, ErrorAction, StreamerzError};
 
 gpui_kit::actions!(streamerz, [CoreUndo, CoreRedo, CoreSave]);
 
@@ -36,15 +39,32 @@ fn send(value: Value) {
 }
 
 /// Enter only in the renderer child. Stdout is reserved for the private core protocol.
-pub fn run() -> Result<(), String> {
+pub fn run() -> Result<(), Box<StreamerzError>> {
+    diag::init();
     let mut input = std::io::BufReader::new(std::io::stdin());
     let mut line = String::new();
-    input.read_line(&mut line).map_err(|error| error.to_string())?;
-    let mut ready: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
+    input.read_line(&mut line).map_err(|error| {
+        Box::new(StreamerzError::unexpected(format!(
+            "Core handshake read failed: {error}"
+        )))
+    })?;
+    let mut ready: Value = serde_json::from_str(&line)
+        .map_err(|error| Box::new(StreamerzError::validation(format!("Invalid core handshake: {error}"))))?;
     if ready["event"] != "core.ready" || ready["protocol"] != 1 {
-        return Err("incompatible core protocol".into());
+        return Err(Box::new(StreamerzError::unexpected("incompatible core protocol")));
     }
-    i18n::init(ready["translations"].take())?;
+    i18n::init(ready["translations"].take()).map_err(|error| Box::new(StreamerzError::from(error)))?;
+    diag::mark_ready(
+        ready["logDir"].as_str(),
+        ready["version"].as_str(),
+        ready["debugLog"].as_bool().unwrap_or(false),
+    );
+    let recovered_crash = ready["recoveredCrash"]
+        .is_object()
+        .then(|| ready["recoveredCrash"].clone());
+    let active_errors = ActiveError::list_from_value(&ready["activeErrors"]);
+    let startup_error: Arc<Mutex<Option<StreamerzError>>> = Arc::new(Mutex::new(None));
+    let startup_error_out = startup_error.clone();
     let input = Arc::new(Mutex::new(input));
     application().with_assets(assets::Assets).run(move |cx| {
         cx.set_app_identity("streamerz", "Streamerz");
@@ -99,7 +119,7 @@ pub fn run() -> Result<(), String> {
             WindowBounds::Windowed(bounds)
         };
 
-        let (window_handle, view) = gpui_kit::open_window(
+        let open_result = gpui_kit::open_window(
             WindowOptions {
                 app_id: Some("streamerz".into()),
                 window_bounds: Some(window_bounds),
@@ -112,6 +132,8 @@ pub fn run() -> Result<(), String> {
             cx,
             |window, cx| {
                 let initial_tab_clone = initial_tab.clone();
+                let recovered = recovered_crash.clone();
+                let initial_errors = active_errors.clone();
                 let frontend = cx.new(|cx| {
                     cx.observe_window_bounds(window, move |this: &mut Frontend, window, cx| {
                         this.window_bounds_changed(window, cx);
@@ -121,6 +143,8 @@ pub fn run() -> Result<(), String> {
                         ready["navigation"].clone(),
                         ready["title"].as_str().unwrap_or("Streamerz").to_owned(),
                         initial_tab_clone,
+                        recovered,
+                        initial_errors,
                     )
                 });
                 window.on_window_should_close(cx, move |window, _| {
@@ -149,8 +173,22 @@ pub fn run() -> Result<(), String> {
                 });
                 frontend
             },
-        )
-        .expect("Streamerz could not create its GPUI window");
+        );
+        let (window_handle, view) = match open_result {
+            Ok(opened) => opened,
+            Err(error) => {
+                let message = i18n::trf("crash.ui_open_window_failed", &[("error", &error.to_string())]);
+                let structured = StreamerzError::unexpected(message);
+                diag::log_error(structured.to_string());
+                if let Ok(mut slot) = startup_error_out.lock() {
+                    *slot = Some(structured);
+                }
+                cx.quit();
+                return;
+            }
+        };
+        diag::fact("UI page", &initial_tab);
+        diag::step(format!("opened window on page {initial_tab}"));
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -189,6 +227,9 @@ pub fn run() -> Result<(), String> {
                         #[cfg(not(feature = "test-support"))]
                         send(json!({"request": "FrontendDevResult", "commandId": value["commandId"], "result": "frontend instrumentation requires dev-ui"}));
                     } else if value["event"] == "core.changed" {
+                        if let Some(debug) = value["debugLog"].as_bool() {
+                            diag::set_debug(debug);
+                        }
                         if let Some(dark) = value["appearance"]["dark"].as_bool() {
                             cx.update(|cx| {
                                 if gpui_kit::component::Theme::global(cx).is_dark() != dark { theme::apply(dark, cx); }
@@ -213,12 +254,31 @@ pub fn run() -> Result<(), String> {
                             if relevant { view.request_read(); }
                         });
                     } else {
+                        if value["status"] == "error" && value["id"].as_str().is_some_and(|id| id.starts_with("page:")) {
+                            let detail = StreamerzError::from_response(&value)
+                                .map(|err| err.summary_line())
+                                .unwrap_or_else(|| value["error"].as_str().unwrap_or_default().to_owned());
+                            diag::log_warn(format!(
+                                "Page error ({}): {}",
+                                value["id"].as_str().unwrap_or_default(),
+                                detail
+                            ));
+                        }
                         let _ = window_handle.update(cx, |_, window, cx| {
                             view.update(cx, |view, cx| view.apply(value, window, cx))
                         });
                     }
                 }
-                _ => {
+                Ok(None) => {
+                    cx.update(|cx| cx.quit());
+                    break;
+                }
+                Err(error) => {
+                    let structured = StreamerzError::from_message(&format!("Core pipe error: {error}"));
+                    diag::log_error(structured.to_string());
+                    if let Ok(mut slot) = startup_error_out.lock() {
+                        *slot = Some(structured);
+                    }
                     cx.update(|cx| cx.quit());
                     break;
                 }
@@ -226,6 +286,9 @@ pub fn run() -> Result<(), String> {
         })
         .detach();
     });
+    if let Some(error) = startup_error.lock().ok().and_then(|mut s| s.take()) {
+        return Err(Box::new(error));
+    }
     Ok(())
 }
 

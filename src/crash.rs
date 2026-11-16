@@ -365,6 +365,15 @@ pub fn line(level: crate::Level, text: &str) {
     }
 }
 
+/// Flushes buffered log lines to `latest.log` (used on Error/Fatal and before crash reports).
+pub fn flush_log() {
+    if let Ok(mut l) = LOG.try_lock() {
+        if let Some((f, _)) = l.as_mut() {
+            let _ = f.flush();
+        }
+    }
+}
+
 /// A panic's message and where it happened.
 fn what_at(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
     let what = info
@@ -432,6 +441,134 @@ fn report(info: &std::panic::PanicHookInfo<'_>) {
     keep(&dir, "crash-", ".reported", KEEP_CRASHES);
     // The report is written: now keep what would be lost.
     crate::engine::save_and_wait();
+}
+
+fn unique_crash_path_for(dir: &Path, prefix: &str, stamp: &str, pid: u32) -> PathBuf {
+    for seq in 0..1000u32 {
+        let name = if seq == 0 {
+            format!("{prefix}{stamp}.txt")
+        } else {
+            format!("{prefix}{stamp}-{pid}-{seq}.txt")
+        };
+        let candidate = dir.join(name);
+        if !candidate.exists() && !candidate.with_extension("reported").exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{prefix}{stamp}-{pid}-overflow.txt"))
+}
+
+fn unique_crash_path(dir: &Path, prefix: &str) -> PathBuf {
+    let stamp = crate::fmt::date(&crate::fmt::now(), "yyyyMMdd-HHmmss");
+    unique_crash_path_for(dir, prefix, &stamp, std::process::id())
+}
+
+/// Logs a UI process panic to the unified backend log and saves/enriches `crash-ui-*.txt`.
+pub fn record_ui_panic(
+    thread: &str,
+    location: &str,
+    message: &str,
+    context: &str,
+    backtrace: &str,
+    existing_path: Option<&Path>,
+) -> PathBuf {
+    crate::fatal_ui(format!(
+        "Panic in thread '{thread}' at {}: {}",
+        if location.is_empty() { "?" } else { location },
+        private(message)
+    ));
+    let log = crate::log_tail_try(60);
+    record_ui_panic_in(
+        &dir(),
+        thread,
+        location,
+        message,
+        context,
+        backtrace,
+        existing_path,
+        &log,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_ui_panic_in(
+    dir: &Path,
+    thread: &str,
+    location: &str,
+    message: &str,
+    context: &str,
+    backtrace: &str,
+    existing_path: Option<&Path>,
+    log: &[String],
+) -> PathBuf {
+    let _ = std::fs::create_dir_all(dir);
+    let log_section = if log.is_empty() {
+        String::new()
+    } else {
+        format!("\nLast log lines:\n{}\n", private(&log.join("\n")))
+    };
+
+    if let Some(existing) = existing_path.filter(|p| p.parent() == Some(dir) && p.is_file()) {
+        if let Ok(mut content) = std::fs::read_to_string(existing) {
+            if !content.contains("\nLast log lines:\n") && !log_section.is_empty() {
+                if !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(&log_section);
+                let _ = std::fs::write(existing, private(&content));
+            }
+            keep(dir, "crash-", ".txt", KEEP_CRASHES);
+            keep(dir, "crash-", ".reported", KEEP_CRASHES);
+            return existing.to_path_buf();
+        }
+    }
+
+    let report = format!(
+        "Streamerz {} on {} {}\nPanic in UI thread '{thread}' at {location}:\n{message}\n\n{context}\nBacktrace:\n{backtrace}\n{log_section}",
+        crate::brand::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    let path = unique_crash_path(dir, "crash-ui-");
+    let _ = std::fs::write(&path, private(&report));
+    keep(dir, "crash-", ".txt", KEEP_CRASHES);
+    keep(dir, "crash-", ".reported", KEEP_CRASHES);
+    path
+}
+
+/// Logs an unexpected UI process termination (without a Rust panic frame) and writes `crash-ui-*.txt`.
+pub fn record_ui_unclean(status: &str) -> PathBuf {
+    crate::fatal_ui(format!("Stopped unexpectedly ({status})"));
+    let log = crate::log_tail_try(60);
+    record_ui_unclean_in(&dir(), status, &log)
+}
+
+fn record_ui_unclean_in(dir: &Path, status: &str, log: &[String]) -> PathBuf {
+    let _ = std::fs::create_dir_all(dir);
+    let tail_file = |name: &str, n: usize| {
+        let t = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+        let lines: Vec<&str> = t.lines().collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
+    };
+    let saved_context = std::fs::read_to_string(dir.join("context.txt")).unwrap_or_default();
+    let ctx = if saved_context.trim().is_empty() {
+        context()
+    } else {
+        saved_context
+    };
+    let stderr = tail_file("stderr.log", 40);
+    let report = format!(
+        "Streamerz {} on {} {}\nUI stopped without a crash message ({status}).\n\n{ctx}\nLast stderr lines:\n{stderr}\n\nLast log lines:\n{}\n",
+        crate::brand::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        log.join("\n"),
+    );
+    let path = unique_crash_path(dir, "crash-ui-");
+    let _ = std::fs::write(&path, private(&report));
+    keep(dir, "crash-", ".txt", KEEP_CRASHES);
+    keep(dir, "crash-", ".reported", KEEP_CRASHES);
+    path
 }
 
 /// The newest crash report nobody has dealt with, and its text. Only `crash-*.txt`: the folder also holds
@@ -745,5 +882,73 @@ mod tests {
         left.sort();
         assert_eq!(left, ["3.log.gz", "4.log.gz"]);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn ui_crash_paths_and_reports_do_not_collide_and_parse_cleanly() {
+        let d = std::env::temp_dir().join(format!("streamerz-ui-crash-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+
+        let p0 = unique_crash_path_for(&d, "crash-ui-", "20260401-120000", 42);
+        assert_eq!(p0.file_name().unwrap(), "crash-ui-20260401-120000.txt");
+        std::fs::write(&p0, "first").unwrap();
+        let p1 = unique_crash_path_for(&d, "crash-ui-", "20260401-120000", 42);
+        assert_eq!(p1.file_name().unwrap(), "crash-ui-20260401-120000-42-1.txt");
+        std::fs::write(p1.with_extension("reported"), "seen").unwrap();
+        let p2 = unique_crash_path_for(&d, "crash-ui-", "20260401-120000", 42);
+        assert_eq!(p2.file_name().unwrap(), "crash-ui-20260401-120000-42-2.txt");
+
+        // Enriching an existing report written by the UI process appends Last log lines without overwriting it.
+        let child_written = d.join("crash-ui-child.txt");
+        std::fs::write(
+            &child_written,
+            "Streamerz 1.9.0 on linux x86_64\nPanic in UI thread 'main' at form.rs:10:\nslider boom\n\nContext:\n  UI page: Overlays\n\nBacktrace:\nframe 0\n",
+        )
+        .unwrap();
+        let enriched = record_ui_panic_in(
+            &d,
+            "main",
+            "form.rs:10",
+            "slider boom",
+            "Context:\n",
+            "frame 0",
+            Some(&child_written),
+            &["[INFO] [UI] navigated".into(), "[FATAL] [UI] boom".into()],
+        );
+        assert_eq!(enriched, child_written);
+        let body = std::fs::read_to_string(&enriched).unwrap();
+        assert!(body.contains("Last log lines:\n[INFO] [UI] navigated\n[FATAL] [UI] boom"));
+        assert_eq!(summary(&body), ("1.9.0".into(), "slider boom".into()));
+
+        // Without a pre-written child report (e.g. abrupt SIGKILL/abort), record_ui_unclean builds one from context and stderr.
+        std::fs::write(d.join("context.txt"), "Context:\n  UI page: Overlays\n").unwrap();
+        std::fs::write(d.join("stderr.log"), "Wayland protocol error\n").unwrap();
+        let created = record_ui_panic_in(
+            &d,
+            "main",
+            "app.rs:5",
+            "direct panic",
+            "Context:\n  UI page: Overlays\n",
+            "bt",
+            None,
+            &["[WARN] [UI] warning".into()],
+        );
+        assert!(created.file_name().unwrap().to_string_lossy().starts_with("crash-ui-"));
+        let created_body = std::fs::read_to_string(&created).unwrap();
+        assert_eq!(summary(&created_body).1, "direct panic");
+
+        // Sleep or distinct name ensured by unique_crash_path for unclean exit too.
+        let unclean = record_ui_unclean_in(&d, "exit status: 139", &["[FATAL] [UI] signal".into()]);
+        assert_ne!(unclean, created);
+        let unclean_body = std::fs::read_to_string(&unclean).unwrap();
+        assert!(unclean_body.contains("Wayland protocol error"), "{unclean_body}");
+        assert!(unclean_body.contains("UI page: Overlays"), "{unclean_body}");
+        assert_eq!(
+            summary(&unclean_body).1,
+            "UI stopped without a crash message (exit status: 139)."
+        );
+
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
