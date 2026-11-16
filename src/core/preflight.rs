@@ -969,6 +969,7 @@ pub fn companion_script_path() -> PathBuf {
 
 /// The command line the OBS companion script uses to start Streamerz in the background.
 pub fn launch_command_args() -> Vec<String> {
+    #[cfg(not(windows))]
     if let Some(id) = crate::sandbox::app_id() {
         return vec!["flatpak".into(), "run".into(), id, "--hidden".into()];
     }
