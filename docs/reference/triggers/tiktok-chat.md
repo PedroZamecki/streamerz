@@ -57,3 +57,77 @@ None.
 ### When
 
 When a comment is pinned or unpinned during the TikTok LIVE.
+
+## Message Deleted
+
+- Kind: trigger
+- Code: 41014
+- Type: TikTokMessageDeleted
+- Category: TikTok/Chat
+- Needs: a TikTok channel set and connected
+
+Fires when TikTok deletes messages during a LIVE.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `channel`: the TikTok channel name.
+- `messageIds`, `userIds`: deleted message IDs and user IDs reported by TikTok.
+- `messageId`, `userId`: first deleted message ID and user ID, when present.
+
+### When
+
+When TikTok delivers a `messageDelete` moderation event during a LIVE.
+
+## Message Pinned
+
+- Kind: trigger
+- Code: 41015
+- Type: TikTokMessagePinned
+- Category: TikTok/Chat
+- Needs: a TikTok channel set and connected
+
+Fires when a comment is pinned in TikTok LIVE chat.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `user`, `userId`, `uniqueId`: the user whose comment was pinned.
+- `message`, `messageId`, `pinMsgId`: the pinned comment text and message IDs.
+- `pinnedBy`: the operator who pinned it, if provided.
+- `channel`: the TikTok channel name.
+
+### When
+
+When a comment is pinned during the TikTok LIVE.
+
+## Message Unpinned
+
+- Kind: trigger
+- Code: 41016
+- Type: TikTokMessageUnpinned
+- Category: TikTok/Chat
+- Needs: a TikTok channel set and connected
+
+Fires when a pinned comment is unpinned in TikTok LIVE chat.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `user`, `userId`, `uniqueId`: the user whose comment was unpinned.
+- `message`, `messageId`, `pinMsgId`: the unpinned comment text and IDs, if provided.
+- `pinnedBy`: the operator who unpinned it, if provided.
+- `channel`: the TikTok channel name.
+
+### When
+
+When a comment is unpinned during the TikTok LIVE.

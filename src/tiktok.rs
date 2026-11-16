@@ -33,6 +33,10 @@ pub const T_TIKTOK_DISCONNECTED: u32 = 41009;
 pub const T_TIKTOK_VIEWER_COUNT: u32 = 41010;
 pub const T_TIKTOK_STREAM_ONLINE: u32 = 41011;
 pub const T_TIKTOK_STREAM_OFFLINE: u32 = 41012;
+pub const T_TIKTOK_ROOM_PIN: u32 = 41013;
+pub const T_TIKTOK_MESSAGE_DELETED: u32 = 41014;
+pub const T_TIKTOK_MESSAGE_PINNED: u32 = 41015;
+pub const T_TIKTOK_MESSAGE_UNPINNED: u32 = 41016;
 
 /// The live being read: its viewers, likes and gifts, for Get Stream Info and Get Top Gifters.
 #[derive(Default)]
@@ -61,6 +65,11 @@ pub fn stream_info(live: bool) -> Obj {
         a.insert("totalCoins".into(), s.coins.into());
         a
     })
+}
+
+/// Live metrics already tracked in memory: (paused, total likes, gift coins).
+pub fn live_metrics() -> (bool, u64, u64) {
+    STREAM.with_borrow(|s| (s.paused, s.likes, s.coins))
 }
 
 /// Get Top Gifters' variables: the `count` who sent the most coins this live.
@@ -789,28 +798,78 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
 fn presentation_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &Value) -> bool {
     let emitted = match event {
         "messageDelete" => {
-            for id in d["deleteMsgIds"]
+            let msg_ids: Vec<String> = d["deleteMsgIds"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
-            {
+                .map(String::from)
+                .collect();
+            let user_ids: Vec<String> = d["deleteUserIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect();
+            for id in &msg_ids {
                 engine.chat_remove("tiktok", id, "");
                 engine.chat_unpinned("tiktok", id);
             }
-            for id in d["deleteUserIds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-            {
+            for id in &user_ids {
                 engine.chat_remove("tiktok", "", id);
             }
+            let mut args = Obj::new();
+            args.insert("channel".into(), channel.into());
+            args.insert("messageIds".into(), json!(msg_ids));
+            args.insert("userIds".into(), json!(user_ids));
+            if let Some(first) = msg_ids.first() {
+                args.insert("messageId".into(), first.clone().into());
+            }
+            if let Some(first) = user_ids.first() {
+                args.insert("userId".into(), first.clone().into());
+            }
+            engine.fire(
+                T_TIKTOK_MESSAGE_DELETED,
+                "TikTokMessageDeleted",
+                "TikTok/Chat",
+                "tiktok",
+                &args,
+                |_| true,
+            );
             "MessageDeleted"
         }
         "roomPin" => {
             let chat = &d["chatMessage"];
             let msg_id = chat["msgId"].as_str().filter(|id| *id != "0").unwrap_or_default();
+            let pin_msg_id = d["pinMsgId"]
+                .as_str()
+                .filter(|id| !id.is_empty() && *id != "0")
+                .unwrap_or_default();
+            let mut args = Obj::new();
+            args.insert("channel".into(), channel.into());
+            args.insert("pinMsgId".into(), pin_msg_id.into());
+            args.insert("messageId".into(), msg_id.into());
+            let pin_user = chat["nickname"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| chat["uniqueId"].as_str())
+                .unwrap_or_default();
+            args.insert("user".into(), pin_user.into());
+            if let Some(uid) = chat["userId"].as_str().filter(|s| !s.is_empty()) {
+                args.insert("userId".into(), uid.into());
+            }
+            if let Some(uniq) = chat["uniqueId"].as_str().filter(|s| !s.is_empty()) {
+                args.insert("uniqueId".into(), uniq.into());
+            }
+            args.insert("message".into(), chat["comment"].as_str().unwrap_or_default().into());
+            if let Some(by) = d["operator"]["nickname"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| d["operator"]["uniqueId"].as_str())
+            {
+                args.insert("pinnedBy".into(), by.into());
+            }
             match d["action"].as_u64() {
                 Some(1) if !msg_id.is_empty() && chat["comment"].as_str().is_some_and(|s| !s.is_empty()) => {
                     STREAM.with_borrow_mut(|s| s.pin_id = d["pinMsgId"].as_str().unwrap_or_default().into());
@@ -821,17 +880,29 @@ fn presentation_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &Value
                     engine.chat_pinned(crate::engine::chatlog::Pin {
                         platform: "tiktok".into(),
                         msg_id: msg_id.into(),
-                        user: chat["nickname"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .or_else(|| chat["uniqueId"].as_str())
-                            .unwrap_or_default()
-                            .into(),
+                        user: pin_user.into(),
                         text,
                         by: d["operator"]["nickname"].as_str().unwrap_or_default().into(),
                         // Expiry units are not established by the schema. Follow explicit cancellation.
                         until: None,
                     });
+                    args.insert("action".into(), "pin".into());
+                    engine.fire(
+                        T_TIKTOK_ROOM_PIN,
+                        "TikTokRoomPin",
+                        "TikTok/Chat",
+                        "tiktok",
+                        &args,
+                        |_| true,
+                    );
+                    engine.fire(
+                        T_TIKTOK_MESSAGE_PINNED,
+                        "TikTokMessagePinned",
+                        "TikTok/Chat",
+                        "tiktok",
+                        &args,
+                        |_| true,
+                    );
                 }
                 Some(2) => {
                     let id = d["pinMsgId"].as_str().filter(|id| !id.is_empty() && *id != "0");
@@ -840,6 +911,23 @@ fn presentation_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &Value
                     }
                     engine.chat_unpinned("tiktok", msg_id);
                     STREAM.with_borrow_mut(|s| s.pin_id.clear());
+                    args.insert("action".into(), "unpin".into());
+                    engine.fire(
+                        T_TIKTOK_ROOM_PIN,
+                        "TikTokRoomPin",
+                        "TikTok/Chat",
+                        "tiktok",
+                        &args,
+                        |_| true,
+                    );
+                    engine.fire(
+                        T_TIKTOK_MESSAGE_UNPINNED,
+                        "TikTokMessageUnpinned",
+                        "TikTok/Chat",
+                        "tiktok",
+                        &args,
+                        |_| true,
+                    );
                 }
                 _ => return true,
             }
@@ -850,6 +938,7 @@ fn presentation_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &Value
             if STREAM.with_borrow_mut(|s| std::mem::replace(&mut s.paused, paused)) == paused {
                 return true;
             }
+            crate::core::stream::tiktok_paused(paused);
             engine.chat_note(
                 "tiktok",
                 crate::i18n::tr(if paused {
