@@ -1,8 +1,10 @@
 //! A page's "Show" selector: the core lists the tables a page can show (`tabs`), one is drawn at a time.
+use crate::theme;
 use gpui_kit::component::{
     tab::{Tab, TabBar},
     ActiveTheme, Sizable,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::Value;
 
@@ -21,7 +23,19 @@ pub fn kinds(tabs: &Value) -> (Vec<String>, usize) {
     (kinds, selected)
 }
 
-/// The label and a segmented bar; `select` gets the kind that was picked.
+/// About how wide the label and the segmented bar are on one line: a page puts the bar in its toolbar
+/// when this and the rest of the toolbar fit.
+pub fn inline_width(tabs: &Value) -> f32 {
+    let label = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 6.8;
+    let bar: f32 = tabs["options"].as_array().into_iter().flatten().map(option_width).sum();
+    label + theme::SPACE_SM + bar
+}
+
+fn option_width(option: &Value) -> f32 {
+    26. + option["label"].as_str().unwrap_or_default().chars().count() as f32 * 6.8
+}
+
+/// The label and a segmented bar (or unified wrapping tray when many options wrap); `select` gets the kind that was picked.
 pub fn bar(
     tabs: &Value,
     window: &Window,
@@ -31,49 +45,119 @@ pub fn bar(
     let (kinds, selected) = kinds(tabs);
     let options = tabs["options"].as_array().map_or(&[][..], Vec::as_slice);
     let select = std::rc::Rc::new(select);
-    // Reserve the sidebar and page insets. Each chunk is still the same segmented tab control.
+    // Reserve the sidebar and page insets.
     let viewport = f32::from(window.viewport_size().width);
-    let room = (viewport - if viewport < 700. { 110. } else { 260. }).max(150.);
-    let widths: Vec<_> = options
-        .iter()
-        .map(|option| 30. + option["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.)
-        .collect();
-    let mut bars = div().flex().flex_wrap().items_center().gap_2().min_w_0();
-    for (chunk, range) in wrap_ranges(&widths, room).into_iter().enumerate() {
-        let offset = range.start;
+    let room = (viewport - if viewport < 700. { 96. } else { 230. }).max(150.);
+    let widths: Vec<_> = options.iter().map(option_width).collect();
+    let ranges = wrap_ranges(&widths, room);
+    let control = if ranges.len() <= 1 {
         let callback = select.clone();
         let kinds = kinds.clone();
-        bars = bars.child(
-            TabBar::new(SharedString::from(format!("page-tabs-{chunk}")))
-                .segmented()
-                .small()
-                .selected_index(if range.contains(&selected) {
-                    selected - offset
-                } else {
-                    usize::MAX
-                })
-                .children(options[range].iter().map(|option| {
-                    let label = option["label"].as_str().unwrap_or_default().to_owned();
-                    Tab::new().aria_label(label.clone()).label(label)
-                }))
-                .on_click(move |index, window, cx| {
-                    if let Some(kind) = kinds.get(offset + *index) {
-                        callback(kind.clone(), window, cx);
-                    }
-                }),
-        );
+        div()
+            .h(px(theme::CONTROL_HEIGHT))
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .child(
+                TabBar::new("page-tabs-0")
+                    .segmented()
+                    .small()
+                    .selected_index(if selected < options.len() { selected } else { usize::MAX })
+                    .children(options.iter().map(|option| {
+                        let label = option["label"].as_str().unwrap_or_default().to_owned();
+                        Tab::new().aria_label(label.clone()).label(label)
+                    }))
+                    .on_click(move |index, window, cx| {
+                        if let Some(kind) = kinds.get(*index) {
+                            callback(kind.clone(), window, cx);
+                        }
+                    }),
+            )
+            .into_any_element()
+    } else {
+        let mut tray = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(theme::SPACE_XS))
+            // A segmented control's own inner padding: its height is the 28 of a button when on one line.
+            .p(px(2.))
+            .w_full()
+            .min_w_0()
+            .rounded(px(8.))
+            .bg(cx.theme().sidebar)
+            .border_1()
+            .border_color(cx.theme().border);
+        for (index, option) in options.iter().enumerate() {
+            let label = option["label"].as_str().unwrap_or_default().to_owned();
+            let active = index == selected;
+            let callback = select.clone();
+            let kind = kinds.get(index).cloned().unwrap_or_default();
+            tray = tray.child(
+                div()
+                    .id(("page-tab", index))
+                    .test_support()
+                    .role(Role::Tab)
+                    .aria_label(label.clone())
+                    .cursor_pointer()
+                    .h(px(theme::CONTROL_HEIGHT - 6.))
+                    .flex()
+                    .items_center()
+                    .px(px(theme::SPACE_SM))
+                    .rounded(px(6.))
+                    .text_size(px(theme::FONT_CAPTION))
+                    .line_height(px(theme::LINE_CAPTION))
+                    .when(active, |pill| {
+                        pill.bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::strong(cx))
+                    })
+                    .when(!active, |pill| {
+                        pill.border_1()
+                            .border_color(gpui_kit::transparent_black())
+                            .text_color(theme::quiet(cx))
+                            .hover(|el| el.bg(cx.theme().muted).text_color(cx.theme().foreground))
+                    })
+                    .child(label)
+                    .on_click(move |_, window, cx| {
+                        if !kind.is_empty() {
+                            callback(kind.clone(), window, cx);
+                        }
+                    }),
+            );
+        }
+        tray.into_any_element()
+    };
+    let label = div()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .text_size(px(theme::FONT_CAPTION))
+        .line_height(px(theme::LINE_CAPTION))
+        .font_weight(FontWeight::BOLD)
+        .text_color(theme::quiet(cx))
+        .child(tabs["label"].as_str().unwrap_or_default().to_owned());
+    // One line: the label then the bar, a toolbar's height. Many options wrap in a tray under the label.
+    if ranges.len() <= 1 {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(theme::SPACE_SM))
+            .min_w_0()
+            .flex_shrink_0()
+            .child(label)
+            .child(control)
+    } else {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACE_XS))
+            .min_w_0()
+            .w_full()
+            .child(label)
+            .child(control)
     }
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .min_w_0()
-        .child(
-            div()
-                .text_color(cx.theme().muted_foreground)
-                .child(tabs["label"].as_str().unwrap_or_default().to_owned()),
-        )
-        .child(bars)
 }
 
 fn wrap_ranges(widths: &[f32], room: f32) -> Vec<std::ops::Range<usize>> {

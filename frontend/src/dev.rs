@@ -58,9 +58,23 @@ fn run(command: &str, view: &Entity<Frontend>, window: &mut Window, cx: &mut App
                 _ => "usage: resize WIDTH HEIGHT".into(),
             }
         }
+        "form" => {
+            if view.read(cx).inspect_form(argument) {
+                "ok".into()
+            } else {
+                "open a sections page first".into()
+            }
+        }
         "process" => std::process::id().to_string(),
         "currentpage" => view.read(cx).selected.clone(),
         "pageready" => view.read(cx).page_ready().to_string(),
+        "visiblelists" => view
+            .read(cx)
+            .visible_lists(cx)
+            .iter()
+            .map(|list| list.read(cx).kind().to_string())
+            .collect::<Vec<_>>()
+            .join(","),
         "renderer" => format!("{:?}", window.gpu_specs()),
         "shot" => {
             let path = argument.trim();
@@ -164,6 +178,10 @@ fn run(command: &str, view: &Entity<Frontend>, window: &mut Window, cx: &mut App
                 .join("\n")
         }
         "overflow" => json!(overflow(window)).to_string(),
+        "panic" => {
+            let msg = argument.trim();
+            panic!("{}", if msg.is_empty() { "simulated ui panic" } else { msg });
+        }
         _ => "unknown frontend command".into(),
     }
 }

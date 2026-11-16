@@ -8,8 +8,8 @@ use crate::{
         prompt::Prompt,
         sections::{Navigate, Sections},
     },
-    i18n::tr,
-    send, CoreRedo, CoreSave, CoreUndo,
+    i18n::{tr, trf},
+    send, theme, CoreRedo, CoreSave, CoreUndo,
 };
 use gpui_kit::base::Selectable;
 use gpui_kit::component::{
@@ -27,7 +27,7 @@ pub struct Frontend {
     version: String,
     status: Value,
     folded: bool,
-    status_error: String,
+    status_error: Option<crate::error::StreamerzError>,
     pub selected: String,
     history: Vec<String>,
     history_index: usize,
@@ -45,7 +45,9 @@ pub struct Frontend {
     log_subscription: Option<Subscription>,
     sections: Option<Entity<Sections>>,
     sections_subscription: Option<Subscription>,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
+    active_errors: Vec<crate::error::ActiveError>,
+    recovered_crash: Option<Value>,
     prompt: Option<Entity<Prompt>>,
     prompt_id: Option<u64>,
     generation: u64,
@@ -60,14 +62,30 @@ impl Frontend {
         !self.read_pending
             && self.data["domain"].as_str() == Some(self.selected.to_lowercase().replace(' ', "_").as_str())
     }
-    pub fn new(navigation: Value, version: String, tab: String) -> Self {
+    #[cfg(feature = "test-support")]
+    pub fn inspect_form(&self, kind: &str) -> bool {
+        if self.sections.is_none() {
+            return false;
+        }
+        send(
+            json!({"request": "StreamerzEntityForm", "kind": kind, "id": format!("sections:{}:form", self.generation)}),
+        );
+        true
+    }
+    pub fn new(
+        navigation: Value,
+        version: String,
+        tab: String,
+        recovered_crash: Option<Value>,
+        active_errors: Vec<crate::error::ActiveError>,
+    ) -> Self {
         let selected = if tab.is_empty() { "Chat".to_string() } else { tab };
         Self {
             navigation,
             version,
             status: Value::Null,
             folded: false,
-            status_error: String::new(),
+            status_error: None,
             selected: selected.clone(),
             history: vec![selected],
             history_index: 0,
@@ -84,7 +102,9 @@ impl Frontend {
             actions_subscription: None,
             sections: None,
             sections_subscription: None,
-            error: String::new(),
+            error: None,
+            active_errors,
+            recovered_crash,
             prompt: None,
             prompt_id: None,
             generation: 0,
@@ -140,7 +160,7 @@ impl Frontend {
         }
     }
     /// The tables of the page now: with tabs, only the one selected.
-    fn visible_lists(&self, cx: &App) -> Vec<Entity<List>> {
+    pub(crate) fn visible_lists(&self, cx: &App) -> Vec<Entity<List>> {
         let page = self.selected.to_lowercase().replace(' ', "_");
         let tabs = &self.data["tabs"];
         let shown = (self.data["domain"].as_str() == Some(page.as_str()) && tabs.is_object())
@@ -189,8 +209,16 @@ impl Frontend {
     }
     fn show_connections(&mut self, connections: Value, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let mut list = div().flex().flex_col().gap_1().min_w(px(360.));
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let max_h = crate::controls::dialog::fit_height(180., 140., 480., window);
+            let mut list = div()
+                .id("connections-list")
+                .w_full()
+                .max_h(px(max_h))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(theme::SPACE_XS));
             let items = connections.as_array().cloned().unwrap_or_default();
             if items.is_empty() {
                 list = list.child(
@@ -212,8 +240,8 @@ impl Frontend {
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .h(px(30.))
+                        .gap(px(theme::SPACE_SM))
+                        .h(px(theme::CONTROL_HEIGHT))
                         .child(
                             crate::controls::body::brand_logo(
                                 ("conn-logo", index),
@@ -242,10 +270,10 @@ impl Frontend {
                                 .id(("conn-state", index))
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(px(theme::SPACE_XS))
                                 .flex_shrink_0()
                                 .text_color(color)
-                                .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)))
+                                .child(Icon::empty().path(format!("icons/{icon}.svg")).size_3p5())
                                 .child(item["state"].as_str().unwrap_or_default().to_owned())
                                 .when(!tip.is_empty(), |state| {
                                     state.tooltip(move |window, cx| {
@@ -254,12 +282,12 @@ impl Frontend {
                                 }),
                         )
                         // A fixed slot, so the buttons line up whether or not a row has this one.
-                        .child(div().w(px(30.)).flex_shrink_0().when(!action.is_empty(), |slot| {
+                        .child(div().w(px(theme::CONTROL_HEIGHT)).flex_shrink_0().when(!action.is_empty(), |slot| {
                             let icon = if item["standby"] == true { "refresh-cw" } else { "plug" };
                             slot.child(
                                 Button::new(("conn-retry", index))
                                     .small()
-                                    .w(px(30.))
+                                    .w(px(theme::CONTROL_HEIGHT))
                                     .icon(Icon::empty().path(format!("icons/{icon}.svg")))
                                     .tooltip(action.clone())
                                     .accessibility_label(action.clone())
@@ -271,7 +299,7 @@ impl Frontend {
                         .child(
                             Button::new(("conn-settings", index))
                                 .small()
-                                .w(px(30.))
+                                .w(px(theme::CONTROL_HEIGHT))
                                 .icon(Icon::empty().path("icons/settings.svg"))
                                 .tooltip(settings)
                                 .accessibility_label(settings)
@@ -287,7 +315,7 @@ impl Frontend {
                 .label(tr("dialogs.close"))
                 .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx));
             let footer = crate::controls::dialog::footer(None, close, cx);
-            crate::controls::dialog::shell(dialog, tr("conns.title"), 460., cx)
+            crate::controls::dialog::shell(dialog, tr("conns.title"), 460., window, cx)
                 .child(crate::controls::dialog::body(list))
                 .footer(footer)
         });
@@ -298,6 +326,8 @@ impl Frontend {
     fn navigate_to(&mut self, page: &str, record_history: bool, window: &mut Window, cx: &mut Context<Self>) {
         if page != self.selected {
             self.selected = page.to_owned();
+            crate::diag::fact("UI page", &self.selected);
+            crate::diag::step(format!("navigated to {}", self.selected));
             send(json!({
                 "request": "StreamerzSelectPage",
                 "page": self.selected,
@@ -321,7 +351,7 @@ impl Frontend {
             self.generation += 1;
             self.read_pending = false;
             self.read_again = false;
-            self.error.clear();
+            self.error = None;
             window.close_dialog(cx);
         }
         self.request_read();
@@ -378,15 +408,16 @@ impl Frontend {
     pub fn apply(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let id = value["id"].as_str().unwrap_or_default().to_owned();
         if id == "status" {
+            self.active_errors = crate::error::ActiveError::list_from_value(&value["activeErrors"]);
             self.status = value;
             cx.notify();
             return;
         }
         if id == "save" {
-            if value["status"] == "error" {
-                self.status_error = value["error"].as_str().unwrap_or_default().to_owned();
+            if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+                self.status_error = Some(err);
             } else {
-                self.status_error.clear();
+                self.status_error = None;
                 window.push_notification(tr("ui.saved"), cx);
             }
             cx.notify();
@@ -409,11 +440,13 @@ impl Frontend {
                     .filter(|t| !t.is_empty())
                     .unwrap_or("Streamerz")
                     .to_owned();
+                let is_markdown = model["kind"] == "notice" && model["markdown"] == true;
                 self.prompt_id = model["id"].as_u64();
                 let prompt = cx.new(|cx| Prompt::new(model.clone(), window, cx));
                 self.prompt = Some(prompt.clone());
-                window.open_dialog(cx, move |dialog, _, cx| {
-                    crate::controls::dialog::shell(dialog, title.clone(), 448., cx)
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    let width = if is_markdown { 620. } else { 448. };
+                    crate::controls::dialog::shell(dialog, title.clone(), width, window, cx)
                         .child(crate::controls::dialog::body(prompt.clone()))
                         .footer(prompt.read(cx).buttons_view())
                         .on_cancel({
@@ -429,11 +462,11 @@ impl Frontend {
             return;
         }
         if id.strip_prefix("prompt:").and_then(|id| id.parse().ok()) == self.prompt_id && self.prompt_id.is_some() {
-            if value["status"] == "error" {
+            if let Some(err) = crate::error::StreamerzError::from_response(&value) {
                 if let Some(prompt) = &self.prompt {
                     prompt.update(cx, |prompt, cx| {
                         prompt.pending = false;
-                        prompt.error = value["error"].as_str().unwrap_or_default().to_owned();
+                        prompt.error = Some(err);
                         cx.notify();
                     });
                 }
@@ -481,9 +514,10 @@ impl Frontend {
             return;
         }
         self.read_pending = false;
-        if value["status"] == "error" {
-            self.error = value["error"].as_str().unwrap_or_default().to_owned();
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+            self.error = Some(err);
         } else if value["domain"].as_str() == Some(self.selected.to_lowercase().replace(' ', "_").as_str()) {
+            self.error = None;
             if value["log"].is_object() {
                 match &self.log {
                     Some(log) => log.update(cx, |log, cx| log.update_model(value.clone(), window, cx)),
@@ -548,13 +582,21 @@ impl Frontend {
                     }
                 }
             }
+            let content_width = self.content_width(window);
             for model in value["tables"].as_array().into_iter().flatten() {
                 let kind = model["kind"].as_str().unwrap_or_default();
                 if let Some(list) = self.lists.iter().find(|list| list.read(cx).kind() == kind) {
-                    list.update(cx, |list, cx| list.update_model(model.clone(), window, cx));
+                    list.update(cx, |list, cx| {
+                        list.update_model(model.clone(), window, cx);
+                        list.set_fit(content_width, cx);
+                    });
                 } else {
                     let route = format!("list:{}:{kind}", self.generation);
-                    let list = cx.new(|cx| List::new(model.clone(), route, window, cx));
+                    let list = cx.new(|cx| {
+                        let mut list = List::new(model.clone(), route, window, cx);
+                        list.set_fit(content_width, cx);
+                        list
+                    });
                     self.list_subscriptions.push(cx.subscribe_in(
                         &list,
                         window,
@@ -579,6 +621,19 @@ impl Frontend {
         }
         cx.notify();
     }
+    fn content_width(&self, window: &Window) -> f32 {
+        content_width_for(f32::from(window.viewport_size().width), self.folded)
+    }
+}
+
+fn content_width_for(viewport_width: f32, folded: bool) -> f32 {
+    let narrow = viewport_width < 700. || folded;
+    let sidebar = if narrow {
+        theme::SIDEBAR_FOLDED_WIDTH
+    } else {
+        theme::SIDEBAR_WIDTH
+    };
+    (viewport_width - sidebar - 2. * theme::PAGE_PAD_X).max(1.)
 }
 /// A development build (as `src/brand.rs` decides it: debug, or built without a release version).
 const IS_DEV: bool = cfg!(debug_assertions) || option_env!("STREAMERZ_VERSION").is_none();
@@ -601,13 +656,13 @@ impl Render for Frontend {
             .gap_0()
             .overflow_y_scrollbar();
         // Fixed above the list: it stays in view while the pages scroll.
-        let fold_button = div().flex().h(px(24.)).ml(px(5.)).child(
+        let fold_button = div().flex().flex_shrink_0().child(
             Button::new("fold")
-                .mt(px(-2.))
-                .text_color(rgb(if cx.theme().is_dark() { 0xb4b4b5 } else { 0x4c4c4d }))
+                .text_color(theme::nav_foreground(cx))
                 .small()
                 .ghost()
-                .w(px(26.))
+                .w(px(theme::CONTROL_HEIGHT))
+                .h(px(theme::CONTROL_HEIGHT))
                 .px(px(0.))
                 .child(
                     Icon::empty()
@@ -616,7 +671,7 @@ impl Render for Frontend {
                         } else {
                             "icons/panel-left-close.svg"
                         })
-                        .size(px(17.)),
+                        .size_4(),
                 )
                 .accessibility_label(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
                 .tooltip(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
@@ -627,24 +682,25 @@ impl Render for Frontend {
                 })),
         );
         let mut title = self.selected.clone();
-        let selected_bg: Hsla = rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }).into();
-        for section in self.navigation.as_array().into_iter().flatten() {
+        let mut page_icon: Option<String> = None;
+        let selected_bg = theme::nav_selected_bg(cx);
+        for (group, section) in self.navigation.as_array().into_iter().flatten().enumerate() {
             navigation = navigation.child(if narrow {
                 // Folded: a line above each group in place of its label (the first one too).
-                div().h(px(18.)).flex().justify_center().child(
-                    div().w(px(24.)).h(px(1.)).mt(px(10.)).bg(rgb(if cx.theme().is_dark() {
-                        0x2b2b2e
-                    } else {
-                        0xdcdcdd
-                    })),
-                )
+                div()
+                    .flex()
+                    .justify_center()
+                    .py(px(theme::SPACE_SM))
+                    .child(div().w(px(24.)).h(px(1.)).bg(theme::nav_divider(cx)))
             } else {
                 div()
-                    .h(px(18.))
-                    .pt(px(1.))
-                    .pl(px(8.))
-                    .text_size(px(11.))
-                    .text_color(crate::theme::quiet(cx))
+                    .px(px(theme::SPACE_MD))
+                    .pt(px(if group == 0 { theme::SPACE_XS } else { theme::SPACE_MD }))
+                    .pb(px(theme::SPACE_XS))
+                    .text_size(px(theme::FONT_MICRO))
+                    .line_height(px(theme::LINE_MICRO))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme::quiet(cx))
                     .child(section["label"].as_str().unwrap_or_default().to_uppercase())
             });
             for page in section["pages"].as_array().into_iter().flatten() {
@@ -653,13 +709,13 @@ impl Render for Frontend {
                 let label = page["label"].as_str().unwrap_or_default().to_owned();
                 if selected {
                     title = label.clone();
+                    page_icon = page["icon"].as_str().map(str::to_owned);
                 }
                 navigation = navigation.child(
                     Button::new(SharedString::from(id.clone()))
                         .small()
-                        .h(px(23.))
-                        .mb(px(2.))
-                        .px(px(10.))
+                        .h(px(theme::NAV_ITEM_HEIGHT))
+                        .px(px(if narrow { 0. } else { theme::SPACE_MD }))
                         .w_full()
                         .ghost()
                         .when(selected, |button| button.bg(selected_bg).font_weight(FontWeight::BOLD))
@@ -671,12 +727,14 @@ impl Render for Frontend {
                                 .w_full()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.))
-                                .text_size(px(13.))
+                                .when(narrow, |row| row.justify_center())
+                                .gap(px(theme::SPACE_SM))
+                                .text_size(px(theme::FONT_BODY))
+                                .line_height(px(theme::LINE_BODY))
                                 .text_color(if selected {
                                     cx.theme().foreground
                                 } else {
-                                    rgb(if cx.theme().is_dark() { 0xb4b4b5 } else { 0x4c4c4d }).into()
+                                    theme::nav_foreground(cx)
                                 })
                                 .when(selected, |row| row.font_weight(FontWeight::BOLD))
                                 .child(
@@ -698,12 +756,12 @@ impl Render for Frontend {
             .id("about")
             .flex()
             .items_center()
-            .gap_2()
-            .h(px(40.))
-            .mx_1()
-            .pl(px(2.))
+            .gap(px(theme::SPACE_SM))
+            .flex_shrink_0()
+            .py(px(theme::SPACE_XS))
+            .when(narrow, |footer| footer.justify_center())
             .border_t_1()
-            .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }))
+            .border_color(theme::nav_divider(cx))
             .child(
                 // The logo of the look: the dark one on the dark theme; a development
                 // build has its own (the tray's), so it is never taken for the installed app.
@@ -727,7 +785,8 @@ impl Render for Frontend {
                         .child(
                             div()
                                 .font_weight(FontWeight::BOLD)
-                                .text_size(px(13.))
+                                .text_size(px(theme::FONT_BODY))
+                                .line_height(px(theme::LINE_BODY))
                                 .child(name.to_owned()),
                         )
                         .child({
@@ -735,8 +794,9 @@ impl Render for Frontend {
                             let ver_tip = ver.clone();
                             div()
                                 .id("app-version")
-                                .text_size(px(12.))
-                                .text_color(crate::theme::quiet(cx))
+                                .text_size(px(theme::FONT_CAPTION))
+                                .line_height(px(theme::LINE_CAPTION))
+                                .text_color(theme::quiet(cx))
                                 .truncate()
                                 .child(ver)
                                 .when(!ver_tip.is_empty(), |el| {
@@ -750,47 +810,224 @@ impl Render for Frontend {
         let navigation = div()
             .flex()
             .flex_col()
-            .w(px(if narrow { 52. } else { 176. }))
+            .w(px(if narrow {
+                theme::SIDEBAR_FOLDED_WIDTH
+            } else {
+                theme::SIDEBAR_WIDTH
+            }))
             .flex_shrink_0()
             .h_full()
-            .px(px(8.))
-            .pt(px(8.))
+            .px(px(theme::SPACE_SM))
+            .pt(px(theme::SPACE_SM))
             .bg(cx.theme().sidebar)
             .border_r_1()
-            .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xd4d4d8 }))
+            .border_color(theme::sidebar_border(cx))
             .child(fold_button)
             .child(navigation)
             .child(footer);
+        // The page frame (docs/UI.md): 16 left, 16 top, 12 bottom, 12 between its parts. It has no
+        // right padding: the parts above the body take it themselves (`head`) and the body takes it
+        // inside its own box, so a scrollbar sits within the 16px right gutter.
         let mut content = div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
-            .px(px(10.))
-            .pt(px(8.))
-            .pb(px(10.))
-            .gap_2()
-            .when(
-                self.lists.is_empty()
-                    && self.sections.is_none()
-                    && self.log.is_none()
-                    && self.chat.is_none()
-                    && self.actions.is_none(),
-                |content| content.child(div().text_lg().child(title)),
-            );
-        if !self.error.is_empty() {
-            content = content.child(div().text_color(cx.theme().danger).child(self.error.clone()));
-        }
+            .pl(px(theme::PAGE_PAD_X))
+            .pt(px(theme::PAGE_PAD_TOP))
+            .pb(px(theme::PAGE_PAD_BOTTOM))
+            .gap(px(theme::SPACE_MD));
+        // The header, banners and tabs, above the body.
+        let mut head = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(theme::SPACE_MD))
+            .pr(px(theme::PAGE_PAD_X));
+        let mut head_parts = 0;
         let visible = self.visible_lists(cx);
         let page = self.selected.to_lowercase().replace(' ', "_");
+        // Sections and lists that follow the page's title and sections: a heading shows only when the
+        // page has more than one section, and never repeats the page's title.
+        if let Some(sections) = &self.sections {
+            sections.update(cx, |sections, _| sections.set_page(title.clone()));
+        }
+        let list_sections = visible.len();
+        // A list that stands for the page hands its page-wide buttons (Add, Pause all) to the header.
+        let mut header_actions = None;
+        let content_width = self.content_width(window);
+        for (index, list) in visible.iter().enumerate() {
+            let page_title = title.clone();
+            let single = list_sections == 1 && self.sections.is_none();
+            let host = list.update(cx, |list, cx| {
+                list.set_page(page_title, single, index == 0);
+                list.set_fit(content_width, cx);
+                list.hosts_actions(cx)
+            });
+            if host
+                && header_actions.is_none()
+                && self.sections.is_none()
+                && self.log.is_none()
+                && self.actions.is_none()
+            {
+                header_actions = Some(list.read(cx).header_actions_view().into_any_element());
+            }
+        }
+        if let Some(actions) = &self.actions {
+            header_actions = Some(actions.read(cx).header_actions_view(cx).into_any_element());
+        }
+        if self.chat.is_none() {
+            head = head.child(crate::controls::page::header(
+                page_icon.as_deref(),
+                title,
+                header_actions,
+                cx,
+            ));
+            head_parts += 1;
+        }
+        if let Some(crash) = &self.recovered_crash {
+            let summary = crash["summary"].as_str().unwrap_or("unknown error");
+            let banner_text = trf("crash.ui_restored_banner", &[("summary", summary)]);
+            head_parts += 1;
+            head = head.child(
+                div()
+                    .id("ui-recovery-banner")
+                    .test_support()
+                    .role(Role::Alert)
+                    .aria_label(banner_text.clone())
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .gap(px(theme::SPACE_SM))
+                    .px(px(theme::SPACE_MD))
+                    .py(px(theme::SPACE_SM))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(cx.theme().warning.opacity(0.35))
+                    .bg(cx.theme().warning.opacity(0.12))
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(px(theme::SPACE_SM))
+                            .child(
+                                div()
+                                    .h(px(theme::LINE_CAPTION))
+                                    .flex()
+                                    .items_center()
+                                    .flex_shrink_0()
+                                    .text_color(cx.theme().warning)
+                                    .child(Icon::empty().path("icons/triangle-alert.svg").size_3p5()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(theme::FONT_CAPTION))
+                                    .line_height(px(theme::LINE_CAPTION))
+                                    .child(banner_text),
+                            )
+                            .child(
+                                Button::new("dismiss-crash-banner")
+                                    .small()
+                                    .ghost()
+                                    .icon(Icon::empty().path("icons/x.svg"))
+                                    .accessibility_label(tr("dialogs.close"))
+                                    .tooltip(tr("dialogs.close"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.recovered_crash = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(theme::SPACE_SM))
+                            .child(
+                                Button::new("crash-banner-crashes")
+                                    .small()
+                                    .label(tr("crash.ui_view_crashes"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.select("Crashes", window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("crash-banner-log")
+                                    .small()
+                                    .label(tr("crash.ui_view_log"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.select("Log", window, cx);
+                                    })),
+                            ),
+                    ),
+            );
+        }
+        for (index, active) in self.active_errors.iter().enumerate() {
+            let action_btn = active.error.action.as_ref().map(|action| {
+                let kind = action.kind.clone();
+                let target = action.target.clone();
+                let label = action.label.clone();
+                let btn_id = if action.id.is_empty() {
+                    format!("active-error-action-{index}")
+                } else {
+                    action.id.clone()
+                };
+                Button::new(SharedString::from(btn_id))
+                    .small()
+                    .label(label.clone())
+                    .accessibility_label(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if kind == "navigate" {
+                            this.select(&target, window, cx);
+                        } else if kind == "retry_server" {
+                            send(json!({
+                                "request": "StreamerzRetryServer",
+                                "server": target,
+                                "id": "retry-server"
+                            }));
+                        }
+                    }))
+                    .into_any_element()
+            });
+            let dismiss_key = active.key.clone();
+            let dismiss_btn = Button::new(("dismiss-active-error", index))
+                .small()
+                .ghost()
+                .icon(Icon::empty().path("icons/x.svg"))
+                .accessibility_label(tr("dialogs.close"))
+                .tooltip(tr("dialogs.close"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let key = dismiss_key.clone();
+                    this.active_errors.retain(|item| item.key != key);
+                    send(json!({"request": "StreamerzDismissError", "key": key, "id": "dismiss-error"}));
+                    cx.notify();
+                }))
+                .into_any_element();
+            head_parts += 1;
+            head = head.child(crate::controls::notice::active_banner(
+                index,
+                active,
+                action_btn,
+                dismiss_btn,
+                cx,
+            ));
+        }
+        if let Some(err) = &self.error {
+            head_parts += 1;
+            head = head.child(crate::controls::notice::error(err, cx));
+        }
         if visible.len() != 1 && self.data["tabs"].is_object() && self.data["domain"].as_str() == Some(page.as_str()) {
             let mut tabs = self.data["tabs"].clone();
             if let Some(kind) = self.view["tab"].as_str() {
                 tabs["selected"] = kind.into();
             }
             let owner = cx.entity().downgrade();
-            content = content.child(crate::controls::tabs::bar(&tabs, window, cx, move |kind, _, cx| {
+            head_parts += 1;
+            head = head.child(crate::controls::tabs::bar(&tabs, window, cx, move |kind, _, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     this.view["tab"] = kind.into();
                     this.request_read();
@@ -798,41 +1035,31 @@ impl Render for Frontend {
                 });
             }));
         }
+        // The body takes the frame's right padding inside its own box, so a scrollbar draws within it.
+        let body = || div().flex_1().min_h_0().pr(px(theme::PAGE_PAD_X));
+        let mut body_view = None;
         if let Some(log) = &self.log {
-            content = content.child(div().flex_1().min_h_0().child(log.clone()));
+            body_view = Some(body().child(log.clone()).into_any_element());
         } else if let Some(chat) = &self.chat {
-            content = content.child(div().flex_1().min_h_0().child(chat.clone()));
+            body_view = Some(body().child(chat.clone()).into_any_element());
         } else if let Some(actions) = &self.actions {
-            content = content.child(div().flex_1().min_h_0().child(actions.clone()));
+            body_view = Some(body().child(actions.clone()).into_any_element());
         } else if let Some(sections) = &self.sections {
-            content = content.child(
-                div()
+            body_view = Some(
+                body()
                     .id("page-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .mt(px(-8.))
-                    .mr(px(-10.))
-                    .mb(px(-10.))
-                    .pt(px(10.))
-                    .pr(px(24.))
                     .overflow_y_scrollbar()
-                    .child(sections.clone()),
+                    .child(sections.clone())
+                    .into_any_element(),
             );
         } else if visible.len() == 1 {
-            content = content.child(div().flex_1().min_h_0().child(visible[0].clone()));
+            body_view = Some(body().child(visible[0].clone()).into_any_element());
         } else if !visible.is_empty() {
-            let mut sections = div()
+            let mut sections = body()
                 .id("page-sections")
                 .flex()
                 .flex_col()
-                .flex_1()
-                .min_h_0()
-                .gap_1()
-                // A page that ends in a read-only table fits without a scrollbar's room.
-                .when(
-                    visible.last().is_some_and(|list| list.read(cx).has_actions()),
-                    |sections| sections.pr(px(14.)),
-                )
+                .gap(px(theme::SECTION_GAP))
                 .overflow_y_scroll();
             // The first table's introduction sits above the sections, so they share the height evenly.
             let lead = visible.first().and_then(|list| {
@@ -840,27 +1067,23 @@ impl Render for Frontend {
                 list.read(cx).intro_block(cx)
             });
             if let Some(lead) = lead {
-                content = content.child(lead);
+                head_parts += 1;
+                head = head.child(lead);
             }
-            for (index, list) in visible.iter().enumerate() {
-                let last = index + 1 == visible.len();
-                let section = if list.read(cx).has_inline() {
+            for list in &visible {
+                let section = if list.read(cx).has_inline()
+                    || list.read(cx).is_settings()
+                    || list.read(cx).is_connections()
+                    || list.read(cx).is_cards()
+                    || list.read(cx).hugs()
+                {
                     div().flex_shrink_0()
-                } else if list.read(cx).is_settings() {
-                    div().h(px(204.)).flex_shrink_0()
-                } else if list.read(cx).is_connections() || list.read(cx).is_cards() {
-                    div().flex_shrink_0().when(!last, |el| el.pb(px(12.)))
                 } else if list.read(cx).has_connection() {
-                    // Connection sections share the page evenly (page padding 20, footer 46, gaps 4).
-                    let count = visible.len() as f32;
-                    let each = (f32::from(window.viewport_size().height) - 66. - 4. * (count - 1.)) / count;
-                    div().h(px(each.max(260.))).flex_shrink_0()
-                } else if index + 1 == visible.len() && !list.read(cx).has_actions() {
-                    // The last table (pending items) has a fixed height, the ones above take the rest.
-                    div().h(px(247.)).flex_shrink_0()
+                    // Connection sections share the page evenly.
+                    div().min_h(px(260.)).flex_grow(1.).flex_shrink(1.).flex_basis(px(0.))
                 } else {
                     div()
-                        .min_h(px(140.))
+                        .min_h(px(list.read(cx).section_min_height()))
                         .flex_grow(1.)
                         .flex_shrink(1.)
                         .flex_basis(px(0.))
@@ -872,28 +1095,31 @@ impl Render for Frontend {
             for list in visible.iter().filter(|list| list.read(cx).buttons_last()) {
                 sections = sections.child(list.read(cx).buttons_view());
             }
-            content = content.child(sections);
-        } else {
-            content = content.child(div().flex_1());
+            body_view = Some(sections.into_any_element());
         }
+        if head_parts > 0 {
+            content = content.child(head);
+        }
+        content = content.child(body_view.unwrap_or_else(|| div().flex_1().into_any_element()));
         let (icon, color) = crate::controls::health::appearance(self.status["health"].as_str().unwrap_or("off"), cx);
-        let status_text = if self.status_error.is_empty() {
-            self.status["text"].as_str().unwrap_or_default().to_owned()
+        let (status_text, status_tip) = if let Some(err) = &self.status_error {
+            (err.summary_line(), err.full_label())
         } else {
-            self.status_error.clone()
+            let text = self.status["text"].as_str().unwrap_or_default().to_owned();
+            (text.clone(), text)
         };
         let connections = self.status["connections"].clone();
         let bar = div()
             .flex()
             .items_center()
-            .gap_2()
-            .px(px(10.))
-            .pt(px(6.))
-            .pb(px(8.))
+            .gap(px(theme::SPACE_SM))
+            .px(px(theme::PAGE_PAD_X))
+            .py(px(theme::SPACE_SM))
             .flex_shrink_0()
             .child(
                 Button::new("save")
-                    .w(px(36.))
+                    .w(px(theme::CONTROL_HEIGHT))
+                    .h(px(theme::CONTROL_HEIGHT))
                     .child(bar_content("save", tr("btn.save"), true, cx))
                     .accessibility_label(tr("btn.save"))
                     .tooltip(tr("ui.save_tooltip"))
@@ -904,22 +1130,17 @@ impl Render for Frontend {
                     .id("connections-status")
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(px(theme::SPACE_SM))
                     .flex_1()
                     .min_w_0()
                     .cursor_pointer()
-                    .text_color(if self.status_error.is_empty() {
+                    .text_color(if self.status_error.is_none() {
                         color
                     } else {
                         cx.theme().danger
                     })
-                    .child(
-                        div()
-                            .ml(px(3.))
-                            .child(Icon::empty().path(format!("icons/{icon}.svg")).small()),
-                    )
+                    .child(Icon::empty().path(format!("icons/{icon}.svg")).small())
                     .child({
-                        let status_tip = status_text.clone();
                         div()
                             .id("status-text")
                             .truncate()
@@ -936,7 +1157,8 @@ impl Render for Frontend {
             )
             .child(
                 Button::new("hide")
-                    .when(small, |button| button.w(px(36.)))
+                    .h(px(theme::CONTROL_HEIGHT))
+                    .when(small, |button| button.w(px(theme::CONTROL_HEIGHT)))
                     .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("eye-off", tr("btn.hide"), small, cx))
                     .accessibility_label(tr("btn.hide"))
@@ -944,7 +1166,8 @@ impl Render for Frontend {
             )
             .child(
                 Button::new("quit")
-                    .when(small, |button| button.w(px(36.)))
+                    .h(px(theme::CONTROL_HEIGHT))
+                    .when(small, |button| button.w(px(theme::CONTROL_HEIGHT)))
                     .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("log-out", tr("btn.quit"), small, cx))
                     .accessibility_label(tr("btn.quit"))
@@ -997,12 +1220,12 @@ mod tests {
 
     #[test]
     fn history_navigation_tracks_pages_and_back_forward() {
-        let mut frontend = Frontend::new(json!([]), "Streamerz".into(), "Chat".into());
+        let mut frontend = Frontend::new(json!([]), "Streamerz".into(), "Chat".into(), None, vec![]);
         assert_eq!(frontend.selected, "Chat");
         assert_eq!(frontend.history, vec!["Chat".to_string()]);
         assert_eq!(frontend.history_index, 0);
 
-        let custom = Frontend::new(json!([]), "Streamerz".into(), "Settings".into());
+        let custom = Frontend::new(json!([]), "Streamerz".into(), "Settings".into(), None, vec![]);
         assert_eq!(custom.selected, "Settings");
         assert_eq!(custom.history, vec!["Settings".to_string()]);
 
@@ -1047,5 +1270,26 @@ mod tests {
 
         assert_eq!(frontend.history, vec!["Chat", "Actions", "Settings"]);
         assert_eq!(frontend.history_index, 2);
+    }
+
+    #[test]
+    fn recovered_crash_banner_state_is_preserved_until_dismissed() {
+        let crash = json!({"summary": "simulated panic", "path": "/tmp/crash-ui.txt"});
+        let frontend = Frontend::new(
+            json!([]),
+            "Streamerz".into(),
+            "Chat".into(),
+            Some(crash.clone()),
+            vec![],
+        );
+        assert_eq!(frontend.recovered_crash, Some(crash));
+    }
+
+    #[test]
+    fn content_width_tracks_viewport_and_sidebar_folding() {
+        assert_eq!(super::content_width_for(1512., false), 1304.);
+        assert_eq!(super::content_width_for(1100., false), 892.);
+        assert_eq!(super::content_width_for(1100., true), 1016.);
+        assert_eq!(super::content_width_for(540., false), 456.);
     }
 }

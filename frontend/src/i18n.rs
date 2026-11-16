@@ -18,3 +18,11 @@ pub fn tr(key: &'static str) -> &'static str {
         .and_then(|catalog| catalog.get(key))
         .map_or(key, String::as_str)
 }
+
+pub fn trf(key: &'static str, vars: &[(&str, &str)]) -> String {
+    let mut text = tr(key).to_owned();
+    for (name, value) in vars {
+        text = text.replace(&format!("{{{name}}}"), value);
+    }
+    text
+}

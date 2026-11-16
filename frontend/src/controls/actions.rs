@@ -5,6 +5,10 @@ use super::{
     picker::{Chosen, Picked, Picker},
     tree::{Node, Options, PaneEvent, TreePane},
 };
+use crate::theme::{
+    FONT_BODY, HEADER_ROW_HEIGHT, LINE_BODY, PAGE_PAD_X, SIDEBAR_FOLDED_WIDTH, SIDEBAR_WIDTH, SPACE_MD, SPACE_SM,
+    SPACE_XS,
+};
 use crate::{i18n::tr, send};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
@@ -42,7 +46,7 @@ pub struct ActionsPage {
     /// The button that asked for a picker, and its row.
     asked: Option<(Value, Option<Node>)>,
     select_after: Option<String>,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,7 +57,10 @@ impl ActionsPage {
                 "actions",
                 model["actions"]["tree"].clone(),
                 true,
-                Options::default(),
+                Options {
+                    in_header: true,
+                    ..Options::default()
+                },
                 window,
                 cx,
             )
@@ -76,11 +83,16 @@ impl ActionsPage {
             picker_choice: String::new(),
             asked: None,
             select_after: None,
-            error: String::new(),
+            error: None,
             _subscriptions: vec![subscription],
         };
         page.sync_editor(window, cx);
         page
+    }
+
+    /// The page-wide buttons (Add, Import, Templates), drawn in the page's header.
+    pub fn header_actions_view(&self, cx: &App) -> Entity<super::tree::HeaderButtons> {
+        self.actions.read(cx).header_view()
     }
 
     /// What the page says about the open action, or about nothing being open.
@@ -188,8 +200,10 @@ impl ActionsPage {
             }
             PaneEvent::Press { spec, node } => self.press(pane, spec.clone(), node.clone(), window, cx),
             PaneEvent::Filter(query) => {
-                if let Some(triggers) = &self.triggers {
-                    triggers.update(cx, |pane, cx| pane.set_filter(query, cx));
+                if pane == Pane::Subs {
+                    if let Some(triggers) = &self.triggers {
+                        triggers.update(cx, |pane, cx| pane.set_filter(query, cx));
+                    }
                 }
             }
         }
@@ -216,7 +230,7 @@ impl ActionsPage {
         let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
         let danger = spec["danger"] == true;
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let (owner, spec, node) = (owner.clone(), spec.clone(), node.clone());
             let confirm = Button::new("confirm-action")
                 .label(label.clone())
@@ -232,7 +246,7 @@ impl ActionsPage {
                 .aria_label(label.clone())
                 .flex()
                 .justify_end()
-                .gap_2()
+                .gap(px(SPACE_SM))
                 .child(
                     Button::new("cancel-action")
                         .label(tr("dialogs.cancel"))
@@ -240,7 +254,7 @@ impl ActionsPage {
                 )
                 .child(if danger { confirm.danger() } else { confirm });
             let footer = crate::controls::dialog::footer(None, buttons, cx);
-            crate::controls::dialog::shell(dialog, label.clone(), 448., cx)
+            crate::controls::dialog::shell(dialog, label.clone(), 448., window, cx)
                 .child(crate::controls::dialog::body(question.clone()))
                 .footer(footer)
         });
@@ -280,7 +294,7 @@ impl ActionsPage {
                 "actionId": action, "code": code, "id": format!("{}:act", self.route)}),
             );
         }
-        self.error.clear();
+        self.error = None;
         cx.notify();
     }
 
@@ -320,7 +334,7 @@ impl ActionsPage {
         );
         let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, window, cx| {
-            crate::controls::dialog::shell(dialog, title.clone(), Picker::width(window), cx)
+            crate::controls::dialog::shell(dialog, title.clone(), Picker::width(window), window, cx)
                 .child(crate::controls::dialog::body(picker.clone()))
                 .footer(picker.read(cx).buttons_view())
                 .on_cancel({
@@ -350,8 +364,8 @@ impl ActionsPage {
         let form = cx.new(|cx| Form::new(value, route, window, cx));
         self.form = Some(form.clone());
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            crate::controls::dialog::shell(dialog, title.clone(), 600., cx)
+        window.open_dialog(cx, move |dialog, window, cx| {
+            crate::controls::dialog::shell(dialog, title.clone(), 600., window, cx)
                 .child(crate::controls::dialog::body(form.clone()))
                 .footer(form.read(cx).buttons_view())
                 .on_cancel({
@@ -383,15 +397,12 @@ impl ActionsPage {
             if choice != self.picker_choice || self.picker.is_none() {
                 return false;
             }
-            if value["status"] == "error" {
-                self.error = value["error"].as_str().unwrap_or_default().to_owned();
-            } else {
+            if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+                self.error = Some(err);
+            } else if let Some(picker) = &self.picker {
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
                 self.form = Some(form.clone());
-                self.picker
-                    .as_ref()
-                    .unwrap()
-                    .update(cx, |picker, cx| picker.set_form(form, cx));
+                picker.update(cx, |picker, cx| picker.set_form(form, cx));
             }
             cx.notify();
             return false;
@@ -403,18 +414,17 @@ impl ActionsPage {
             }
             return false;
         }
-        if value["status"] == "error" {
-            let error = value["error"].as_str().unwrap_or_default().to_owned();
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             if matches!(operation, "save" | "json") {
                 if let Some(form) = &self.form {
                     form.update(cx, |form, cx| {
                         form.pending = false;
-                        form.error = error;
+                        form.error = Some(err);
                         cx.notify();
                     });
                 }
             } else {
-                self.error = error;
+                self.error = Some(err);
             }
             cx.notify();
             return false;
@@ -445,7 +455,7 @@ impl ActionsPage {
                         window.push_notification(message.to_owned(), cx);
                     }
                 }
-                self.error.clear();
+                self.error = None;
                 self.select_after = value["saved"].as_str().filter(|id| !id.is_empty()).map(str::to_owned);
                 return true;
             }
@@ -458,26 +468,36 @@ impl ActionsPage {
 impl Render for ActionsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = f32::from(window.viewport_size().width);
-        let content = viewport - if viewport < 700. { 52. } else { 176. };
+        let content = viewport
+            - if viewport < 700. {
+                SIDEBAR_FOLDED_WIDTH
+            } else {
+                SIDEBAR_WIDTH
+            };
         let stacked = content < 760.;
         let idle = !self.model["actions"]["editor"].is_object();
         if idle {
             return div()
                 .size_full()
                 .flex()
-                .gap_3()
+                .gap(px(SPACE_MD))
                 .child(div().flex_1().min_w_0().child(self.actions.clone()))
                 .into_any_element();
         }
-        // The page's own padding is 8 here (the shell's is 10): widths follow from it.
-        let inner = content - 16.;
-        let (left_width, right_width) = if stacked { (inner, inner) } else { (340., inner - 348.) };
+        // The frame's left and right padding is outside the page: widths follow from it.
+        let inner = content - 2. * PAGE_PAD_X;
+        let (left_width, right_width) = if stacked {
+            (inner, inner)
+        } else {
+            (340., inner - 340. - SPACE_MD)
+        };
         self.actions.update(cx, |pane, cx| {
             pane.set_options(
                 Options {
                     width: left_width,
                     icons_first: false,
                     header: true,
+                    in_header: true,
                     ..Options::default()
                 },
                 cx,
@@ -533,7 +553,7 @@ impl Render for ActionsPage {
             Some(node) if node.detail.is_object() => detail_of(&node.detail),
             _ => detail_of(Self::default_detail(&self.model)),
         };
-        let mut right = div().flex_1().min_w_0().min_h_0().flex().flex_col().gap(px(4.));
+        let mut right = div().flex_1().min_w_0().min_h_0().flex().flex_col().gap(px(SPACE_SM));
         if let Some(result) = editor["lastTest"].as_object() {
             let id = result.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
             let text = result
@@ -572,7 +592,7 @@ impl Render for ActionsPage {
                     let title_tip = title.clone();
                     div()
                         .id("action-editor-title")
-                        .h(px(24.))
+                        .h(px(HEADER_ROW_HEIGHT))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -588,7 +608,7 @@ impl Render for ActionsPage {
                 })
                 .child(
                     div()
-                        .h(px(22.))
+                        .h(px(HEADER_ROW_HEIGHT))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -611,11 +631,12 @@ impl Render for ActionsPage {
                         div()
                             .id("details")
                             .flex_shrink_0()
-                            .h(px(60.))
+                            .min_h(px(44.))
+                            .max_h(px(120.))
                             .overflow_y_scroll()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
+                            .gap(px(SPACE_XS))
                             .child(
                                 div()
                                     .font_weight(FontWeight::BOLD)
@@ -624,9 +645,9 @@ impl Render for ActionsPage {
                             )
                             .child(
                                 div()
-                                    .pl(px(3.))
+                                    .pl(px(SPACE_XS))
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(detail.1.clone()),
+                                    .child(super::markdown::inline("action-detail", detail.1.clone())),
                             ),
                     )
                 });
@@ -638,15 +659,17 @@ impl Render for ActionsPage {
         let mut column = div()
             .absolute()
             .top_0()
-            .left(px(-2.))
-            .right(px(-2.))
-            .bottom(px(-2.))
+            .left_0()
+            .right_0()
+            .bottom_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .gap_2();
-        if !self.error.is_empty() {
-            column = column.child(super::notice::error(&self.error, cx));
+            .text_size(px(FONT_BODY))
+            .line_height(px(LINE_BODY))
+            .gap(px(SPACE_SM));
+        if let Some(err) = &self.error {
+            column = column.child(super::notice::error(err, cx));
         }
         if stacked {
             // Too narrow for two panes: the whole page scrolls instead of squeezing the editor.
@@ -659,9 +682,9 @@ impl Render for ActionsPage {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap_2()
+                                .gap(px(SPACE_MD))
                                 .child(left)
-                                .child(right.h(px(424.)).flex_none()),
+                                .child(right.min_h(px(424.)).flex_none()),
                         ),
                     ),
                 )
@@ -670,7 +693,144 @@ impl Render for ActionsPage {
         div()
             .relative()
             .size_full()
-            .child(column.child(div().size_full().min_h_0().flex().gap_2().child(left).child(right)))
+            .child(
+                column.child(
+                    div()
+                        .size_full()
+                        .min_h_0()
+                        .flex()
+                        .gap(px(SPACE_MD))
+                        .child(left)
+                        .child(right),
+                ),
+            )
             .into_any_element()
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::ActionsPage;
+    use crate::controls::tree::tests::{is_visible_empty, matching_ids, search_input};
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+    use serde_json::json;
+
+    struct ActionsHost(Entity<ActionsPage>);
+    impl Render for ActionsHost {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn searching_actions_does_not_filter_triggers_while_searching_subs_does(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let model = json!({
+            "actions": {
+                "tree": {
+                    "title": "Actions",
+                    "searchHint": "Search actions…",
+                    "empty": "No actions.",
+                    "nodes": [
+                        {"id": "a:1", "kind": "action", "label": "Shoutout"},
+                        {"id": "a:2", "kind": "action", "label": "Raid"}
+                    ],
+                    "buttons": []
+                },
+                "editor": {
+                    "actionId": "1",
+                    "title": "Shoutout",
+                    "detail": {"title": "Shoutout", "text": "2 triggers, 2 sub-actions"},
+                    "triggers": {
+                        "title": "Triggers",
+                        "empty": "No triggers.",
+                        "nodes": [
+                            {"id": "t:1", "kind": "trigger", "label": "Chat Message"},
+                            {"id": "t:2", "kind": "trigger", "label": "Follow"}
+                        ],
+                        "buttons": []
+                    },
+                    "subs": {
+                        "title": "Sub-actions",
+                        "searchHint": "Search sub-actions…",
+                        "empty": "No sub-actions.",
+                        "nodes": [
+                            {"id": "s:1", "kind": "sub", "label": "Send Message"},
+                            {"id": "s:2", "kind": "sub", "label": "Play Sound"}
+                        ],
+                        "buttons": []
+                    }
+                }
+            }
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<ActionsPage>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(1100.), px(700.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let page = cx.new(|cx| ActionsPage::new(model, "actions".into(), window, cx));
+                    *s.borrow_mut() = Some(page.clone());
+                    cx.new(|_| ActionsHost(page))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let page = slot.borrow().clone().expect("actions page created");
+
+        let no_matches = crate::i18n::tr("lists.no_matches");
+        let (subs_pane, triggers_pane, subs_search) = cx
+            .update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let actions_search = search_input(page.read(cx).actions.read(cx)).expect("actions search");
+                let subs_pane = page.read(cx).subs.clone().expect("subs pane");
+                let triggers_pane = page.read(cx).triggers.clone().expect("triggers pane");
+                let subs_search = search_input(subs_pane.read(cx)).expect("subs search");
+
+                // Searching Actions must filter Actions only, leaving Triggers intact.
+                actions_search.update(cx, |input, cx| input.focus(window, cx));
+                window.input("Raid", cx);
+                (subs_pane, triggers_pane, subs_search)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(matching_ids(page.read(cx).actions.read(cx), cx), vec!["a:2"]);
+            assert_eq!(matching_ids(triggers_pane.read(cx), cx), vec!["t:1", "t:2"]);
+            assert!(!is_visible_empty(triggers_pane.read(cx)));
+            assert!(window.try_find_by_label(no_matches).is_none());
+
+            // Searching Sub-actions filters Sub-actions and the open action's Triggers.
+            subs_search.update(cx, |input, cx| input.focus(window, cx));
+            window.input("Chat", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(matching_ids(subs_pane.read(cx), cx).is_empty());
+            assert!(is_visible_empty(subs_pane.read(cx)));
+            assert!(window.try_find_by_label(no_matches).is_some());
+            assert_eq!(matching_ids(triggers_pane.read(cx), cx), vec!["t:1"]);
+        })
+        .unwrap();
     }
 }

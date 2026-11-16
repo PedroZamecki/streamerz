@@ -219,15 +219,19 @@ impl Rows {
         let columns = self.model["columns"].as_array().map_or(&[][..], Vec::as_slice);
         let rows = self.model["rows"].as_array().map_or(&[][..], Vec::as_slice);
         let mut widths = Vec::with_capacity(columns.len());
+        let mut naturals = Vec::with_capacity(columns.len());
         let mut mins = Vec::with_capacity(columns.len());
         let mut priorities = Vec::with_capacity(columns.len());
+        let mut hidden = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
             let sample = rows.iter().take(64).map(|row| &row["cells"][index]);
             let mut longest = 0;
             let mut logos = 0;
             let mut is_switch = false;
+            let mut has_icon = false;
             for value in sample {
                 is_switch |= value.is_boolean();
+                has_icon |= value["icon"].is_string() || value["brand"].is_string() || value["health"].is_string();
                 logos = logos.max(value["platforms"].as_array().map_or(0, Vec::len));
                 longest = longest.max(
                     value
@@ -237,47 +241,102 @@ impl Rows {
                 );
             }
             let key = column["key"].as_str().unwrap_or_default();
-            let essential = is_switch || matches!(key, "name" | "command" | "action" | "what");
+            let header_chars = column["label"].as_str().map_or(0, |s| s.chars().count());
+            let essential = is_switch || matches!(key, "name" | "command" | "action" | "what" | "agent" | "when");
             let priority = column["priority"]
                 .as_u64()
                 .unwrap_or(if essential { 0 } else { 1 + index as u64 });
-            let min = if is_switch {
+            let icon_extra = if has_icon { 22. } else { 0. };
+            let header_min = if is_switch {
+                48.
+            } else {
+                (28. + header_chars as f32 * 7.2).min(110.)
+            };
+            let content_min = if is_switch {
                 48.
             } else if logos > 0 {
-                logos as f32 * 22. + 11.
+                logos as f32 * 24. + 16.
             } else if longest == 0 {
                 48.
             } else {
-                (24. + longest as f32 * 6.).clamp(64., if essential { 120. } else { 96. })
+                (24. + icon_extra + longest as f32 * 6.4).clamp(64., if essential { 128. } else { 96. })
             };
+            let min = content_min.max(header_min);
             let preferred = column["width"].as_f64().unwrap_or(160.) as f32;
-            widths.push(if is_switch || logos > 0 {
+            let content_width = 24. + icon_extra + longest as f32 * 7.6;
+            let base = if is_switch || logos > 0 {
                 min
             } else {
-                preferred.min((24. + longest as f32 * 7.).max(min))
-            });
+                preferred.min(content_width.max(min)).max(min)
+            };
+            let natural = if is_switch || logos > 0 {
+                min
+            } else {
+                content_width.max(preferred).max(min).min(420.)
+            };
+            widths.push(base);
+            naturals.push(natural);
             mins.push(min);
             priorities.push(priority);
+            hidden.push(column["hidden"] == true);
         }
-        self.visible = visible_columns(&mins, &priorities, self.fit);
+        self.visible = visible_columns(&mins, &priorities, &hidden, self.fit);
         self.fitted = self.visible.iter().map(|&index| widths[index]).collect();
         let visible_mins: Vec<_> = self.visible.iter().map(|&index| mins[index]).collect();
-        // A descriptive column receives spare room, rather than an empty trailing state column.
+        let visible_naturals: Vec<_> = self.visible.iter().map(|&index| naturals[index]).collect();
+        // Expand columns below their natural content width first, then share leftover room across flexible text columns.
         let total: f32 = self.fitted.iter().sum();
         if total < self.fit {
-            let flexible = self
-                .visible
+            let mut spare = self.fit - total;
+            let gaps: Vec<f32> = self
+                .fitted
                 .iter()
-                .position(|&index| {
-                    matches!(
-                        columns[index]["key"].as_str(),
-                        Some("description" | "what" | "command" | "text" | "message")
-                    )
-                })
-                .or_else(|| self.visible.iter().position(|&index| columns[index]["key"] == "name"))
-                .unwrap_or_else(|| self.fitted.len().saturating_sub(1));
-            if let Some(width) = self.fitted.get_mut(flexible) {
-                *width += self.fit - total;
+                .zip(visible_naturals.iter())
+                .map(|(w, nat)| (nat - w).max(0.))
+                .collect();
+            let gap_sum: f32 = gaps.iter().sum();
+            if gap_sum > 0. {
+                let take = spare.min(gap_sum);
+                for (w, g) in self.fitted.iter_mut().zip(gaps.iter()) {
+                    *w += take * (*g / gap_sum);
+                }
+                spare -= take;
+            }
+            if spare > 0.5 {
+                let flex: Vec<usize> = self
+                    .visible
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, index)| {
+                        matches!(
+                            columns[**index]["key"].as_str(),
+                            Some(
+                                "description"
+                                    | "what"
+                                    | "command"
+                                    | "config"
+                                    | "text"
+                                    | "message"
+                                    | "action"
+                                    | "name"
+                                    | "why"
+                            )
+                        )
+                    })
+                    .map(|(pos, _)| pos)
+                    .collect();
+                if flex.is_empty() {
+                    if let Some(width) = self.fitted.last_mut() {
+                        *width += spare;
+                    }
+                } else {
+                    let per = spare / flex.len() as f32;
+                    for pos in flex {
+                        if let Some(width) = self.fitted.get_mut(pos) {
+                            *width += per;
+                        }
+                    }
+                }
             }
         } else {
             fit_widths_above(&mut self.fitted, &visible_mins, self.fit);
@@ -285,7 +344,10 @@ impl Rows {
     }
 
     pub fn hidden_columns(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.model["columns"].as_array().map_or(0, Vec::len)).filter(|index| !self.visible.contains(index))
+        let columns = self.model["columns"].as_array();
+        (0..columns.map_or(0, Vec::len)).filter(move |index| {
+            columns.is_some_and(|cols| cols[*index]["hidden"] != true) && !self.visible.contains(index)
+        })
     }
 
     fn source_column(&self, index: usize) -> usize {
@@ -310,9 +372,9 @@ impl TableDelegate for Rows {
             .resizable(false)
             .paddings(Edges {
                 top: px(0.),
-                right: px(6.),
+                right: px(crate::theme::SPACE_MD),
                 bottom: px(0.),
-                left: px(11.),
+                left: px(crate::theme::SPACE_MD),
             });
         // A sortable column shows the model's current sort; the core sorts, so it covers every row.
         if column["sortable"] == true {
@@ -330,7 +392,7 @@ impl TableDelegate for Rows {
         // A quiet small header line above the box.
         div()
             .id("header")
-            .text_size(px(12.))
+            .text_size(px(crate::theme::FONT_CAPTION))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(crate::theme::quiet(cx))
     }
@@ -354,8 +416,7 @@ impl TableDelegate for Rows {
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(1.))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::FONT_CAPTION))
             .font_weight(if sorted { FontWeight::BOLD } else { FontWeight::SEMIBOLD })
             .when(sorted, |th| th.text_color(crate::theme::strong(cx)))
             .when(column["sortable"] == true, |th| {
@@ -424,7 +485,7 @@ impl TableDelegate for Rows {
                 return div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(crate::theme::SPACE_SM))
                     .children(platforms.iter().filter_map(Value::as_str).map(|platform| {
                         img(format!("brands/{platform}.svg"))
                             .id(SharedString::from(platform.to_owned()))
@@ -477,7 +538,7 @@ impl TableDelegate for Rows {
             }
             cell.child(words(text)).into_any_element()
         })();
-        div().size_full().flex().items_center().pl(px(1.)).child(content)
+        div().size_full().flex().items_center().child(content)
     }
     fn cell_label(&self, row: usize, column: usize, _: &App) -> Option<SharedString> {
         let cell = &self.model["rows"][row]["cells"][self.source_column(column)];
@@ -539,8 +600,10 @@ impl TableDelegate for Rows {
 }
 
 /// Keep identifying columns and remove the least important until the remaining ones are readable.
-fn visible_columns(mins: &[f32], priorities: &[u64], fit: f32) -> Vec<usize> {
-    let mut visible: Vec<_> = (0..mins.len()).collect();
+fn visible_columns(mins: &[f32], priorities: &[u64], hidden: &[bool], fit: f32) -> Vec<usize> {
+    let mut visible: Vec<_> = (0..mins.len())
+        .filter(|&index| !hidden.get(index).copied().unwrap_or(false))
+        .collect();
     if fit <= 0. {
         return visible;
     }
@@ -612,15 +675,31 @@ mod tests {
     fn narrow_tables_drop_secondary_columns_without_hiding_identity() {
         let minimums = [48., 120., 120., 96., 99., 96., 96.];
         let priorities = [0, 0, 0, 4, 5, 6, 7];
-        assert_eq!(super::visible_columns(&minimums, &priorities, 400.), vec![0, 1, 2, 3]);
+        let hidden = [false; 7];
         assert_eq!(
-            super::visible_columns(&minimums, &priorities, 900.),
+            super::visible_columns(&minimums, &priorities, &hidden, 400.),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            super::visible_columns(&minimums, &priorities, &hidden, 900.),
             (0..7).collect::<Vec<_>>()
         );
         assert_eq!(
-            super::visible_columns(&minimums, &priorities, 0.),
+            super::visible_columns(&minimums, &priorities, &hidden, 0.),
             (0..7).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn hidden_columns_stay_out_of_visible_tables() {
+        let minimums = [120., 280., 80.];
+        let priorities = [0, 2, 3];
+        let hidden = [false, true, false];
+        assert_eq!(
+            super::visible_columns(&minimums, &priorities, &hidden, 900.),
+            vec![0, 2]
+        );
+        assert_eq!(super::visible_columns(&minimums, &priorities, &hidden, 0.), vec![0, 2]);
     }
 
     #[test]
@@ -628,7 +707,7 @@ mod tests {
         // Commands at 540 px: Sources once shrank until Kick's logo was a green bar and TikTok's gone.
         let mut widths = [72., 200., 160., 120., 130., 100., 140.];
         let mut mins = [48.; 7];
-        mins[4] = 4. * 16. + 3. * 6. + 17.;
+        mins[4] = 4. * 16. + 3. * 8. + 24.;
         super::fit_widths_above(&mut widths, &mins, 420.);
         assert!(widths[4] >= mins[4] - 0.01, "{widths:?}");
         assert!(widths.iter().all(|width| *width >= 48. - 0.01));
