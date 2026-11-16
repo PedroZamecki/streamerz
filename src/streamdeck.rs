@@ -45,12 +45,14 @@ pub async fn run(e: Rc<Engine>, s: Settings) {
     let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
         Ok(l) => l,
         Err(err) => {
-            return crate::error(format!(
-                "Stream Deck server: can't listen on {}:{} ({err})",
-                s.address, s.port
-            ))
+            crate::error::record_active(
+                "server.stream_deck",
+                crate::error::StreamerzError::stream_deck_server_start(&s.address, s.port, &err.to_string()),
+            );
+            return;
         }
     };
+    crate::error::clear_active("server.stream_deck");
     crate::say(format!("Stream Deck server on ws://{}:{}/", s.address, s.port));
     let mut next = IDS;
     loop {
