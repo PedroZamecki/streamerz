@@ -647,13 +647,30 @@ pub fn room(engine: &Rc<Engine>, platform: &str) -> Value {
     json!({"name": shown, "picture": picture.unwrap_or_default()})
 }
 
+/// The browser account's picture address: the live one (kept on disk when it changes), else the last
+/// one kept, so the picture stays while the browser is away, as the other accounts' do.
+fn browser_avatar(bridge: &crate::tiktok_bridge::Bridge) -> String {
+    const KEY: &str = "tiktok:browser";
+    let (user, live) = (bridge.user(), bridge.avatar());
+    let saved = avatars();
+    if !user.is_empty() && !live.is_empty() {
+        if saved[KEY][0].as_str() != Some(live.as_str()) {
+            let mut all = if saved.is_object() { saved } else { json!({}) };
+            all[KEY] = json!([live, crate::fmt::unix_now().as_secs(), user]);
+            save_avatars(&all);
+        }
+        return live;
+    }
+    saved[KEY][0].as_str().unwrap_or_default().to_owned()
+}
+
 /// An account's picture file for the chat's send box (`bot` picks the slot; TikTok has the browser account).
 pub fn account_picture(engine: &Rc<Engine>, platform: &str, bot: bool) -> String {
     let Some(p) = P::from_slug(platform) else {
         return String::new();
     };
     if p == P::TikTok {
-        return super::images::lookup(&engine.tiktok_bridge.avatar())
+        return super::images::lookup(&browser_avatar(&engine.tiktok_bridge))
             .map(|file| file.to_string_lossy().into_owned())
             .unwrap_or_default();
     }
@@ -851,7 +868,7 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 "status": state(health, &text), "control": buttons(vec![set_up])});
             // The browser account's picture, as the other accounts have theirs.
             let face = account_picture(engine, "tiktok", false);
-            if !face.is_empty() && !bridge.user().is_empty() {
+            if !face.is_empty() {
                 sending["picture"] = face.into();
             }
             rows.push(sending);
