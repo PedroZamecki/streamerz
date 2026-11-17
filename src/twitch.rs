@@ -4695,6 +4695,12 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
 /// What the channel's owner is on Twitch: "partner", "affiliate" or "" (neither). Read at connect.
 static CHANNEL_TYPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// What the channel's owner is on Twitch: `Some("partner")`, `Some("affiliate")`, `Some("")` (neither), or
+/// `None` while it isn't read yet (before the first connect).
+pub fn channel_type() -> Option<String> {
+    CHANNEL_TYPE.lock().ok().and_then(|t| t.clone())
+}
+
 /// Whether the channel may run commercials (only affiliates and partners can); true when not known yet.
 pub fn commercials_possible() -> bool {
     CHANNEL_TYPE

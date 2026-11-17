@@ -692,6 +692,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             }
         }
         "StreamerzCoreStatus"
+        | "StreamerzAutomationWarnings"
         | "StreamerzCoreSave"
         | "StreamerzCoreQuit"
         | "StreamerzSelectPage"
@@ -703,6 +704,21 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             error(&id, "Authentication required to use this method")
         }
         "StreamerzCoreStatus" => ok(&id, crate::core::status::summary(e)),
+        "StreamerzAutomationWarnings" => {
+            let kind = crate::automation::requirements::Kind::parse(get("kind"));
+            let result = match (get("kind"), kind, req.get("code").and_then(Value::as_u64)) {
+                ("", _, _) => crate::core::requirements::report(e, get("actionId"), None),
+                (_, None, _) => Err("kind is trigger or subaction".to_owned()),
+                (_, Some(kind), Some(code)) => {
+                    crate::core::requirements::type_report(e, kind, code as u32, get("connectionId"))
+                }
+                (_, Some(kind), None) => crate::core::requirements::report(e, get("actionId"), Some(kind)),
+            };
+            match result {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
         "StreamerzCoreSave" => match crate::core::status::save(e) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),

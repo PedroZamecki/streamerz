@@ -5,6 +5,7 @@ pub mod edits;
 pub mod entities;
 pub mod labels;
 pub mod pick_icons;
+pub mod requirements;
 pub mod schema;
 
 use serde_json::{json, Value};
@@ -55,12 +56,16 @@ pub fn describe(kind: &str, code: u32) -> Result<Value, String> {
         .map(|(k, l, w)| json!({"key": k, "label": forms::field_label(l), "holds": w.about()}))
         .collect();
 
+    let needs = requirements::needs_json(&requirements::of(
+        requirements::Kind::parse(kind).ok_or(format!("unknown automation kind {kind}"))?,
+        code as u32,
+    ));
     let docs = crate::docs::entry(kind, code as u32)
         .map(|e| e.text)
         .unwrap_or_default();
     Ok(
         json!({"code": code, "name": name, "about": about, "fields": fields, "new": new, "docs": docs,
-    "formState": form_state, "available": crate::docs::available(kind, code as u32),
+    "formState": form_state, "available": crate::docs::available(kind, code as u32), "needs": needs,
     "preservedFields": if sub { forms::preserved_fields(code) } else { &[][..] },
     "note": if form_state == "json" { "Advanced JSON editing; see the built-in reference for limitations." } else { "" }}),
     )
@@ -81,6 +86,7 @@ mod tests {
                 assert_eq!(value["name"], name);
                 assert_eq!(value["new"]["type"], code);
                 assert!(value["fields"].is_array());
+                assert!(value["needs"].is_array());
                 assert!(matches!(
                     value["formState"].as_str(),
                     Some("form" | "no_settings" | "json")

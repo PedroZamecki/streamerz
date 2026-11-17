@@ -647,6 +647,15 @@ impl Render for TreePane {
                                         .child(text),
                                 )
                             })
+                            // Something this item needs isn't ready (the reasons are in its tooltip).
+                            .when(value["warn"] == true, |row| {
+                                row.child(
+                                    Icon::empty()
+                                        .path("icons/triangle-alert.svg")
+                                        .small()
+                                        .text_color(cx.theme().warning),
+                                )
+                            })
                             .when((value["kind"] == "trigger" && muted) || value["off"] == true, |row| {
                                 row.pr(px(SPACE_LG))
                                     .child(Icon::empty().path("icons/power-off.svg").small())

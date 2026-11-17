@@ -4,6 +4,7 @@
 //! Row ids: `a:<action id>` and `g:<group name>` in the action tree; a trigger's or sub-action's own
 //! id (`#<index>` or `#<i>.<j>` for the rare one that has none) in the editor.
 
+use crate::automation::requirements::Kind;
 use crate::automation::{catalog as picker, edits, entities, labels, schema};
 use crate::edit::{self, Path};
 use crate::engine::Engine;
@@ -113,7 +114,7 @@ fn group_names(config: &crate::Config) -> Vec<String> {
 
 /// An action's row: what starts it (its first trigger's logo or icon; a dashed circle when nothing
 /// does), its name, how many sub-actions it runs, and on hover what fires it.
-fn action_row(action: &Action, names: &labels::Names) -> Value {
+fn action_row(action: &Action, names: &labels::Names, ready: &super::requirements::Readiness) -> Value {
     let code = |trigger: &Obj| trigger.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
     let first = action
         .triggers
@@ -160,15 +161,19 @@ fn action_row(action: &Action, names: &labels::Names) -> Value {
     if !action.enabled {
         tip.push(tr("actions.tip_disabled").to_owned());
     }
+    if ready.action_has_warnings(action) {
+        row["warn"] = true.into();
+        tip.push(tr("requirements.row_tip").to_owned());
+    }
     row["tip"] = tip.join("\n").into();
     row
 }
 
-fn action_tree(config: &crate::Config) -> Value {
+fn action_tree(config: &crate::Config, ready: &super::requirements::Readiness) -> Value {
     let mut sorted: Vec<&Action> = config.actions.actions.iter().collect();
     sorted.sort_by_key(|action| action.name.to_lowercase());
     let names = labels::names(config);
-    let row = |action: &&Action| action_row(action, &names);
+    let row = |action: &&Action| action_row(action, &names, ready);
     let mut nodes = Vec::new();
     for group in group_names(config) {
         let children = sorted.iter().filter(|action| action.group == group).map(row).collect();
@@ -256,7 +261,7 @@ fn field<'a>(object: &'a Obj, key: &str) -> &'a str {
     object.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn trigger_id(trigger: &Obj, index: usize) -> String {
+pub(super) fn trigger_id(trigger: &Obj, index: usize) -> String {
     let id = field(trigger, "id");
     if id.is_empty() {
         format!("#{index}")
@@ -264,7 +269,7 @@ fn trigger_id(trigger: &Obj, index: usize) -> String {
         id.into()
     }
 }
-fn sub_id(sub: &Obj, path: &[usize]) -> String {
+pub(super) fn sub_id(sub: &Obj, path: &[usize]) -> String {
     let id = field(sub, "id");
     if id.is_empty() {
         format!("#{}", path.iter().map(usize::to_string).collect::<Vec<_>>().join("."))
@@ -309,7 +314,12 @@ fn sub_path(action: &Action, id: &str) -> Option<Path> {
     find_sub(&action.sub_actions, id, &mut path).then_some(path)
 }
 
-fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value> {
+fn sub_nodes(
+    list: &[Obj],
+    path: &mut Path,
+    names: &labels::Names,
+    ready: &super::requirements::Readiness,
+) -> Vec<Value> {
     let mut out = Vec::new();
     for (index, sub) in list.iter().enumerate() {
         path.push(index);
@@ -336,10 +346,11 @@ fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value>
                 labels::sub_icon(code as u32)
             },
             off || unsupported,
-            sub_nodes(&kids, path, names),
+            sub_nodes(&kids, path, names, ready),
         );
         row["italic"] = (99901..=99904).contains(&code).into();
         row["code"] = code.into();
+        mark_warnings(&mut row, &ready.warnings(Kind::SubAction, sub));
         if let Some(logo) = labels::sub_logo(code as u32).filter(|_| !off) {
             row["logo"] = logo.into();
         }
@@ -351,7 +362,19 @@ fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value>
     out
 }
 
-fn editor(config: &crate::Config, action: &Action) -> Value {
+/// A row whose trigger or sub-action isn't ready keeps working as a row; it gets a warning icon and
+/// the reasons on hover.
+fn mark_warnings(row: &mut Value, warnings: &[super::requirements::Warning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    row["warn"] = true.into();
+    let label = row["label"].as_str().unwrap_or_default().to_owned();
+    let reasons = super::requirements::messages(warnings);
+    row["tip"] = format!("{label}\n{}", reasons.join("\n")).into();
+}
+
+fn editor(config: &crate::Config, action: &Action, ready: &super::requirements::Readiness) -> Value {
     let names = labels::names(config);
     let mut flags = Vec::new();
     for (on, what) in [
@@ -386,6 +409,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
                 Vec::new(),
             );
             row["code"] = code.into();
+            mark_warnings(&mut row, &ready.warnings(Kind::Trigger, trigger));
             if let Some(logo) = labels::trigger_logo(code) {
                 row["logo"] = logo.into();
             }
@@ -394,7 +418,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
             row
         })
         .collect();
-    let subs = sub_nodes(&action.sub_actions, &mut Vec::new(), &names);
+    let subs = sub_nodes(&action.sub_actions, &mut Vec::new(), &names, ready);
     let trigger_buttons = vec![
         picker_for(
             form(button("add", "btn.add", "plus", &[]), "act:trigger_add"),
@@ -459,12 +483,13 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         text(request, "actionId")
     });
     let open = config_action(&config, open);
+    let ready = super::requirements::Readiness::capture(engine);
     Ok(json!({"domain": "actions", "actions": {
-        "tree": action_tree(&config),
+        "tree": action_tree(&config, &ready),
         "empty": tr("actions.pick_to_edit"),
         "detail": {"title": tr("actions.details"), "text": tr("actions.details_empty")},
         "editor": open.map(|action| {
-            let mut model = editor(&config, action);
+            let mut model = editor(&config, action, &ready);
             if let Some(run) = engine.history().iter().rev().find(|record|
                 record.action_id == action.id && record.args.get("isTest") == Some(&Value::Bool(true))) {
                 let key = match run.outcome.status() {
@@ -481,7 +506,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }),
         // Nothing open: the same panes, empty.
         "idle": open.is_none().then(|| {
-            let mut idle = editor(&config, &Action::default());
+            let mut idle = editor(&config, &Action::default(), &ready);
             idle["title"] = tr("actions.pick_to_edit").into();
             idle["idle"] = true.into();
             idle
@@ -1077,6 +1102,11 @@ fn automation_form(
         out["okLabel"] = tr("btn.add").into();
     }
     let mut notes = Vec::new();
+    let warnings = super::requirements::Readiness::capture(engine)
+        .warnings(if trigger { Kind::Trigger } else { Kind::SubAction }, &item);
+    if !warnings.is_empty() {
+        out["warnings"] = json!(super::requirements::messages(&warnings));
+    }
     // A gift is picked by its picture, name and price; the list loads as the form opens when it isn't here.
     if trigger && edit::kind(&item) as u32 == crate::tiktok::T_TIKTOK_GIFT {
         if let Some(field) = out["fields"]
