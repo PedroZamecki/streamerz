@@ -900,27 +900,29 @@ platform, 99740-99749 Discord, 99750-99779 OBS Studio. Names follow Streamer.bot
 
 ### Sub-action editor UX (every sub-action, old and new)
 
-- [ ] Who: one shared field for the user a sub-action acts on: "Who started this" (the default), "The
+- [x] Who: one shared field for the user a sub-action acts on: "Who started this" (the default), "The
   user named in the command" or "Someone else" (typed, with Insert value). It saves the same field and
   text as now (`userLogin`, `%user%`), so exports to Streamer.bot keep working; a value it doesn't know
   shows as "Someone else".
-- [ ] Which message: one shared field, "The message that started this" (the default, `%msgId%`) or
+- [x] Which message: one shared field, "The message that started this" (the default, `%msgId%`) or
   "Another message" (typed). Reply, pin, unpin, delete and TikTok's pin use it.
-- [ ] No raw ids or codes: YouTube's Broadcast is the live one unless another found one is picked,
+- [x] No raw ids or codes: YouTube's Broadcast is the live one unless another found one is picked,
   its User ID is Who; Kick's cost Operator is Set, Add or Subtract; its category Source a choice; reward
   colours use the colour field; every duration takes human units.
-- [ ] Values: each sub-action that gets something declares the values it adds (name, meaning,
+- [x] Values: each sub-action that gets something declares the values it adds (name, meaning,
   example). The picker shows them like a trigger's, and Insert value offers them in the sub-actions
   after it.
-- [ ] Test: the selected sub-action has Test (button and right-click menu). It runs only that step with
+- [x] Test: the selected sub-action has Test (button and right-click menu). It runs only that step with
   the action's sample values and shows what happened and the values it added. Dev mode keeps chat and
   moderation from leaving, as it does now. MCP `run_subaction` does the same.
-- [ ] Ready or not: the picker greys out what can't run now with the reason (not logged in, needs more
+- [x] Ready or not: the picker greys out what can't run now with the reason (not logged in, needs more
   permissions, partners only), and the editor shows the same notice with the button that fixes it
   (Accounts, Reconnect).
-- [ ] Picker: platform groups wear their logos, the every-platform group comes first, and search knows
+- [x] Picker: platform groups wear their logos, the every-platform group comes first, and search knows
   other words for the same thing (delete, remove, purge; mute, timeout; kick, ban).
-- [ ] Every new field and the existing platform ones are translated, with a tip.
+- [x] Every new field and the existing platform ones are translated, with a tip. Done for every form
+  (labels and choices are `field.*` keys, a test keeps it so); the tip is the field's line in its
+  reference, which is English. The sub-actions' own names are still English.
 
 ### Every platform (Streamerz-only)
 
@@ -934,7 +936,7 @@ platform that can't do it is skipped with a log line, and its box is greyed with
 
 ### Twitch, with the permissions it has
 
-- [ ] Delete Chat Message, Purge User (a 1 second timeout), Send and Pin Message, Send Whisper
+- [x] Delete Chat Message, Purge User (a 1 second timeout), Send and Pin Message, Send Whisper
 - [x] Unique Chat, Non-Moderator Chat Delay, Get Chat Settings
 - [x] Approve AutoMod Message, Deny AutoMod Message, Get Unban Requests, Resolve Unban Request
 - [x] Get Moderators, Get VIPs, Is Subscribed (with the tier)
@@ -945,7 +947,7 @@ platform that can't do it is skipped with a log line, and its box is greyed with
 
 ### Twitch, with more permissions (asked when needed)
 
-- [ ] Accounts says "More permissions available" with one Reconnect button; the new scopes are asked
+- [x] Accounts says "More permissions available" with one Reconnect button; the new scopes are asked
   only then. A sub-action that needs them says so and opens it.
 - [x] Add Blocked Term, Remove Blocked Term, Set AutoMod Level, Set Bot Chat Colour
 - [x] Block User, Unblock User
@@ -970,10 +972,10 @@ when a ticked sub-action isn't run).
 Streamer.bot keeps reward counters and groups itself; Streamerz has neither, so the reward sub-actions
 above need them.
 
-- [ ] Counters: each redemption counts per reward and per user (saved), and the Reward Redemption
+- [x] Counters: each redemption counts per reward and per user (saved), and the Reward Redemption
   triggers (Twitch, Kick) give `counter` and `userCounter`, as Streamer.bot does.
-- [ ] Groups: a reward belongs to at most one group, by name.
-- [ ] A Rewards page (Twitch and Kick, platform logos): a row per reward with its switch, title, cost,
+- [x] Groups: a reward belongs to at most one group, by name.
+- [x] A Rewards page (Twitch and Kick, platform logos): a row per reward with its switch, title, cost,
   group and counter; New reward, Edit, Pause, Reset counter, Group and Delete, the same in the
   right-click menu. A reward Streamerz didn't create is shown read only, with the reason (Twitch and
   Kick let an app change only its own rewards).
@@ -1008,8 +1010,8 @@ above need them.
 
 ### Close
 
-- [ ] MCP: every new sub-action through `describe` and `run_subaction`, with tests.
-- [ ] Unit tests per sub-action (request shape, values added, skipped platforms).
+- [x] MCP: every new sub-action through `describe` and `run_subaction`, with tests.
+- [x] Unit tests per sub-action (request shape, values added, skipped platforms).
 - [ ] Live tests on the real Twitch, Kick and YouTube channels; smoke in English and pt_BR; Windows
   type-check; hidden RSS and idle CPU before and after.
 
