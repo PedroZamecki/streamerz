@@ -2096,6 +2096,22 @@ pub fn chat_mode_patches(was: &Value, flag: &str, extra: Option<&str>, value: f6
 mod tests {
     use super::*;
 
+    /// A step that went on but did nothing says why: Test and MCP's run_subaction show the warning.
+    #[test]
+    fn a_run_keeps_the_first_warning() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        super::super::tests::run(async {
+            let engine = super::super::tests::engine(json!({"actions": []}));
+            let settings = json!({"platforms": [], "userLogin": "ana"})
+                .as_object()
+                .cloned()
+                .unwrap();
+            let (_, outcome) = engine.execute_one(99726, settings).await;
+            assert!(outcome.error.is_none());
+            assert!(outcome.warning.unwrap().contains("no platform ticked"));
+        });
+    }
+
     #[test]
     fn a_chat_mode_goes_on_and_comes_back_as_it_was() {
         let was = json!({"slow_mode": true, "slow_mode_wait_time": 10, "emote_mode": false});

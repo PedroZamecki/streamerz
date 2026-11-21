@@ -551,6 +551,10 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
                 folder
             })
             .collect();
+        // What works everywhere comes before each place's own.
+        if path.is_empty() {
+            out.sort_by_key(|folder| folder["label"] != "Every Platform");
+        }
         let mut items = level.items;
         items.sort_by_key(|item| item["label"].as_str().unwrap_or_default().to_lowercase());
         out.extend(items);
@@ -2457,7 +2461,10 @@ fn test_sub(engine: &Rc<Engine>, action_id: &str, sub: Obj, label: String, group
         let mut lines = vec![match outcome.error.as_deref() {
             Some(error) => trf("actions.test_sub_failed", &[("error", error)]),
             None if outcome.skipped > 0 => tr("actions.test_sub_skipped").to_owned(),
-            None => tr("actions.test_sub_done").to_owned(),
+            None => match outcome.warning.as_deref() {
+                Some(warning) => trf("actions.test_sub_warned", &[("warning", warning)]),
+                None => tr("actions.test_sub_done").to_owned(),
+            },
         }];
         let added: Vec<String> = after
             .iter()
@@ -3542,6 +3549,27 @@ mod tests {
             assert_eq!(cleared["status"], "ok", "{cleared}");
             assert!(engine.config().actions.actions[0].triggers[0].get("giftName").is_none());
         });
+    }
+
+    /// The picker lists the every-platform group before each platform's own.
+    #[test]
+    fn the_picker_puts_every_platform_first() {
+        let entry = |category: &str| Entry {
+            id: category.into(),
+            title: "X".into(),
+            category: category.into(),
+            description: String::new(),
+            icon: "zap",
+            values: None,
+            unready: None,
+        };
+        let tree = tree_of(vec![
+            entry("Core/Moderation"),
+            entry("Every Platform/Chat"),
+            entry("Twitch/Chat"),
+        ]);
+        let labels: Vec<_> = tree.iter().map(|node| node["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["Every Platform", "Core", "Twitch"]);
     }
 
     /// A sub-action's form says what it does (its reference, not its field names), each field says

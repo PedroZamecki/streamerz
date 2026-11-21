@@ -2471,5 +2471,6 @@
   "field.automod_3": "3",
   "field.automod_4": "4: o máximo",
   "field.keep_as_is": "Manter como está",
-  "field.automod_each": "Definir cada um abaixo"
+  "field.automod_each": "Definir cada um abaixo",
+  "actions.test_sub_warned": "Executou, com um aviso: {warning}"
 }

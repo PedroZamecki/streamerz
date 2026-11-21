@@ -82,6 +82,9 @@ pub struct RunOutcome {
     pub skipped: u32,
     pub failed_step: Option<u64>,
     pub error: Option<String>,
+    /// The first warning it logged (it went on, but something didn't happen as asked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     #[serde(skip)]
     step: u64,
 }
@@ -107,6 +110,15 @@ pub fn record_error(message: &str) {
         if state.error.is_none() {
             state.error = Some(message.into());
             state.failed_step = Some(state.step);
+        }
+    });
+}
+
+pub fn record_warning(message: &str) {
+    let _ = RUN_OUTCOME.try_with(|state| {
+        let mut state = state.borrow_mut();
+        if state.warning.is_none() {
+            state.warning = Some(message.into());
         }
     });
 }

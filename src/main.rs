@@ -655,6 +655,8 @@ fn log(level: Level, line: String) {
     let line = redact(&line);
     if matches!(level, Level::Error | Level::Fatal) {
         engine::record_error(&line);
+    } else if level == Level::Warn {
+        engine::record_warning(&line);
     }
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());

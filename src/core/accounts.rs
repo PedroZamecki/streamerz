@@ -2124,6 +2124,22 @@ mod tests {
             .collect()
     }
 
+    /// Accounts offers the extra Twitch permissions only while the login lacks one of them.
+    #[test]
+    fn more_permissions_show_only_while_some_are_missing() {
+        let mut config = crate::Config::default();
+        assert!(more_permissions_row(&config).is_none(), "no login, nothing to offer");
+        config.twitch.broadcaster = Some(crate::twitch::TwitchAccount::default());
+        let row = more_permissions_row(&config).unwrap();
+        assert_eq!(row["control"]["buttons"][0]["id"], "twitch.more_permissions", "{row}");
+        let account = config.twitch.broadcaster.as_mut().unwrap();
+        account.token.scope = crate::engine::TWITCH_EXTRA_SCOPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(more_permissions_row(&config).is_none());
+    }
+
     #[test]
     fn setup_steps_speak_of_the_browser_the_extension_is_in() {
         use crate::browsers::{Browser, BrowserEngine};

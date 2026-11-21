@@ -2471,5 +2471,6 @@
   "field.automod_3": "3",
   "field.automod_4": "4: most",
   "field.keep_as_is": "Keep as it is",
-  "field.automod_each": "Set each one below"
+  "field.automod_each": "Set each one below",
+  "actions.test_sub_warned": "It ran, with a warning: {warning}"
 }
