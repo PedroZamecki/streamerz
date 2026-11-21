@@ -203,7 +203,11 @@ def main():
     finally:
         stop.set()
         app.terminate()
-        subprocess.run(["pkill", "-x", "Streamerz"], check=False)
+        # Its window ends with it. Never pkill by name: that closes the real instance too.
+        try:
+            app.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            app.kill()
 
 
 main()
