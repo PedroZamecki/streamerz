@@ -591,6 +591,7 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
             let value = need_bool()?;
             let before = super::frontend::software_reason(engine.config().software_render).is_some();
             engine.change(|config| config.software_render = value);
+            crate::tray::show_software(value);
             // The window opens again, drawn the other way; nothing to do when that doesn't change.
             if super::frontend::software_reason(value).is_some() != before {
                 crate::host::reopen();

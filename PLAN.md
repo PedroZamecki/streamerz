@@ -65,12 +65,16 @@ The backend launches the window as a separate process of the same executable (`-
 it and releases its renderer; the backend, tray, integrations and MCP keep running. They talk over
 inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
 
-The GPU draws the window; the processor draws it when there's no GPU to use. The core decides before the
-window starts (Settings > Appearance > Software rendering, `STREAMERZ_SOFTWARE_RENDER`, a GPU that failed
-earlier in this run, or no render node on Linux) and hands the window the environment its graphics
-libraries read: Mesa's llvmpipe or lavapipe on Linux, Direct3D's WARP on Windows (`patches/gpui-pre-windows`,
-which also falls back to WARP by itself when no GPU can make a device or show the window). A window that
-still ends before it opens is started once more in software. Switching it reopens only the window.
+The GPU draws the window; the processor draws it when the GPU can't, without asking. Before the window
+starts, the core picks software for Settings > Appearance > Software rendering (also in the tray menu),
+`STREAMERZ_SOFTWARE_RENDER`, a GPU that failed earlier in this run, or no render node on Linux, and hands
+the window the environment its graphics libraries read: Mesa's llvmpipe or lavapipe on Linux, Direct3D's
+WARP on Windows. On Windows the patched GPUI (`patches/gpui-pre-windows`) also switches to WARP by itself,
+with the window open: no GPU can make a device or show the window, three frames in a row fail, the first
+frame with text comes out one flat colour (the GPU drew nothing), or the device is lost a third time. A
+window that ends before it opens, or crashes in the GPU code (Linux's renderer gives up after ten GPU
+errors), is started again in software. The renderer's warnings go to the log, with what draws the window.
+Switching by hand reopens only the window.
 
 - [x] The window: every page, its dialogs, menus, forms and prompts, from core models.
 - [x] Automation schemas, picker metadata, emote catalogs, validated edits, server schemas and settings in the core.

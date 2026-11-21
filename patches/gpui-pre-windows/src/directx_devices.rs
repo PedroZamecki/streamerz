@@ -143,7 +143,7 @@ fn get_adapter(
                 return Ok(found);
             }
         }
-        log::warn!("No GPU could draw with Direct3D 11, using software rendering (WARP)");
+        log::warn!(target: "streamerz::software", "No GPU could draw with Direct3D 11, using software rendering (WARP)");
         use_software_rendering();
     }
     // WARP draws on the processor, on every Windows, with or without a GPU driver.

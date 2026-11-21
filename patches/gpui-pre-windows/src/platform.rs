@@ -463,15 +463,23 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                let mut losses = 0u32;
                 loop {
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
-                    if check_device_lost(&directx_device.device)
-                        || invalidate_devices.fetch_and(false, Ordering::Acquire)
-                    {
+                    let lost = check_device_lost(&directx_device.device);
+                    if lost {
+                        // A GPU that keeps losing its device can't be relied on: software (WARP).
+                        losses += 1;
+                        if losses >= 3 && !software_rendering() {
+                            log::warn!(target: "streamerz::software", "The GPU lost its device {losses} times, using software rendering (WARP)");
+                            use_software_rendering();
+                        }
+                    }
+                    if lost || invalidate_devices.fetch_and(false, Ordering::Acquire) {
                         if let Err(err) = handle_gpu_device_lost(
                             &mut directx_device,
                             platform_window.as_raw(),

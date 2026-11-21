@@ -1262,7 +1262,7 @@
   "settings.animations": "Animações",
   "settings.animations.about": "Diálogos, menus e painéis deslizam e aparecem aos poucos. Desligado: aparecem na hora.",
   "settings.software_render": "Renderização por software",
-  "settings.software_render.about": "Desenha a janela no processador em vez da GPU. Ative se a janela ficar em branco, piscar ou desenhar errado. Sem uma GPU para usar, o Streamerz faz isso sozinho. A janela abre de novo para aplicar.",
+  "settings.software_render.about": "Desenha a janela no processador em vez da GPU. Ative se a janela ficar em branco, piscar ou desenhar errado. Quando a GPU não consegue desenhar, o Streamerz faz isso sozinho. A janela abre de novo para aplicar.",
   "settings.software_render.gpu": "Desenhada agora por {device}.",
   "settings.software_render.software": "Desenhada agora no processador ({device}).",
   "twitch.error.owner_only": "Só o login do dono do canal pode fazer isso na Twitch.",

@@ -22,14 +22,35 @@ pub struct CrashInfo {
     pub summary: String,
     pub report_path: Option<PathBuf>,
     pub panic_recorded: bool,
+    /// It failed in the GPU code (the renderer gave up, a lost device couldn't be remade).
+    pub gpu: bool,
+}
+
+/// Whether a panic came from drawing on the GPU: its place is in the renderer's crates, or its message
+/// names the GPU's parts.
+pub(crate) fn gpu_failure(location: &str, message: &str) -> bool {
+    let location = location.replace('\\', "/");
+    [
+        "gpui-pre-wgpu",
+        "gpui-pre-windows",
+        "/wgpu-",
+        "/wgpu-hal-",
+        "/ash-",
+        "/glow-",
+    ]
+    .iter()
+    .any(|place| location.contains(place))
+        || ["GPU", "DirectX", "Direct3D", "Device lost", "swap chain", "Vulkan"]
+            .iter()
+            .any(|word| message.contains(word))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Exit {
     Clean,
     Crashed(CrashInfo),
-    /// It ended before its window opened: the GPU (or its driver) couldn't show it.
-    NoWindow(Option<CrashInfo>),
+    /// The GPU failed: the window ended before it opened, or crashed while drawing.
+    GpuFailed(Option<CrashInfo>),
 }
 
 /// Set to draw the window on the processor instead of the GPU, like the Settings switch.
@@ -272,6 +293,7 @@ pub(crate) fn handle_diag_request(request: &Value, crash_info: &mut Option<Crash
                 summary: message.to_owned(),
                 report_path: Some(path),
                 panic_recorded: true,
+                gpu: gpu_failure(location, message),
             });
             true
         }
@@ -464,9 +486,11 @@ fn exit_of(opened: bool, success: bool, crash_info: Option<CrashInfo>, status: S
         summary,
         report_path,
         panic_recorded: false,
+        gpu: false,
     };
     match crash_info {
-        _ if !opened => Exit::NoWindow(crash_info.or_else(|| (!success).then(|| unclean(status, None)))),
+        Some(info) if info.gpu => Exit::GpuFailed(Some(info)),
+        _ if !opened => Exit::GpuFailed(crash_info.or_else(|| (!success).then(|| unclean(status, None)))),
         Some(info) => Exit::Crashed(info),
         None if success => Exit::Clean,
         None => {
@@ -482,6 +506,7 @@ pub fn report(info: Option<CrashInfo>) -> CrashInfo {
         summary: "the window couldn't open".to_owned(),
         report_path: None,
         panic_recorded: false,
+        gpu: true,
     });
     if info.report_path.is_none() {
         info.report_path = Some(crate::crash::record_ui_unclean(&info.summary));
@@ -498,6 +523,7 @@ mod tests {
             summary: summary.to_owned(),
             report_path: None,
             panic_recorded: false,
+            gpu: false,
         }
     }
 
@@ -505,20 +531,49 @@ mod tests {
     fn a_window_that_never_opened_is_told_apart_from_a_crash() {
         let status = || "exit status: 1".to_owned();
         // The GPU couldn't make a surface: the process ends, cleanly or not, before its first request.
-        assert_eq!(exit_of(false, true, None, status()), Exit::NoWindow(None));
+        assert_eq!(exit_of(false, true, None, status()), Exit::GpuFailed(None));
         assert_eq!(
             exit_of(false, false, None, status()),
-            Exit::NoWindow(Some(info("exit status: 1")))
+            Exit::GpuFailed(Some(info("exit status: 1")))
         );
         assert_eq!(
             exit_of(false, false, Some(info("panic")), status()),
-            Exit::NoWindow(Some(info("panic")))
+            Exit::GpuFailed(Some(info("panic")))
         );
         // Once open, it is the usual clean close or crash.
         assert_eq!(exit_of(true, true, None, status()), Exit::Clean);
         assert_eq!(
             exit_of(true, true, Some(info("panic")), status()),
             Exit::Crashed(info("panic"))
+        );
+    }
+
+    #[test]
+    fn a_crash_in_the_gpu_code_is_the_gpu_failing() {
+        // Linux's renderer gives up after ten GPU errors in a row; Windows can't remake a lost device.
+        let wgpu = "/home/u/.cargo/registry/src/index.crates.io-1/gpui-pre-wgpu-0.3.11/src/wgpu_renderer.rs:1180:17";
+        assert!(gpu_failure(
+            wgpu,
+            "Too many consecutive GPU errors. Last error: Validation"
+        ));
+        assert!(gpu_failure(
+            r"C:\Users\u\.cargo\registry\src\gpui-pre-windows-0.3.11\src\events.rs:1336:13",
+            "x"
+        ));
+        assert!(gpu_failure(
+            "frontend/src/app.rs:10:5",
+            "Device lost: Recreating DirectX devices"
+        ));
+        assert!(!gpu_failure(
+            "frontend/src/controls/form.rs:280:9",
+            "index out of bounds"
+        ));
+        // A window that opened and crashed in the GPU code goes the same way as one that never opened.
+        let mut gpu = info("Too many consecutive GPU errors");
+        gpu.gpu = true;
+        assert_eq!(
+            exit_of(true, false, Some(gpu.clone()), "exit".into()),
+            Exit::GpuFailed(Some(gpu))
         );
     }
 

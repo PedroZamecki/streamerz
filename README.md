@@ -85,10 +85,11 @@ versions: ask first (the default), download them in the background and use them 
 leave them alone. Streamerz looks every hour while it's open and tells you with a desktop notification.
 The Flatpak and the packages are updated by the system instead, so they don't look.
 
-The window is drawn by the GPU. With no GPU to use (no driver, a virtual machine, a remote desktop),
-Streamerz draws it on the processor instead, from the start: Direct3D's WARP on Windows, Mesa's llvmpipe
-or lavapipe on Linux. If your window opens but stays blank or draws wrong, turn on **Settings >
-Appearance > Software rendering** (or start Streamerz with `STREAMERZ_SOFTWARE_RENDER=1`).
+The window is drawn by the GPU. When the GPU can't draw it (no driver, an old card, a virtual machine, a
+remote desktop), Streamerz draws it on the processor instead, by itself: Direct3D's WARP on Windows,
+Mesa's llvmpipe or lavapipe on Linux. If your window still stays blank or draws wrong, turn on **Software
+rendering** in the tray menu or in **Settings > Appearance** (or start Streamerz with
+`STREAMERZ_SOFTWARE_RENDER=1`).
 
 ## Where things live
 

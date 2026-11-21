@@ -148,7 +148,7 @@ impl WindowsWindowState {
             // The GPU made a device but can't show this window (its swap chain or composition failed):
             // WARP draws it instead, and every device made from now on.
             Err(error) if !software_rendering() => {
-                log::warn!("The GPU can't draw this window ({error:#}), using software rendering (WARP)");
+                log::warn!(target: "streamerz::software", "The GPU can't draw this window ({error:#}), using software rendering (WARP)");
                 use_software_rendering();
                 let warp = DirectXDevices::new().context("Creating DirectX devices in software")?;
                 DirectXRenderer::new(hwnd, &warp, disable_direct_composition)
@@ -1047,11 +1047,19 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        self.state
-            .renderer
-            .borrow_mut()
+        let mut renderer = self.state.renderer.borrow_mut();
+        renderer
             .draw(scene, self.state.background_appearance.get())
             .log_err();
+        // The GPU can't draw this window: every device is remade in software (WARP), the way a lost
+        // device is, and the window draws again without closing.
+        if renderer.gpu_failed() && !software_rendering() {
+            log::warn!(target: "streamerz::software", "The GPU isn't drawing this window, using software rendering (WARP)");
+            use_software_rendering();
+            self.state
+                .invalidate_devices
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 
     #[cfg(feature = "test-support")]

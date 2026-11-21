@@ -94,6 +94,62 @@ pub fn mark_ready(log_dir: Option<&str>, version: Option<&str>, debug: bool) {
     }
 }
 
+/// The renderer's own warnings and errors, in Streamerz's log: what the GPU did (a failed frame, a lost
+/// device, a switch to software rendering). Repeats are dropped and there is a cap, so a failing frame
+/// can't flood it. GPUI's other notes (fonts, input devices) stay out.
+struct Gpui;
+static GPUI: Gpui = Gpui;
+static FORWARDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static LAST: Mutex<String> = Mutex::new(String::new());
+const FORWARDED_MAX: u32 = 100;
+/// Where the patched GPUI logs a switch to software rendering.
+const SOFTWARE_TARGET: &str = "streamerz::software";
+/// The renderers: Windows' Direct3D code and the wgpu one (Linux).
+const RENDERER_TARGETS: [&str; 3] = [SOFTWARE_TARGET, "gpui_windows::directx", "gpui_wgpu"];
+/// The window switched to software rendering by itself: what draws it is reported again.
+pub static RENDERER_CHANGED: AtomicBool = AtomicBool::new(false);
+
+impl log::Log for Gpui {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+            && RENDERER_TARGETS
+                .iter()
+                .any(|target| metadata.target().starts_with(target))
+    }
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        if record.target() == SOFTWARE_TARGET {
+            RENDERER_CHANGED.store(true, Ordering::Relaxed);
+        }
+        let text = record.args().to_string();
+        let Ok(mut last) = LAST.lock() else { return };
+        if *last == text || FORWARDED.fetch_add(1, Ordering::Relaxed) >= FORWARDED_MAX {
+            return;
+        }
+        last.clone_from(&text);
+        drop(last);
+        let text = if record.target() == SOFTWARE_TARGET {
+            text
+        } else {
+            format!("{}: {text}", record.target())
+        };
+        match record.level() {
+            log::Level::Error => log_error(text),
+            _ => log_warn(text),
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Sends the renderer's warnings and errors to Streamerz's log.
+pub fn forward_gpui_log() {
+    if log::set_logger(&GPUI).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
 pub fn set_debug(debug: bool) {
     DEBUG.store(debug, Ordering::Relaxed);
 }

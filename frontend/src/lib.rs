@@ -59,6 +59,7 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
             std::env::set_var(key, value);
         }
     }
+    diag::forward_gpui_log();
     i18n::init(ready["translations"].take()).map_err(|error| Box::new(StreamerzError::from(error)))?;
     diag::mark_ready(
         ready["logDir"].as_str(),
@@ -195,9 +196,7 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 return;
             }
         };
-        if let Ok(Some(gpu)) = window_handle.update(cx, |_, window, _| window.gpu_specs()) {
-            send(json!({"request": "FrontendRenderer", "device": gpu.device_name, "software": gpu.is_software_emulated}));
-        }
+        report_renderer(window_handle, cx);
         diag::fact("UI page", &initial_tab);
         diag::step(format!("opened window on page {initial_tab}"));
         cx.on_window_closed(|cx, _| {
@@ -232,6 +231,10 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 .await;
             match result {
                 Ok(Some(value)) => {
+                    // The GPU stopped drawing and the window went on in software: say what draws it now.
+                    if diag::RENDERER_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        cx.update(|cx| report_renderer(window_handle, cx));
+                    }
                     if value["event"] == "frontend.dev" {
                         #[cfg(feature = "test-support")]
                         dev::dispatch(&value, window_handle, &view, cx);
@@ -301,6 +304,13 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
         return Err(Box::new(error));
     }
     Ok(())
+}
+
+/// Tells the core what draws the window (a GPU, or software rendering).
+fn report_renderer(window: AnyWindowHandle, cx: &mut App) {
+    if let Ok(Some(gpu)) = window.update(cx, |_, window, _| window.gpu_specs()) {
+        send(json!({"request": "FrontendRenderer", "device": gpu.device_name, "software": gpu.is_software_emulated}));
+    }
 }
 
 /// Room around the window for what the system draws: Windows' title bar and borders sit outside the

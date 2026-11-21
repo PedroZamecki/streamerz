@@ -1556,6 +1556,7 @@ fn main() {
             let _ = sender.send(message);
         })
     };
+    tray::show_software(cfg.software_render);
     rt.spawn(tray::run(tray_sender));
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();

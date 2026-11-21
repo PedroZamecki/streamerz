@@ -1,4 +1,5 @@
-//! Tray icon: click (or "Show/Hide") toggles the window, "Quit" exits. Without a tray (e.g. no
+//! Tray icon: click (or "Show/Hide") toggles the window, "Software rendering" switches how it is drawn
+//! (reachable when the window itself shows nothing), "Quit" exits. Without a tray (e.g. no
 //! StatusNotifier host on Linux) the window stays up instead. The icon follows the desktop's colour
 //! scheme (not the app's theme): the light-panel logo or the dark-panel one, changing as the desktop does.
 
@@ -6,6 +7,35 @@ use crate::brand::{tray as icon, SIZE};
 use crate::host::{Message as Msg, Sender};
 use crate::i18n::tr;
 use crate::version;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The Software rendering setting, as the tray's check shows it.
+static SOFTWARE: AtomicBool = AtomicBool::new(false);
+
+/// Wakes the tray to show a new check (Linux: the tray task; Windows: the tray thread's message loop).
+#[cfg(target_os = "linux")]
+static REFRESH: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+#[cfg(windows)]
+static TRAY_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(windows)]
+const WM_SOFTWARE: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+/// The Software rendering setting changed (or is read at start): the tray's check follows it.
+pub fn show_software(on: bool) {
+    if SOFTWARE.swap(on, Ordering::Relaxed) == on {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    REFRESH.get_or_init(Default::default).notify_one();
+    #[cfg(windows)]
+    {
+        let thread = TRAY_THREAD.load(Ordering::Relaxed);
+        if thread != 0 {
+            // SAFETY: no pointers; a thread message to the tray's own loop.
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(thread, WM_SOFTWARE, 0, 0) };
+        }
+    }
+}
 
 /// The tray: the window's sender, and whether the desktop is dark (the icon follows it).
 #[cfg(target_os = "linux")]
@@ -43,7 +73,7 @@ impl ksni::Tray for Tray {
         self.0.send(Msg::Toggle);
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::StandardItem;
+        use ksni::menu::{CheckmarkItem, StandardItem};
         vec![
             StandardItem {
                 label: tr("tray.show_hide").into(),
@@ -51,6 +81,14 @@ impl ksni::Tray for Tray {
                 ..Default::default()
             }
             .into(),
+            CheckmarkItem {
+                label: tr("settings.software_render").into(),
+                checked: SOFTWARE.load(Ordering::Relaxed),
+                activate: Box::new(|t: &mut Self| t.0.send(Msg::SoftwareRender)),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
             StandardItem {
                 label: tr("tray.quit").into(),
                 activate: Box::new(|t: &mut Self| t.0.send(Msg::Quit)),
@@ -165,32 +203,48 @@ pub async fn run(ui: Sender) {
         .spawn()
         .await
     {
-        // The tray lives as long as its handle; its icon follows the desktop's colours.
+        // The tray lives as long as its handle; its icon follows the desktop's colours, and its check the
+        // Software rendering setting.
         Ok(handle) => {
-            if let Some(s) = &settings {
-                if let Ok(mut changes) = s.receive_signal("SettingChanged").await {
-                    while let Some(m) = changes.next().await {
-                        let Ok((space, key, _)) =
-                            m.body().deserialize::<(String, String, zbus::zvariant::OwnedValue)>()
-                        else {
-                            continue;
-                        };
-                        if key == "accent-color" {
-                            crate::host::system_accent(desktop_accent(s).await);
-                            continue;
-                        }
-                        if space != "org.freedesktop.appearance" || key != "color-scheme" {
-                            continue;
-                        }
-                        if let Some(now) = desktop_dark(s).await.filter(|&n| n != dark) {
-                            dark = now;
-                            crate::host::system_dark(now);
-                            handle.update(|t| t.1 = now).await;
-                        }
+            let mut changes = match &settings {
+                Some(s) => s.receive_signal("SettingChanged").await.ok(),
+                None => None,
+            };
+            let refresh = REFRESH.get_or_init(Default::default);
+            loop {
+                let next = async {
+                    match changes.as_mut() {
+                        Some(changes) => changes.next().await,
+                        None => std::future::pending().await,
                     }
+                };
+                let m = tokio::select! {
+                    m = next => m,
+                    () = refresh.notified() => {
+                        handle.update(|_| {}).await;
+                        continue;
+                    }
+                };
+                let (Some(m), Some(s)) = (m, &settings) else {
+                    changes = None;
+                    continue;
+                };
+                let Ok((space, key, _)) = m.body().deserialize::<(String, String, zbus::zvariant::OwnedValue)>() else {
+                    continue;
+                };
+                if key == "accent-color" {
+                    crate::host::system_accent(desktop_accent(s).await);
+                    continue;
+                }
+                if space != "org.freedesktop.appearance" || key != "color-scheme" {
+                    continue;
+                }
+                if let Some(now) = desktop_dark(s).await.filter(|&n| n != dark) {
+                    dark = now;
+                    crate::host::system_dark(now);
+                    handle.update(|t| t.1 = now).await;
                 }
             }
-            std::future::pending().await
         }
         Err(e) => {
             crate::warn(format!("no tray icon ({e})"));
@@ -250,7 +304,7 @@ fn reg_dword(key: &str, name: &str) -> Option<u32> {
 
 #[cfg(windows)]
 pub async fn run(ui: Sender) {
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage, MSG};
 
@@ -261,20 +315,28 @@ pub async fn run(ui: Sender) {
     // thread with a message loop.
     std::thread::spawn(move || {
         let open = MenuItem::new(tr("tray.show_hide"), true, None);
+        let software = CheckMenuItem::new(
+            tr("settings.software_render"),
+            true,
+            SOFTWARE.load(Ordering::Relaxed),
+            None,
+        );
         let close = MenuItem::new(tr("tray.quit"), true, None);
         let menu = Menu::new();
         let fail = |e: String| {
             crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         };
-        if let Err(e) = menu.append_items(&[&open, &close]) {
+        if let Err(e) = menu.append_items(&[&open, &software, &PredefinedMenuItem::separator(), &close]) {
             return fail(e.to_string());
         }
-        let (open_id, close_id) = (open.id().clone(), close.id().clone());
+        let (open_id, software_id, close_id) = (open.id().clone(), software.id().clone(), close.id().clone());
         let menu_ui = ui.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             if e.id == open_id {
                 menu_ui.send(Msg::Toggle);
+            } else if e.id == software_id {
+                menu_ui.send(Msg::SoftwareRender);
             } else if e.id == close_id {
                 menu_ui.send(Msg::Quit);
             }
@@ -310,10 +372,19 @@ pub async fn run(ui: Sender) {
             Err(e) => return fail(e),
         };
 
+        // SAFETY: no pointers.
+        TRAY_THREAD.store(
+            unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+            Ordering::Relaxed,
+        );
         // SAFETY: standard Win32 message loop; MSG is plain data, zeroed is a valid initial value.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                if msg.message == WM_SOFTWARE {
+                    software.set_checked(SOFTWARE.load(Ordering::Relaxed));
+                    continue;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

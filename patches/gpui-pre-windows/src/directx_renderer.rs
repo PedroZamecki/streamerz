@@ -54,6 +54,13 @@ pub(crate) struct DirectXRenderer {
     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
     /// meaning we lost all the allocated gpu textures and scene resources.
     skip_draws: bool,
+
+    /// Draws in a row that failed while the device was fine.
+    failed_draws: u32,
+    /// Whether the first frame with text was read back to see that the GPU drew it.
+    frame_checked: bool,
+    /// The GPU took the frame and drew nothing (it came out as one flat colour).
+    drew_nothing: bool,
 }
 
 /// Direct3D objects
@@ -194,6 +201,9 @@ impl DirectXRenderer {
             width: 1,
             height: 1,
             skip_draws: false,
+            failed_draws: 0,
+            frame_checked: false,
+            drew_nothing: false,
         })
     }
 
@@ -324,6 +334,9 @@ impl DirectXRenderer {
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
         self.skip_draws = true;
+        self.failed_draws = 0;
+        self.frame_checked = false;
+        self.drew_nothing = false;
         Ok(())
     }
 
@@ -337,8 +350,107 @@ impl DirectXRenderer {
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
         }
-        self.render(scene, background_appearance)?;
-        self.present()
+        let result = self.render(scene, background_appearance).and_then(|()| {
+            self.check_first_frame(scene);
+            self.present()
+        });
+        match &result {
+            Ok(()) => self.failed_draws = 0,
+            // A lost device is recovered elsewhere; a fine device that keeps failing can't draw.
+            Err(_) if self.device_is_fine() => self.failed_draws += 1,
+            Err(_) => {}
+        }
+        result
+    }
+
+    /// Whether this GPU can't draw the window: it keeps failing, or drew nothing. Windows then
+    /// switches to software rendering (WARP).
+    pub(crate) fn gpu_failed(&self) -> bool {
+        self.drew_nothing || self.failed_draws >= 3
+    }
+
+    fn device_is_fine(&self) -> bool {
+        self.devices
+            .as_ref()
+            .is_some_and(|devices| unsafe { devices.device.GetDeviceRemovedReason() }.is_ok())
+    }
+
+    /// Reads back the first frame that has text, once: a frame with text is never one flat colour, so
+    /// one means the GPU took the work and drew nothing (an old or broken driver). Software rendering
+    /// is trusted and not checked.
+    fn check_first_frame(&mut self, scene: &Scene) {
+        if self.frame_checked
+            || software_rendering()
+            || (scene.monochrome_sprites.is_empty() && scene.subpixel_sprites.is_empty())
+            || self.width < 32
+            || self.height < 32
+        {
+            return;
+        }
+        self.frame_checked = true;
+        match self.frame_is_flat() {
+            Ok(true) => {
+                log::warn!("The GPU drew nothing in the first frame");
+                self.drew_nothing = true;
+            }
+            Ok(false) => {}
+            Err(error) => log::warn!("Couldn't read the first frame back: {error:#}"),
+        }
+    }
+
+    /// Whether every pixel of the frame just rendered is the same.
+    fn frame_is_flat(&self) -> Result<bool> {
+        // Development builds can pretend the GPU drew nothing, to test the switch to software.
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("STREAMERZ_TEST_GPU_DRAWS_NOTHING").is_some() {
+            return Ok(true);
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+        let render_target = resources
+            .render_target
+            .as_ref()
+            .context("render target missing")?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { render_target.GetDesc(&mut desc) };
+        let staging_desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+            MipLevels: 1,
+            ArraySize: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..desc
+        };
+        let mut staging: Option<ID3D11Texture2D> = None;
+        unsafe {
+            devices
+                .device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))?
+        };
+        let staging = staging.context("creating staging texture")?;
+        let context = &devices.device_context;
+        unsafe { context.CopyResource(&staging, render_target) };
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))? };
+        let row_bytes = desc.Width as usize * 4;
+        // SAFETY: `Map` succeeded, so `pData` points at `RowPitch * Height` readable bytes until
+        // `Unmap`, and `RowPitch >= row_bytes`.
+        let flat = unsafe {
+            let base = mapped.pData as *const u8;
+            let first = std::slice::from_raw_parts(base, 4).to_vec();
+            (0..desc.Height as usize).all(|row| {
+                std::slice::from_raw_parts(base.add(row * mapped.RowPitch as usize), row_bytes)
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == first.as_slice())
+            })
+        };
+        unsafe { context.Unmap(&staging, 0) };
+        Ok(flat)
     }
 
     /// Clear the render target for `background_appearance` and encode every
@@ -823,10 +935,15 @@ impl DirectXRenderer {
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let desc = unsafe { devices.adapter.GetDesc1() }?;
-        let is_software_emulated = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
-        let device_name = String::from_utf16_lossy(&desc.Description)
-            .trim_matches(char::from(0))
-            .to_string();
+        let is_software_emulated =
+            (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 || software_rendering();
+        // The name ends at its first NUL; what follows may be anything.
+        let length = desc
+            .Description
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(desc.Description.len());
+        let device_name = String::from_utf16_lossy(&desc.Description[..length]);
         let driver_name = match desc.VendorId {
             0x10DE => "NVIDIA Corporation".to_string(),
             0x1002 => "AMD Corporation".to_string(),

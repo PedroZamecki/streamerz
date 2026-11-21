@@ -6866,6 +6866,7 @@ version = "0.0.0"
 dependencies = [
  "gpui-kit",
  "image",
+ "log",
  "raw-window-handle",
  "serde_json",
  "windows-sys 0.61.2",

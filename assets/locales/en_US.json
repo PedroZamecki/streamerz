@@ -1256,7 +1256,7 @@
   "settings.animations": "Animations",
   "settings.animations.about": "Dialogs, menus and panels slide and fade in and out. Off: they appear at once.",
   "settings.software_render": "Software rendering",
-  "settings.software_render.about": "Draws the window on the processor instead of the GPU. Turn it on if the window stays blank, flickers or draws wrong. With no GPU to use, Streamerz does it by itself. The window opens again to apply it.",
+  "settings.software_render.about": "Draws the window on the processor instead of the GPU. Turn it on if the window stays blank, flickers or draws wrong. When the GPU can't draw it, Streamerz does this by itself. The window opens again to apply it.",
   "settings.software_render.gpu": "Drawn now by {device}.",
   "settings.software_render.software": "Drawn now on the processor ({device}).",
   "twitch.error.owner_only": "Only the channel owner's login can do this on Twitch.",

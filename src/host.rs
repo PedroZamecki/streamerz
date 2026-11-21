@@ -183,6 +183,8 @@ pub enum Message {
     Restart,
     /// Open the window again, if it is open.
     Reopen,
+    /// The tray's Software rendering: turn it the other way.
+    SoftwareRender,
     /// The desktop's colour scheme changed.
     Theme,
     /// A dev command for the window (see `dev`).
