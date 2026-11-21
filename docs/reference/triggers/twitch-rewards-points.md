@@ -32,6 +32,7 @@ Fires when a viewer redeems a custom Channel Points reward. A redemption with no
 - `skipsQueue`, `requiresUserInput`, `maxPerStream`, `maxPerUserPerStream`, `globalCooldown`,
   `backgroundColor`: the reward's settings.
 - `rewardImage`, `rewardColor`: the reward's picture and colour, when known.
+- `counter`, `userCounter`: how many times the reward was redeemed, and by this user (Streamerz's counts; Reset Reward Counter starts them again).
 
 ### When
 

@@ -127,15 +127,18 @@ Changes the description of a reward.
 - Code: 35104
 - Type: KickChannelRewardConfigure
 - Category: Kick/Rewards
-- Needs: nothing (not run yet)
+- Needs: the broadcaster's Kick login
 
-Disables the rewards that are not configured. Streamerz doesn't run it yet.
+Disables the rewards that are not configured.
 
 ### Fields
 
 | Field | Key | What it holds |
 | --- | --- | --- |
-| Disable not configured | `disableNotConfigured` | On disables the rewards that are not configured. |
+| Turn on | `enable` | The rewards to turn on (and unpause), one per line, by name or id. |
+| Pause | `pause` | The rewards to turn on and pause, one per line. |
+| Turn off | `disable` | The rewards to turn off, one per line. |
+| Turn off the rest | `disableNotConfigured` | On: every other reward Streamerz may change is turned off. |
 
 ### Arguments
 
@@ -143,7 +146,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch and Kick let an app change only the rewards it made, so only those change; the others stay as they are.
+- Streamer.bot keeps these lists in its own editor, which an export doesn't carry: an imported Configure Rewards starts with empty lists.
 
 ## Update
 
@@ -212,9 +216,9 @@ Reads a reward and puts its details into the arguments, for the sub-actions afte
 - Code: 35109
 - Type: KickChannelRewardResetCounter
 - Category: Kick/Rewards
-- Needs: nothing (not run yet)
+- Needs: nothing: the counts are Streamerz's
 
-Resets the redemption counter of a reward. Streamerz doesn't run it yet.
+Resets the redemption counter of a reward.
 
 ### Fields
 
@@ -228,7 +232,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- The count is the one Streamerz keeps: each Reward Redemption counts, and gives `counter` and `userCounter`.
 
 ## Reset Reward User Counters
 
@@ -236,9 +240,9 @@ None set.
 - Code: 35110
 - Type: KickChannelRewardResetUserCounters
 - Category: Kick/Rewards
-- Needs: nothing (not run yet)
+- Needs: nothing: the counts are Streamerz's
 
-Resets the per-user redemption counters of a reward. Streamerz doesn't run it yet.
+Resets the per-user redemption counters of a reward.
 
 ### Fields
 
@@ -252,7 +256,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Every user's count of the reward starts again; the reward's own count stays. Each Reward Redemption gives `userCounter`.
 
 ## Set Group Enabled State
 
@@ -260,9 +264,9 @@ None set.
 - Code: 35111
 - Type: KickChannelRewardSetGroupEnabledState
 - Category: Kick/Rewards
-- Needs: nothing (not run yet)
+- Needs: the broadcaster's Kick login
 
-Turns on or off every reward in a group. Streamerz doesn't run it yet.
+Turns on or off every reward in a group.
 
 ### Fields
 
@@ -277,7 +281,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- A reward's group is set on the Rewards page. Only the rewards Streamerz made can be changed: the others in the group are left as they are, with a log line.
 
 ## Set Group Paused State
 
@@ -285,9 +289,9 @@ None set.
 - Code: 35112
 - Type: KickChannelRewardSetGroupPausedState
 - Category: Kick/Rewards
-- Needs: nothing (not run yet)
+- Needs: the broadcaster's Kick login
 
-Pauses or unpauses every reward in a group. Streamerz doesn't run it yet.
+Pauses or unpauses every reward in a group.
 
 ### Fields
 
@@ -302,7 +306,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- A reward's group is set on the Rewards page. Only the rewards Streamerz made can be changed: the others in the group are left as they are, with a log line.
 
 ## Set Background Color
 
@@ -329,3 +333,98 @@ Changes the background color of a reward.
 ### Notes
 
 - Kick takes `#RRGGBB`, so the alpha digits of a picked color are dropped. A `#` is optional.
+
+## Accept Redemption
+
+- Kind: sub-action
+- Code: 99601
+- Type: KickAcceptRedemption
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Accepts a Kick reward redemption. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Redemption | `redemptionId` | The redemption's id. Empty: the newest waiting redemption of the reward that started the action, by the same viewer (Kick's chat doesn't say which one it was). |
+
+### Arguments
+
+- `redemptionResult`: true when Kick took it.
+- `redemptionId`: the redemption.
+
+### Notes
+
+- Kick only lets an app accept the redemptions of the rewards it made.
+
+## Reject Redemption
+
+- Kind: sub-action
+- Code: 99602
+- Type: KickRejectRedemption
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Rejects a Kick reward redemption, giving the points back. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Redemption | `redemptionId` | The redemption's id. Empty: the newest waiting redemption of the reward that started the action, by the same viewer. |
+
+### Arguments
+
+- `redemptionResult`: true when Kick took it.
+- `redemptionId`: the redemption.
+
+### Notes
+
+- Kick only lets an app reject the redemptions of the rewards it made.
+
+## Create Reward
+
+- Kind: sub-action
+- Code: 99603
+- Type: KickCreateReward
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Creates a Kick channel reward (up to 50 per channel). This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Title | `title` | The title. Variables are filled in first. |
+| Cost | `cost` | What it costs, in points. |
+| Description | `description` | What the reward says to viewers. Optional. |
+| Viewer types a message | `inputRequired` | On: the viewer types a message to redeem it. |
+| Colour | `backgroundColor` | The reward's colour, picked. Empty: the platform's own. |
+| On | `enabled` | On: viewers can redeem it at once. |
+
+### Arguments
+
+- `rewardId`: the new reward's id.
+
+## Delete Reward
+
+- Kind: sub-action
+- Code: 99604
+- Type: KickDeleteReward
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Deletes a Kick channel reward. Kick only lets an app delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward | `rewardId` | The reward, picked from the channel's rewards (or its id typed). |
+
+### Arguments
+
+None set.

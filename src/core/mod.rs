@@ -28,6 +28,7 @@ pub mod read;
 mod renderer_job;
 pub mod requests;
 pub mod requirements;
+pub mod rewards;
 pub mod sections;
 pub mod settings;
 pub mod status;

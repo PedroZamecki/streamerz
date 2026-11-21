@@ -162,6 +162,24 @@ pub fn new_sub(kind: u64) -> Obj {
         }
         _ => {}
     }
+    // A new one acts on whoever and whatever started the action, until told otherwise.
+    for (key, _, widget) in crate::automation::schema::sub_fields(kind).unwrap_or_default() {
+        let start = match widget {
+            crate::automation::schema::W::Who if kind != 99514 => json!("%userName%"),
+            crate::automation::schema::W::Message(from) => json!(from),
+            crate::automation::schema::W::Checks(_) => json!([]),
+            crate::automation::schema::W::Bool
+                if matches!(*key, "fallback" | "enabled" | "approve" | "wait" | "persisted" | "all") =>
+            {
+                json!(true)
+            }
+            _ => continue,
+        };
+        o.insert((*key).into(), start);
+    }
+    if kind == 99514 {
+        o.insert("userLogin".into(), "%targetUserName%".into());
+    }
     for (k, v) in [
         ("id", Value::from(uuid())),
         ("weight", json!(0.0)),

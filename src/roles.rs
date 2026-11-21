@@ -150,7 +150,7 @@ pub fn allowed(platform: &str, me: Role, my_id: &str, t: Target<'_>) -> Allowed 
     Allowed {
         reply,
         // Our own messages we may always take back, as a moderator.
-        delete: matches!(platform, "twitch" | "kick") && (mine || !shielded),
+        delete: matches!(platform, "twitch" | "kick" | "youtube") && (mine || !shielded),
         pin: platform == "twitch",
         timeout: has_mod_tools && sanction,
         ban: has_mod_tools && sanction,
@@ -229,8 +229,8 @@ mod tests {
     fn a_moderator_handles_viewers() {
         let a = allowed("youtube", Role::Moderator, "2", t("3", false, false));
         assert!(
-            a.ban && a.timeout && !a.delete && !a.pin,
-            "YouTube has no delete or pin here"
+            a.ban && a.timeout && a.delete && !a.pin,
+            "YouTube deletes a message (Data API), but has no pin"
         );
         let a = allowed("tiktok", Role::Broadcaster, "1", t("3", false, false));
         assert!(!a.ban && !a.timeout, "TikTok has no moderation API");

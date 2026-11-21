@@ -15,6 +15,7 @@ pub const NAV: &[Section] = &[
             ("Community", "nav.page.community", "users"),
             ("Moderation", "nav.page.moderation", "shield"),
             ("Polls", "nav.page.polls", "vote"),
+            ("Rewards", "nav.page.rewards", "gift"),
         ],
     ),
     (

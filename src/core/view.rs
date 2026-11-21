@@ -67,17 +67,19 @@ pub fn supports(domain: &str) -> bool {
         || super::moderation::supports(domain)
         || super::stream::supports(domain)
         || super::sections::supports(domain)
+        || super::rewards::supports(domain)
 }
 
-/// The crash report's trail: the page the frontend opened last, noted when it changes.
-fn note_page(domain: &str) {
+/// The crash report's trail: the page the frontend opened last, noted when it changes. Whether the
+/// page was just opened (it wasn't the one shown before).
+fn note_page(domain: &str) -> bool {
     // Only the sidebar's pages count: a dialog's or a popup's read says nothing about the page behind it.
     let is_page = super::navigation::NAV
         .iter()
         .flat_map(|(_, _, pages)| pages.iter())
         .any(|(id, _, _)| id.to_lowercase().replace(' ', "_") == domain);
     if !is_page {
-        return;
+        return false;
     }
     // The Chat and Stream pages show viewer counts: the platforms are asked for them while one is open.
     crate::host::set_viewers_visible(matches!(domain, "chat" | "stream"));
@@ -85,25 +87,29 @@ fn note_page(domain: &str) {
         static SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     }
     // Opening the Stream page reads the platforms again (re-reads while it stays open don't).
-    if SHOWN.with_borrow_mut(|shown| std::mem::replace(shown, domain.to_owned()) != domain) && domain == "stream" {
+    let opened = SHOWN.with_borrow_mut(|shown| std::mem::replace(shown, domain.to_owned()) != domain);
+    if opened && domain == "stream" {
         super::stream::opened();
     }
     #[cfg(not(test))]
     {
         static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-        let Ok(mut last) = LAST.lock() else { return };
+        let Ok(mut last) = LAST.lock() else { return opened };
         if *last != domain {
             *last = domain.to_owned();
             crate::crash::step(&format!("opened page {domain}"));
             crate::crash::fact("Page", domain);
         }
     }
+    opened
 }
 
 /// A request's own filters (the log's level and search) on top of the domain.
 pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let domain = request["domain"].as_str().unwrap_or_default();
-    note_page(domain);
+    if note_page(domain) && domain == "rewards" {
+        super::rewards::opened(engine);
+    }
     if let Some((page_id, _, _)) = super::navigation::NAV
         .iter()
         .flat_map(|(_, _, pages)| pages.iter())
@@ -161,6 +167,9 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     }
     if super::sections::supports(domain) {
         return super::sections::read(engine, domain);
+    }
+    if super::rewards::supports(domain) {
+        return super::rewards::read(engine);
     }
     let kinds: &[&str] = match domain {
         "commands" => &["command"],

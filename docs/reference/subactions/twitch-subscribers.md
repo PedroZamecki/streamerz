@@ -36,8 +36,32 @@ None.
 
 ### Arguments
 
-Adds `totalSubscribers`, the total number of subscribers.
+- `totalSubscribers`: the total number of subscribers.
+- `latestSubscriber.userName`, `latestSubscriber.userLogin`, `latestSubscriber.userId`: who subscribed last (display name, login, id).
+- `latestSubscriber.tier` (`Tier1`, `Tier2`, `Tier3` or `Prime`) and `latestSubscriber.isGift`.
 
 ### Notes
 
-- The latest subscriber isn't read yet. Only the total is set, the same as Get Subscriber Count.
+- Twitch has no call for the latest subscriber, so it is the last one Streamerz saw (a Sub, Resub or Gift Sub, the one who got it), kept across restarts. Before the first one, only the total is set.
+
+## Is Subscribed
+
+- Kind: sub-action
+- Code: 99513
+- Type: TwitchIsSubscribed
+- Category: Twitch/Subscribers
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Says whether someone subscribes to the channel, and at which tier. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+
+### Arguments
+
+- `isSubscribed`: true when they subscribe.
+- `subscriptionTier`: 1, 2 or 3 (0: not subscribed).
+- `isGift`, `gifterUser`: whether it was a gift, and from whom.

@@ -240,7 +240,7 @@ def main():
                     close = strings["dialogs.close"]
                     return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                 def layout_pass():
-                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                         if args.page and page.casefold() != args.page.casefold():
                             continue
                         for width, height in ((1100, 800), (540, 700)):
@@ -425,7 +425,7 @@ def main():
                             red, green, blue = captured.convert("RGB").getpixel((width - 3, height // 2))
                             assert (min(red, green, blue) > 200) if args.theme == "light" else (max(red, green, blue) < 80), (args.theme, red, green, blue)
                 # Pages built on the core's table and section models: each loads, draws and keeps its window size.
-                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
+                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)
                         load_page(page)

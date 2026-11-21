@@ -102,7 +102,7 @@ None set.
 
 ### Notes
 
-- The cost is always set to the value of `cost`. The operation isn't used yet, so Add and Subtract act like Set.
+- Add and Subtract change the cost the reward has now; a cost never goes under 1.
 
 ## Configure Rewards
 
@@ -110,15 +110,18 @@ None set.
 - Code: 203
 - Type: RewardConfigure
 - Category: Twitch/Rewards
-- Needs: the broadcaster's Twitch login (only the channel's owner can do this)
+- Needs: the broadcaster's Twitch login
 
-Configures the channel's rewards.
+Turns several rewards on, off or paused at once.
 
 ### Fields
 
 | Field | Key | What it holds |
 | --- | --- | --- |
-| Disable not configured | `disableNotConfigured` | On or off. |
+| Turn on | `enable` | The rewards to turn on (and unpause), one per line, by name or id. |
+| Pause | `pause` | The rewards to turn on and pause, one per line. |
+| Turn off | `disable` | The rewards to turn off, one per line. |
+| Turn off the rest | `disableNotConfigured` | On: every other reward Streamerz may change is turned off. |
 
 ### Arguments
 
@@ -126,7 +129,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch and Kick let an app change only the rewards it made, so only those change; the others stay as they are.
+- Streamer.bot keeps these lists in its own editor, which an export doesn't carry: an imported Configure Rewards starts with empty lists.
 
 ## Set Global Cooldown
 
@@ -265,7 +269,7 @@ Reads a reward from Twitch and puts its settings in the arguments.
 - Code: 209
 - Type: RewardResetCounter
 - Category: Twitch/Rewards
-- Needs: the broadcaster's Twitch login (only the channel's owner can do this)
+- Needs: nothing: the counts are Streamerz's
 
 Resets the redemption count of a reward.
 
@@ -281,7 +285,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- The count is the one Streamerz keeps: each Reward Redemption counts, and gives `counter` and `userCounter`.
 
 ## Reset Reward User Counters
 
@@ -289,7 +293,7 @@ None set.
 - Code: 210
 - Type: RewardResetUserCounters
 - Category: Twitch/Rewards
-- Needs: the broadcaster's Twitch login (only the channel's owner can do this)
+- Needs: nothing: the counts are Streamerz's
 
 Resets the redemption counts of every user for a reward.
 
@@ -305,7 +309,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Every user's count of the reward starts again; the reward's own count stays. Each Reward Redemption gives `userCounter`.
 
 ## Set Group Enabled State
 
@@ -313,7 +317,7 @@ None set.
 - Code: 211
 - Type: RewardSetGroupEnabledState
 - Category: Twitch/Rewards
-- Needs: the broadcaster's Twitch login (only the channel's owner can do this)
+- Needs: the broadcaster's Twitch login
 
 Turns the rewards in a group on or off.
 
@@ -330,7 +334,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- A reward's group is set on the Rewards page. Only the rewards Streamerz made can be changed: the others in the group are left as they are, with a log line.
 
 ## Set Group Paused State
 
@@ -338,7 +342,7 @@ None set.
 - Code: 212
 - Type: RewardSetGroupPausedState
 - Category: Twitch/Rewards
-- Needs: the broadcaster's Twitch login (only the channel's owner can do this)
+- Needs: the broadcaster's Twitch login
 
 Pauses or resumes the rewards in a group.
 
@@ -355,7 +359,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- A reward's group is set on the Rewards page. Only the rewards Streamerz made can be changed: the others in the group are left as they are, with a log line.
 
 ## Set Background Color
 
@@ -435,3 +439,48 @@ None set.
 ### Notes
 
 - A number above 0 turns the limit on. 0 turns it off.
+
+## Create Reward
+
+- Kind: sub-action
+- Code: 99522
+- Type: TwitchCreateReward
+- Category: Twitch/Rewards
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Creates a channel points reward. Streamerz can change and delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Title | `title` | The title. Variables are filled in first. |
+| Cost | `cost` | What it costs, in points. |
+| Description | `prompt` | What the reward says to viewers. Optional. |
+| Viewer types a message | `inputRequired` | On: the viewer types a message to redeem it. |
+| Colour | `backgroundColor` | The reward's colour, picked. Empty: the platform's own. |
+| On | `enabled` | On: viewers can redeem it at once. |
+
+### Arguments
+
+- `rewardId`: the new reward's id.
+
+## Delete Reward
+
+- Kind: sub-action
+- Code: 99523
+- Type: TwitchDeleteReward
+- Category: Twitch/Rewards
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Deletes a channel points reward. Twitch only lets an app delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward | `rewardId` | The reward, picked from the channel's rewards (or its id typed). |
+
+### Arguments
+
+None set.

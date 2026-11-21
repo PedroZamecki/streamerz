@@ -214,3 +214,97 @@ None set.
 ### Notes
 
 - If nothing is pinned, an error is logged.
+
+## Delete Chat Message
+
+- Kind: sub-action
+- Code: 99500
+- Type: TwitchDeleteChatMessage
+- Category: Twitch/Chat
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Deletes one message from the Twitch chat. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message | `messageId` | Which message: the one that started the action (`%msgId%`, the default), or a message's ID. |
+
+### Arguments
+
+- `deleteResult`: true when Twitch deleted it.
+
+### Notes
+
+- Dev mode keeps it instead of deleting, as the Chat page does.
+
+## Send and Pin Message
+
+- Kind: sub-action
+- Code: 99502
+- Type: TwitchSendAndPinMessage
+- Category: Twitch/Chat
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Sends a message to the Twitch chat and pins it. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message | `text` | The text to send. Variables like `%user%` are filled in first. |
+| Duration | `duration` | How long it stays pinned (30 seconds to 30 minutes). 0: until the stream ends. |
+| Send as the bot | `useBot` | On: the bot account sends it. Off: the broadcaster does. |
+| Use the broadcaster if the bot can't | `fallback` | On: when the chosen account can't send, the other one does. |
+
+### Arguments
+
+- `messageId`: the message sent.
+- `pinResult`: true when it's pinned.
+
+## Send Whisper
+
+- Kind: sub-action
+- Code: 99503
+- Type: TwitchSendWhisper
+- Category: Twitch/Chat
+- Needs: a Twitch login
+
+Sends a whisper (a private message) on Twitch. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+| Message | `text` | The text to send. Variables like `%user%` are filled in first. |
+| Send as the bot | `useBot` | On: the bot account sends it. Off: the broadcaster does. |
+
+### Arguments
+
+- `whisperResult`: true when Twitch took it.
+
+### Notes
+
+- Twitch only lets accounts with a verified phone number whisper, and limits how many new people they can whisper a day.
+
+## Set Bot Chat Colour
+
+- Kind: sub-action
+- Code: 99533
+- Type: TwitchSetBotChatColor
+- Category: Twitch/Chat
+- Needs: the broadcaster's Twitch login with more permissions (Accounts, Twitch, Allow more)
+
+Sets the chat colour of the bot account (else the broadcaster's). This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| color | `color` | A colour name such as `blue_violet`, or `#rrggbb` for accounts with Turbo or Prime. |
+
+### Arguments
+
+None set.

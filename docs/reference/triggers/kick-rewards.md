@@ -27,6 +27,7 @@ Fires when someone redeems a channel reward on Kick.
 - `userInput`: the text the user typed for the reward, if any.
 - `rawInput`, `rawInputEscaped`, `rawInputUrlEncoded`: the same text, raw, escaped and URL encoded.
 - `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+- `counter`, `userCounter`: how many times the reward was redeemed, and by this user (Streamerz's counts; Reset Reward Counter starts them again).
 
 ### When
 

@@ -273,7 +273,7 @@ fn tags_of(v: Option<&Value>) -> Vec<String> {
 }
 
 /// A state field that may be a checkbox: ticked is 0 (enable, pause), unticked 1, as `new_state` reads.
-fn state_of(o: &Obj) -> f64 {
+pub(super) fn state_of(o: &Obj) -> f64 {
     match o.get("state") {
         Some(Value::Bool(on)) => f64::from(u8::from(!on)),
         _ => n(o, "state"),
@@ -1085,8 +1085,24 @@ impl Engine {
             // Set Cost (202)
             202 => {
                 let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
-                let cost = n(o, "cost") as u64;
+                let mut cost = n(o, "cost") as i64;
                 if let Some(tw) = self.twitch() {
+                    // Add or Subtract: from what it costs now (Twitch keeps it at 1 or more).
+                    let operator = n(o, "operator") as i64;
+                    if operator == 1 || operator == 2 {
+                        let q = vec![("broadcaster_id", "{broadcaster_id}"), ("id", reward_id.as_str())];
+                        match tw
+                            .helix("GET", "channel_points/custom_rewards", q, None, false, true)
+                            .await
+                        {
+                            Ok(v) => {
+                                let now = v["data"][0]["cost"].as_i64().unwrap_or(0);
+                                cost = if operator == 1 { now + cost } else { now - cost };
+                            }
+                            Err(e) => return crate::error(format!("Twitch: {e}")),
+                        }
+                    }
+                    let cost = cost.max(1);
                     if let Err(e) = tw
                         .helix(
                             "PATCH",
@@ -2239,11 +2255,29 @@ impl Engine {
                         if let Some(total) = resp.pointer("/total") {
                             ctx.args.insert("totalFollowers".into(), total.clone());
                         }
+                        // Twitch lists followers newest first.
+                        let latest = &resp["data"][0];
+                        if kind == 507 && !latest.is_null() {
+                            for (arg, key) in [
+                                ("latestFollower.user", "user_name"),
+                                ("latestFollower.userName", "user_login"),
+                                ("latestFollower.userId", "user_id"),
+                                ("latestFollower.followedAt", "followed_at"),
+                            ] {
+                                ctx.args.insert(arg.into(), latest[key].clone());
+                            }
+                        }
                     }
                 }
             }
             // Get Subscriber Count (508) / Get Latest Subscriber (509)
             508 | 509 => {
+                let latest = self.cfg.borrow().twitch.latest_subscriber.clone();
+                if let (509, Some(latest)) = (kind, latest) {
+                    for key in ["userName", "userLogin", "userId", "tier", "isGift"] {
+                        ctx.args.insert(format!("latestSubscriber.{key}"), latest[key].clone());
+                    }
+                }
                 if let Some(tw) = self.twitch() {
                     if let Ok(resp) = tw
                         .helix(
@@ -4153,7 +4187,8 @@ impl Engine {
             4008 => {
                 ctx.args.insert("banResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
@@ -4175,7 +4210,8 @@ impl Engine {
             4009 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let duration = self.duration_number(ctx, o, "duration") as u64;
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
@@ -5441,9 +5477,41 @@ impl Engine {
             .and_then(Value::as_object)
             .map(|h| h.iter().map(|(k, v)| (k.clone(), self.expand(ctx, &text(v)))).collect())
             .unwrap_or_default();
-        let r = match crate::http::request("GET", &url, &headers, b"").await {
-            Ok(r) if (200..300).contains(&r.status) => r,
-            Ok(r) => return crate::error(format!("Fetch URL {url}: HTTP {}", r.status)),
+        // Our extension: a method other than GET, with a body (a Streamer.bot export has neither).
+        let method = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+            .get(n(o, "method") as usize)
+            .copied()
+            .unwrap_or("GET");
+        let sent = self.expand(ctx, s(o, "body"));
+        let mut headers = headers;
+        if !sent.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+            let kind = self.expand(ctx, s(o, "contentType"));
+            let kind = if !kind.trim().is_empty() {
+                kind.trim().to_string()
+            } else if serde_json::from_str::<Value>(&sent).is_ok() {
+                "application/json".into()
+            } else {
+                "text/plain".into()
+            };
+            headers.push(("Content-Type".into(), kind));
+        }
+        ctx.args.insert("httpStatus".into(), 0.into());
+        ctx.args.insert("httpOk".into(), false.into());
+        let r = match crate::http::request(method, &url, &headers, sent.as_bytes()).await {
+            Ok(r) => {
+                ctx.args.insert("httpStatus".into(), r.status.into());
+                ctx.args.insert("httpOk".into(), (200..300).contains(&r.status).into());
+                if (200..300).contains(&r.status) {
+                    r
+                } else {
+                    crate::error(format!("Fetch URL {url}: HTTP {}", r.status));
+                    // A GET that failed sets nothing, as before; a request with a body still gives its answer.
+                    if method == "GET" {
+                        return;
+                    }
+                    r
+                }
+            }
             Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
         let body = r.text();

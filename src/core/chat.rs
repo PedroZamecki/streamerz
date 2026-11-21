@@ -922,7 +922,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "platforms": list, "connected": connected, "history": config.window.chat.save_history && !crate::memory_saver(),
         "historyDisabled": !config.window.chat.save_history || crate::memory_saver(),
         "canEnableHistory": !crate::memory_saver(),
-        "pins": pins, "polls": polls, "totalViewers": total_viewers, "viewersBreakdown": viewers_breakdown,
+        "pins": pins, "polls": polls, "held": held_of(engine), "totalViewers": total_viewers, "viewersBreakdown": viewers_breakdown,
         "modes": modes(engine), "texts": texts(), "fadeIn": config.window.chat.fade_in, "me": my_names(&config),
         "view": view(&config, &list.iter().filter(|platform| platform["present"] == true).filter_map(|platform| platform["id"].as_str()).collect::<Vec<_>>()),
     }}))
@@ -1012,6 +1012,15 @@ pub async fn request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Stri
     match request["op"].as_str().unwrap_or_default() {
         "send" => send(engine, request),
         "act" => act(engine, request),
+        // A message AutoMod held: let it through or keep it out.
+        "held" => {
+            let id = request["msgId"].as_str().unwrap_or_default();
+            if !engine.held().iter().any(|h| h["msgId"] == id) {
+                return Err("that message isn't held anymore".into());
+            }
+            engine.decide_held(id, request["allow"] == true);
+            Ok(json!({"accepted": true}))
+        }
         "card" => card(engine, request).await,
         "clear" => {
             CLEARED.set(engine.chat_last_seq());
@@ -1357,10 +1366,89 @@ fn unavailable(engine: &Rc<Engine>, platform: &str) -> String {
     }
 }
 
+/// The messages AutoMod holds, while we moderate Twitch's chat: who, what, why, and the buttons' words.
+fn held_of(engine: &Rc<Engine>) -> Vec<Value> {
+    if !crate::roles::get("twitch").0.moderates() {
+        return Vec::new();
+    }
+    engine
+        .held()
+        .into_iter()
+        .map(|mut h| {
+            let why = h["reason"].as_str().unwrap_or_default().replace('_', " ");
+            h["title"] = if why.is_empty() {
+                tr("chat.held").to_string()
+            } else {
+                trf("chat.held_for", &[("reason", &why)])
+            }
+            .into();
+            h["allow"] = tr("chat.held_allow").into();
+            h["deny"] = tr("chat.held_deny").into();
+            h
+        })
+        .collect()
+}
+
+/// What a chatter's card offers besides a line's actions: lifting a ban Streamerz made on YouTube,
+/// and, for the channel's owner, making them a moderator or taking it back (Twitch, YouTube).
+fn card_extras(engine: &Rc<Engine>, line: &Line) -> Vec<&'static str> {
+    let (me, my_id) = crate::roles::get(&line.platform);
+    let mut out = Vec::new();
+    if line.user_id.is_empty() || line.broadcaster || line.user_id == my_id {
+        return out;
+    }
+    if line.platform == "youtube"
+        && me.moderates()
+        && !crate::core::moderation::youtube_ban_ids(engine, &line.user_id).is_empty()
+    {
+        out.push("unban");
+    }
+    if me == crate::roles::Role::Broadcaster && matches!(line.platform.as_str(), "twitch" | "youtube") {
+        out.push(if line.moderator { "unmod" } else { "mod" });
+    }
+    out
+}
+
+/// A card's extra: the platform's own sub-action, as an action would run it (dev mode keeps it).
+fn card_extra(engine: &Rc<Engine>, line: &Line, act: &str) {
+    let what = format!("/{act} {}", line.user);
+    if engine.dev_out(&line.platform, &what, false) {
+        engine.chat_note(&line.platform, format!("(dev, not sent) {what}"));
+        return;
+    }
+    let code = match (line.platform.as_str(), act) {
+        ("twitch", "mod") => 504,
+        ("twitch", _) => 505,
+        ("youtube", "unban") => 99651,
+        ("youtube", "mod") => 99652,
+        _ => 99653,
+    };
+    let who = if line.platform == "youtube" {
+        line.user_id.clone()
+    } else {
+        line.user.clone()
+    };
+    let settings = json!({"userLogin": who}).as_object().cloned().unwrap_or_default();
+    let (engine, platform) = (engine.clone(), line.platform.clone());
+    tokio::task::spawn_local(async move {
+        let (_, outcome) = engine.execute_one(code, settings).await;
+        if let Some(error) = outcome.error {
+            engine.chat_note(&platform, format!("{what}: {error}"));
+        }
+    });
+}
+
 /// A message's moderation. Banning asks first through a core prompt unless `confirmed`.
 fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let line = line_of(engine, request)?;
     let act = request["act"].as_str().unwrap_or_default();
+    if matches!(act, "unban" | "mod" | "unmod") {
+        if !card_extras(engine, &line).contains(&act) {
+            return Err(format!("{act} is not possible for them"));
+        }
+        card_extra(engine, &line, act);
+        return Ok(json!({"accepted": true}));
+    }
     if (act == "unpin" || act == "pin") && !line.msg_id.is_empty() {
         let (me, _) = crate::roles::get(&line.platform);
         if me.moderates() {
@@ -1580,10 +1668,11 @@ async fn card(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "id": id, "seq": line.seq, "loading": !lookup, "pending": pending, "user": shown_name(&line, true), "userId": line.user_id,
         "platform": platform, "platformName": name(&platform), "color": name_color(&line), "role": role,
         "picture": picture, "banner": banner, "created": created, "facts": shown, "messages": messages, "groups": groups,
-        "badges": badges(engine, &line), "acts": actions(&line, false).into_iter().filter(|act| !matches!(*act, "copy" | "pin" | "unpin")).collect::<Vec<_>>(),
+        "badges": badges(engine, &line), "acts": actions(&line, false).into_iter().filter(|act| !matches!(*act, "copy" | "pin" | "unpin")).chain(card_extras(engine, &line)).collect::<Vec<_>>(),
         "handle": handle(&line), "createdText": if created.is_empty() { String::new() } else { trf("card.created_on", &[("date", &created)]) }, "groupsLabel": tr("card.groups"), "noGroups": tr("card.no_groups"),
         "groupsTip": tr("card.groups_tip"), "recent": tr("card.recent"),
         "labels": {"timeout": tr("chat.timeout_10m"), "ban": tr("chat.act_ban"), "delete": tr("chat.act_delete_message"),
+            "unban": tr("chat.act_unban"), "mod": tr("chat.act_mod"), "unmod": tr("chat.act_unmod"),
             "profile": tr("btn.open_profile"), "close": tr("dialogs.close")},
         "noMessages": tr("lists.community.card_no_messages"),
         "profile": engine_profile(&platform, &line),
@@ -2057,6 +2146,86 @@ mod tests {
             let all = request_sync(&engine, json!({"op": "send", "text": "to everyone"})).unwrap();
             assert_eq!(all["sent"], json!(["twitch"]));
             assert!(request_sync(&engine, json!({"op": "nothing"})).is_err());
+        });
+    }
+
+    /// AutoMod's held messages show in the chat while we moderate, and Allow or Deny takes them off.
+    #[test]
+    fn held_messages_wait_for_a_moderator_and_leave_when_decided() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            let held = json!({"messageId": "h1", "user": "Ana", "userId": "5", "rawInput": "rude", "category": "hostility", "level": 3});
+            engine.note_held(crate::twitch::T_AUTOMOD_MESSAGE_HELD, held.as_object().unwrap());
+            crate::roles::clear("twitch");
+            assert!(held_of(&engine).is_empty(), "only a moderator sees what is held");
+            crate::roles::set("twitch", crate::roles::Role::Moderator, "me");
+            let shown = held_of(&engine);
+            assert_eq!(
+                (shown[0]["msgId"].clone(), shown[0]["user"].clone()),
+                (json!("h1"), json!("Ana"))
+            );
+            assert!(shown[0]["title"].as_str().unwrap().contains("hostility"));
+            assert!(request_sync(&engine, json!({"op": "held", "msgId": "nope", "allow": true})).is_err());
+            request_sync(&engine, json!({"op": "held", "msgId": "h1", "allow": true})).unwrap();
+            assert!(held_of(&engine).is_empty());
+            // Another moderator decided first: the update takes it away too.
+            engine.note_held(crate::twitch::T_AUTOMOD_MESSAGE_HELD, held.as_object().unwrap());
+            engine.note_held(crate::twitch::T_AUTOMOD_MESSAGE_UPDATED, held.as_object().unwrap());
+            assert!(held_of(&engine).is_empty());
+            crate::roles::clear("twitch");
+        });
+    }
+
+    /// A card also lifts a ban Streamerz made on YouTube, and the owner makes moderators; dev mode
+    /// keeps it as a note.
+    #[test]
+    fn a_card_unbans_youtube_and_the_owner_makes_moderators() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.youtube.broadcaster = Some(crate::youtube::YouTubeAccount {
+                    channel_id: "owner".into(),
+                    ..Default::default()
+                });
+            });
+            crate::core::moderation::remember_youtube(&engine, "ban1", "UCana", "chat", None);
+            engine
+                .inject_chat("youtube", "Ana", "UCana", "viewer", "hi", &json!({}))
+                .unwrap();
+            let line = |engine: &Rc<Engine>| {
+                read(engine, &json!({})).unwrap()["chat"]["lines"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|line| line["userId"] == "UCana")
+                    .unwrap()
+                    .clone()
+            };
+            let seq = line(&engine)["seq"].clone();
+            crate::roles::set("youtube", crate::roles::Role::Moderator, "UCmod");
+            let line = |engine: &Rc<Engine>| {
+                let line = line(engine);
+                let line = line_of(engine, &json!({"seq": line["seq"]})).unwrap();
+                card_extras(engine, &line)
+            };
+            assert_eq!(
+                line(&engine),
+                vec!["unban"],
+                "a moderator lifts the ban, but doesn't make moderators"
+            );
+            crate::roles::set("youtube", crate::roles::Role::Broadcaster, "UCowner");
+            assert_eq!(line(&engine), vec!["unban", "mod"]);
+            request_sync(&engine, json!({"op": "act", "seq": seq, "act": "mod"})).unwrap();
+            assert!(
+                request_sync(&engine, json!({"op": "act", "seq": seq, "act": "unmod"})).is_err(),
+                "not a moderator yet"
+            );
+            crate::roles::clear("youtube");
         });
     }
 

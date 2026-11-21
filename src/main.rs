@@ -49,6 +49,7 @@ mod overlays;
 mod package;
 pub mod ports;
 pub mod remote;
+mod rewards;
 pub mod roles;
 mod sandbox;
 mod scenario;
@@ -210,6 +211,9 @@ pub struct Config {
     quotes: Vec<model::Obj>,
     /// Persisted command counters: by command id, and by "command id:user id".
     counters: model::Obj,
+    /// Reward counters and groups (Twitch and Kick), as Streamer.bot keeps them.
+    #[serde(skip_serializing_if = "rewards::Book::is_empty")]
+    pub rewards: rewards::Book,
     /// Twitch configuration (broadcaster, bot, auto-connect, settings).
     #[serde(default)]
     pub twitch: twitch::TwitchConfig,
@@ -296,6 +300,7 @@ impl Default for Config {
             stream_deck: Default::default(),
             file_tails: Vec::new(),
             counters: Map::new(),
+            rewards: rewards::Book::default(),
             quotes: Vec::new(),
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),

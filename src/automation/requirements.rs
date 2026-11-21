@@ -413,9 +413,9 @@ mod tests {
 
     #[test]
     fn types_that_never_run_need_nothing() {
-        // Guest Star sub-actions aren't supported, so a missing login isn't why they don't work.
-        assert!(!crate::engine::supported(520));
-        assert!(sub_action(520).is_empty());
+        // Speaker.bot's sub-actions aren't supported, so a missing service isn't why they don't work.
+        assert!(!crate::engine::supported(601));
+        assert!(sub_action(601).is_empty());
         assert!(sub_action(u32::MAX).is_empty());
         assert!(trigger(u32::MAX).is_empty());
     }

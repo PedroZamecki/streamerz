@@ -137,6 +137,13 @@ impl Engine {
         self.write_global(ctx, &name, persisted, user.as_ref(), new);
     }
 
+    /// A global as a number (0 when it isn't one), for the Counter sub-action.
+    pub(super) fn global_number(&self, name: &str, persisted: bool) -> f64 {
+        self.read_global(name, persisted, None)
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(crate::fmt::parse_number)))
+            .unwrap_or(0.0)
+    }
+
     fn read_global(&self, name: &str, persisted: bool, user: Option<&User>) -> Option<Value> {
         let c = self.cfg.borrow();
         let st = self.st.borrow();

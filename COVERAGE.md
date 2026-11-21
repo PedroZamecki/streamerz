@@ -339,18 +339,18 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] followers: Get Follow Age Info for Target
 - [x] followers: Get Follower Count
 - [x] followers: Get Latest Follower
-- [x] guest-star: Assign Guest Star Slot
-- [x] guest-star: Create Guest Star Session
-- [x] guest-star: Delete Guest Star Invite
-- [x] guest-star: Delete Guest Star Slot
-- [x] guest-star: End Guest Star Session
-- [x] guest-star: Get Channel Guest Star Settings
-- [x] guest-star: Get Guest Star Invites
-- [x] guest-star: Get Guest Star Session
-- [x] guest-star: Send Guest Star Invite
-- [x] guest-star: Update Channel Guest Star Settings
-- [x] guest-star: Update Guest Star Slot Settings
-- [x] guest-star: Update Guest Star Slot
+- [x] guest-star: Assign Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Create Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Delete Guest Star Invite (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Delete Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: End Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Channel Guest Star Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Guest Star Invites (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Send Guest Star Invite (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Channel Guest Star Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Guest Star Slot Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
 - [x] moderation: Add Moderator
 - [x] moderation: Add Vip
 - [x] moderation: Ban User

@@ -261,6 +261,18 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
     let text = |v: Result<Value, String>, default: &str| v.map(|v| v.as_str().unwrap_or(default).to_string());
     while let Some(cmd) = rx.recv().await {
         match cmd {
+            C::Data {
+                method,
+                broadcast,
+                path,
+                body,
+                resp,
+            } => drop(resp.send(f.call(
+                P,
+                &format!("{method} {path}"),
+                json!({"broadcast": broadcast, "body": body}),
+                json!({}),
+            ))),
             C::Connect => drop(f.unit(P, "connect", json!({}))),
             C::Disconnect => drop(f.unit(P, "disconnect", json!({}))),
             C::LiveVideo(resp) => {

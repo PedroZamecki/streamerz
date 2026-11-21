@@ -20,14 +20,17 @@ pub mod chatlog;
 mod chatters;
 pub use chatlog::can_send;
 pub mod community;
+mod data_tools;
 pub mod events;
 pub mod globals;
 mod midi_in;
+mod obs_tools;
 pub mod overlays;
 pub mod plugins;
 mod processes;
 mod rest;
 mod songs;
+mod tools;
 mod watchers;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -342,11 +345,13 @@ impl Engine {
     }
 
     /// A direct execution reports observed errors and skips using the normal runner's outcome.
-    pub async fn execute_one(self: &Rc<Self>, kind: u64, mut o: Obj) -> (Obj, RunOutcome) {
-        let mut ctx = Ctx {
-            args: Obj::new(),
-            group: String::new(),
-        };
+    pub async fn execute_one(self: &Rc<Self>, kind: u64, o: Obj) -> (Obj, RunOutcome) {
+        self.execute_with(kind, o, Obj::new(), String::new()).await
+    }
+
+    /// The same, starting from `args` (a test uses an action's values), in the action group `group`.
+    pub async fn execute_with(self: &Rc<Self>, kind: u64, mut o: Obj, args: Obj, group: String) -> (Obj, RunOutcome) {
+        let mut ctx = Ctx { args, group };
         o.insert("type".into(), kind.into());
         let outcome = RUN_OUTCOME
             .scope(RefCell::new(RunOutcome::default()), async {
@@ -426,11 +431,14 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4018 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35044 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99700..=99706 | 99900..=99904
+            | 99450..=99454 | 99500..=99523 | 99530..=99544 | 99600..=99607 | 99650..=99664 | 99720..=99733 | 99740..=99743 | 99750..=99765 | 99780..=99787
+            | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
     )
 }
 
 pub(crate) use rest::{poll_args, prediction_args};
+pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
 /// A UTC civil date and time from Unix seconds.
 pub fn civil_time(secs: i64) -> crate::fmt::Time {
@@ -1179,8 +1187,20 @@ impl Engine {
         args: &Obj,
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
+        // A reward redemption counts, and says its counts (`counter`, `userCounter`).
+        let counted = self.count_redemption(kind, args);
+        let args = counted.as_ref().unwrap_or(args);
         self.record(kind, args);
         self.chat_event(kind, args);
+        if matches!(kind, 103..=105) {
+            self.note_subscriber(kind, args);
+        }
+        if matches!(
+            kind,
+            crate::twitch::T_AUTOMOD_MESSAGE_HELD | crate::twitch::T_AUTOMOD_MESSAGE_UPDATED
+        ) {
+            self.note_held(kind, args);
+        }
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }
@@ -1934,45 +1954,11 @@ impl Engine {
                     }
                 }
                 // Streamerz-only countdown operations, used by configurable templates.
-                99803 => {
-                    let id = self.expand(ctx, s(o, "clockId"));
-                    let expected = self.expand(ctx, s(o, "expectedCurrency"));
-                    let actual = self.expand(ctx, "%donationCurrency%");
-                    if !expected.is_empty() && !expected.eq_ignore_ascii_case(actual.trim()) {
-                        return Flow::Continue;
-                    }
-                    let now = crate::templates::clock::now_ms();
-                    let ms =
-                        |key: &str| crate::templates::clock::field_ms(o.get(key), |t| self.expand(ctx, t)).unwrap_or(0);
-                    let (start, max) = (ms("startMs"), ms("maxMs"));
-                    let reset = match s(o, "operation") {
-                        "reset" => true,
-                        "add" => false,
-                        _ => {
-                            crate::warn("Countdown: invalid operation".to_string());
-                            return Flow::Continue;
-                        }
-                    };
-                    let units = crate::fmt::parse_number(&self.expand(ctx, s(o, "units"))).unwrap_or(-1.0);
-                    let per_unit = ms("perUnitMs");
-                    if !reset && (!units.is_finite() || units < 0.0) {
-                        crate::warn("Countdown: invalid amount".to_string());
-                        return Flow::Continue;
-                    }
-                    let amount = ((per_unit as f64) * units).round() as u64;
-                    let mut changed = false;
-                    self.change(|config| {
-                        use crate::templates::clock;
-                        changed = if reset {
-                            clock::reset(config, &id, start, max, now)
-                        } else {
-                            clock::set_max(config, &id, max, now) && clock::add(config, &id, amount, now)
-                        };
-                    });
-                    if changed {
-                        self.countdown_changed(&id);
-                    } else {
-                        crate::warn("Countdown: timer not found".to_string());
+                99803 => self.countdown(ctx, o),
+                // Text and data tools; a cooldown still closed stops the action.
+                99780..=99799 => {
+                    if !self.data_tool(ctx, o, kind) {
+                        return Flow::BreakToRoot;
                     }
                 }
                 // Streamerz-only: set an overlay topic, which the pages listening show at once.
@@ -1983,6 +1969,11 @@ impl Engine {
                     self.overlay_publish(topic.trim(), value);
                 }
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
+                99450..=99499 | 99500..=99699 | 99720..=99779 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
+                    if !self.tools(ctx, o, kind).await {
+                        self.unsupported(kind);
+                    }
+                }
                 _ => self.unsupported(kind),
             }
             Flow::Continue
@@ -2211,6 +2202,44 @@ pub fn trigger_matches(code: u32, trigger: &Obj, args: &Obj) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A sub-action ticked in COVERAGE.md is one the engine runs (Guest Star and some reward ones were
+    /// ticked while `supported` skipped them).
+    #[test]
+    fn every_ticked_sub_action_in_coverage_runs() {
+        let mut phase = "";
+        let mut listed = false;
+        let mut skipped = Vec::new();
+        for line in include_str!("../COVERAGE.md").lines() {
+            if let Some(title) = line.strip_prefix("## ") {
+                (phase, listed) = (title, false);
+                continue;
+            }
+            if line.starts_with("**") {
+                listed = line.starts_with("**Sub-actions");
+                continue;
+            }
+            let Some(item) = line.strip_prefix("- [x] ").filter(|i| listed && !i.starts_with("~~")) else {
+                continue;
+            };
+            let title = item.rsplit_once(": ").map_or(item, |(_, t)| t);
+            let title = title.split(" (").next().unwrap_or(title).trim();
+            let named: Vec<_> = crate::types::SUB_ACTION_INFO
+                .iter()
+                .filter(|(_, name, ..)| *name == title)
+                .collect();
+            let here: Vec<_> = named
+                .iter()
+                .filter(|(_, _, category, _)| phase.contains(category.split('/').next().unwrap_or_default()))
+                .copied()
+                .collect();
+            let pool = if here.is_empty() { named } else { here };
+            if !pool.is_empty() && !pool.iter().any(|(code, ..)| supported(*code)) {
+                skipped.push(format!("{phase}: {title}"));
+            }
+        }
+        assert!(skipped.is_empty(), "ticked but not run: {skipped:#?}");
+    }
 
     #[test]
     fn action_results_capture_failures_and_skips_without_leaking_between_runs() {

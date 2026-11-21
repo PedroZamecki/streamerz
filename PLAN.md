@@ -862,6 +862,173 @@ OBS settings and local destinations.
   eight maintenance warnings). The history scan records exact fingerprints for three already-redacted
   legacy benchmark commits; new paths and all credentials remain blocked, with eight regression tests.
 
+## Version 1.9.0: platform tools and sub-action UX
+
+Agreed on 2026-11-14: more tools and more control for the user, with the editor's UX as the focus. One
+version holds it all. New platform permissions are asked only when a tool needs them (nobody is logged
+out). Streamerz-only sub-actions that work on every platform sit beside the per-platform ones. TikTok
+moderation waits for a live test in a later version.
+
+Streamerz-only codes (kept on export, skipped by Streamer.bot, said so in their description):
+99450-99499 TikTok, 99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99700-99706 the
+moderation workspace's cross-platform moderation (`docs/MODERATION-FEASIBILITY.md`), 99720-99739 every
+platform, 99740-99749 Discord, 99750-99779 OBS Studio. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# method is called).
+
+### Sub-action editor UX (every sub-action, old and new)
+
+- [ ] Who: one shared field for the user a sub-action acts on: "Who started this" (the default), "The
+  user named in the command" or "Someone else" (typed, with Insert value). It saves the same field and
+  text as now (`userLogin`, `%user%`), so exports to Streamer.bot keep working; a value it doesn't know
+  shows as "Someone else".
+- [ ] Which message: one shared field, "The message that started this" (the default, `%msgId%`) or
+  "Another message" (typed). Reply, pin, unpin, delete and TikTok's pin use it.
+- [ ] No raw ids or codes: YouTube's Broadcast is the live one unless another found one is picked,
+  its User ID is Who; Kick's cost Operator is Set, Add or Subtract; its category Source a choice; reward
+  colours use the colour field; every duration takes human units.
+- [ ] Values: each sub-action that gets something declares the values it adds (name, meaning,
+  example). The picker shows them like a trigger's, and Insert value offers them in the sub-actions
+  after it.
+- [ ] Test: the selected sub-action has Test (button and right-click menu). It runs only that step with
+  the action's sample values and shows what happened and the values it added. Dev mode keeps chat and
+  moderation from leaving, as it does now. MCP `run_subaction` does the same.
+- [ ] Ready or not: the picker greys out what can't run now with the reason (not logged in, needs more
+  permissions, partners only), and the editor shows the same notice with the button that fixes it
+  (Accounts, Reconnect).
+- [ ] Picker: platform groups wear their logos, the every-platform group comes first, and search knows
+  other words for the same thing (delete, remove, purge; mute, timeout; kick, ban).
+- [ ] Every new field and the existing platform ones are translated, with a tip.
+
+### Every platform (Streamerz-only)
+
+Where: "The platform it came from" (the default) or the platforms ticked (check boxes with logos). A
+platform that can't do it is skipped with a log line, and its box is greyed with the reason.
+
+- [x] Send Message, Reply to Message, Delete Message, Pin Message, Unpin Message
+- [x] Timeout User, Remove Timeout, Ban User, Unban User
+- [x] Set Stream Title, Set Category, Get Stream Info (live, uptime, viewers, title, category)
+- [x] Shoutout (Twitch's shoutout, a message elsewhere), Get User Info for Target
+
+### Twitch, with the permissions it has
+
+- [ ] Delete Chat Message, Purge User (a 1 second timeout), Send and Pin Message, Send Whisper
+- [x] Unique Chat, Non-Moderator Chat Delay, Get Chat Settings
+- [x] Approve AutoMod Message, Deny AutoMod Message, Get Unban Requests, Resolve Unban Request
+- [x] Get Moderators, Get VIPs, Is Subscribed (with the tier)
+- [x] Get Clips for Target (random, latest or most viewed; featured only), Get Stream Info
+- [x] Get Hype Train, Get Creator Goals, Get Bits Leaderboard
+- [x] Set Content Classification Labels, Set Stream Language, Set Stream Delay
+- [x] Create Reward, Delete Reward
+
+### Twitch, with more permissions (asked when needed)
+
+- [ ] Accounts says "More permissions available" with one Reconnect button; the new scopes are asked
+  only then. A sub-action that needs them says so and opens it.
+- [x] Add Blocked Term, Remove Blocked Term, Set AutoMod Level, Set Bot Chat Colour
+- [x] Block User, Unblock User
+- [x] Get Schedule, Add Schedule Segment, Cancel Schedule Segment, Set Vacation
+
+### Streamer.bot sub-actions not run yet
+
+COVERAGE.md had them ticked; `engine::supported` skipped them (a test now reads COVERAGE.md and fails
+when a ticked sub-action isn't run).
+
+- [x] Twitch rewards: Configure Rewards (203), Reset Reward Counter (209), Reset Reward User
+  Counters (210), Set Group Enabled State (211), Set Group Paused State (212)
+- [x] Twitch Guest Star (520-531). Twitch still calls this API beta: test it live first.
+- [x] Kick rewards: Configure (35104), Reset Counter (35109), Reset User Counters (35110), Set Group
+  Enabled State (35111), Set Group Paused State (35112)
+- [x] Set Cost (202) and Kick's: Add and Subtract act like Set today.
+- [x] Get Latest Follower (507) and Get Latest Subscriber (509) set only the total today: add the
+  latest one's name, id and time.
+
+### Rewards page
+
+Streamer.bot keeps reward counters and groups itself; Streamerz has neither, so the reward sub-actions
+above need them.
+
+- [ ] Counters: each redemption counts per reward and per user (saved), and the Reward Redemption
+  triggers (Twitch, Kick) give `counter` and `userCounter`, as Streamer.bot does.
+- [ ] Groups: a reward belongs to at most one group, by name.
+- [ ] A Rewards page (Twitch and Kick, platform logos): a row per reward with its switch, title, cost,
+  group and counter; New reward, Edit, Pause, Reset counter, Group and Delete, the same in the
+  right-click menu. A reward Streamerz didn't create is shown read only, with the reason (Twitch and
+  Kick let an app change only its own rewards).
+
+### Kick (public API)
+
+- [x] Delete Chat Message (`kick::delete_message`, which the chat already uses)
+- [x] Accept Redemption, Reject Redemption, Create Reward, Delete Reward
+- [x] Get KICKs Leaderboard, Get Stream Info, Remove Channel Tag
+- Kick's public API has no chat modes, moderators, VIPs, pins, raids or polls: not done.
+
+### YouTube (Data API, the permission it has)
+
+- [x] Delete Message (first check that InnerTube's message ids are the Data API's), Unban User (for
+  bans Streamerz made: the ban id is kept), Add Moderator, Remove Moderator
+- [x] Set Tags, Add Tag, Remove Tag, Clear Tags, Set Category, Set Privacy, End Stream
+- [x] Get Broadcast Info, Get User Info for Target, Add Random Users
+- The Data API has no chat modes and no pinning: not done.
+
+### TikTok
+
+- [x] Add User to Group, Remove User from Group, User in Group, Add Random Users, Get User Info for
+  Target (from what the chat has seen)
+- Later, its own version: Mute, Unmute, Remove from LIVE, Delete Comment, Add Moderator, Remove
+  Moderator. Each is captured from TikTok's own request on the user's live, acting only on a second test
+  account, never on viewers.
+
+### Chat page
+
+- [x] Delete on YouTube lines; Unban, Mod and Unmod for YouTube on the user card.
+- [x] AutoMod's held messages show in the chat with Allow and Deny (Twitch).
+
+### Close
+
+- [ ] MCP: every new sub-action through `describe` and `run_subaction`, with tests.
+- [ ] Unit tests per sub-action (request shape, values added, skipped platforms).
+- [ ] Live tests on the real Twitch, Kick and YouTube channels; smoke in English and pt_BR; Windows
+  type-check; hidden RSS and idle CPU before and after.
+
+### Approved from the second list (2026-11-15: "implement all of those")
+
+Done here (each with scenarios, reference pages and both languages):
+
+- [x] Fetch URL: POST, PUT, PATCH and DELETE with a body and content type; `httpStatus` and `httpOk`.
+- [x] Countdown: subtract, set, pause, resume, toggle and get (a pause survives a restart).
+- [x] Discord: rich embed, edit and delete a message, upload a file, threads and forum posts.
+- [x] OBS Studio: move, size, rotate and crop a source; volume with a fade; audio monitor; Studio Mode,
+  preview scene and its transition; the transition and its length; virtual camera; split recording;
+  hotkey by name; profile and scene collection; the last replay's file; filter and input settings;
+  show a source for a while.
+
+Kept for later in this version, in this order:
+
+- [x] Twitch: Check AutoMod Status, Get Shared Chat, Get Channel Info for any channel, Get Latest Video,
+  Chat Mode for a While (puts the chat back after the time).
+- [ ] Twitch: Create Clip's title and duration and a clip from a VOD (the Twitch change behind them isn't
+  confirmed in Twitch's docs yet: check first), sending to this chat only in a Shared Chat.
+- [x] Core / Text and Data: regex match and replace, change text, split, JSON value, counter, cooldown gate,
+  format duration.
+- [ ] Core: list operations and get and set the clipboard (the clipboard is the window's, not the core's).
+- [x] YouTube: Go Live (testing, live); End Stream was already in.
+- [ ] YouTube: add a stream to a playlist, poll results.
+- [ ] Spotify and song requests: enable, disable and toggle requests, move one next, clear a user's,
+  block a user or artist, change the rules; fade Spotify's volume.
+- [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
+  offset and balance.
+- [ ] Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway (needs a live account
+  to test).
+- [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
+- [ ] Quality of life: chat mode for a while, then back; one step to update the stream everywhere.
+- Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
+  (per desktop), screen capture, TikTok moderation (needs a live test).
+
+Where it meets the moderation workspace (same thread, uncommitted in the main checkout): its
+`CrossPlatform*` sub-actions (99700-99706) act on a linked person; mine under "Every Platform" act on a
+name on the platforms ticked. Both stay; the picker names them apart (Core / Moderation and Every
+Platform). Merge them when the workspace is committed.
+
+
 ## Version 1.9.0: Stream page study and rework
 
 The study and its findings are in [docs/STREAM-PAGE.md](docs/STREAM-PAGE.md).

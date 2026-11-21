@@ -632,6 +632,47 @@ pub(crate) fn spotify_player_title(code: u32) -> Option<&'static str> {
 }
 
 /// Generate structured PickItem list for all sub-actions.
+/// Other words people search with for what a title does ("remove" finds Delete Message), for the pickers.
+pub fn keywords(title: &str) -> String {
+    const SAME: &[(&str, &str)] = &[
+        ("delete", "remove erase purge"),
+        ("purge", "delete remove clear"),
+        ("timeout", "mute silence"),
+        ("untimeout", "unmute"),
+        ("remove timeout", "unmute"),
+        ("ban", "kick block remove"),
+        ("unban", "unblock pardon"),
+        ("send message", "say chat post write"),
+        ("reply", "answer respond"),
+        ("pin", "stick highlight"),
+        ("shoutout", "so promote"),
+        ("whisper", "dm direct private"),
+        ("clip", "video highlight"),
+        ("reward", "points redemption channel points"),
+        ("redemption", "reward points refund"),
+        ("title", "name rename"),
+        ("category", "game"),
+        ("game", "category"),
+        ("raid", "host"),
+        ("commercial", "ad break advert"),
+        ("poll", "vote"),
+        ("prediction", "bet"),
+        ("moderator", "mod"),
+        ("random users", "giveaway raffle winner"),
+        ("stream info", "live uptime viewers online"),
+        ("blocked term", "banned word filter"),
+        ("automod", "filter"),
+        ("schedule", "calendar"),
+        ("leaderboard", "top"),
+    ];
+    let lower = title.to_lowercase();
+    SAME.iter()
+        .filter(|(word, _)| lower.contains(word))
+        .map(|(_, more)| *more)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn sub_action_pick_items() -> Vec<PickItem> {
     SUB_ACTION_INFO
         .iter()

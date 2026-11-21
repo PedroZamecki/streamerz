@@ -56,6 +56,15 @@ pub enum W {
     /// Not a value (its key is empty): how this computer catches the Key Press (false) or Mouse Click
     /// (true) trigger, what it needs and why, with the button that gives or takes back the access.
     Access(bool),
+    /// Who a sub-action acts on: "Who started this" (`%userName%`), "The user named in the command"
+    /// (`%input0%`), or typed.
+    Who,
+    /// Which message (or request): the one that started this (that value), or typed.
+    Message(&'static str),
+    /// A few on or off choices, saved as the list of the ticked ones (platforms wear their logos).
+    Checks(&'static [&'static str]),
+    /// A colour, `#rrggbb`.
+    Color,
 }
 
 use W::*;
@@ -102,6 +111,11 @@ impl W {
             Keys => "key code (modifiers in modifierMask)".into(),
             MouseButton => "mouse button: 0 any, 1 left, 2 right, 3 middle, 4 back, 5 forward".into(),
             Access(_) => "nothing (a note)".into(),
+            Who => "text: a user name (%userName% is who started the action, %input0% a name typed after the command)"
+                .into(),
+            Message(from) => format!("text: an id ({from} is the one that started the action)"),
+            Checks(options) => format!("a list of some of {options:?}"),
+            Color => "a colour, #rrggbb".into(),
         }
     }
 }
@@ -119,7 +133,7 @@ pub fn preserved_fields(kind: u64) -> &'static [&'static str] {
 }
 
 pub(crate) fn field_label(label: &'static str) -> &'static str {
-    if label.starts_with("spotify.") || label.starts_with("automation.") {
+    if label.starts_with("spotify.") || label.starts_with("automation.") || label.starts_with("tools.") {
         return crate::i18n::tr(label);
     }
     match label {
@@ -200,8 +214,468 @@ pub fn plugin_fields(key: &str, fields: &[crate::engine::plugins::Field]) -> &'s
     })
 }
 
+/// The label of a check box that isn't a platform.
+pub fn check_label(id: &str) -> &'static str {
+    crate::i18n::tr(match id {
+        "DebatedSocialIssuesAndPolitics" => "tools.ccl_politics",
+        "DrugsIntoxication" => "tools.ccl_drugs",
+        "SexualThemes" => "tools.ccl_sexual",
+        "ViolentGraphic" => "tools.ccl_violence",
+        "Gambling" => "tools.ccl_gambling",
+        "ProfanityVulgarity" => "tools.ccl_profanity",
+        _ => "tools.unknown",
+    })
+}
+
+const ON_OFF_TOGGLE: &[&str] = &["tools.turn_on", "tools.turn_off", "tools.toggle"];
+const PLATFORM_CHECKS: &[&str] = &crate::engine::PLATFORMS;
+const WHO_FIELD: F = ("userLogin", "tools.who", Who);
+const PLATFORMS_FIELD: F = ("platforms", "tools.platforms", Checks(PLATFORM_CHECKS));
+const MESSAGE_FIELD: F = ("messageId", "tools.message", Message("%msgId%"));
+const TEXT_FIELD: F = ("text", "tools.text", Multi);
+const BOT_FIELD: F = ("useBot", "tools.use_bot", Bool);
+const FALLBACK_FIELD: F = ("fallback", "tools.fallback", Bool);
+const COUNT_FIELD: F = ("count", "tools.count", Int);
+const REASON_FIELD: F = ("reason", "tools.reason", Text);
+const DURATION_FIELD: F = ("duration", "automation.duration_duration", Duration(1000));
+const PIN_FIELD: F = ("duration", "tools.pin_for", Duration(1000));
+const GROUP_FIELD: F = ("groupName", "tools.group", UserGroup);
+const TITLE_FIELD: F = ("title", "tools.title", Text);
+const COST_FIELD: F = ("cost", "tools.cost", Int);
+const INPUT_FIELD: F = ("inputRequired", "tools.input_required", Bool);
+const COLOR_FIELD: F = ("backgroundColor", "tools.color", Color);
+const ENABLED_FIELD: F = ("enabled", "tools.enabled", Bool);
+const HOOK_FIELD: F = ("webhookUrl", "tools.dc_hook", Text);
+const BROADCAST_FIELD: F = ("broadcast", "tools.broadcast", Text);
+
+/// The fields of the Streamerz platform tools (PLAN.md, Version 1.9.0).
+fn tool_fields(kind: u64) -> Option<&'static [F]> {
+    Some(match kind {
+        203 => &[
+            ("enable", "tools.rewards_on", Lines),
+            ("pause", "tools.rewards_paused", Lines),
+            ("disable", "tools.rewards_off", Lines),
+            ("disableNotConfigured", "tools.rewards_rest_off", Bool),
+        ],
+        35104 => &[
+            ("enable", "tools.rewards_on", Lines),
+            ("pause", "tools.rewards_paused", Lines),
+            ("disable", "tools.rewards_off", Lines),
+            ("disableNotConfigured", "tools.rewards_rest_off", Bool),
+        ],
+        99450..=99452 => &[WHO_FIELD, GROUP_FIELD],
+        99453 | 99663 => &[COUNT_FIELD],
+        99501 => &[WHO_FIELD, REASON_FIELD],
+        99454 | 99513 | 99534 | 99535 | 99651..=99653 | 99662 => &[WHO_FIELD],
+        99500 | 99600 | 99650 | 99722 => &[MESSAGE_FIELD],
+        99502 => &[TEXT_FIELD, PIN_FIELD, BOT_FIELD, FALLBACK_FIELD],
+        99503 => &[WHO_FIELD, TEXT_FIELD, BOT_FIELD],
+        99504 => &[("state", "tools.state", Pick(ON_OFF_TOGGLE))],
+        99505 => &[
+            ("state", "tools.state", Pick(ON_OFF_TOGGLE)),
+            (
+                "delay",
+                "tools.chat_delay",
+                Pick(&["tools.seconds_2", "tools.seconds_4", "tools.seconds_6"]),
+            ),
+        ],
+        99506 | 99511 | 99512 | 99516 | 99517 | 99536 | 99538 | 99606 | 99724 => &[],
+        99507 | 99508 => &[("messageId", "tools.held_message", Message("%messageId%"))],
+        99509 => &[(
+            "status",
+            "tools.unban_status",
+            Pick(&["tools.pending", "tools.approved", "tools.denied"]),
+        )],
+        99510 => &[
+            ("requestId", "tools.unban_request", Message("%requestId%")),
+            ("approve", "tools.approve", Bool),
+            ("resolutionText", "tools.resolution", Text),
+        ],
+        99514 => &[
+            ("userLogin", "tools.channel", Who),
+            (
+                "pick",
+                "tools.clip_pick",
+                Pick(&["tools.clip_random", "tools.clip_latest", "tools.clip_top"]),
+            ),
+            ("featured", "tools.featured", Bool),
+            ("days", "tools.clip_days", Int),
+        ],
+        99515 => &[("userLogin", "tools.channel_ours", Text)],
+        99518 => &[
+            (
+                "period",
+                "tools.period",
+                Pick(&["tools.all_time", "tools.day", "tools.week", "tools.month", "tools.year"]),
+            ),
+            COUNT_FIELD,
+        ],
+        99605 => &[
+            (
+                "period",
+                "tools.period",
+                Pick(&["tools.all_time", "tools.month", "tools.week"]),
+            ),
+            COUNT_FIELD,
+        ],
+        99519 => &[("labels", "tools.labels", Checks(&crate::engine::CONTENT_LABELS))],
+        99520 => &[(
+            "language",
+            "tools.language",
+            Expression(&["en", "pt", "es", "fr", "de", "it", "ja", "ko", "zh", "ru", "other"]),
+        )],
+        99521 => &[("delay", "tools.stream_delay", Duration(1000))],
+        99522 => &[
+            TITLE_FIELD,
+            COST_FIELD,
+            ("prompt", "tools.prompt", Multi),
+            INPUT_FIELD,
+            COLOR_FIELD,
+            ENABLED_FIELD,
+        ],
+        99603 => &[
+            TITLE_FIELD,
+            COST_FIELD,
+            ("description", "tools.prompt", Multi),
+            INPUT_FIELD,
+            COLOR_FIELD,
+            ENABLED_FIELD,
+        ],
+        99523 => &[("rewardId", "tools.reward", Entity("twitch.rewards"))],
+        99604 => &[("rewardId", "tools.reward", Entity("kick.rewards"))],
+        99530 | 99531 => &[("term", "tools.term", Text)],
+        99532 => &[(
+            "level",
+            "tools.automod_level",
+            Pick(&[
+                "tools.automod_0",
+                "tools.automod_1",
+                "tools.automod_2",
+                "tools.automod_3",
+                "tools.automod_4",
+            ]),
+        )],
+        99533 => &[(
+            "color",
+            "tools.chat_color",
+            Expression(&[
+                "blue",
+                "blue_violet",
+                "cadet_blue",
+                "chocolate",
+                "coral",
+                "dodger_blue",
+                "firebrick",
+                "golden_rod",
+                "green",
+                "hot_pink",
+                "orange_red",
+                "red",
+                "sea_green",
+                "spring_green",
+                "yellow_green",
+            ]),
+        )],
+        99537 => &[
+            ("start", "tools.starts", Text),
+            ("duration", "tools.length", Duration(1000)),
+            TITLE_FIELD,
+            ("category", "tools.category", Text),
+            ("recurring", "tools.weekly", Bool),
+        ],
+        99539 => &[
+            ("state", "tools.vacation", Pick(&["tools.turn_on", "tools.turn_off"])),
+            ("start", "tools.from", Text),
+            ("end", "tools.until", Text),
+        ],
+        99601 | 99602 => &[("redemptionId", "tools.redemption", Text)],
+        99607 => &[("tag", "tools.tag", Text)],
+        99540 => &[("text", "tools.text", Multi)],
+        99541 => &[],
+        99542 => &[("userLogin", "tools.channel_ours", Text)],
+        99543 => &[
+            ("userLogin", "tools.channel_ours", Text),
+            (
+                "kind",
+                "tools.video_kind",
+                Pick(&["tools.video_past", "tools.video_upload", "tools.video_highlight"]),
+            ),
+        ],
+        99544 => &[
+            (
+                "mode",
+                "tools.cm_mode",
+                Pick(&[
+                    "tools.cm_slow",
+                    "tools.cm_followers",
+                    "tools.cm_subs",
+                    "tools.cm_emotes",
+                    "tools.cm_unique",
+                ]),
+            ),
+            ("value", "tools.cm_value", Text),
+            ("duration", "tools.cm_for", Duration(1000)),
+        ],
+        99664 => &[
+            BROADCAST_FIELD,
+            ("stage", "tools.yt_stage", Pick(&["tools.yt_testing", "tools.yt_live"])),
+        ],
+        99654 => &[BROADCAST_FIELD, ("tags", "tools.tags", Lines)],
+        99655 | 99656 => &[BROADCAST_FIELD, ("tag", "tools.tag", Text)],
+        99657 | 99660 | 99661 => &[BROADCAST_FIELD],
+        99658 => &[
+            BROADCAST_FIELD,
+            (
+                "category",
+                "tools.category",
+                Pick(&[
+                    "Gaming",
+                    "People & Blogs",
+                    "Entertainment",
+                    "Music",
+                    "Comedy",
+                    "Education",
+                    "Science & Technology",
+                    "Sports",
+                    "Howto & Style",
+                    "News & Politics",
+                    "Film & Animation",
+                    "Autos & Vehicles",
+                    "Pets & Animals",
+                    "Travel & Events",
+                ]),
+            ),
+        ],
+        99659 => &[
+            BROADCAST_FIELD,
+            (
+                "privacy",
+                "tools.privacy",
+                Pick(&["tools.public", "tools.unlisted", "tools.private"]),
+            ),
+        ],
+        99750 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
+            ("x", "tools.obs_x", Text),
+            ("y", "tools.obs_y", Text),
+            ("scale", "tools.obs_scale", Text),
+            ("rotation", "tools.obs_rotation", Text),
+            ("cropLeft", "tools.obs_crop_left", Text),
+            ("cropRight", "tools.obs_crop_right", Text),
+            ("cropTop", "tools.obs_crop_top", Text),
+            ("cropBottom", "tools.obs_crop_bottom", Text),
+        ],
+        99751 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("inputName", "Source", Suggest("obs.sources")),
+            ("level", "tools.obs_level", Text),
+            ("unit", "tools.obs_unit", Pick(&["tools.obs_percent", "tools.obs_db"])),
+            ("fade", "tools.obs_fade", Duration(1)),
+        ],
+        99752 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("inputName", "Source", Suggest("obs.sources")),
+            (
+                "monitor",
+                "tools.obs_monitor",
+                Pick(&[
+                    "tools.obs_monitor_off",
+                    "tools.obs_monitor_only",
+                    "tools.obs_monitor_and_out",
+                ]),
+            ),
+        ],
+        99753 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("state", "tools.state", Pick(ON_OFF_TOGGLE)),
+        ],
+        99754 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+        ],
+        99755 | 99758 | 99762 => &[("connectionId", "Connection (empty: any)", ObsConnection)],
+        99756 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("transitionName", "tools.obs_transition", Text),
+            ("duration", "tools.obs_transition_ms", Text),
+        ],
+        99757 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            (
+                "state",
+                "tools.state",
+                Pick(&["tools.obs_start", "tools.obs_stop", "tools.toggle"]),
+            ),
+        ],
+        99759 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("hotkeyName", "tools.obs_hotkey", Text),
+        ],
+        99760 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("profileName", "tools.obs_profile", Text),
+        ],
+        99761 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("collectionName", "tools.obs_collection", Text),
+        ],
+        99763 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("sourceName", "Source", Suggest("obs.sources")),
+            ("filterName", "Filter", Text),
+            ("settings", "tools.obs_settings", Map),
+        ],
+        99764 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("inputName", "Source", Suggest("obs.sources")),
+            ("settings", "tools.obs_settings", Map),
+        ],
+        99765 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
+            ("duration", "tools.obs_show_for", Duration(1)),
+            ("wait", "tools.obs_wait", Bool),
+        ],
+        99780 => &[
+            ("input", "tools.td_input", Multi),
+            ("pattern", "tools.td_pattern", Text),
+            ("ignoreCase", "tools.td_ignore_case", Bool),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99781 => &[
+            ("input", "tools.td_input", Multi),
+            ("pattern", "tools.td_pattern", Text),
+            ("replacement", "tools.td_replacement", Text),
+            ("ignoreCase", "tools.td_ignore_case", Bool),
+            ("all", "tools.td_all", Bool),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99782 => &[
+            ("input", "tools.td_input", Multi),
+            (
+                "how",
+                "tools.td_how",
+                Pick(&[
+                    "tools.td_upper",
+                    "tools.td_lower",
+                    "tools.td_title",
+                    "tools.td_trim",
+                    "tools.td_reverse",
+                    "tools.td_spaces",
+                    "tools.td_first",
+                    "tools.td_last",
+                    "tools.td_url",
+                    "tools.td_length",
+                ]),
+            ),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99783 => &[
+            ("input", "tools.td_input", Multi),
+            ("separator", "tools.td_separator", Text),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99784 => &[
+            ("input", "tools.td_json", Multi),
+            ("path", "tools.td_path", Text),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99785 => &[
+            ("name", "tools.td_counter", Text),
+            (
+                "operation",
+                "tools.td_op",
+                Pick(&["tools.td_add", "tools.td_subtract", "tools.td_set", "tools.td_reset"]),
+            ),
+            ("amount", "tools.td_amount", Text),
+            ("persisted", "tools.td_persisted", Bool),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99786 => &[
+            ("key", "tools.td_gate", Text),
+            ("duration", "tools.td_wait", Duration(1000)),
+            ("perUser", "tools.td_per_user", Bool),
+        ],
+        99787 => &[
+            ("seconds", "tools.td_seconds", Text),
+            (
+                "style",
+                "tools.td_style",
+                Pick(&["tools.td_clock", "tools.td_short", "tools.td_words"]),
+            ),
+            ("variableName", "tools.td_variable", Text),
+        ],
+        99740 => &[
+            HOOK_FIELD,
+            ("username", "tools.dc_username", Text),
+            ("avatar", "tools.dc_avatar", Text),
+            ("content", "tools.text", Multi),
+            ("title", "tools.title", Text),
+            ("description", "tools.prompt", Multi),
+            ("color", "tools.color", Color),
+            ("url", "tools.dc_url", Text),
+            ("author", "tools.dc_author", Text),
+            ("footer", "tools.dc_footer", Text),
+            ("image", "tools.dc_image", Text),
+            ("thumbnail", "tools.dc_thumbnail", Text),
+            ("fields", "tools.dc_fields", Map),
+            ("inlineFields", "tools.dc_inline", Bool),
+            ("timestamp", "tools.dc_timestamp", Bool),
+            ("threadId", "tools.dc_thread", Text),
+            ("threadName", "tools.dc_thread_name", Text),
+        ],
+        99741 => &[
+            HOOK_FIELD,
+            ("messageId", "tools.dc_message", Message("%messageId%")),
+            ("threadId", "tools.dc_thread", Text),
+            ("content", "tools.text", Multi),
+            ("title", "tools.title", Text),
+            ("description", "tools.prompt", Multi),
+            ("color", "tools.color", Color),
+            ("url", "tools.dc_url", Text),
+            ("author", "tools.dc_author", Text),
+            ("footer", "tools.dc_footer", Text),
+            ("image", "tools.dc_image", Text),
+            ("thumbnail", "tools.dc_thumbnail", Text),
+            ("fields", "tools.dc_fields", Map),
+            ("inlineFields", "tools.dc_inline", Bool),
+        ],
+        99742 => &[
+            HOOK_FIELD,
+            ("messageId", "tools.dc_message", Message("%messageId%")),
+            ("threadId", "tools.dc_thread", Text),
+        ],
+        99743 => &[
+            HOOK_FIELD,
+            ("file", "tools.dc_file", Text),
+            ("fileName", "tools.dc_file_name", Text),
+            ("content", "tools.text", Multi),
+            ("username", "tools.dc_username", Text),
+            ("avatar", "tools.dc_avatar", Text),
+            ("threadId", "tools.dc_thread", Text),
+        ],
+        99720 => &[PLATFORMS_FIELD, TEXT_FIELD, BOT_FIELD, FALLBACK_FIELD],
+        99721 => &[MESSAGE_FIELD, TEXT_FIELD, BOT_FIELD, FALLBACK_FIELD],
+        99723 => &[MESSAGE_FIELD, PIN_FIELD],
+        99725 => &[PLATFORMS_FIELD, WHO_FIELD, DURATION_FIELD, REASON_FIELD],
+        99726 | 99728 | 99733 => &[PLATFORMS_FIELD, WHO_FIELD],
+        99727 => &[PLATFORMS_FIELD, WHO_FIELD, REASON_FIELD],
+        99729 => &[PLATFORMS_FIELD, TITLE_FIELD],
+        99730 => &[PLATFORMS_FIELD, ("category", "tools.category", Text)],
+        99731 => &[PLATFORMS_FIELD],
+        99732 => &[PLATFORMS_FIELD, WHO_FIELD, ("text", "tools.shoutout_text", Multi)],
+        _ => return None,
+    })
+}
+
 /// A core sub-action's fields; None when it has no form (it opens as JSON).
 pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
+    if let Some(fields) = tool_fields(kind) {
+        return Some(fields);
+    }
     Some(match kind {
         99810..=99816 | 99830..=99833 => &[],
         99827 => &[("query", "spotify.query", Text)],
@@ -284,7 +758,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         99880 => &[("topic", "overlay.topic", Text), ("value", "overlay.value", Multi)],
         99803 => &[
             ("clockId", "countdown.id", Text),
-            ("operation", "countdown.operation", Text),
+            (
+                "operation",
+                "countdown.operation",
+                Expression(&["reset", "add", "subtract", "set", "pause", "resume", "toggle", "get"]),
+            ),
             ("startMs", "countdown.start", Text),
             ("maxMs", "countdown.max", Text),
             ("perUnitMs", "countdown.per_unit", Text),
@@ -329,7 +807,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         18 => &[("hasDelay", "automation.clip_delay", Bool)],
         19 => &[("duration", "automation.duration_duration", Duration(1000))],
         20 => &[
-            ("userLogin", "User login", Text),
+            ("userLogin", "tools.who", Who),
             ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Multi),
         ],
@@ -373,7 +851,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("status", "Follower mode", Bool),
             ("duration", "Duration (minutes)", Int),
         ],
-        29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "User login", Text)],
+        29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "tools.who", Who)],
         200 => &[
             ("rewardId", "Reward", Entity("twitch.rewards")),
             ("state", "State", Pick(STATE)),
@@ -387,7 +865,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        203 => &[("disableNotConfigured", "Disable not configured", Bool)],
         204 => &[
             ("rewardId", "Reward", Entity("twitch.rewards")),
             ("cooldown", "automation.duration_cooldown", Duration(1000)),
@@ -409,11 +886,17 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         208..=210 => &[("rewardId", "Reward", Entity("twitch.rewards"))],
-        211 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
-        212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
+        211 => &[
+            ("groupName", "tools.reward_group", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        212 => &[
+            ("groupName", "tools.reward_group", Text),
+            ("state", "State", Pick(STATE)),
+        ],
         213 => &[
             ("rewardId", "Reward", Entity("twitch.rewards")),
-            ("backgroundColor", "Background color", Text),
+            ("backgroundColor", "tools.color", Color),
             ("random", "Random", Bool),
         ],
         214 | 215 => &[
@@ -423,7 +906,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         252 => &[("tags", "Tags", Lines)],
         253 | 254 => &[("tag", "Tag", Text)],
-        511 => &[("userLogin", "User login", Text), ("reason", "Reason", Multi)],
+        511 => &[("userLogin", "tools.who", Who), ("reason", "Reason", Multi)],
         521 => &[
             ("moderatorSendLiveEnabled", "Mod send live", Bool),
             ("slotCount", "Slot count", Int),
@@ -431,12 +914,12 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("groupLayout", "Group layout", Text),
             ("regenerateBrowserSources", "Regenerate sources", Bool),
         ],
-        528 => &[("userLogin", "User login", Text), ("slot", "Slot", Int)],
+        528 => &[("userLogin", "tools.who", Who), ("slot", "Slot", Int)],
         529 => &[
             ("sourceSlot", "Source slot", Int),
             ("destinationSlot", "Destination slot", Int),
         ],
-        530 => &[("userLogin", "User login", Text), ("slot", "Slot", Int)],
+        530 => &[("userLogin", "tools.who", Who), ("slot", "Slot", Int)],
         531 => &[
             ("slot", "Slot", Int),
             ("audioEnabled", "Audio enabled", Bool),
@@ -446,10 +929,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         550 => &[("userIndex", "User index", Int)],
         552 => &[("value", "Value", Int)],
-        553 | 554 | 558 => &[("userLogin", "User login", Text), ("groupName", "Group", UserGroup)],
+        553 | 554 | 558 => &[("userLogin", "tools.who", Who), ("groupName", "Group", UserGroup)],
         560 => &[
             ("text", "Reply", Multi),
-            ("replyId", "Reply message ID", Text),
+            ("replyId", "tools.reply_to", Message("%msgId%")),
             ("useBot", "Send from bot account", Bool),
             ("fallback", "Fallback to broadcaster", Bool),
         ],
@@ -460,7 +943,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("choices", "Choices (one per line)", Lines),
         ],
         564 => &[("status", "Branded content", Bool)],
-        565 => &[("userLogin", "User login", Text), ("reason", "Reason", Multi)],
+        565 => &[("userLogin", "tools.who", Who), ("reason", "Reason", Multi)],
         568 => &[
             ("title", "Title", Text),
             (
@@ -474,12 +957,12 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         572 => &[("outcomeTitle", "Winning outcome title", Text)],
         573 => &[("clipId", "Clip ID", Text)],
         576 => &[
-            ("messageId", "Message ID", Text),
+            ("messageId", "tools.message", Message("%msgId%")),
             ("duration", "automation.duration_duration", Duration(1000)),
         ],
         577 => &[("duration", "automation.duration_duration", Duration(1000))],
         579 => &[
-            ("userLogin", "User login", Text),
+            ("userLogin", "tools.who", Who),
             ("status", "Status", Pick(&["Monitored", "Restricted"])),
         ],
         581 => &[("messageId", "Message ID", Text)],
@@ -583,6 +1066,17 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("headers", "Headers (Name=value)", Map),
             ("parseAsJson", "Parse as JSON", Bool),
             ("autoType", "Auto type", Bool),
+            (
+                "method",
+                "tools.http_method",
+                Pick(&["GET", "POST", "PUT", "PATCH", "DELETE"]),
+            ),
+            ("body", "tools.http_body", Multi),
+            (
+                "contentType",
+                "tools.http_content_type",
+                Expression(&["application/json", "application/x-www-form-urlencoded", "text/plain"]),
+            ),
         ],
         1009 => &[("value", "Comment", Multi), ("color", "Color (#RRGGBB)", Text)],
         1010 => &[("groupName", "Group", CommandGroup), ("state", "State", Pick(STATE))],
@@ -886,38 +1380,38 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("chapterName", "Chapter name", Text),
         ],
         4001 => &[
-            ("broadcast", "Broadcast", Text),
+            ("broadcast", "tools.broadcast", Text),
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),
             ("fallback", "Fallback to Broadcaster", Bool),
         ],
-        4002 => &[("broadcast", "Broadcast", Text), ("title", "Title", Text)],
-        4003 => &[("broadcast", "Broadcast", Text), ("description", "Description", Text)],
+        4002 => &[("broadcast", "tools.broadcast", Text), ("title", "Title", Text)],
+        4003 => &[
+            ("broadcast", "tools.broadcast", Text),
+            ("description", "Description", Text),
+        ],
         4004 => &[
-            ("broadcast", "Broadcast", Text),
+            ("broadcast", "tools.broadcast", Text),
             ("title", "Title", Text),
             ("description", "Description", Text),
         ],
-        4005..=4007 => &[("userLogin", "User login", Text), ("groupName", "Group name", Text)],
-        4008 => &[("broadcast", "Broadcast", Text), ("userId", "User ID", Text)],
+        4005..=4007 => &[("userLogin", "tools.who", Who), ("groupName", "Group name", Text)],
+        4008 => &[("broadcast", "tools.broadcast", Text), ("userId", "tools.who", Who)],
         4009 => &[
-            ("broadcast", "Broadcast", Text),
-            ("userId", "User ID", Text),
+            ("broadcast", "tools.broadcast", Text),
+            ("userId", "tools.who", Who),
             ("duration", "automation.duration_duration", Duration(1000)),
         ],
         4010 => &[],
         4011 => &[
-            ("broadcast", "Broadcast", Text),
+            ("broadcast", "tools.broadcast", Text),
             ("question", "Question", Text),
             ("options", "Options (one per line)", Lines),
         ],
-        4012 => &[("broadcast", "Broadcast", Text)],
-        4013 => &[
-            ("broadcast", "Broadcast (empty: active)", Text),
-            ("file", "Image File", Text),
-        ],
+        4012 => &[("broadcast", "tools.broadcast", Text)],
+        4013 => &[("broadcast", "tools.broadcast", Text), ("file", "Image File", Text)],
         4014 => &[
-            ("broadcast", "Broadcast (empty: active)", Text),
+            ("broadcast", "tools.broadcast", Text),
             ("duration", "Duration (seconds)", Int),
         ],
         4015 => &[("banId", "Ban ID", Text), ("userId", "User ID (tracked lookup)", Text)],
@@ -940,20 +1434,19 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),
             ("fallback", "Fallback to Broadcaster", Bool),
-            ("replyId", "Reply Message ID", Text),
+            ("replyId", "tools.reply_to", Message("%msgId%")),
         ],
         35010 => &[],
-        35011 => &[("userLogin", "User login", Text)],
+        35011 => &[("userLogin", "tools.who", Who)],
         35012 => &[
             ("present", "Present users only", Bool),
             ("count", "Count", Int),
             ("includeFrom", "Include from", Int),
             ("groups", "Groups (one per line)", Lines),
         ],
-        35020..=35022 => &[("userLogin", "User login", Text), ("groupName", "Group name", Text)],
+        35020..=35022 => &[("userLogin", "tools.who", Who), ("groupName", "Group name", Text)],
         35030 => &[("title", "Title", Text)],
         35031 => &[
-            ("source", "Source", Int),
             ("categoryName", "Category name", Text),
             ("categoryId", "Category ID", Text),
         ],
@@ -962,10 +1455,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         35034 => &[],
         35050 => &[("duration", "Duration (seconds)", Int)],
         35051 => &[],
-        35040 => &[("userLogin", "User login", Text), ("reason", "Reason", Text)],
-        35041 | 35043 => &[("userLogin", "User login", Text)],
+        35040 => &[("userLogin", "tools.who", Who), ("reason", "Reason", Text)],
+        35041 | 35043 => &[("userLogin", "tools.who", Who)],
         35042 => &[
-            ("userLogin", "User login", Text),
+            ("userLogin", "tools.who", Who),
             ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Text),
         ],
@@ -974,9 +1467,8 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         35103 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
             ("cost", "Cost", Int),
-            ("operator", "Operator", Int),
+            ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        35104 => &[("disableNotConfigured", "Disable not configured", Bool)],
         35105 => &[("rewardId", "Reward", Entity("kick.rewards")), ("title", "Title", Text)],
         35106 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
@@ -987,13 +1479,13 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("title", "Title", Text),
             ("description", "Description", Text),
             ("cost", "Cost", Int),
-            ("operator", "Operator", Int),
+            ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         35108..=35110 => &[("rewardId", "Reward", Entity("kick.rewards"))],
-        35111 | 35112 => &[("groupName", "Group name", Text), ("state", "State", Bool)],
+        35111 | 35112 => &[("groupName", "tools.reward_group", Text), ("state", "State", Bool)],
         35113 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
-            ("backgroundColor", "Background color", Text),
+            ("backgroundColor", "tools.color", Color),
             ("random", "Random", Bool),
         ],
         43002 => &[("count", "How many", Int)],
@@ -1006,8 +1498,8 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         1037 => &[("quoteVariable", "Quote", Text)],
         43001 => &[("text", "Message", Text)],
         43010 => &[("title", "Stream Title", Text)],
-        43011 => &[("msgId", "Message ID", Text)],
-        43012 => &[("msgId", "Message ID", Text)],
+        43011 => &[("msgId", "tools.message", Message("%msgId%"))],
+        43012 => &[("msgId", "tools.message", Message("%msgId%"))],
         7001 => &[
             ("name", "Name", Text),
             ("username", "Username", Text),
