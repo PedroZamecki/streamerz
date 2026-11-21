@@ -111,6 +111,8 @@ wat = "1"
 
 [patch.crates-io]
 tray-icon = { path = "patches/tray-icon" }
+# Falls back to Direct3D's software renderer (WARP) when no GPU can draw the window.
+gpui-pre-windows = { path = "patches/gpui-pre-windows" }
 
 
 [workspace]

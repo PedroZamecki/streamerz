@@ -160,6 +160,14 @@ pub async fn run(
                 let crash = match result {
                     Ok(Ok(super::frontend::Exit::Clean)) => None,
                     Ok(Ok(super::frontend::Exit::Crashed(info))) => Some(info),
+                    // Its window never opened: the GPU couldn't show it. Once, it is drawn in software.
+                    Ok(Ok(super::frontend::Exit::NoWindow(info))) if super::frontend::use_software() => {
+                        let reason = info.map(|info| format!(" ({})", info.summary.trim())).unwrap_or_default();
+                        crate::warn(format!("The GPU couldn't show the window{reason}; drawing it in software"));
+                        renderer = open(engine.clone(), changes.clone(), requests_tx.clone(), None);
+                        None
+                    }
+                    Ok(Ok(super::frontend::Exit::NoWindow(info))) => Some(super::frontend::report(info)),
                     Ok(Err(error)) => {
                         let msg = error.to_string();
                         crate::report_error(&crate::error::StreamerzError::frontend_crash(format!("Streamerz frontend: {msg}")));
