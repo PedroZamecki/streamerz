@@ -1047,11 +1047,14 @@ Kept for later in this version, in this order:
 - Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
   (per desktop), screen capture, TikTok moderation (needs a live test).
 
-Where it meets the moderation workspace (same thread, uncommitted in the main checkout): its
-`CrossPlatform*` sub-actions (99700-99706) act on a linked person; mine under "Every Platform" act on a
-name on the platforms ticked. Both stay; the picker names them apart (Core / Moderation and Every
-Platform). Merge them when the workspace is committed.
-
+Where it met the moderation workspace (decided 2026-11-21, on merging both into 1.10.0): where
+Streamer.bot has the sub-action, its code is kept and the Streamerz copy is gone. Twitch's Delete
+Message (581), Resolve AutoMod Message (582), blocked terms (583, 584), unban requests (586, 587), Unique
+Chat (588), Chat Delay (589), Get Chat Settings (590), Update AutoMod Settings (592, now with an overall
+level), Check AutoMod Status (593), Get Moderators and VIPs (595, 596); Kick's Delete Message (35044);
+YouTube's Unban User, Delete Message, Add and Remove Moderator (4015 to 4018). They took the copies'
+forms (Who, Which message, a term by its text), the permission check and paging. Every Platform's Delete
+Message, Timeout, Ban and Unban are Core / Moderation's (99700 to 99706); Remove Timeout stays.
 
 ## Version 1.10.0: Overlay editor, sounds and voices
 
