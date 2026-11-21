@@ -543,6 +543,10 @@ impl Frontend {
                                 this.view["actionId"] = opened.0.clone().into();
                                 this.request_read();
                             }));
+                        cx.subscribe_in(&actions, window, |this, _, go: &Navigate, window, cx| {
+                            this.select(&go.0, window, cx);
+                        })
+                        .detach();
                         self.actions = Some(actions);
                     }
                 }

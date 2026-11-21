@@ -1247,6 +1247,8 @@ fn automation_form(
     }
     if let Some(why) = (!trigger).then(|| unready(config, kind)).flatten() {
         notes.insert(0, why);
+        // A login or a permission is fixed in Accounts: the form takes the user there.
+        out["fix"] = json!({"label": tr("actions.fix_in_accounts"), "go": "Accounts", "icon": "user"});
     }
     if !trigger {
         if let Some(action) = parts.get(2).and_then(|id| config_action(config, id)) {
@@ -1280,6 +1282,16 @@ fn automation_form(
     }
     if !notes.is_empty() {
         out["notes"] = json!(notes);
+    }
+    // Each field says what it holds, as its reference does.
+    let doc = if trigger { "trigger" } else { "subaction" };
+    for field in out["fields"].as_array_mut().into_iter().flatten() {
+        if field.get("tip").is_none() {
+            let key = field["key"].as_str().unwrap_or_default();
+            if let Some(tip) = crate::docs::field_tip(doc, kind, key) {
+                field["tip"] = tip.into();
+            }
+        }
     }
     if fields.is_none() {
         out["jsonOnly"] = true.into();
@@ -1549,13 +1561,8 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             let item = edit::get(&action.sub_actions, &path).cloned().ok_or_else(item_gone)?;
             let code = edit::kind(&item);
             let title = labels::sub_title(code);
-            let hint = match SUB_ACTION_INFO.binary_search_by_key(&(code as u32), |x| x.0) {
-                Ok(i) => trf(
-                    "actions.subaction_fields_hint",
-                    &[("title", &title), ("fields", &SUB_ACTION_INFO[i].3.join(", "))],
-                ),
-                Err(_) => title.clone(),
-            };
+            // What it does, as its reference says it (the fields are right below, by name).
+            let hint = crate::docs::summary("subaction", code as u32).map_or_else(|| title.clone(), str::to_string);
             Ok(automation_form(engine, &config, &parts, false, item, title, hint))
         }
         other => Err(format!("no form {other}")),
@@ -3535,6 +3542,29 @@ mod tests {
             assert_eq!(cleared["status"], "ok", "{cleared}");
             assert!(engine.config().actions.actions[0].triggers[0].get("giftName").is_none());
         });
+    }
+
+    /// A sub-action's form says what it does (its reference, not its field names), each field says
+    /// what it holds, and one that can't run without a login takes the user to Accounts.
+    #[test]
+    fn a_sub_action_form_explains_itself_and_offers_the_fix() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let engine = crate::engine::tests::engine(json!({"actions": [{"id": "a1", "name": "A", "triggers": [],
+            "subActions": [{"id": "s1", "type": 581, "messageId": "%msgId%", "index": 0, "enabled": true}]}]}));
+        let form = ask(
+            &engine,
+            json!({"request": "StreamerzEntityForm", "kind": "act:sub_edit", "actionId": "a1", "itemId": "s1"}),
+        );
+        assert_eq!(form["status"], "ok", "{form}");
+        let hint = form["hint"].as_str().unwrap();
+        assert_eq!(Some(hint), crate::docs::summary("subaction", 581));
+        assert!(!hint.contains("messageId"), "{hint}");
+        let message = &form["fields"][field(&form, "messageId")];
+        assert_eq!(
+            message["tip"].as_str(),
+            crate::docs::field_tip("subaction", 581, "messageId")
+        );
+        assert_eq!(form["fix"]["go"], "Accounts", "{form}");
     }
 
     #[test]

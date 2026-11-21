@@ -615,6 +615,9 @@ fn wrapped(text: &str, line: f32, width: f32) -> f32 {
         .sum::<f32>()
         .max(line)
 }
+/// A form's fix button asks for another page.
+impl EventEmitter<super::sections::Navigate> for Form {}
+
 impl Render for Form {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.autofocus {
@@ -699,6 +702,25 @@ impl Render for Form {
         {
             body = body.child(super::notice::warn(("form-warning", i), warning, cx));
             wanted += wrapped(warning, 18., note_width) + 18.;
+        }
+        // What fixes it, one click away (a login or a permission: the Accounts page).
+        if let Some(go) = self.model["fix"]["go"].as_str() {
+            let go = go.to_owned();
+            let icon = self.model["fix"]["icon"].as_str().unwrap_or("arrow-right").to_owned();
+            body = body.child(
+                div().flex_shrink_0().child(
+                    Button::new("form-fix")
+                        .small()
+                        .h(px(CONTROL_HEIGHT))
+                        .icon(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")))
+                        .label(self.model["fix"]["label"].as_str().unwrap_or_default().to_owned())
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            crate::controls::dialog::dismiss(window, cx);
+                            cx.emit(super::sections::Navigate(go.clone()));
+                        })),
+                ),
+            );
+            wanted += CONTROL_HEIGHT + SPACE_SM;
         }
         // Why part of the form is unavailable, in quiet text.
         for note in self.model["notes"]

@@ -138,6 +138,17 @@ pub fn summary(kind: &str, code: u32) -> Option<&'static str> {
         .find(|p| !p.starts_with('-') && !p.starts_with('#') && !p.trim().is_empty())
 }
 
+/// What a field holds, from the reference's table of fields (`| Label | `key` | What it holds |`).
+pub fn field_tip(kind: &str, code: u32, key: &str) -> Option<&'static str> {
+    let needle = format!("| `{key}` |");
+    text(kind, code)?
+        .lines()
+        .find(|line| line.starts_with('|') && line.contains(&needle))
+        .and_then(|line| line.trim_end().trim_end_matches('|').rsplit('|').next())
+        .map(str::trim)
+        .filter(|tip| !tip.is_empty())
+}
+
 /// The arguments a trigger gives its action, as its reference lists them (`user`, `giftId`...), in order.
 pub fn arguments(kind: &str, code: u32) -> Vec<&'static str> {
     let Some(text) = text(kind, code) else {
@@ -315,6 +326,13 @@ mod tests {
         assert!(!available("subaction", 99999));
         assert!(!available("trigger", 5001));
         assert!(available("trigger", 41002));
+    }
+
+    #[test]
+    fn a_field_tip_is_its_line_in_the_reference_table() {
+        let tip = field_tip("subaction", 581, "messageId").unwrap();
+        assert!(!tip.is_empty() && !tip.contains('|'), "{tip}");
+        assert_eq!(field_tip("subaction", 581, "nothing"), None);
     }
 
     #[test]

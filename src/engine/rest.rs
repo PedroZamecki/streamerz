@@ -5779,13 +5779,25 @@ mod tests {
     fn obs_state_lists_match_what_the_engine_reads() {
         use crate::automation::schema::*;
         // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
-        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
-        assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
-        assert_eq!(RECORD_STATE, ["Start", "Stop", "Pause", "Resume", "Toggle"]);
-        assert_eq!(REPLAY_STATE, ["Start", "Stop", "Save", "Toggle"]);
-        assert_eq!(FILTER_STATE[0], "Enable");
-        assert_eq!(MUTE_STATE[0], "Mute");
-        assert_eq!(MEDIA_STATE[2..4], ["Restart", "Stop"]);
+        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "field.show");
+        assert_eq!(STREAM_STATE[..2], ["field.start", "field.stop"]);
+        assert_eq!(
+            RECORD_STATE,
+            [
+                "field.start",
+                "field.stop",
+                "field.pause",
+                "field.resume",
+                "field.toggle"
+            ]
+        );
+        assert_eq!(
+            REPLAY_STATE,
+            ["field.start", "field.stop", "field.save", "field.toggle"]
+        );
+        assert_eq!(FILTER_STATE[0], "field.enable");
+        assert_eq!(MUTE_STATE[0], "field.mute");
+        assert_eq!(MEDIA_STATE[2..4], ["field.restart", "field.stop"]);
     }
     use serde_json::json;
 

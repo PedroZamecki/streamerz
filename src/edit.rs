@@ -171,7 +171,7 @@ pub fn new_sub(kind: u64) -> Obj {
         99300 | 99303 => {
             o.insert("volume".into(), 100.into());
         }
-        // Each AutoMod level keeps its value until one is set (-1).
+        // Each AutoMod level keeps its value until one is picked.
         592 => {
             for key in [
                 "overallLevel",
@@ -184,7 +184,8 @@ pub fn new_sub(kind: u64) -> Obj {
                 "sexualitySexOrGender",
                 "swearing",
             ] {
-                o.insert(key.into(), (-1).into());
+                // The last choice, outside 0 to 4: kept as it is.
+                o.insert(key.into(), 5.into());
             }
         }
         _ => {}

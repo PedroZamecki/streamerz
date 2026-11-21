@@ -104,8 +104,7 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
             } else {
                 super::schema::WHILE_OPS.get(op)
             }
-            .copied()
-            .unwrap_or("?");
+            .map_or("?", |op| super::schema::field_label(op));
             format!("{} {op} {}", v("input"), v("value"))
         }
         123 | 122 => format!("{} = {}", v("variableName"), v("value")),
