@@ -183,7 +183,9 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 if let Ok(mut slot) = startup_error_out.lock() {
                     *slot = Some(structured);
                 }
-                cx.quit();
+                // Once the event loop runs: Linux's loop forgets a quit asked for before it starts, and the
+                // process would stay with no window, so the core never tries software rendering.
+                cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
             }
         };
