@@ -36,6 +36,8 @@ pub enum Event {
     Toggle,
     /// Show the window if it's hidden (another copy was started).
     Show,
+    /// Close the window and open it again (how it is drawn changed).
+    Reopen,
     Restart,
     Quit,
 }
@@ -135,6 +137,10 @@ pub fn show() {
 pub fn restart() {
     emit(Event::Restart);
 }
+/// Opens the window again if it is open, so a change in how it is drawn applies.
+pub fn reopen() {
+    emit(Event::Reopen);
+}
 
 static VIEWERS_VISIBLE: AtomicBool = AtomicBool::new(false);
 
@@ -175,6 +181,8 @@ pub enum Message {
     Image,
     /// An update is in place: restart into it.
     Restart,
+    /// Open the window again, if it is open.
+    Reopen,
     /// The desktop's colour scheme changed.
     Theme,
     /// A dev command for the window (see `dev`).

@@ -53,6 +53,12 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
     if ready["event"] != "core.ready" || ready["protocol"] != 1 {
         return Err(Box::new(StreamerzError::unexpected("incompatible core protocol")));
     }
+    // Software rendering is chosen before GPUI starts: the graphics libraries read these as they load.
+    for (key, value) in ready["software"]["env"].as_object().into_iter().flatten() {
+        if let Some(value) = value.as_str() {
+            std::env::set_var(key, value);
+        }
+    }
     i18n::init(ready["translations"].take()).map_err(|error| Box::new(StreamerzError::from(error)))?;
     diag::mark_ready(
         ready["logDir"].as_str(),
@@ -189,6 +195,9 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 return;
             }
         };
+        if let Ok(Some(gpu)) = window_handle.update(cx, |_, window, _| window.gpu_specs()) {
+            send(json!({"request": "FrontendRenderer", "device": gpu.device_name, "software": gpu.is_software_emulated}));
+        }
         diag::fact("UI page", &initial_tab);
         diag::step(format!("opened window on page {initial_tab}"));
         cx.on_window_closed(|cx, _| {

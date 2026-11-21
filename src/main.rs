@@ -165,6 +165,8 @@ pub struct Config {
     memory_saver: bool,
     /// Dialogs, menus and floating panels move as they come and go (Settings, Appearance).
     animations: bool,
+    /// Draw the window on the processor instead of the GPU (Settings, Appearance).
+    software_render: bool,
     autostart: bool,
     /// Keep [DEBUG] lines in the log.
     debug_log: bool,
@@ -271,6 +273,7 @@ impl Default for Config {
             start_hidden: true,
             memory_saver: false,
             animations: true,
+            software_render: false,
             autostart: false,
             debug_log: false,
             actions: model::ActionsFile::default(),

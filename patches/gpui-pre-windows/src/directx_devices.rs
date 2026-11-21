@@ -102,9 +102,23 @@ fn get_dxgi_factory(debug_layer_available: bool) -> Result<IDXGIFactory6> {
     unsafe { Ok(CreateDXGIFactory2(factory_flag)?) }
 }
 
-/// Asks for software rendering (Direct3D's WARP) from the start. Streamerz sets it when the GPU failed
-/// to show the window, and it can be set by hand when a driver draws nothing.
+/// Asks for software rendering (Direct3D's WARP) from the start: Streamerz sets it from its setting, and
+/// it can be set by hand when a driver draws nothing.
 const SOFTWARE_RENDER: &str = "STREAMERZ_SOFTWARE_RENDER";
+
+/// Set once the GPU couldn't draw: every device made after it is WARP's.
+static SOFTWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether windows are drawn in software (WARP): asked for, or because no GPU could draw.
+pub(crate) fn software_rendering() -> bool {
+    SOFTWARE.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var_os(SOFTWARE_RENDER).is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Draw in software from now on.
+pub(crate) fn use_software_rendering() {
+    SOFTWARE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
 
 #[inline]
 fn get_adapter(
@@ -116,8 +130,7 @@ fn get_adapter(
     ID3D11DeviceContext,
     D3D_FEATURE_LEVEL,
 )> {
-    let software = std::env::var_os(SOFTWARE_RENDER).is_some_and(|value| !value.is_empty() && value != "0");
-    if !software {
+    if !software_rendering() {
         for adapter_index in 0.. {
             // Past the last adapter: none of them could draw.
             let Ok(adapter) = (unsafe { dxgi_factory.EnumAdapters(adapter_index) }) else {
@@ -131,6 +144,7 @@ fn get_adapter(
             }
         }
         log::warn!("No GPU could draw with Direct3D 11, using software rendering (WARP)");
+        use_software_rendering();
     }
     // WARP draws on the processor, on every Windows, with or without a GPU driver.
     let warp: IDXGIAdapter1 = unsafe { dxgi_factory.EnumWarpAdapter() }.context("Getting the WARP adapter")?;

@@ -208,6 +208,12 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
                     tr("settings.animations.about"),
                     switch(config.animations),
                 ),
+                row(
+                    "software_render",
+                    tr("settings.software_render"),
+                    &software_about(),
+                    switch(config.software_render),
+                ),
             ],
         ),
         section(
@@ -317,6 +323,22 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
     let chat = namespace_sections(super::chat::options(engine), "chat");
     blocks.splice(2..2, chat);
     blocks
+}
+
+/// What the switch does, and what draws the window now.
+fn software_about() -> String {
+    let about = tr("settings.software_render.about");
+    match super::frontend::renderer() {
+        Some((device, software)) => {
+            let key = if software {
+                "settings.software_render.software"
+            } else {
+                "settings.software_render.gpu"
+            };
+            format!("{about}\n{}", trf(key, &[("device", &device)]))
+        }
+        None => about.to_owned(),
+    }
 }
 
 /// Reuse another settings domain inline, retaining stable keys within that domain.
@@ -564,6 +586,15 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
         ("settings", "animations") => {
             let value = need_bool()?;
             engine.change(|config| config.animations = value);
+        }
+        ("settings", "software_render") => {
+            let value = need_bool()?;
+            let before = super::frontend::software_reason(engine.config().software_render).is_some();
+            engine.change(|config| config.software_render = value);
+            // The window opens again, drawn the other way; nothing to do when that doesn't change.
+            if super::frontend::software_reason(value).is_some() != before {
+                crate::host::reopen();
+            }
         }
         ("settings", "memory_saver") => {
             let value = need_bool()?;
@@ -814,6 +845,37 @@ mod tests {
             assert!(engine.config().window.chat.save_history);
             assert!(set(&engine, "settings", "chat.missing", &json!(true)).is_err());
             assert!(set(&engine, "settings", "notification.missing", &json!(true)).is_err());
+        });
+    }
+
+    #[test]
+    fn software_rendering_is_a_switch_that_says_what_draws_the_window() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let row = |engine: &Rc<Engine>| {
+                read(engine, "settings").unwrap()["sections"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|section| section["rows"].as_array().unwrap().clone())
+                    .find(|row| row["key"] == "software_render")
+                    .expect("the switch is in Settings")
+            };
+            assert_eq!(row(&engine)["control"]["value"], false);
+            assert!(set(&engine, "settings", "software_render", &json!("yes")).is_err());
+            set(&engine, "settings", "software_render", &json!(true)).unwrap();
+            assert!(engine.config().software_render);
+            assert_eq!(row(&engine)["control"]["value"], true);
+            // The window says what it is drawn by, and the switch shows it.
+            let mut crash = None;
+            let report =
+                json!({"request": "FrontendRenderer", "device": "llvmpipe (LLVM 21.1.0, 256 bits)", "software": true});
+            assert!(super::super::frontend::handle_diag_request(&report, &mut crash));
+            let about = row(&engine)["about"].as_str().unwrap_or_default().to_owned();
+            assert!(about.contains("llvmpipe (LLVM 21.1.0, 256 bits)"), "{about}");
+            set(&engine, "settings", "software_render", &json!(false)).unwrap();
+            assert!(!engine.config().software_render);
         });
     }
 

@@ -32,21 +32,78 @@ pub enum Exit {
     NoWindow(Option<CrashInfo>),
 }
 
-/// Set to draw the window on the processor instead of the GPU. Streamerz turns it on by itself when the
-/// window can't open; a user whose driver opens a window that stays blank can set it by hand.
+/// Set to draw the window on the processor instead of the GPU, like the Settings switch.
 pub const SOFTWARE_RENDER: &str = "STREAMERZ_SOFTWARE_RENDER";
 
-static SOFTWARE: AtomicBool = AtomicBool::new(false);
+/// The GPU couldn't show the window in this run: it is drawn in software until Streamerz restarts.
+static FAILED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the window is drawn in software, for the rest of this run.
-pub fn software() -> bool {
-    SOFTWARE.load(Ordering::Relaxed)
-        || std::env::var_os(SOFTWARE_RENDER).is_some_and(|value| !value.is_empty() && value != "0")
+/// What draws the open window, as it reported (a GPU's or a software renderer's name).
+static RENDERER: std::sync::Mutex<Option<(String, bool)>> = std::sync::Mutex::new(None);
+
+/// Why the window is drawn in software, decided before it opens; None: the GPU draws it.
+pub fn software_reason(setting: bool) -> Option<&'static str> {
+    let asked = std::env::var_os(SOFTWARE_RENDER).is_some_and(|value| !value.is_empty() && value != "0");
+    reason_of(asked, setting, FAILED.load(Ordering::Relaxed), gpu_present)
 }
 
-/// Draw the window in software from now on (until Streamerz restarts). False when it already was.
-pub fn use_software() -> bool {
-    !software() && !SOFTWARE.swap(true, Ordering::Relaxed)
+fn reason_of(asked: bool, setting: bool, failed: bool, gpu_present: impl FnOnce() -> bool) -> Option<&'static str> {
+    if asked {
+        Some("STREAMERZ_SOFTWARE_RENDER is set")
+    } else if setting {
+        Some("turned on in Settings")
+    } else if failed {
+        Some("the GPU couldn't show it")
+    } else if !gpu_present() {
+        Some("no GPU was found")
+    } else {
+        None
+    }
+}
+
+/// The window couldn't open on the GPU: true when it should try again in software (it wasn't already).
+pub fn use_software(setting: bool) -> bool {
+    software_reason(setting).is_none() && !FAILED.swap(true, Ordering::Relaxed)
+}
+
+/// What the window said it is drawn by: the device's name, and whether it draws on the processor.
+pub fn renderer() -> Option<(String, bool)> {
+    RENDERER.lock().ok()?.clone()
+}
+
+/// The handshake's `software`: why, and the environment the window sets before its graphics load.
+fn software_plan(setting: bool) -> Value {
+    match software_reason(setting) {
+        Some(reason) => {
+            let env: serde_json::Map<String, Value> = software_env()
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value.into()))
+                .collect();
+            json!({"reason": reason, "env": env})
+        }
+        None => Value::Null,
+    }
+}
+
+/// A GPU the window can draw with: a render node (or NVIDIA's device) on Linux. Windows always has
+/// WARP behind the GPU, picked in the window itself when no GPU can draw.
+fn gpu_present() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gpu_in(std::path::Path::new("/dev"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_in(dev: &std::path::Path) -> bool {
+    dev.join("nvidia0").exists()
+        || std::fs::read_dir(dev.join("dri")).is_ok_and(|mut nodes| {
+            nodes.any(|node| node.is_ok_and(|node| node.file_name().to_string_lossy().starts_with("renderD")))
+        })
 }
 
 /// What the window process needs to draw without the GPU. Windows: the patched GPUI picks Direct3D's
@@ -131,7 +188,7 @@ impl Changes {
             Event::Dev => 64,
             // Another copy was started: the window comes to the front.
             Event::Show => 128,
-            Event::Toggle | Event::Restart | Event::Quit => return,
+            Event::Toggle | Event::Reopen | Event::Restart | Event::Quit => return,
         };
         self.topics.fetch_or(bit, Ordering::Release);
         self.ready.notify_one();
@@ -189,6 +246,19 @@ pub(crate) fn handle_diag_request(request: &Value, crash_info: &mut Option<Crash
             }
             true
         }
+        // What draws the window, once it is open.
+        Some("FrontendRenderer") => {
+            let device = request["device"].as_str().unwrap_or("an unknown device").to_owned();
+            let software = request["software"].as_bool().unwrap_or(false);
+            crate::say(format!(
+                "The window is drawn by {device}{}",
+                if software { " (in software)" } else { "" }
+            ));
+            if let Ok(mut renderer) = RENDERER.lock() {
+                *renderer = Some((device, software));
+            }
+            true
+        }
         Some("FrontendCrash") => {
             let thread = request["thread"].as_str().unwrap_or("?");
             let location = request["location"].as_str().unwrap_or("");
@@ -234,9 +304,6 @@ impl Frontend {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
-        if software() {
-            command.envs(software_env());
-        }
         #[cfg(target_os = "linux")]
         {
             let parent = std::process::id() as libc::pid_t;
@@ -298,7 +365,11 @@ impl Frontend {
             "version": crate::brand::VERSION,
             "debugLog": crate::debug_log(),
             "activeErrors": crate::error::active_list(),
+            "software": software_plan(engine.config().software_render),
         });
+        if let Some(reason) = ready["software"]["reason"].as_str() {
+            crate::say(format!("Drawing the window in software: {reason}"));
+        }
         if let Some(crash) = recovered_crash {
             ready["recoveredCrash"] = crash;
         }
@@ -452,29 +523,49 @@ mod tests {
     }
 
     #[test]
-    fn software_rendering_is_turned_on_once_and_passed_to_the_window() {
+    fn software_rendering_is_chosen_before_the_window_opens() {
+        let gpu = || true;
+        assert_eq!(reason_of(false, false, false, gpu), None);
+        assert_eq!(reason_of(false, false, false, || false), Some("no GPU was found"));
+        assert_eq!(reason_of(false, false, true, gpu), Some("the GPU couldn't show it"));
+        assert_eq!(reason_of(false, true, false, gpu), Some("turned on in Settings"));
+        assert_eq!(
+            reason_of(true, false, false, gpu),
+            Some("STREAMERZ_SOFTWARE_RENDER is set")
+        );
+        // The GPU isn't looked for when something else already decided.
+        assert!(reason_of(false, true, false, || unreachable!()).is_some());
+    }
+
+    #[test]
+    fn the_window_is_told_how_to_draw_in_software() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        std::env::remove_var(SOFTWARE_RENDER);
-        SOFTWARE.store(false, Ordering::Relaxed);
-        assert!(!software());
-        assert!(use_software());
-        assert!(software());
-        assert!(!use_software(), "a second failure in software isn't retried");
-        let env = software_env();
-        assert!(env.contains(&(SOFTWARE_RENDER, "1".to_owned())));
+        assert_eq!(software_plan(true)["reason"], "turned on in Settings");
+        let env = &software_plan(true)["env"];
+        assert_eq!(env[SOFTWARE_RENDER], "1");
         #[cfg(target_os = "linux")]
         {
-            assert!(env.contains(&("LIBGL_ALWAYS_SOFTWARE", "1".to_owned())));
-            let vulkan = env
-                .iter()
-                .find(|(key, _)| *key == "VK_DRIVER_FILES")
-                .map(|(_, value)| value);
-            assert!(
-                vulkan.is_some_and(|path| path == "/dev/null" || path.contains("lvp")),
-                "{vulkan:?}"
-            );
+            assert_eq!(env["LIBGL_ALWAYS_SOFTWARE"], "1");
+            let vulkan = env["VK_DRIVER_FILES"].as_str().unwrap_or_default();
+            assert!(vulkan == "/dev/null" || vulkan.contains("lvp"), "{vulkan}");
         }
-        SOFTWARE.store(false, Ordering::Relaxed);
+        // A failure in software isn't retried.
+        assert!(!use_software(true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_gpu_is_a_render_node_or_nvidias_device() {
+        let root = std::env::temp_dir().join(format!("streamerz-dev-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("dri")).unwrap();
+        std::fs::write(root.join("dri/card0"), "").unwrap();
+        assert!(!gpu_in(&root), "a display without a render node can't draw");
+        std::fs::write(root.join("dri/renderD128"), "").unwrap();
+        assert!(gpu_in(&root));
+        std::fs::remove_dir_all(root.join("dri")).unwrap();
+        std::fs::write(root.join("nvidia0"), "").unwrap();
+        assert!(gpu_in(&root));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "linux")]

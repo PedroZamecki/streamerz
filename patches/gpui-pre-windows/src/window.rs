@@ -143,8 +143,19 @@ impl WindowsWindowState {
         };
         let border_offset = WindowBorderOffset::default();
         let restore_from_minimized = None;
-        let renderer = DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
-            .context("Creating DirectX renderer")?;
+        let renderer = match DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition) {
+            Ok(renderer) => renderer,
+            // The GPU made a device but can't show this window (its swap chain or composition failed):
+            // WARP draws it instead, and every device made from now on.
+            Err(error) if !software_rendering() => {
+                log::warn!("The GPU can't draw this window ({error:#}), using software rendering (WARP)");
+                use_software_rendering();
+                let warp = DirectXDevices::new().context("Creating DirectX devices in software")?;
+                DirectXRenderer::new(hwnd, &warp, disable_direct_composition)
+                    .context("Creating DirectX renderer in software")?
+            }
+            Err(error) => return Err(error.context("Creating DirectX renderer")),
+        };
         let callbacks = Callbacks::default();
         let input_handler = None;
         let pending_surrogate = None;
