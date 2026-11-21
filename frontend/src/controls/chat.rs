@@ -3007,9 +3007,9 @@ impl Render for ChatView {
                 div()
                     .id(SharedString::from(format!("held-card-{held_idx}")))
                     .flex()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_MD))
+                    .py(px(SPACE_SM))
                     .rounded(theme.radius)
                     .border_1()
                     .border_color(theme.border)
@@ -3026,7 +3026,7 @@ impl Render for ChatView {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap(px(SPACE_XS))
                             .min_w_0()
                             .child(
                                 div()
@@ -3034,14 +3034,14 @@ impl Render for ChatView {
                                     .flex_wrap()
                                     .items_center()
                                     .justify_between()
-                                    .gap_2()
-                                    .text_xs()
+                                    .gap(px(SPACE_SM))
+                                    .caption()
                                     .text_color(theme.muted_foreground)
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap_1()
+                                            .gap(px(SPACE_XS))
                                             .min_w_0()
                                             .child(Icon::empty().path("icons/shield.svg").size_3().flex_shrink_0())
                                             .child(div().min_w_0().truncate().child(title)),
@@ -3049,7 +3049,7 @@ impl Render for ChatView {
                                     .child(
                                         div()
                                             .flex()
-                                            .gap_1()
+                                            .gap(px(SPACE_XS))
                                             .child(decide(true, get("allow"), "check", id.clone()))
                                             .child(decide(false, get("deny"), "x", id.clone())),
                                     ),
@@ -3057,8 +3057,8 @@ impl Render for ChatView {
                             .child(
                                 div()
                                     .flex()
-                                    .gap_1p5()
-                                    .text_xs()
+                                    .gap(px(SPACE_XS))
+                                    .caption()
                                     .child(div().font_weight(FontWeight::BOLD).child(format!("{user}:")))
                                     .child(div().flex_1().min_w_0().truncate().child(said)),
                             ),
