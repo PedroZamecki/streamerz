@@ -844,7 +844,12 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         23 => &[
             ("text", "field.announcement", Multi),
-            ("color", "field.color_primary_blue_green_orange_purple", Text),
+            // Twitch's own names, as it stores them.
+            (
+                "color",
+                "field.color",
+                Expression(&["Primary", "Blue", "Green", "Orange", "Purple"]),
+            ),
             ("useBot", "field.send_from_bot_account", Bool),
             ("fallback", "field.fallback_to_broadcaster", Bool),
         ],
@@ -856,7 +861,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         27 => &[("status", "field.shield_mode", Bool)],
         28 => &[
             ("status", "field.follower_mode", Bool),
-            ("duration", "field.duration_minutes", Int),
+            ("duration", "automation.duration_duration", Duration(60_000)),
         ],
         29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "tools.who", Who)],
         200 => &[
@@ -1103,7 +1108,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
                 Expression(&["application/json", "application/x-www-form-urlencoded", "text/plain"]),
             ),
         ],
-        1009 => &[("value", "field.comment", Multi), ("color", "field.color_rrggbb", Text)],
+        1009 => &[("value", "field.comment", Multi), ("color", "field.color", Color)],
         1010 => &[
             ("groupName", "field.group", CommandGroup),
             ("state", "field.state", Pick(STATE)),
@@ -1255,7 +1260,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         99900 => &[
             ("name", "field.name", Text),
             ("random", "field.random", Bool),
-            ("color", "field.color_rrggbb", Text),
+            ("color", "field.color", Color),
         ],
         30 => &[
             ("connectionId", "field.connection", ObsConnection),
@@ -1448,7 +1453,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         4012 => &[BROADCAST_FIELD],
         4013 => &[BROADCAST_FIELD, ("file", "field.image_file", Text)],
-        4014 => &[BROADCAST_FIELD, ("duration", "field.duration_seconds", Int)],
+        4014 => &[
+            BROADCAST_FIELD,
+            ("duration", "automation.duration_duration", Duration(1000)),
+        ],
         4015 => &[
             ("banId", "field.ban_id_empty_the_one_streamerz_made", Text),
             ("userId", "tools.who", Who),
@@ -1488,7 +1496,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         35032 => &[("tags", "field.tags_one_per_line", Lines)],
         35033 => &[("tag", "field.tag", Text)],
         35034 => &[],
-        35050 => &[("duration", "field.duration_seconds", Int)],
+        35050 => &[("duration", "automation.duration_duration", Duration(1000))],
         35051 => &[],
         35040 => &[("userLogin", "tools.who", Who), ("reason", "field.reason", Text)],
         35041 | 35043 => &[("userLogin", "tools.who", Who)],
