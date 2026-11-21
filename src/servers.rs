@@ -563,11 +563,16 @@ fn find_action(e: &Engine, a: &Value) -> Option<String> {
         .map(|x| x.id.clone())
 }
 
-/// Prefix `id`, then the fields, then status ok.
+/// Prefix `id`, then the fields, then status ok. A field named `id` never replaces the request's: the
+/// caller matches the answer by it.
 fn ok(id: &Value, fields: Value) -> Value {
     let mut out = json!({"id": id});
     if let (Some(o), Some(f)) = (out.as_object_mut(), fields.as_object()) {
-        o.extend(f.clone());
+        o.extend(
+            f.iter()
+                .filter(|(k, _)| *k != "id")
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
         o.insert("status".into(), "ok".into());
     }
     out
@@ -1012,6 +1017,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzCountdown"
         | "StreamerzOverlays"
         | "StreamerzOverlayPublish"
+        | "StreamerzSound"
         | "StreamerzManageActionGroup"
         | "StreamerzActionGroups"
         | "StreamerzGroupIcon"
@@ -1167,6 +1173,10 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 json!({"overlays": files, "topics": topics, "base": crate::overlays::base(&e.config())}),
             )
         }
+        "StreamerzSound" => match crate::sound::request(req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
         "StreamerzOverlayPublish" => {
             let topic = get("topic").trim();
             if topic.is_empty() {
@@ -2378,7 +2388,12 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             }
             return crate::overlays::events(e, tcp, query).await;
         }
-        let served = crate::overlays::file(&e.config(), path);
+        // A page opened as a preview shows the editor's draft.
+        let draft = crate::overlays::group_of(path)
+            .filter(|_| crate::overlays::is_preview(query))
+            .map(|group| e.overlay_draft(&group))
+            .unwrap_or_default();
+        let served = crate::overlays::file_with(&e.config(), path, &draft);
         return match served {
             crate::overlays::Served::Bytes(status, kind, body) => {
                 crate::overlays::respond(&mut tcp, status, kind, &body).await
@@ -2466,6 +2481,12 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_answer_keeps_the_requests_id() {
+        let answer = ok(&json!("r7"), json!({"id": 3, "durationMs": 10}));
+        assert_eq!(answer, json!({"id": "r7", "durationMs": 10, "status": "ok"}));
+    }
+
     #[test]
     fn a_raw_platform_call_goes_through_the_running_client_in_dev_mode_only() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());

@@ -78,7 +78,7 @@ async function open(group, w = 640, h = 260, file = "") {
 }
 const done = async (t, slug) => {
   await t.shot(`/tmp/szoverlay/example-${slug}.png`);
-  if (["Subathon", "Top gifters", "Credits roll", "Song request queue"].includes(t.group)) {
+  if (["Subathon", "Top gifters", "Credits roll", "Song request queue", "Alert box"].includes(t.group)) {
     await t.cmd("Emulation.setDeviceMetricsOverride", { width: 360, height: t.height, deviceScaleFactor: 1, mobile: false });
     if (t.group === "Credits roll") await t.js("roll.getAnimations()[0].currentTime = 13000; 1");
     await t.shot(`/tmp/szoverlay/example-${slug}-narrow.png`);
@@ -92,7 +92,7 @@ try {
   // A dev instance starts with the HTTP server off: the pages are served by it.
   await ask({ request: "StreamerzSave", what: "server_http", item: { autoStart: true, address: "127.0.0.1", port: 7495 } });
   const examples = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
-  check(examples.length === 19, "examples listed: " + examples.map(r => r.id).join(", "));
+  check(examples.length === 20, "examples listed: " + examples.map(r => r.id).join(", "));
   for (const e of examples) check((await act("add_example", e.id, "overlay_examples")).status === "ok", `example ${e.id} added`);
   const again = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
   check(again.every(r => r.cells[2] === "Added" && r.can.add_example === false), "every example says it is here");
@@ -211,6 +211,96 @@ try {
   check(await t.js("document.body.classList.contains('dark') && ![...list.querySelectorAll('.card:not(.old) .what')].some(w => /gifted|sent Rose/.test(w.textContent))"), "a kind that is switched off stays out");
   await values("Alerts", { look: "Platform colors", side: "Left", gifts: true });
   await done(t, "alerts");
+
+  // Alert box: rules pick what shows, a queue shows them in turn, and the controls are a topic.
+  const alert = (platform, user, kind, args = {}, text = "") => ["Chat.Alert", { platform, user, userId: "ab-" + user,
+    event: kind + " (test)", icon: "star", kind, trigger: "Test", args, text, parts: text ? [{ t: text }] : [], badges: [] }];
+  const box = events => ask({ request: "StreamerzOverlay", op: "test", overlay: "Alert box", events });
+  // From its defaults, whatever an earlier run left.
+  const boxDefaults = Object.fromEntries((await ask({ request: "StreamerzOverlay", op: "read", overlay: "Alert box" })).settings.map(d => [d.name, d.default]));
+  await values("Alert box", { ...boxDefaults, gap: 0, animMs: 100 });
+  t = await open("Alert box", 1280, 720);
+  const rule = (kind, args = {}) => t.js(`(alertBox.pick({kind: "${kind}", platform: "twitch", args: ${JSON.stringify(args)}}) || {}).text`);
+  check(await rule("cheer", { bits: 1500 }) === "%user% cheered %amount% bits!", "a cheer of 1500 bits takes the rule from 1000 bits up");
+  check(await rule("cheer", { bits: 999 }) === "%user% cheered %amount% bits", "one of 999 takes the next rule");
+  check(await rule("share") === "%user%: %event%", "a kind with no rule of its own takes the Any rule");
+  check(await t.js("alertBox.amount({kind: 'gift', args: {diamondCount: 5, repeatCount: 3}})") === 15, "a TikTok combo is worth its coins");
+  check((await box([alert("twitch", "Ana", "cheer", { bits: 1500 }, "Take my bits!"), alert("kick", "Cy", "raid", { viewers: 42 }),
+    alert("youtube", "Bea", "superchat", { amount: 20 }, "Love it")])).status === "ok", "three alerts are sent");
+  check(await t.until("stage.querySelectorAll('.alert').length === 1"), "one shows at a time");
+  check(await t.js("stage.querySelector('.title').textContent") === "Ana cheered 1500 bits!", "with its rule's text: " + await t.js("stage.querySelector('.title')?.textContent"));
+  check(await t.js("alertBox.waiting.length") === 2, "and the others wait their turn");
+  check(await t.js("!!stage.querySelector('.alert img.media[src$=\"img/star.svg\"]') && stage.querySelector('.said').textContent === 'Take my bits!'"), "its picture and what they wrote");
+  check(await t.until("alertBox.showing[0]?.audio?.readyState >= 1", 3000), "its sound loads: " + await t.js("alertBox.showing[0]?.audio?.src"));
+  await sleep(600);
+  await t.shot("/tmp/szoverlay/example-alert-box-first.png");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "skip" } });
+  check(await t.until("stage.querySelector('.alert:not(.going) .title')?.textContent === 'Cy is raiding with 42 viewers!'"), "skip shows the next one");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "pause" } });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "skip" } });
+  await sleep(800);
+  check(await t.js("stage.querySelectorAll('.alert').length === 0 && alertBox.waiting.length === 1"), "paused, the next one waits");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "resume" } });
+  check(await t.until("stage.querySelector('.title')?.textContent.startsWith('Bea sent a Super Chat')"), "resumed, it shows");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  check(await t.until("stage.querySelectorAll('.alert').length === 0"), "clear empties it");
+  // A gift bomb is one alert; a TikTok combo grows on one card.
+  await box([alert("twitch", "Eve", "giftbomb", { gifts: 5 }), alert("twitch", "Eve", "giftsub", { fromGiftBomb: true, recipientUser: "Zed" })]);
+  check(await t.until("stage.querySelector('.title')?.textContent === 'Eve gifted 5 subs!'"), "a gift bomb shows once");
+  await sleep(300);
+  check(await t.js("alertBox.waiting.length") === 0, "its single gifts don't follow");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  await t.until("stage.querySelectorAll('.alert').length === 0");
+  const rose = n => alert("tiktok", "Dee", "gift", { giftName: "Rose", giftId: 5655, repeatCount: n, coins: n });
+  await box([rose(1)]);
+  check(await t.until("stage.querySelector('.count')?.textContent === 'x1'"), "a TikTok gift shows its count");
+  await box([rose(2)]);
+  await box([rose(5)]);
+  check(await t.until("stage.querySelector('.count')?.textContent === 'x5'") && await t.js("stage.querySelectorAll('.alert').length") === 1, "a combo grows on the same card");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  check(await t.until("stage.querySelectorAll('.alert').length === 0"), "and clear takes it away");
+  // Settings change it at once: together, the place, the layout, a text with no card, own CSS.
+  await values("Alert box", { mode: "Together", together: 3, position: "Top right", layout: "Picture at the left", card: false, outline: true, extraCss: ".title { letter-spacing: 3px; }" });
+  check(await t.until("document.body.className === 'top right' && extra.textContent.includes('letter-spacing')"), "the place and the CSS follow the settings");
+  await box([alert("twitch", "F1", "follow"), alert("twitch", "F2", "follow"), alert("twitch", "F3", "follow"), alert("twitch", "F4", "follow")]);
+  check(await t.until("stage.querySelectorAll('.alert').length === 3"), "three together, as set: " + await t.js("stage.querySelectorAll('.alert').length"));
+  check(await t.js("[...stage.querySelectorAll('.alert')].every(a => a.classList.contains('beside-left') && !a.classList.contains('card') && a.classList.contains('outline'))"), "with the layout and look set: " + await t.js("[...stage.querySelectorAll('.alert')].map(a => a.className).join(' / ')"));
+  await sleep(500);
+  await t.shot("/tmp/szoverlay/example-alert-box-together.png");
+  // Weighted rules: two that match, one by weight.
+  await values("Alert box", { pick: "One of the matching rules, by weight", rules: [
+    { when: "Follow", from: "Any", min: 0, max: 0, text: "A", picture: "", sound: "", volume: 80, seconds: 6, weight: 1 },
+    { when: "Follow", from: "Any", min: 0, max: 0, text: "B", picture: "", sound: "", volume: 80, seconds: 6, weight: 3 }] });
+  const counts = JSON.parse(await t.js("(() => { const c = {A: 0, B: 0}; for (let i = 0; i < 4000; i++) c[alertBox.pick({kind: 'follow', platform: 'kick', args: {}}).text]++; return JSON.stringify(c); })()"));
+  check(counts.B > counts.A * 2 && counts.B < counts.A * 4, "by weight, B three times as often as A: " + JSON.stringify(counts));
+  // Your own HTML, with what a viewer typed kept as text.
+  await values("Alert box", { pick: "The first that matches", mode: "One at a time", cardHtml: "<b class=mine>%user%</b> <i>%message%</i>" });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  await box([alert("twitch", "<img src=x onerror=alert(1)>", "follow", {}, "<script>bad()</script>")]);
+  check(await t.until("!!stage.querySelector('b.mine')"), "the card is drawn from the Card HTML");
+  check(await t.js("!stage.querySelector('b.mine img') && stage.querySelector('b.mine').textContent.includes('<img') && !stage.querySelector('i script')"), "what a viewer sends stays text in it");
+  await values("Alert box", { cardHtml: "", extraCss: "", card: true, outline: false, layout: "Picture above", position: "Center", mode: "One at a time", gap: 0.5, animMs: 600 });
+  // A draft (the editor's unsaved settings) shows on a preview page at once, never on OBS's page.
+  const draft = (action, extra = {}) => ask({ request: "StreamerzOverlay", op: "draft", overlay: "Alert box", action, ...extra });
+  const started = await draft("get");
+  check(started.status === "ok" && started.preview.endsWith("/overlays/Alert%20box/index.html?preview=1"), "the editor's preview address: " + started.preview);
+  const p = await tab();
+  await p.cmd("Page.navigate", { url: started.preview });
+  check(await p.until("!!window.alertBox && streamerz.preview === true"), "a preview page knows it is one");
+  await sleep(400);
+  check((await draft("set", { values: { position: "Bottom left" } })).status === "ok", "a setting is changed as a draft");
+  check(await p.until("document.body.className === 'bottom left'"), "the preview shows it at once");
+  await sleep(400);
+  check(await t.js("document.body.className") === "middle center", "OBS's page keeps the saved one");
+  check((await draft("set", { values: { position: "Nowhere" } })).status === "error", "a value the setting doesn't have is refused");
+  check((await draft("revert")).status === "ok" && await p.until("document.body.className === 'middle center'"), "revert puts the preview back");
+  await draft("set", { values: { position: "Top" } });
+  check((await draft("save")).status === "ok" && await t.until("document.body.className === 'top center'") && await p.until("document.body.className === 'top center'"), "save shows it everywhere");
+  check((await draft("get")).draft && Object.keys((await draft("get")).draft).length === 0, "and the draft is gone");
+  await values("Alert box", { position: "Center" });
+  check(p.errors.length === 0, "the preview has no page errors " + p.errors.join(" | "));
+  await p.close();
+  await done(t, "alert-box");
 
   // TikTok gifts: one pill for a combo, its count growing.
   t = await open("TikTok gifts", 760, 520);

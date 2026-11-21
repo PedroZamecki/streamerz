@@ -59,6 +59,7 @@ pub mod servers;
 mod slash;
 mod slobs;
 mod songrequests;
+mod sound;
 mod spotify;
 mod storage;
 mod streamdeck;
@@ -1362,6 +1363,12 @@ fn attach_parent_console() {
 }
 
 fn main() {
+    // The audio process (sound.rs): plays what Streamerz pipes to it, nothing else is started.
+    let mut args = std::env::args_os();
+    if args.nth(1).is_some_and(|a| a == "--sound-output") {
+        let device = args.next().and_then(|d| d.into_string().ok()).unwrap_or_default();
+        std::process::exit(sound::output_main(&device));
+    }
     // In Flatpak, settings and caches stay in the host's folders, shared with every other copy.
     sandbox::use_host_folders();
     if std::env::args_os().any(|arg| arg == "--frontend") {

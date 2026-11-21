@@ -138,6 +138,8 @@ declare namespace Streamerz {
     readonly group: string;
     /** True while the page handles made-up data from Test: a page that keeps a count leaves it out. */
     readonly testing: boolean;
+    /** True on a page the overlay editor opened as a preview (`?preview` in its address): it shows settings not saved yet. */
+    readonly preview: boolean;
     /** The last value of each topic this page listens to. */
     readonly state: Record<string, unknown>;
     readonly platforms: Record<Platform, { name: string; color: string }>;

@@ -30,6 +30,7 @@ pub mod plugins;
 mod processes;
 mod rest;
 mod songs;
+mod sounds;
 mod tools;
 mod watchers;
 
@@ -187,6 +188,8 @@ pub struct Engine {
     spotify_seen: RefCell<std::collections::HashMap<u32, String>>,
     /// The last value of each overlay topic.
     overlay_state: RefCell<std::collections::HashMap<String, Value>>,
+    /// Settings changed in the overlay editor and not saved yet, by overlay: only preview pages see them.
+    overlay_drafts: RefCell<std::collections::HashMap<String, serde_json::Map<String, Value>>>,
     /// Captured at startup, independent of pending settings changes.
     pub(crate) memory_saver: bool,
     cfg: Arc<watch::Sender<Config>>,
@@ -434,6 +437,7 @@ pub fn supported(kind: u32) -> bool {
             | 99450..=99454 | 99500..=99523 | 99530..=99544 | 99600..=99607 | 99650..=99664 | 99720..=99733 | 99740..=99743 | 99750..=99765 | 99780..=99787
             | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
+            | 1 | 7 | 30001 | 30002 | 99300..=99304
     )
 }
 
@@ -569,6 +573,7 @@ impl Engine {
             song_playing: RefCell::default(),
             spotify_seen: RefCell::default(),
             overlay_state: RefCell::default(),
+            overlay_drafts: RefCell::default(),
             memory_saver,
             cfg,
             save,
@@ -854,6 +859,9 @@ impl Engine {
             for (group, values) in &c.action_group_variables {
                 if before.get(group) != Some(values) {
                     self.emit("Settings", group, || crate::overlays::settings(&c, group));
+                    // Preview pages follow the saved values with the editor's draft over them.
+                    let draft = self.overlay_draft(group);
+                    self.emit("Draft", group, || crate::overlays::settings_with(&c, group, &draft));
                 }
             }
         }
@@ -1968,6 +1976,7 @@ impl Engine {
                     let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
                     self.overlay_publish(topic.trim(), value);
                 }
+                k if sounds::handles(k) => self.sound_sub(ctx, o, k).await,
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
                 99450..=99499 | 99500..=99699 | 99720..=99779 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
                     if !self.tools(ctx, o, kind).await {

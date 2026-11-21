@@ -160,6 +160,17 @@ pub fn new_sub(kind: u64) -> Obj {
             o.insert("kick".into(), true.into());
             o.insert("youtube".into(), true.into());
         }
+        // Sounds start at full volume and wait for their end, as Streamer.bot's do.
+        1 | 7 => {
+            o.insert("volume".into(), 100.into());
+            o.insert("finishBeforeContinuing".into(), true.into());
+            if kind == 7 {
+                o.insert("avoidRepeats".into(), true.into());
+            }
+        }
+        99300 | 99303 => {
+            o.insert("volume".into(), 100.into());
+        }
         _ => {}
     }
     // A new one acts on whoever and whatever started the action, until told otherwise.

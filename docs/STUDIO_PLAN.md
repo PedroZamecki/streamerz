@@ -1,9 +1,9 @@
-# Overlay editor, sounds and voices (1.9.0)
+# Overlay editor, sounds and voices (1.10.0)
 
 The design for the overlay's own page, live preview and drafts, the media of an overlay, sounds played by
 Streamerz, the alert box, new setting kinds, live controls and voices (text to speech). The phases are in
-`PLAN.md` ("Version 1.9.0: Overlay editor, sounds and voices"). Decisions marked **(ask)** wait for the
-owner.
+`PLAN.md` ("Version 1.10.0: Overlay editor, sounds and voices"). The owner agreed to the whole plan with the
+recommended answers (2026-11-16); they are written in below as decisions.
 
 ## Goals
 
@@ -23,7 +23,7 @@ Twitch and OBS connected) must hold with and without these features in use, meas
 |---|---|---|
 | Overlay page | Nothing: it is drawn by the window, a separate process that is gone while hidden | The window's own memory |
 | Live preview | Nothing | A headless Chromium (the one `overlay_shot` already starts) while the Preview is on screen; closed when it is not |
-| Sound player | Its code in the binary (target under 1.5 MB, measured); no thread, no device open | One audio callback thread per device while a sound plays; the device is closed when the last sound on it ends |
+| Sound player | Its code in the binary; no thread, no device open | One thread per device while a sound plays and, on Linux, the audio process; both end with the last sound, and the decoders' freed memory goes back to the system |
 | System voices | Nothing | A few MB while speaking |
 | Neural voices | A catalog and the Voices page in the binary (under 100 KB) | A separate process, downloaded on request: tens to a few hundred MB while a voice is loaded, one core for a fraction of the speech's length while speaking, 0% idle |
 
@@ -81,7 +81,7 @@ closes, then look at the page. The overlay gets a page of its own instead.
 - Leaving the page, closing the window or opening another overlay with a draft asks: Save, Discard or
   Cancel.
 - **Show on OBS while I edit** (a switch on the toolbar, off by default) sends the draft to every page,
-  OBS included, for someone setting up off air. **(ask)** default off.
+  OBS included, for someone setting up off air. Decided: off by default.
 - The draft lives in the core, in memory, not on disk, so it survives a window restart and MCP sees it.
 - How: a preview page's address carries a token the core gives (`?preview=<token>`), its WebSocket says
   so, and `onSettings` for those connections carries the draft. OBS pages never see a draft unless the
@@ -181,7 +181,7 @@ Each kind gets its control in `controls/form.rs`, its check in `src/automation/`
 | `hidden` | any value | not drawn, kept and shared | the value |
 
 Every overlay also gets **Extra CSS** under Code, a `code` setting that `streamerz.js` puts on the page
-by itself, so a look can be changed in any overlay without opening its files. **(ask)**
+by itself, so a look can be changed in any overlay without opening its files. Decided: yes.
 
 ## Part 3: Live controls
 
@@ -218,8 +218,12 @@ Settings are what is set before going live; controls are what is changed while l
 - A device that goes away: the sound ends with `reason: failed`, the log says why, and the next sound on
   Default goes to the new default.
 - Flatpak: the manifest asks for `--socket=pulseaudio` **(verify)** the ALSA plugin in the runtime.
-- Choice of crates: Symphonia and cpal, or rodio on top of both. Phase 4.1 measures binary size and
-  memory of both and keeps the lighter one.
+- Decided and done: Symphonia decodes; the output is the system's own, with no audio crate: on Linux a
+  small audio process (`Streamerz --sound-output`, started with the first sound, ended after the last)
+  that loads PulseAudio's simple API (PipeWire answers it too), so its 2.4 MB of libraries never stay in
+  Streamerz (owner's choice, 2026-11-16: a few tens of ms on the first sound after a quiet spell); on
+  Windows WASAPI through the `windows` crate already in the build. cpal would have added ALSA bindings
+  and a thread of its own.
 
 ### Sub-actions
 
@@ -242,8 +246,8 @@ Streamerz's own, 99300 to 99319:
 | 99302 | Resume Sound | a named sound or all |
 | 99303 | Set Master Volume | the master volume, over `fadeMs` |
 | 99304 | Get Sound Info | a file's `soundDurationMs`, `soundFormat`, `soundChannels` as arguments |
-| 99305 | Play Sound In Overlay | plays a file on an overlay's open pages (the browser source's audio, so OBS mixes it with that source); `streamerz.js` plays it with no page code |
-| 99306 | Set Sound Device | the device that Default means for Streamerz |
+| 99305 | Play Sound In Overlay | plays a file on an overlay's open pages (the browser source's audio, so OBS mixes it with that source); `streamerz.js` plays it with no page code. Comes with live controls, since a page must be connected to hear it |
+| 99306 | Set Sound Device | the device that Default means for Streamerz. Comes with the Output section of the Sounds page, which stores it |
 
 Paths from a Streamer.bot import (`C:\...`) are kept; on Linux a path that is not there says so on the
 sub-action, with Pick file.
@@ -256,12 +260,12 @@ Streamerz's own, 99300 to 99309:
 |---|---|---|
 | 99300 | Sound Started | `soundName`, `soundFile`, `device`, `soundDurationMs`, `actionName` |
 | 99301 | Sound Ended | the same, and `reason` (`finished`, `stopped`, `failed`) |
-| 99302 | Sound Device Changed | `device`, `available` (a device came or went) |
+| 99302 | Sound Device Changed | `device`, `available` (a device came or went). Comes with the Sounds page: it needs the system's device notifications (IMMNotificationClient, PulseAudio's subscribe), never a poll |
 
 ### Sounds page
 
 A sidebar page, **Sounds** (Lucide `volume-2`), with a Show selector: Playing, Library, Board, Voices,
-Output. **(ask)** one page with the Show selector, or Voices as its own sidebar page.
+Output. Decided: one page with the Show selector.
 
 - **Playing**: what plays now: name, file, device, place and length, a volume slider; Stop, Pause, Stop
   all; the right-click menu has the same.
@@ -296,14 +300,14 @@ Output. **(ask)** one page with the Show selector, or Voices as its own sidebar 
      when voices are turned off, on Unload, or when Streamerz closes (stdin closed).
    - **Keep the voice loaded** (on by default while voices are on) answers at once; off, the program quits
      when the speech queue is empty and starts again for the next one (a second or two later, no memory
-     between). **(ask)** default.
+     between). Decided: on by default.
 
 ### Catalog and downloads
 
 - `assets/voices.json` in Streamerz: each voice's id, engine, language, style, quality, size on disk and
   in memory, address (the sherpa-onnx releases on GitHub and Hugging Face), SHA-256, license with its
   attribution, and a short sample to hear before downloading.
-- New voices come with Streamerz updates; there is no catalog fetched in the background. **(ask)**
+- New voices come with Streamerz updates; there is no catalog fetched in the background. Decided.
 - A download can be cancelled and picks up where it stopped, is checked against its SHA-256, and lands in
   `voices/` beside `streamerz.json` (not in backups, not in exports).
 - The license is shown before the download, and voices that are not free for commercial use say so.
@@ -365,9 +369,12 @@ Triggers, 99320 to 99329:
 
 ## Part 6: The alert box
 
-A built-in example, **Alert box**, whose page is a runtime of ours (`/overlays/-/alertbox.js`, plain DOM
-and CSS animations) driven by data in `meta.template.alertbox`. Nothing in it needs HTML; HTML, CSS and
-JS are there for whoever wants them.
+A built-in example, **Alert box**, plain DOM and CSS animations driven by its settings. Nothing in it needs
+HTML; HTML, CSS and JS are there for whoever wants them. Decided while building it: the whole runtime is
+the example's own `index.html` (commented, so a power user reads and changes it, and a `.streamerz` file
+or a saved page carries it), and the rules are a `list` setting (When, From, At least, At most, Text,
+Picture, Sound, Volume, Seconds, Weight) that the Alerts tab will edit as a form. The controls are a
+topic for now (`alertbox`, `{"do": "pause"}`...), and become live controls in Part 3.
 
 ### Queue
 
@@ -383,8 +390,8 @@ Each rule:
 
 - **When**: kinds, platforms, and conditions: amount from and to (bits, coins, money in the stream's
   currency), tier, months from and to, gift names, user groups, first time, message contains.
-- **Which one plays**: the first matching rule in order, or one of the matching rules by weight **(ask)**
-  either, per alert box.
+- **Which one plays**: the first matching rule in order, or one of the matching rules by weight, chosen
+  per alert box. Decided: both.
 - **Show**: a picture, GIF or video (fit, loop); the layout (picture above, at the left, at the right,
   behind the text, text only, picture only); its `position` and `size`; the text from a template
   (`%user%`, `%amount%`, `%message%`, `%gift%`, `%months%`, `%platform%`) with a `textStyle` and a color

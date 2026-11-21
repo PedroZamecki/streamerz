@@ -43,6 +43,7 @@ pub const ALL: &[Example] = &[
     example!("chat", "index.html"),
     example!("danmaku", "index.html"),
     example!("alerts", "index.html"),
+    example!("alert-box", "index.html", "img/star.svg", "sounds/chime.wav"),
     example!("emote-wall", "index.html"),
     example!("top-gifters", actions, "index.html"),
     example!("credits", "index.html"),

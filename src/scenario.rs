@@ -33,7 +33,8 @@
 //! `expect.config` checks the settings after (partial match: `{"timers": [{"enabled": true}]}`).
 //! `ran` on a step counts the actions it started (for events and waits: those that finished);
 //! `error` says the step must fail, with that text (a webhook refused, say).
-//! `{tmp}` anywhere in a scenario is a folder of its own (removed after); `"debug": true` keeps
+//! `{tmp}` anywhere in a scenario is a folder of its own (removed after), holding the scenario's
+//! `files` (`{"beep.wav": "<base64>"}`) when it has them; `"debug": true` keeps
 //! debug lines in the log for `expect.log`; `{http}` is a local web server's address (its requests
 //! are `http` calls, answered from `fakes.http`); `"only": "linux"` or `"windows"` runs it there only.
 
@@ -149,6 +150,19 @@ pub fn run(s: &Value) -> Outcome {
     let tmp = s.to_string().contains("{tmp}").then(|| {
         let d = std::env::temp_dir().join(format!("streamerz-scenario-{}", crate::engine::uuid()));
         let _ = std::fs::create_dir_all(&d);
+        // `files`: written into it first (a sound to play, say), plain names only.
+        for (name, content) in s["files"].as_object().into_iter().flatten() {
+            use base64::Engine as _;
+            let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != "..";
+            if let (true, Some(Ok(bytes))) = (
+                plain,
+                content
+                    .as_str()
+                    .map(|c| base64::engine::general_purpose::STANDARD.decode(c)),
+            ) {
+                let _ = std::fs::write(d.join(name), bytes);
+            }
+        }
         d
     });
     // `{http}`: a local web server's address; what it's asked is kept as `http` calls.
@@ -210,6 +224,8 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
         let e = Engine::with_music(Arc::new(tokio::sync::watch::channel(cfg).0), |_| {}, &fakes::MUSIC);
         e.dev_mode();
         e.allow_prompts(false);
+        // A scenario plays its sounds silently, at the speed they would be heard.
+        crate::sound::silence();
         let fk = fakes::install(&e, s.get("fakes").unwrap_or(&Value::Null), http);
         // As the app starts them (each only when set up or used).
         e.watchers();

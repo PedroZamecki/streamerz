@@ -109,8 +109,12 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("overlay_add_to_obs", "Add an overlay page to OBS as a browser source of the page's size in the scene on air (a source of that name is pointed at the page again, never doubled). A dock page gives the steps instead, since OBS has no request for docks. Acts on the real OBS.", r#"{"overlay": {"type": "string"}, "file": {"type": "string"}}"#, &["overlay"]),
     ("overlay_connect", "Connect an overlay to a group of actions, or disconnect it. Connected, its pages can run the group's actions (permission actions.run) and those actions read its settings as %group.name%. With no group it gets a new empty group of its own name; with one, that group's actions, commands, timers and settings move under the overlay's name. disconnect true takes the group out of Actions (its actions stay, ungrouped) and keeps the overlay.", r#"{"overlay": {"type": "string"}, "group": {"type": "string"}, "disconnect": {"type": "boolean"}}"#, &["overlay"]),
     ("overlay_examples", "The overlays that come with Streamerz (clock, now playing, chat, alerts, TikTok gifts, poll, prize wheel...), each readable as a starting point: slug, name, what it shows and whether it is here. With add, installs or updates that one; then overlay_read gives its files.", r#"{"add": {"type": "string", "description": "The slug of the example to add"}}"#, &[]),
+    ("overlay_draft", "The overlay editor's unsaved settings (a draft): only pages opened as a preview (their address with ?preview=1, given back as preview) show them, OBS keeps the saved ones. action get reads the draft and the settings a preview shows; set changes some (values: {name: value}, each checked against its setting); save keeps them and sends them to every page; revert drops the draft, or one setting of it.", r#"{"overlay": {"type": "string"}, "action": {"type": "string", "enum": ["get", "set", "save", "revert"]}, "values": {"type": "object"}, "setting": {"type": "string"}}"#, &["overlay"]),
     ("overlay_publish", "Set an overlay topic: the pages listening show it at once. The value is any JSON. The Overlay sub-action (type 99880, fields topic and value) does the same from an action.", r#"{"topic": {"type": "string"}, "value": {}}"#, &["topic"]),
     ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (installation evidence per browser/profile, socket connection, pairing refusal, TikTok login, versions and protocol compatibility; never returns the pairing token), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "retry", "login", "remove"]}}"#, &[]),
+    ("sounds", "The sounds Streamerz plays itself (Play Sound and the rest of Core > Sounds): with no op, what plays now (name, file, device, position, length, volume 0-100, paused), the outputs and the master volume. op pause, resume or volume (0-100, over fadeMs) acts on the sounds of name, every sound when name is empty; master sets the volume of every sound; info reads a file's length, rate and channels without playing it. Plays on this computer's real speakers.", r#"{"op": {"type": "string", "enum": ["list", "pause", "resume", "volume", "master", "info"]}, "name": {"type": "string"}, "volume": {"type": "integer", "minimum": 0, "maximum": 100}, "fadeMs": {"type": "integer", "minimum": 0}, "file": {"type": "string"}}"#, &[]),
+    ("sound_play", "Play a sound file (MP3, WAV, OGG, M4A, FLAC) through Streamerz on this computer's real speakers, as Play Sound does but firing no trigger. name lets sound_stop and sounds act on it; device is an output's name (empty: the default); volume 0-100. Several play at once. Returns its soundId and length.", r#"{"file": {"type": "string", "description": "Its path; a relative one is beside streamerz.json"}, "name": {"type": "string"}, "device": {"type": "string"}, "volume": {"type": "integer", "minimum": 0, "maximum": 100}}"#, &["file"]),
+    ("sound_stop", "Stop the sounds of a name, or every sound when name is empty, at once or over fadeMs. Returns how many.", r#"{"name": {"type": "string"}, "fadeMs": {"type": "integer", "minimum": 0}}"#, &[]),
     ("countdown", "Read a template countdown by its clock ID.", r#"{"clockId": {"type": "string"}}"#, &["clockId"]),
     ("spotify_find", "The track a song name or Spotify link would be: what a viewer's !sr would queue. Adds nothing.", r#"{"query": {"type": "string"}}"#, &["query"]),
     ("spotify_player", "What Spotify plays and has queued, and the song requests (who asked, and whether each is with Spotify or still waiting).", "{}", &[]),
@@ -542,8 +546,28 @@ impl Client {
             }
             "overlay_examples" if s("add").is_empty() => self.ask(json!({"request": "StreamerzOverlay", "op": "examples"})).await,
             "overlay_examples" => self.ask(json!({"request": "StreamerzOverlay", "op": "add_example", "slug": s("add")})).await,
+            "overlay_draft" => {
+                self.ask(json!({"request": "StreamerzOverlay", "op": "draft", "overlay": s("overlay"), "action": s("action"),
+                    "values": a["values"], "setting": s("setting")}))
+                    .await
+            }
             "overlay_publish" => {
                 self.ask(json!({"request": "StreamerzOverlayPublish", "topic": s("topic"), "value": a["value"]}))
+                    .await
+            }
+            "sounds" => {
+                let op = Some(s("op")).filter(|o| !o.is_empty()).unwrap_or_else(|| "list".into());
+                self.ask(json!({"request": "StreamerzSound", "op": op, "name": s("name"), "volume": a["volume"],
+                    "fadeMs": a["fadeMs"], "file": s("file")}))
+                    .await
+            }
+            "sound_play" => {
+                self.ask(json!({"request": "StreamerzSound", "op": "play", "file": s("file"), "name": s("name"),
+                    "device": s("device"), "volume": a["volume"]}))
+                    .await
+            }
+            "sound_stop" => {
+                self.ask(json!({"request": "StreamerzSound", "op": "stop", "name": s("name"), "fadeMs": a["fadeMs"]}))
                     .await
             }
             "countdown" => self.ask(json!({"request": "StreamerzCountdown", "clockId": s("clockId")})).await,
