@@ -475,13 +475,39 @@ impl Frontend {
             },
         };
 
-        Ok(exit_of(opened, status.success(), crash_info, status.to_string()))
+        let stopped = stopped_from_outside(&status);
+        if stopped && crash_info.is_none() {
+            crate::say(format!("The window was closed from outside Streamerz ({status})"));
+        }
+        Ok(exit_of(
+            opened,
+            status.success(),
+            stopped,
+            crash_info,
+            status.to_string(),
+        ))
+    }
+}
+
+/// Whether something outside Streamerz asked the window to stop: a task manager, `kill`, the session
+/// ending. That is a close, not a crash: no report, and the window isn't brought back.
+fn stopped_from_outside(status: &std::process::ExitStatus) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        matches!(status.signal(), Some(libc::SIGTERM | libc::SIGHUP | libc::SIGINT))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = status;
+        false
     }
 }
 
 /// How the window process ended. A failed exit with no report of its own gets one, except before the
-/// window opened: that is reported only if drawing in software doesn't help either (`report`).
-fn exit_of(opened: bool, success: bool, crash_info: Option<CrashInfo>, status: String) -> Exit {
+/// window opened: that is reported only if drawing in software doesn't help either (`report`). One
+/// stopped from outside (`stopped`) closed, like the window's own close button.
+fn exit_of(opened: bool, success: bool, stopped: bool, crash_info: Option<CrashInfo>, status: String) -> Exit {
     let unclean = |summary: String, report_path| CrashInfo {
         summary,
         report_path,
@@ -490,6 +516,7 @@ fn exit_of(opened: bool, success: bool, crash_info: Option<CrashInfo>, status: S
     };
     match crash_info {
         Some(info) if info.gpu => Exit::GpuFailed(Some(info)),
+        None if stopped => Exit::Clean,
         _ if !opened => Exit::GpuFailed(crash_info.or_else(|| (!success).then(|| unclean(status, None)))),
         Some(info) => Exit::Crashed(info),
         None if success => Exit::Clean,
@@ -531,21 +558,48 @@ mod tests {
     fn a_window_that_never_opened_is_told_apart_from_a_crash() {
         let status = || "exit status: 1".to_owned();
         // The GPU couldn't make a surface: the process ends, cleanly or not, before its first request.
-        assert_eq!(exit_of(false, true, None, status()), Exit::GpuFailed(None));
+        assert_eq!(exit_of(false, true, false, None, status()), Exit::GpuFailed(None));
         assert_eq!(
-            exit_of(false, false, None, status()),
+            exit_of(false, false, false, None, status()),
             Exit::GpuFailed(Some(info("exit status: 1")))
         );
         assert_eq!(
-            exit_of(false, false, Some(info("panic")), status()),
+            exit_of(false, false, false, Some(info("panic")), status()),
             Exit::GpuFailed(Some(info("panic")))
         );
         // Once open, it is the usual clean close or crash.
-        assert_eq!(exit_of(true, true, None, status()), Exit::Clean);
+        assert_eq!(exit_of(true, true, false, None, status()), Exit::Clean);
         assert_eq!(
-            exit_of(true, true, Some(info("panic")), status()),
+            exit_of(true, true, false, Some(info("panic")), status()),
             Exit::Crashed(info("panic"))
         );
+    }
+
+    #[test]
+    fn a_window_stopped_from_outside_closed_and_did_not_crash() {
+        // A task manager or `kill` sends SIGTERM: no crash report, no window brought back.
+        let status = || "signal: 15 (SIGTERM)".to_owned();
+        assert_eq!(exit_of(true, false, true, None, status()), Exit::Clean);
+        assert_eq!(exit_of(false, false, true, None, status()), Exit::Clean);
+        // A panic it reported before the signal is still a crash.
+        assert_eq!(
+            exit_of(true, false, true, Some(info("panic")), status()),
+            Exit::Crashed(info("panic"))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_signals_are_told_apart_from_crash_signals() {
+        use std::os::unix::process::ExitStatusExt;
+        let signal = |number| std::process::ExitStatus::from_raw(number);
+        assert!(stopped_from_outside(&signal(libc::SIGTERM)));
+        assert!(stopped_from_outside(&signal(libc::SIGHUP)));
+        assert!(stopped_from_outside(&signal(libc::SIGINT)));
+        assert!(!stopped_from_outside(&signal(libc::SIGSEGV)));
+        assert!(!stopped_from_outside(&signal(libc::SIGKILL)));
+        assert!(!stopped_from_outside(&signal(libc::SIGABRT)));
+        assert!(!stopped_from_outside(&std::process::ExitStatus::from_raw(1 << 8)));
     }
 
     #[test]
@@ -572,7 +626,7 @@ mod tests {
         let mut gpu = info("Too many consecutive GPU errors");
         gpu.gpu = true;
         assert_eq!(
-            exit_of(true, false, Some(gpu.clone()), "exit".into()),
+            exit_of(true, false, false, Some(gpu.clone()), "exit".into()),
             Exit::GpuFailed(Some(gpu))
         );
     }
