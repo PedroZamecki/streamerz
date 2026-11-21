@@ -1770,7 +1770,30 @@ async fn find_next_broadcast(
         return Err(format!("YouTube broadcasts: HTTP {} {}", res.status, res.text()));
     }
     let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
-    Ok(pick_broadcast(v["items"].as_array().map_or(&[], Vec::as_slice)))
+    let items = v["items"].as_array().map_or(&[][..], Vec::as_slice);
+    remember_broadcasts(items);
+    Ok(pick_broadcast(items))
+}
+
+/// The live and upcoming broadcasts a list held, for a sub-action's Broadcast to pick from by title.
+fn remember_broadcasts(items: &[Value]) {
+    let found = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.pointer("/status/lifeCycleStatus").and_then(Value::as_str),
+                Some("live" | "liveStarting" | "ready" | "created" | "testing" | "testStarting")
+            )
+        })
+        .filter_map(|item| {
+            let id = item["id"].as_str().filter(|id| !id.is_empty())?;
+            Some((
+                id.to_owned(),
+                item["snippet"]["title"].as_str().unwrap_or_default().to_owned(),
+            ))
+        })
+        .collect();
+    crate::catalog::set("youtube.broadcasts", found);
 }
 
 /// One Data API GET as the broadcaster: the JSON answer, or YouTube's own error message.
@@ -1838,6 +1861,7 @@ async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Confi
     let Ok(v) = serde_json::from_slice::<Value>(&res.body) else {
         return (None, None);
     };
+    remember_broadcasts(v["items"].as_array().map_or(&[][..], Vec::as_slice));
     let mut nearest_sched: Option<i64> = None;
     for item in v["items"].as_array().into_iter().flatten() {
         let state = item
@@ -3008,6 +3032,23 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    /// A Broadcast field offers what YouTube listed live or still to come, by title.
+    #[test]
+    fn found_broadcasts_are_offered_by_title() {
+        remember_broadcasts(&[
+            json!({"id": "live1", "snippet": {"title": "Now"}, "status": {"lifeCycleStatus": "live"}}),
+            json!({"id": "next1", "snippet": {"title": "Friday"}, "status": {"lifeCycleStatus": "ready"}}),
+            json!({"id": "old1", "snippet": {"title": "Done"}, "status": {"lifeCycleStatus": "complete"}}),
+        ]);
+        assert_eq!(
+            crate::catalog::choices("youtube.broadcasts"),
+            vec![
+                ("next1".to_string(), "Friday".to_string()),
+                ("live1".to_string(), "Now".to_string())
+            ]
+        );
     }
 
     #[test]

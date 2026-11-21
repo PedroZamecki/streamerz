@@ -285,7 +285,8 @@ const INPUT_FIELD: F = ("inputRequired", "tools.input_required", Bool);
 const COLOR_FIELD: F = ("backgroundColor", "tools.color", Color);
 const ENABLED_FIELD: F = ("enabled", "tools.enabled", Bool);
 const HOOK_FIELD: F = ("webhookUrl", "tools.dc_hook", Text);
-const BROADCAST_FIELD: F = ("broadcast", "tools.broadcast", Text);
+// Typed, or picked by title from the broadcasts YouTube listed (empty: the live one).
+const BROADCAST_FIELD: F = ("broadcast", "tools.broadcast", Suggest("youtube.broadcasts"));
 
 /// The fields of the Streamerz platform tools (PLAN.md, Version 1.9.0).
 fn tool_fields(kind: u64) -> Option<&'static [F]> {
@@ -1420,43 +1421,34 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("chapterName", "field.chapter_name", Text),
         ],
         4001 => &[
-            ("broadcast", "tools.broadcast", Text),
+            BROADCAST_FIELD,
             ("text", "field.message", Text),
             ("useBot", "field.use_bot_account", Bool),
             ("fallback", "field.fallback_to_broadcaster_2", Bool),
         ],
-        4002 => &[("broadcast", "tools.broadcast", Text), ("title", "field.title", Text)],
-        4003 => &[
-            ("broadcast", "tools.broadcast", Text),
-            ("description", "field.description", Text),
-        ],
+        4002 => &[BROADCAST_FIELD, ("title", "field.title", Text)],
+        4003 => &[BROADCAST_FIELD, ("description", "field.description", Text)],
         4004 => &[
-            ("broadcast", "tools.broadcast", Text),
+            BROADCAST_FIELD,
             ("title", "field.title", Text),
             ("description", "field.description", Text),
         ],
         4005..=4007 => &[("userLogin", "tools.who", Who), ("groupName", "field.group_name", Text)],
-        4008 => &[("broadcast", "tools.broadcast", Text), ("userId", "tools.who", Who)],
+        4008 => &[BROADCAST_FIELD, ("userId", "tools.who", Who)],
         4009 => &[
-            ("broadcast", "tools.broadcast", Text),
+            BROADCAST_FIELD,
             ("userId", "tools.who", Who),
             ("duration", "automation.duration_duration", Duration(1000)),
         ],
         4010 => &[],
         4011 => &[
-            ("broadcast", "tools.broadcast", Text),
+            BROADCAST_FIELD,
             ("question", "field.question", Text),
             ("options", "field.options_one_per_line", Lines),
         ],
-        4012 => &[("broadcast", "tools.broadcast", Text)],
-        4013 => &[
-            ("broadcast", "tools.broadcast", Text),
-            ("file", "field.image_file", Text),
-        ],
-        4014 => &[
-            ("broadcast", "tools.broadcast", Text),
-            ("duration", "field.duration_seconds", Int),
-        ],
+        4012 => &[BROADCAST_FIELD],
+        4013 => &[BROADCAST_FIELD, ("file", "field.image_file", Text)],
+        4014 => &[BROADCAST_FIELD, ("duration", "field.duration_seconds", Int)],
         4015 => &[
             ("banId", "field.ban_id_empty_the_one_streamerz_made", Text),
             ("userId", "tools.who", Who),
