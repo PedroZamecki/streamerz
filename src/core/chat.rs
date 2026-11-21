@@ -1419,16 +1419,16 @@ fn card_extra(engine: &Rc<Engine>, line: &Line, act: &str) {
     let code = match (line.platform.as_str(), act) {
         ("twitch", "mod") => 504,
         ("twitch", _) => 505,
-        ("youtube", "unban") => 99651,
-        ("youtube", "mod") => 99652,
-        _ => 99653,
+        ("youtube", "unban") => 4015,
+        ("youtube", "mod") => 4017,
+        _ => 4018,
     };
-    let who = if line.platform == "youtube" {
-        line.user_id.clone()
+    let settings = if line.platform == "youtube" {
+        json!({"userId": line.user_id})
     } else {
-        line.user.clone()
+        json!({"userLogin": line.user})
     };
-    let settings = json!({"userLogin": who}).as_object().cloned().unwrap_or_default();
+    let settings = settings.as_object().cloned().unwrap_or_default();
     let (engine, platform) = (engine.clone(), line.platform.clone());
     tokio::task::spawn_local(async move {
         let (_, outcome) = engine.execute_one(code, settings).await;

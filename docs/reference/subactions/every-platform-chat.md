@@ -52,30 +52,6 @@ Replies to the message that started the action, on its platform. Twitch and Kick
 
 None set.
 
-## Delete Message
-
-- Kind: sub-action
-- Code: 99722
-- Type: AllDeleteMessage
-- Category: Every Platform/Chat
-- Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
-
-Deletes the message that started the action, on its platform (Twitch, Kick, YouTube). This sub-action is Streamerz only: Streamer.bot does not have it.
-
-### Fields
-
-| Field | Key | What it holds |
-| --- | --- | --- |
-| Message | `messageId` | Which message: the one that started the action (`%msgId%`, the default), or a message's ID. |
-
-### Arguments
-
-- Those of the platform's own sub-action (`deleteResult`).
-
-### Notes
-
-- TikTok is skipped with a log line for now.
-
 ## Pin Message
 
 - Kind: sub-action

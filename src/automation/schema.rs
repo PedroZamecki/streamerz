@@ -237,7 +237,6 @@ const BOT_FIELD: F = ("useBot", "tools.use_bot", Bool);
 const FALLBACK_FIELD: F = ("fallback", "tools.fallback", Bool);
 const COUNT_FIELD: F = ("count", "tools.count", Int);
 const REASON_FIELD: F = ("reason", "tools.reason", Text);
-const DURATION_FIELD: F = ("duration", "automation.duration_duration", Duration(1000));
 const PIN_FIELD: F = ("duration", "tools.pin_for", Duration(1000));
 const GROUP_FIELD: F = ("groupName", "tools.group", UserGroup);
 const TITLE_FIELD: F = ("title", "tools.title", Text);
@@ -266,31 +265,10 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         99450..=99452 => &[WHO_FIELD, GROUP_FIELD],
         99453 | 99663 => &[COUNT_FIELD],
         99501 => &[WHO_FIELD, REASON_FIELD],
-        99454 | 99513 | 99534 | 99535 | 99651..=99653 | 99662 => &[WHO_FIELD],
-        99500 | 99600 | 99650 | 99722 => &[MESSAGE_FIELD],
+        99454 | 99513 | 99534 | 99535 | 99662 => &[WHO_FIELD],
         99502 => &[TEXT_FIELD, PIN_FIELD, BOT_FIELD, FALLBACK_FIELD],
         99503 => &[WHO_FIELD, TEXT_FIELD, BOT_FIELD],
-        99504 => &[("state", "tools.state", Pick(ON_OFF_TOGGLE))],
-        99505 => &[
-            ("state", "tools.state", Pick(ON_OFF_TOGGLE)),
-            (
-                "delay",
-                "tools.chat_delay",
-                Pick(&["tools.seconds_2", "tools.seconds_4", "tools.seconds_6"]),
-            ),
-        ],
-        99506 | 99511 | 99512 | 99516 | 99517 | 99536 | 99538 | 99606 | 99724 => &[],
-        99507 | 99508 => &[("messageId", "tools.held_message", Message("%messageId%"))],
-        99509 => &[(
-            "status",
-            "tools.unban_status",
-            Pick(&["tools.pending", "tools.approved", "tools.denied"]),
-        )],
-        99510 => &[
-            ("requestId", "tools.unban_request", Message("%requestId%")),
-            ("approve", "tools.approve", Bool),
-            ("resolutionText", "tools.resolution", Text),
-        ],
+        99516 | 99517 | 99536 | 99538 | 99606 | 99724 => &[],
         99514 => &[
             ("userLogin", "tools.channel", Who),
             (
@@ -343,18 +321,6 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         ],
         99523 => &[("rewardId", "tools.reward", Entity("twitch.rewards"))],
         99604 => &[("rewardId", "tools.reward", Entity("kick.rewards"))],
-        99530 | 99531 => &[("term", "tools.term", Text)],
-        99532 => &[(
-            "level",
-            "tools.automod_level",
-            Pick(&[
-                "tools.automod_0",
-                "tools.automod_1",
-                "tools.automod_2",
-                "tools.automod_3",
-                "tools.automod_4",
-            ]),
-        )],
         99533 => &[(
             "color",
             "tools.chat_color",
@@ -390,7 +356,6 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         ],
         99601 | 99602 => &[("redemptionId", "tools.redemption", Text)],
         99607 => &[("tag", "tools.tag", Text)],
-        99540 => &[("text", "tools.text", Multi)],
         99541 => &[],
         99542 => &[("userLogin", "tools.channel_ours", Text)],
         99543 => &[
@@ -660,9 +625,7 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         99720 => &[PLATFORMS_FIELD, TEXT_FIELD, BOT_FIELD, FALLBACK_FIELD],
         99721 => &[MESSAGE_FIELD, TEXT_FIELD, BOT_FIELD, FALLBACK_FIELD],
         99723 => &[MESSAGE_FIELD, PIN_FIELD],
-        99725 => &[PLATFORMS_FIELD, WHO_FIELD, DURATION_FIELD, REASON_FIELD],
-        99726 | 99728 | 99733 => &[PLATFORMS_FIELD, WHO_FIELD],
-        99727 => &[PLATFORMS_FIELD, WHO_FIELD, REASON_FIELD],
+        99726 | 99733 => &[PLATFORMS_FIELD, WHO_FIELD],
         99729 => &[PLATFORMS_FIELD, TITLE_FIELD],
         99730 => &[PLATFORMS_FIELD, ("category", "tools.category", Text)],
         99731 => &[PLATFORMS_FIELD],
@@ -965,13 +928,13 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("userLogin", "tools.who", Who),
             ("status", "Status", Pick(&["Monitored", "Restricted"])),
         ],
-        581 => &[("messageId", "Message ID", Text)],
+        581 => &[MESSAGE_FIELD],
         582 => &[
-            ("messageId", "Message ID", Text),
+            ("messageId", "tools.held_message", Message("%messageId%")),
             ("action", "Action", Pick(&["Allow", "Deny"])),
         ],
         583 => &[("text", "Term", Text)],
-        584 => &[("termId", "Term ID", Text)],
+        584 => &[("termId", "Term (its ID or text)", Text)],
         585 | 590 | 591 | 595 | 596 => &[],
         586 => &[
             ("unbanRequestId", "Unban request ID", Text),
@@ -989,6 +952,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Delay (2, 4, or 6s)", Duration(1000)),
         ],
         592 => &[
+            ("overallLevel", "Overall level (0-4, -1: set each below)", Int),
             ("aggression", "Aggression (0-4, -1: keep)", Int),
             ("bullying", "Bullying (0-4, -1: keep)", Int),
             ("disability", "Disability (0-4, -1: keep)", Int),
@@ -1414,16 +1378,16 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("broadcast", "tools.broadcast", Text),
             ("duration", "Duration (seconds)", Int),
         ],
-        4015 => &[("banId", "Ban ID", Text), ("userId", "User ID (tracked lookup)", Text)],
-        4016 => &[("messageId", "Message ID", Text)],
-        4017 => &[
-            ("broadcast", "Broadcast (empty: active)", Text),
-            ("userId", "User Channel ID", Text),
+        4015 => &[
+            ("banId", "Ban ID (empty: the one Streamerz made)", Text),
+            ("userId", "tools.who", Who),
         ],
+        4016 => &[MESSAGE_FIELD],
+        4017 => &[BROADCAST_FIELD, ("userId", "tools.who", Who)],
         4018 => &[
-            ("broadcast", "Broadcast (empty: active)", Text),
-            ("moderatorId", "Moderator ID", Text),
-            ("userId", "User Channel ID", Text),
+            BROADCAST_FIELD,
+            ("moderatorId", "Moderator ID (empty: found from Who)", Text),
+            ("userId", "tools.who", Who),
         ],
         35001 => &[
             ("text", "Message", Text),
@@ -1462,7 +1426,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Text),
         ],
-        35044 => &[("messageId", "Message ID", Text)],
+        35044 => &[MESSAGE_FIELD],
         35101 | 35102 => &[("rewardId", "Reward", Entity("kick.rewards")), ("state", "State", Bool)],
         35103 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),

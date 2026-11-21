@@ -3540,10 +3540,10 @@ mod tests {
     #[test]
     fn an_empty_platform_list_says_what_it_means_in_its_tip() {
         let engine = crate::engine::tests::engine(json!({"actions": []}));
-        let item = crate::edit::new_sub(99725);
+        let item = crate::edit::new_sub(99726);
         let fields = form_fields(
             &engine.config(),
-            crate::automation::schema::sub_fields(99725).unwrap(),
+            crate::automation::schema::sub_fields(99726).unwrap(),
             &item,
         );
         let platforms = fields.iter().find(|f| f["key"] == "platforms").unwrap();

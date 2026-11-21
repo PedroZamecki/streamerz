@@ -34,8 +34,8 @@ pub const TWITCH_EXTRA_SCOPES: &[&str] = &[
 /// The extra Twitch permission a sub-action needs, if any.
 pub fn twitch_extra_scope(kind: u64) -> Option<&'static str> {
     Some(match kind {
-        99530 | 99531 => "moderator:manage:blocked_terms",
-        99532 => "moderator:manage:automod_settings",
+        583 | 584 => "moderator:manage:blocked_terms",
+        592 => "moderator:manage:automod_settings",
         99533 => "user:manage:chat_color",
         99534 | 99535 => "user:manage:blocked_users",
         99536..=99539 => "channel:manage:schedule",
@@ -249,10 +249,13 @@ impl Engine {
             self.chat_note("twitch", format!("(dev, not sent) {what}"));
             return;
         }
-        let settings = json!({"messageId": id}).as_object().cloned().unwrap_or_default();
+        let settings = json!({"messageId": id, "action": if allow { 0 } else { 1 }})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         let engine = self.clone();
         tokio::task::spawn_local(async move {
-            let (_, outcome) = engine.execute_one(if allow { 99507 } else { 99508 }, settings).await;
+            let (_, outcome) = engine.execute_one(582, settings).await;
             if let Some(error) = outcome.error {
                 engine.chat_note("twitch", format!("{what}: {error}"));
             }
@@ -531,21 +534,6 @@ impl Engine {
         }
         let text = |key: &str| self.expand(ctx, s(o, key));
         match kind {
-            // Delete Chat Message
-            99500 => {
-                let id = text("messageId");
-                ctx.args.insert("deleteResult".into(), false.into());
-                if id.trim().is_empty() {
-                    return Err("no message given".into());
-                }
-                if self.dev_out("twitch", &format!("/delete {id}"), false) {
-                    ctx.args.insert("deleteResult".into(), true.into());
-                    return Ok(());
-                }
-                self.helix_mod("DELETE", "moderation/chat", &[("message_id", id.trim())], None)
-                    .await?;
-                ctx.args.insert("deleteResult".into(), true.into());
-            }
             // Purge User: a 1 second timeout takes their messages away.
             99501 => {
                 let (who, reason) = (text("userLogin"), text("reason"));
@@ -605,142 +593,6 @@ impl Engine {
                 self.helix_call("POST", "whispers", &q, Some(json!({"message": message})), bot)
                     .await?;
                 ctx.args.insert("whisperResult".into(), true.into());
-            }
-            // Unique Chat, Non-Moderator Chat Delay: on, off or toggle (Streamer.bot's state order).
-            99504 | 99505 => {
-                let current = self.helix_mod("GET", "chat/settings", &[], None).await?;
-                let now = &current["data"][0];
-                let (key, on_now) = if kind == 99504 {
-                    ("unique_chat_mode", now["unique_chat_mode"].as_bool().unwrap_or(false))
-                } else {
-                    (
-                        "non_moderator_chat_delay",
-                        now["non_moderator_chat_delay"].as_bool().unwrap_or(false),
-                    )
-                };
-                let on = new_state(n(o, "state"), on_now);
-                let mut body = json!({ key: on });
-                if kind == 99505 && on {
-                    // Twitch takes 2, 4 or 6 seconds.
-                    let delay = [2, 4, 6][(n(o, "delay") as usize).min(2)];
-                    body["non_moderator_chat_delay_duration"] = delay.into();
-                }
-                self.helix_mod("PATCH", "chat/settings", &[], Some(body)).await?;
-                ctx.args
-                    .insert(if kind == 99504 { "uniqueChat" } else { "chatDelay" }.into(), on.into());
-            }
-            // Get Chat Settings
-            99506 => {
-                let current = self.helix_mod("GET", "chat/settings", &[], None).await?;
-                let now = &current["data"][0];
-                for (arg, key) in [
-                    ("emoteOnly", "emote_mode"),
-                    ("followerMode", "follower_mode"),
-                    ("followerModeDuration", "follower_mode_duration"),
-                    ("slowMode", "slow_mode"),
-                    ("slowModeWaitTime", "slow_mode_wait_time"),
-                    ("subscriberOnly", "subscriber_mode"),
-                    ("uniqueChat", "unique_chat_mode"),
-                    ("chatDelay", "non_moderator_chat_delay"),
-                    ("chatDelayDuration", "non_moderator_chat_delay_duration"),
-                ] {
-                    let value = match &now[key] {
-                        Value::Null => Value::from(0),
-                        v => v.clone(),
-                    };
-                    ctx.args.insert(arg.into(), value);
-                }
-            }
-            // Allow / Deny AutoMod Message
-            99507 | 99508 => {
-                let id = text("messageId");
-                let action = if kind == 99507 { "ALLOW" } else { "DENY" };
-                ctx.args.insert("autoModResult".into(), false.into());
-                if id.trim().is_empty() {
-                    return Err("no message given".into());
-                }
-                let body = json!({"user_id": "{moderator_id}", "msg_id": id.trim(), "action": action});
-                self.helix_call("POST", "moderation/automod/message", &[], Some(body), false)
-                    .await?;
-                ctx.args.insert("autoModResult".into(), true.into());
-            }
-            // Get Unban Requests: pending by default.
-            99509 => {
-                let status = match n(o, "status") as u64 {
-                    1 => "approved",
-                    2 => "denied",
-                    _ => "pending",
-                };
-                let got = self
-                    .helix_mod(
-                        "GET",
-                        "moderation/unban_requests",
-                        &[("status", status), ("first", "100")],
-                        None,
-                    )
-                    .await?;
-                let items: Vec<Vec<(&str, Value)>> = got["data"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|r| {
-                        vec![
-                            ("Id", r["id"].clone()),
-                            ("User", r["user_name"].clone()),
-                            ("UserName", r["user_login"].clone()),
-                            ("UserId", r["user_id"].clone()),
-                            ("Text", r["text"].clone()),
-                            ("CreatedAt", r["created_at"].clone()),
-                        ]
-                    })
-                    .collect();
-                Self::put_list(ctx, "unbanRequest", &items);
-            }
-            // Resolve Unban Request
-            99510 => {
-                let id = text("requestId");
-                let status = if b(o, "approve", true) { "approved" } else { "denied" };
-                let note = text("resolutionText");
-                ctx.args.insert("unbanRequestResult".into(), false.into());
-                if id.trim().is_empty() {
-                    return Err("no unban request given".into());
-                }
-                let mut q = vec![("unban_request_id", id.trim()), ("status", status)];
-                if !note.is_empty() {
-                    q.push(("resolution_text", note.as_str()));
-                }
-                self.helix_mod("PATCH", "moderation/unban_requests", &q, None).await?;
-                ctx.args.insert("unbanRequestResult".into(), true.into());
-            }
-            // Get Moderators / Get VIPs
-            99511 | 99512 => {
-                let path = if kind == 99511 {
-                    "moderation/moderators"
-                } else {
-                    "channels/vips"
-                };
-                let mut items = Vec::new();
-                let mut after = String::new();
-                loop {
-                    let mut q = vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")];
-                    if !after.is_empty() {
-                        q.push(("after", after.as_str()));
-                    }
-                    let got = self.helix_call("GET", path, &q, None, false).await?;
-                    for u in got["data"].as_array().into_iter().flatten() {
-                        items.push(vec![
-                            ("User", u["user_name"].clone()),
-                            ("UserName", u["user_login"].clone()),
-                            ("UserId", u["user_id"].clone()),
-                        ]);
-                    }
-                    after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-                    // Twitch caps VIPs at a few hundred and moderators near that: ten pages is plenty.
-                    if after.is_empty() || items.len() >= 1000 {
-                        break;
-                    }
-                }
-                Self::put_list(ctx, if kind == 99511 { "moderator" } else { "vip" }, &items);
             }
             // Is Subscribed
             99513 => {
@@ -980,17 +832,6 @@ impl Engine {
                     .await?;
                 crate::twitch::reward_removed(&id);
             }
-            // Check AutoMod Status: whether AutoMod would let this text through, before sending it.
-            99540 => {
-                let message = text("text");
-                let body = json!({"data": [{"msg_id": "check", "msg_text": message}]});
-                let q = [("broadcaster_id", "{broadcaster_id}")];
-                let got = self
-                    .helix_call("POST", "moderation/enforcements/status", &q, Some(body), false)
-                    .await?;
-                ctx.args
-                    .insert("autoModPermitted".into(), got["data"][0]["is_permitted"].clone());
-            }
             // Get Shared Chat: whether the channel is in a shared chat, and with whom.
             99541 => {
                 let q = [("broadcaster_id", "{broadcaster_id}")];
@@ -1104,51 +945,6 @@ impl Engine {
                         crate::error(format!("Twitch: chat mode not put back: {e}"));
                     }
                 });
-            }
-            // Add / Remove Blocked Term
-            99530 | 99531 => {
-                let term = text("term").trim().to_string();
-                if term.is_empty() {
-                    return Err("no term given".into());
-                }
-                if kind == 99530 {
-                    self.helix_mod("POST", "moderation/blocked_terms", &[], Some(json!({"text": term})))
-                        .await?;
-                } else {
-                    let mut id = None;
-                    let mut after = String::new();
-                    while id.is_none() {
-                        let mut q = vec![("first", "100")];
-                        if !after.is_empty() {
-                            q.push(("after", after.as_str()));
-                        }
-                        let got = self.helix_mod("GET", "moderation/blocked_terms", &q, None).await?;
-                        id = got["data"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .find(|t| t["text"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(&term)))
-                            .and_then(|t| t["id"].as_str().map(str::to_string));
-                        after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-                        if after.is_empty() {
-                            break;
-                        }
-                    }
-                    let id = id.ok_or_else(|| format!("{term} isn't a blocked term"))?;
-                    self.helix_mod("DELETE", "moderation/blocked_terms", &[("id", id.as_str())], None)
-                        .await?;
-                }
-            }
-            // Set AutoMod Level (0 off to 4 most)
-            99532 => {
-                let level = (n(o, "level") as u64).min(4);
-                self.helix_mod(
-                    "PUT",
-                    "moderation/automod/settings",
-                    &[],
-                    Some(json!({"overall_level": level})),
-                )
-                .await?;
             }
             // Set Bot Chat Colour: a named colour, or #rrggbb for Turbo and Prime accounts.
             99533 => {
@@ -1482,25 +1278,6 @@ impl Engine {
         let text = |key: &str| self.expand(ctx, s(o, key));
         let kick = self.kick_start();
         match kind {
-            // Delete Chat Message
-            99600 => {
-                let id = text("messageId");
-                ctx.args.insert("deleteResult".into(), false.into());
-                if id.trim().is_empty() {
-                    return Err("no message given".into());
-                }
-                if self.dev_out("kick", &format!("/delete {id}"), false) {
-                    ctx.args.insert("deleteResult".into(), true.into());
-                    return Ok(());
-                }
-                kick.api(
-                    "DELETE",
-                    &format!("/chat/{}", crate::commands::url_encode(id.trim())),
-                    None,
-                )
-                .await?;
-                ctx.args.insert("deleteResult".into(), true.into());
-            }
             // Accept / Reject Redemption: the one given, else the triggering reward's newest pending
             // redemption by the same user (Kick's chat feed doesn't say which redemption it was).
             99601 | 99602 => {
@@ -1909,14 +1686,6 @@ impl Engine {
                     35002
                 }
             }
-            (99722, "twitch" | "kick" | "youtube") => {
-                set("messageId", field("messageId"));
-                match platform {
-                    "twitch" => 99500,
-                    "kick" => 99600,
-                    _ => 99650,
-                }
-            }
             (99723, "twitch") => {
                 set("messageId", field("messageId"));
                 set("duration", field("duration"));
@@ -1931,46 +1700,18 @@ impl Engine {
                 set("msgId", Value::String("%msgId%".into()));
                 43012
             }
-            (99725, "twitch" | "kick") => {
+            (99726, "twitch" | "kick") => {
                 set("userLogin", field("userLogin"));
-                set("duration", field("duration"));
-                set("reason", field("reason"));
                 if platform == "twitch" {
-                    20
+                    513
                 } else {
-                    35042
+                    35043
                 }
             }
-            (99725, "youtube") => {
+            // YouTube lifts a timeout like a ban, by the one Streamerz made.
+            (99726, "youtube") => {
                 set("userId", youtube_id().into());
-                set("duration", field("duration"));
-                4009
-            }
-            (99726 | 99728, "twitch" | "kick") => {
-                set("userLogin", field("userLogin"));
-                match (kind, platform) {
-                    (99726, "twitch") => 513,
-                    (99728, "twitch") => 512,
-                    (99726, _) => 35043,
-                    _ => 35041,
-                }
-            }
-            (99727, "twitch" | "kick") => {
-                set("userLogin", field("userLogin"));
-                set("reason", field("reason"));
-                if platform == "twitch" {
-                    511
-                } else {
-                    35040
-                }
-            }
-            (99727, "youtube") => {
-                set("userId", youtube_id().into());
-                4008
-            }
-            (99726 | 99728, "youtube") => {
-                set("userLogin", youtube_id().into());
-                99651
+                4015
             }
             (99731, "youtube") => 99661,
             (99733, "youtube") => {
@@ -2137,69 +1878,6 @@ impl Engine {
         let who = self.expand(ctx, s(o, "userLogin"));
         let enc = crate::commands::url_encode;
         match kind {
-            // Delete Message
-            99650 => {
-                let id = self.expand(ctx, s(o, "messageId"));
-                ctx.args.insert("deleteResult".into(), false.into());
-                if id.trim().is_empty() {
-                    return Err("no message given".into());
-                }
-                if self.dev_out("youtube", &format!("/delete {id}"), false) {
-                    ctx.args.insert("deleteResult".into(), true.into());
-                    return Ok(());
-                }
-                yt.data("DELETE", "", &format!("liveChat/messages?id={}", enc(id.trim())), None)
-                    .await?;
-                ctx.args.insert("deleteResult".into(), true.into());
-            }
-            // Unban User: only a ban or timeout Streamerz made can be lifted (YouTube wants its id).
-            99651 => {
-                let id = self.youtube_channel_id(ctx, &who);
-                ctx.args.insert("unbanResult".into(), false.into());
-                let bans = crate::core::moderation::youtube_ban_ids(self, &id);
-                if bans.is_empty() {
-                    return Err(
-                        "Streamerz didn't ban or time them out, so it has no ban to lift (YouTube Studio can)".into(),
-                    );
-                }
-                for ban in bans {
-                    yt.remove_ban(&ban).await?;
-                }
-                ctx.args.insert("unbanResult".into(), true.into());
-                ctx.args.insert("unbannedUserId".into(), id.into());
-            }
-            // Add Moderator
-            99652 => {
-                let id = self.youtube_channel_id(ctx, &who);
-                let body = json!({"snippet": {"liveChatId": "{chat}", "moderatorDetails": {"channelId": id}}});
-                yt.data("POST", &broadcast, "liveChat/moderators?part=snippet", Some(body))
-                    .await?;
-            }
-            // Remove Moderator: found in the chat's list by their channel.
-            99653 => {
-                let id = self.youtube_channel_id(ctx, &who);
-                let mut page = String::new();
-                let found = loop {
-                    let mut path = "liveChat/moderators?part=snippet&maxResults=50&liveChatId={chat}".to_string();
-                    if !page.is_empty() {
-                        path.push_str(&format!("&pageToken={}", enc(&page)));
-                    }
-                    let got = yt.data("GET", &broadcast, &path, None).await?;
-                    let hit = got["items"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|m| m["snippet"]["moderatorDetails"]["channelId"] == id.as_str())
-                        .and_then(|m| m["id"].as_str().map(str::to_string));
-                    page = got["nextPageToken"].as_str().unwrap_or_default().to_string();
-                    if hit.is_some() || page.is_empty() {
-                        break hit;
-                    }
-                };
-                let found = found.ok_or("they aren't a moderator of this chat")?;
-                yt.data("DELETE", "", &format!("liveChat/moderators?id={}", enc(&found)), None)
-                    .await?;
-            }
             // Go Live: moves the broadcast to testing, or live.
             99664 => {
                 let stage = ["testing", "live"][(n(o, "stage") as usize).min(1)];

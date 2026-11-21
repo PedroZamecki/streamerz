@@ -171,6 +171,22 @@ pub fn new_sub(kind: u64) -> Obj {
         99300 | 99303 => {
             o.insert("volume".into(), 100.into());
         }
+        // Each AutoMod level keeps its value until one is set (-1).
+        592 => {
+            for key in [
+                "overallLevel",
+                "aggression",
+                "bullying",
+                "disability",
+                "misogyny",
+                "raceEthnicityOrReligion",
+                "sexBasedTerms",
+                "sexualitySexOrGender",
+                "swearing",
+            ] {
+                o.insert(key.into(), (-1).into());
+            }
+        }
         _ => {}
     }
     // A new one acts on whoever and whatever started the action, until told otherwise.

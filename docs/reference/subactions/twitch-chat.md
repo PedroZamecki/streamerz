@@ -215,30 +215,6 @@ None set.
 
 - If nothing is pinned, an error is logged.
 
-## Delete Chat Message
-
-- Kind: sub-action
-- Code: 99500
-- Type: TwitchDeleteChatMessage
-- Category: Twitch/Chat
-- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
-
-Deletes one message from the Twitch chat. This sub-action is Streamerz only: Streamer.bot does not have it.
-
-### Fields
-
-| Field | Key | What it holds |
-| --- | --- | --- |
-| Message | `messageId` | Which message: the one that started the action (`%msgId%`, the default), or a message's ID. |
-
-### Arguments
-
-- `deleteResult`: true when Twitch deleted it.
-
-### Notes
-
-- Dev mode keeps it instead of deleting, as the Chat page does.
-
 ## Send and Pin Message
 
 - Kind: sub-action

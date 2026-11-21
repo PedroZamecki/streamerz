@@ -1,6 +1,6 @@
 [
   {
-    "name": "twitch tools: delete, purge, send and pin, whisper are kept in dev mode; chat modes read and change",
+    "name": "twitch tools: purge, send and pin, whisper are kept in dev mode; delete and chat modes",
     "fakes": {
       "twitch": {
         "GET chat/settings": {
@@ -23,7 +23,7 @@
         "name": "mod",
         "subActions": [
           {
-            "type": 99500,
+            "type": 581,
             "messageId": "%msgId%"
           },
           {
@@ -42,16 +42,16 @@
             "text": "psst"
           },
           {
-            "type": 99504,
-            "state": 0
+            "type": 588,
+            "status": true
           },
           {
-            "type": 99505,
-            "state": 0,
-            "delay": 1
+            "type": 589,
+            "status": true,
+            "duration": 4
           },
           {
-            "type": 99506
+            "type": 590
           }
         ]
       }
@@ -70,10 +70,6 @@
       "chat": [
         {
           "platform": "twitch",
-          "text": "/delete m1"
-        },
-        {
-          "platform": "twitch",
           "text": "/timeout ana 1"
         },
         {
@@ -88,6 +84,13 @@
       "calls": [
         {
           "platform": "twitch",
+          "call": "DELETE moderation/chat",
+          "query": {
+            "message_id": "m1"
+          }
+        },
+        {
+          "platform": "twitch",
           "call": "resolve",
           "login": "ana"
         },
@@ -95,10 +98,6 @@
           "platform": "twitch",
           "call": "resolve",
           "login": "bob"
-        },
-        {
-          "platform": "twitch",
-          "call": "GET chat/settings"
         },
         {
           "platform": "twitch",
@@ -114,20 +113,26 @@
             "non_moderator_chat_delay": true,
             "non_moderator_chat_delay_duration": 4
           }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET chat/settings"
         }
       ],
       "runs": [
         {
           "action": "mod",
           "after": {
-            "deleteResult": true,
+            "deleteMessageResult": true,
             "purgeResult": true,
             "pinResult": true,
             "whisperResult": true,
-            "emoteOnly": true,
+            "uniqueModeEnabled": true,
+            "chatDelayEnabled": true,
+            "emoteMode": true,
             "slowMode": true,
             "slowModeWaitTime": 30,
-            "uniqueChat": false
+            "uniqueChatMode": false
           }
         }
       ]
@@ -187,28 +192,30 @@
         "name": "queue",
         "subActions": [
           {
-            "type": 99507,
-            "messageId": "%messageId%"
+            "type": 582,
+            "messageId": "%messageId%",
+            "action": 0
           },
           {
-            "type": 99508,
-            "messageId": "h2"
+            "type": 582,
+            "messageId": "h2",
+            "action": 1
           },
           {
-            "type": 99509,
+            "type": 587,
             "status": 0
           },
           {
-            "type": 99510,
-            "requestId": "%requestId%",
-            "approve": true,
+            "type": 586,
+            "unbanRequestId": "%requestId%",
+            "status": 0,
             "resolutionText": "ok"
           },
           {
-            "type": 99511
+            "type": 595
           },
           {
-            "type": 99512
+            "type": 596
           },
           {
             "type": 99513,
@@ -281,15 +288,15 @@
         {
           "action": "queue",
           "after": {
-            "autoModResult": true,
+            "resolveAutoModResult": true,
             "unbanRequestCount": 1,
-            "unbanRequest0Id": "r1",
-            "unbanRequest0Text": "sorry",
-            "unbanRequestResult": true,
+            "unbanRequest0.id": "r1",
+            "unbanRequest0.text": "sorry",
+            "resolveUnbanRequestResult": true,
             "moderatorCount": 1,
-            "moderator0UserName": "mod",
+            "moderator0.userLogin": "mod",
             "vipCount": 2,
-            "vip1User": "Pal",
+            "vip1.userName": "Pal",
             "isSubscribed": true,
             "subscriptionTier": 2,
             "isGift": true,
@@ -584,8 +591,8 @@
         "name": "block",
         "subActions": [
           {
-            "type": 99530,
-            "term": "badword"
+            "type": 583,
+            "text": "badword"
           }
         ]
       }
@@ -661,16 +668,16 @@
         "name": "manage",
         "subActions": [
           {
-            "type": 99530,
-            "term": "badword"
+            "type": 583,
+            "text": "badword"
           },
           {
-            "type": 99531,
-            "term": "badword"
+            "type": 584,
+            "termId": "badword"
           },
           {
-            "type": 99532,
-            "level": 3
+            "type": 592,
+            "overallLevel": 3
           },
           {
             "type": 99533,
@@ -804,7 +811,7 @@
     }
   },
   {
-    "name": "kick tools: delete is kept in dev mode; redemptions, rewards, KICKs, stream info and tags",
+    "name": "kick tools: delete, redemptions, rewards, KICKs, stream info and tags",
     "config": {
       "kick": {
         "broadcaster": {
@@ -907,7 +914,7 @@
         "name": "kick",
         "subActions": [
           {
-            "type": 99600,
+            "type": 35044,
             "messageId": "%msgId%"
           },
           {
@@ -954,13 +961,12 @@
       }
     ],
     "expect": {
-      "chat": [
+      "calls": [
         {
           "platform": "kick",
-          "text": "/delete km1"
-        }
-      ],
-      "calls": [
+          "call": "deleteMessage",
+          "messageId": "km1"
+        },
         {
           "platform": "kick",
           "call": "GET /channels/rewards/redemptions?reward_id=kr9"
@@ -1131,20 +1137,20 @@
         "name": "yt",
         "subActions": [
           {
-            "type": 99650,
+            "type": 4016,
             "messageId": "%msgId%"
           },
           {
-            "type": 99651,
-            "userLogin": "UCbannedbannedbannedbann"
+            "type": 4015,
+            "userId": "UCbannedbannedbannedbann"
           },
           {
-            "type": 99652,
-            "userLogin": "Ana"
+            "type": 4017,
+            "userId": "Ana"
           },
           {
-            "type": 99653,
-            "userLogin": "Ana"
+            "type": 4018,
+            "userId": "Ana"
           },
           {
             "type": 99654,
@@ -1210,14 +1216,15 @@
       "chat": [
         {
           "platform": "youtube",
-          "text": "/delete y1"
-        },
-        {
-          "platform": "youtube",
           "text": "/end stream"
         }
       ],
       "calls": [
+        {
+          "platform": "youtube",
+          "call": "deleteMessage",
+          "messageId": "y1"
+        },
         {
           "platform": "youtube",
           "call": "removeBan",
@@ -1225,19 +1232,13 @@
         },
         {
           "platform": "youtube",
-          "call": "POST liveChat/moderators?part=snippet",
-          "body": {
-            "snippet": {
-              "liveChatId": "{chat}",
-              "moderatorDetails": {
-                "channelId": "UCanaanaanaanaanaanaanaa"
-              }
-            }
-          }
+          "call": "addModerator",
+          "userId": "UCanaanaanaanaanaanaanaa"
         },
         {
           "platform": "youtube",
-          "call": "DELETE liveChat/moderators?id=mod1"
+          "call": "removeModerator",
+          "userId": "UCanaanaanaanaanaanaanaa"
         },
         {
           "platform": "youtube",
@@ -1306,7 +1307,8 @@
             "targetSubscriberCount": "7",
             "randomUsersCount": 1,
             "randomUser0": "Ana",
-            "randomUserType0": "youtube"
+            "randomUserType0": "youtube",
+            "deleteMessageResult": true
           }
         }
       ]
@@ -1463,30 +1465,6 @@
             "text": "thanks"
           },
           {
-            "type": 99725,
-            "platforms": [
-              "twitch",
-              "kick"
-            ],
-            "userLogin": "troll",
-            "duration": 600,
-            "reason": "spam"
-          },
-          {
-            "type": 99727,
-            "platforms": [
-              "kick"
-            ],
-            "userLogin": "troll"
-          },
-          {
-            "type": 99728,
-            "platforms": [
-              "twitch"
-            ],
-            "userLogin": "troll"
-          },
-          {
             "type": 99726,
             "platforms": [
               "kick"
@@ -1534,10 +1512,6 @@
       {
         "name": "here",
         "subActions": [
-          {
-            "type": 99722,
-            "messageId": "%msgId%"
-          },
           {
             "type": 99723,
             "messageId": "%msgId%",
@@ -1595,41 +1569,9 @@
         {
           "platform": "kick",
           "text": "Follow @pal"
-        },
-        {
-          "platform": "twitch",
-          "text": "/delete tm1"
         }
       ],
       "calls": [
-        {
-          "platform": "twitch",
-          "call": "POST moderation/bans",
-          "body": {
-            "data": {
-              "user_id": "id-troll",
-              "duration": 600
-            }
-          }
-        },
-        {
-          "platform": "kick",
-          "call": "timeout",
-          "login": "troll",
-          "duration": 600
-        },
-        {
-          "platform": "kick",
-          "call": "ban",
-          "login": "troll"
-        },
-        {
-          "platform": "twitch",
-          "call": "DELETE moderation/bans",
-          "query": {
-            "user_id": "id-troll"
-          }
-        },
         {
           "platform": "kick",
           "call": "untimeout",
@@ -3168,8 +3110,8 @@
         "name": "extras",
         "subActions": [
           {
-            "type": 99540,
-            "text": "hello %user%"
+            "type": 593,
+            "message": "hello %user%"
           },
           {
             "type": 99541
@@ -3243,13 +3185,14 @@
         {
           "action": "extras",
           "after": {
-            "autoModPermitted": false,
             "sharedChatActive": false,
             "channelTitle": "Chess night",
             "channelTags": "a, b",
             "videoFound": true,
             "videoUrl": "https://twitch.tv/videos/9",
-            "videoViews": 40
+            "videoViews": 40,
+            "autoModStatusResult": true,
+            "isPermitted": false
           }
         }
       ],

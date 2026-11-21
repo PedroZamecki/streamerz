@@ -399,6 +399,63 @@ impl Engine {
         self.st.borrow().dev_out.is_some()
     }
 
+    /// Whether the Twitch login has the extra permission this sub-action needs; says so when not.
+    fn twitch_scope_for(&self, kind: u64) -> bool {
+        let missing = super::twitch_extra_scope(kind).is_some_and(|scope| !self.twitch_has_scope(scope));
+        if missing {
+            crate::error(format!("Twitch: {}", crate::i18n::tr("twitch.error.more_permissions")));
+        }
+        !missing
+    }
+
+    /// Every page of a Helix list of the channel (moderators, VIPs), up to a thousand.
+    async fn helix_pages(tw: &crate::twitch::TwitchHandle, path: &str) -> Result<Vec<Value>, String> {
+        let mut items = Vec::new();
+        let mut after = String::new();
+        loop {
+            let mut query = vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")];
+            if !after.is_empty() {
+                query.push(("after", after.as_str()));
+            }
+            let got = tw.helix("GET", path, query, None, false, true).await?;
+            items.extend(got["data"].as_array().cloned().unwrap_or_default());
+            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
+            if after.is_empty() || items.len() >= 1000 {
+                return Ok(items);
+            }
+        }
+    }
+
+    /// The id of the channel's blocked term with this text (any case), if there is one.
+    async fn blocked_term_id(&self, tw: &crate::twitch::TwitchHandle, text: &str) -> Result<Option<String>, String> {
+        let mut after = String::new();
+        loop {
+            let mut query = vec![
+                ("broadcaster_id", "{broadcaster_id}"),
+                ("moderator_id", "{moderator_id}"),
+                ("first", "100"),
+            ];
+            if !after.is_empty() {
+                query.push(("after", after.as_str()));
+            }
+            let got = tw
+                .helix("GET", "moderation/blocked_terms", query, None, false, true)
+                .await?;
+            let hit = got["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|term| term["text"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(text)));
+            if let Some(term) = hit {
+                return Ok(term["id"].as_str().map(str::to_string));
+            }
+            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
+            if after.is_empty() {
+                return Ok(None);
+            }
+        }
+    }
+
     /// Dev mode: keep a chat line instead of sending it. Whether it was kept.
     pub fn dev_out(&self, platform: &str, text: &str, bot: bool) -> bool {
         let mut st = self.st.borrow_mut();
@@ -2703,6 +2760,9 @@ impl Engine {
             583 => {
                 ctx.args.insert("blockedTermResult".into(), false.into());
                 let term = self.expand(ctx, s(o, "text")).trim().to_string();
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
                 match tw
                     .helix(
@@ -2731,8 +2791,22 @@ impl Engine {
             // Remove Blocked Term (584)
             584 => {
                 ctx.args.insert("removeBlockedTermResult".into(), false.into());
-                let term_id = self.expand(ctx, s(o, "termId")).trim().to_string();
+                let mut term_id = self.expand(ctx, s(o, "termId")).trim().to_string();
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
+                // Not an id: the term's own text, found in the channel's list (else it is taken as an id).
+                if !super::is_uuid(&term_id) {
+                    match self.blocked_term_id(&tw, &term_id).await {
+                        Ok(Some(id)) => term_id = id,
+                        Ok(None) => {}
+                        Err(e) => {
+                            crate::error(format!("Twitch: {e}"));
+                            return;
+                        }
+                    }
+                }
                 match tw
                     .helix(
                         "DELETE",
@@ -3036,6 +3110,9 @@ impl Engine {
             // Update AutoMod Settings (592)
             592 => {
                 ctx.args.insert("updateAutoModSettingsResult".into(), false.into());
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
                 let r = async {
                     let cur = tw
@@ -3053,27 +3130,37 @@ impl Engine {
                         .await?;
                     let existing = &cur["data"][0];
                     let mut body = serde_json::Map::new();
-                    for (field, api_key) in [
-                        ("aggression", "aggression"),
-                        ("bullying", "bullying"),
-                        ("disability", "disability"),
-                        ("misogyny", "misogyny"),
-                        ("raceEthnicityOrReligion", "race_ethnicity_or_religion"),
-                        ("sexBasedTerms", "sex_based_terms"),
-                        ("sexualitySexOrGender", "sexuality_sex_or_gender"),
-                        ("swearing", "swearing"),
-                    ] {
-                        let desired = match o.get(field) {
-                            Some(Value::Number(v)) => v.as_i64().filter(|x| (0..=4).contains(x)).map(|x| x as u64),
-                            Some(Value::String(st)) => self
-                                .expand(ctx, st)
-                                .trim()
-                                .parse::<i64>()
-                                .ok()
-                                .filter(|x| (0..=4).contains(x))
-                                .map(|x| x as u64),
-                            _ => None,
-                        };
+                    let level = |field: &str| match o.get(field) {
+                        Some(Value::Number(v)) => v.as_i64().filter(|x| (0..=4).contains(x)).map(|x| x as u64),
+                        Some(Value::String(st)) => self
+                            .expand(ctx, st)
+                            .trim()
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|x| (0..=4).contains(x))
+                            .map(|x| x as u64),
+                        _ => None,
+                    };
+                    // One overall level sets every category at once; Twitch takes it alone.
+                    if let Some(overall) = level("overallLevel") {
+                        body.insert("overall_level".into(), overall.into());
+                    }
+                    for (field, api_key) in body
+                        .is_empty()
+                        .then_some([
+                            ("aggression", "aggression"),
+                            ("bullying", "bullying"),
+                            ("disability", "disability"),
+                            ("misogyny", "misogyny"),
+                            ("raceEthnicityOrReligion", "race_ethnicity_or_religion"),
+                            ("sexBasedTerms", "sex_based_terms"),
+                            ("sexualitySexOrGender", "sexuality_sex_or_gender"),
+                            ("swearing", "swearing"),
+                        ])
+                        .into_iter()
+                        .flatten()
+                    {
+                        let desired = level(field);
                         let val = desired.unwrap_or_else(|| existing[api_key].as_u64().unwrap_or(0));
                         body.insert(api_key.into(), val.into());
                     }
@@ -3189,19 +3276,8 @@ impl Engine {
             // Get Moderators (595)
             595 => {
                 let Some(tw) = self.twitch() else { return };
-                match tw
-                    .helix(
-                        "GET",
-                        "moderation/moderators",
-                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
-                        None,
-                        false,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(v) => {
-                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                match Self::helix_pages(&tw, "moderation/moderators").await {
+                    Ok(items) => {
                         ctx.args.insert("moderatorCount".into(), (items.len() as u64).into());
                         for (i, item) in items.iter().enumerate() {
                             ctx.args.insert(format!("moderator{i}.userId"), item["user_id"].clone());
@@ -3218,19 +3294,8 @@ impl Engine {
             // Get VIPs (596)
             596 => {
                 let Some(tw) = self.twitch() else { return };
-                match tw
-                    .helix(
-                        "GET",
-                        "channels/vips",
-                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
-                        None,
-                        false,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(v) => {
-                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                match Self::helix_pages(&tw, "channels/vips").await {
+                    Ok(items) => {
                         ctx.args.insert("vipCount".into(), (items.len() as u64).into());
                         for (i, item) in items.iter().enumerate() {
                             ctx.args.insert(format!("vip{i}.userId"), item["user_id"].clone());
@@ -4291,7 +4356,12 @@ impl Engine {
             4015 => {
                 ctx.args.insert("unbanResult".into(), false.into());
                 let mut ban_id = self.expand(ctx, s(o, "banId")).trim().to_string();
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = if who.trim().is_empty() {
+                    String::new()
+                } else {
+                    self.youtube_channel_id(ctx, &who)
+                };
                 if ban_id.is_empty() && !user_id.is_empty() {
                     let ids = crate::core::moderation::youtube_ban_ids(self, &user_id);
                     if ids.len() == 1 {
@@ -4332,7 +4402,8 @@ impl Engine {
             4017 => {
                 ctx.args.insert("addModeratorResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = self.youtube_channel_id(ctx, &who);
                 let yt = self.youtube_start();
                 match yt.add_moderator(&broadcast, &user_id).await {
                     Ok(id) => {
@@ -4349,7 +4420,12 @@ impl Engine {
                 ctx.args.insert("removeModeratorResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let moderator_id = self.expand(ctx, s(o, "moderatorId")).trim().to_string();
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = if who.trim().is_empty() {
+                    String::new()
+                } else {
+                    self.youtube_channel_id(ctx, &who)
+                };
                 let yt = self.youtube_start();
                 match yt.remove_moderator(&broadcast, &moderator_id, &user_id).await {
                     Ok(_) => drop(ctx.args.insert("removeModeratorResult".into(), true.into())),

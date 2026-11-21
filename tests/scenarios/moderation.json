@@ -1,6 +1,22 @@
 [
   {
     "name": "twitch: moderation tools (messages, terms, requests, chat and AutoMod settings, lists)",
+    "config": {
+      "twitch": {
+        "broadcaster": {
+          "userId": "1",
+          "login": "me",
+          "displayName": "Me",
+          "token": {
+            "accessToken": "a",
+            "scope": [
+              "moderator:manage:blocked_terms",
+              "moderator:manage:automod_settings"
+            ]
+          }
+        }
+      }
+    },
     "fakes": {
       "twitch": {
         "resolve": {
