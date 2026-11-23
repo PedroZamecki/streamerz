@@ -61,6 +61,22 @@ fn minutes_seconds(ms: u64) -> String {
 
 type Done = Result<(), Rejection>;
 
+/// The song request settings Change a Rule can set, in its list's order.
+pub const SONG_RULES: [&str; 12] = [
+    "who",
+    "maxPerUser",
+    "maxPerSubscriber",
+    "unlimitedWho",
+    "maxLength",
+    "blockExplicit",
+    "explicitWho",
+    "skipWho",
+    "skipOwn",
+    "voteSkipCount",
+    "skipCooldown",
+    "controlWho",
+];
+
 impl Engine {
     /// A number in a field (or `%group.name%`): 0 when it is empty or not a number.
     fn song_limit(&self, ctx: &Ctx, o: &Obj, key: &str) -> u64 {
@@ -173,6 +189,146 @@ impl Engine {
         self.songs.borrow_mut().clear();
         self.song_queue_changed();
         ctx.args.insert("spotifyOk".into(), "true".into());
+    }
+
+    /// The group that holds the song request settings: the action's own when it has them, else the
+    /// template's.
+    fn song_group(&self, ctx: &Ctx) -> Result<String, String> {
+        let c = self.config();
+        let has = |group: &str| !group.is_empty() && crate::groups::values(&c, group).contains_key("blockedArtists");
+        if has(&ctx.group) {
+            Ok(ctx.group.clone())
+        } else if has(crate::templates::songs::GROUP) {
+            Ok(crate::templates::songs::GROUP.to_string())
+        } else {
+            Err("add the song requests first (Actions, Templates, Song requests)".into())
+        }
+    }
+
+    /// Sets one of the song request settings, typed as text; what it holds now.
+    fn song_setting(self: &Rc<Self>, ctx: &Ctx, name: &str, text: &str) -> Result<Value, String> {
+        let group = self.song_group(ctx)?;
+        let def = crate::groups::meta(&self.config(), &group)
+            .variables
+            .into_iter()
+            .find(|d| d.name == name)
+            .ok_or_else(|| format!("the song requests have no setting {name}"))?;
+        let value = def.parse(text)?;
+        if !def.accepts(&value) {
+            return Err(format!("{text} is not a value for {}", def.label));
+        }
+        self.change(|c| {
+            let mut values = crate::groups::values(c, &group);
+            values.insert(name.into(), value.clone());
+            c.action_group_variables.insert(group.clone(), Value::Object(values));
+        });
+        Ok(value)
+    }
+
+    /// The song request controls: open or close them (99834), take back a viewer's (99835), block a
+    /// viewer or an artist (99836) and change a rule (99837).
+    pub(super) async fn song_control(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) {
+        let result = match kind {
+            99834 => {
+                let open = match super::n(o, "state") as u64 {
+                    0 => true,
+                    1 => false,
+                    _ => self.song_group(ctx).is_ok_and(|g| {
+                        crate::groups::values(&self.config(), &g).get("open") == Some(&Value::Bool(false))
+                    }),
+                };
+                self.song_setting(ctx, "open", &open.to_string()).map(|_| {
+                    ctx.args.insert("spotifyRequestsOpen".into(), open.to_string().into());
+                })
+            }
+            99835 => {
+                let who = self.expand(ctx, s(o, "userLogin"));
+                let who = who.trim().trim_start_matches('@');
+                let mut taken = 0;
+                if !who.is_empty() {
+                    let mut songs = self.songs.borrow_mut();
+                    while songs.take_back_of_name(who).is_some() {
+                        taken += 1;
+                    }
+                }
+                if taken > 0 {
+                    self.song_watch_start();
+                    self.song_queue_changed();
+                }
+                ctx.args.insert("spotifyTakenBack".into(), taken.to_string().into());
+                Ok(())
+            }
+            99836 => {
+                let artist = super::n(o, "what") as u64 == 1;
+                let mut name = self
+                    .expand(ctx, s(o, "value"))
+                    .trim()
+                    .trim_start_matches('@')
+                    .to_string();
+                if name.is_empty() && artist {
+                    if let Ok(player) = self.music.player(self).await {
+                        name = player
+                            .current
+                            .and_then(|t| t.artists.into_iter().next())
+                            .unwrap_or_default();
+                    }
+                }
+                let key = if artist { "blockedArtists" } else { "blockedUsers" };
+                if name.is_empty() {
+                    Err("nobody to block".into())
+                } else {
+                    let now = self
+                        .song_group(ctx)
+                        .map(|g| crate::groups::values(&self.config(), &g))
+                        .map(|v| list(v.get(key).and_then(Value::as_str).unwrap_or("")))
+                        .unwrap_or_default();
+                    let mut all = now;
+                    if !all.iter().any(|b| b.eq_ignore_ascii_case(&name)) {
+                        all.push(name.clone());
+                    }
+                    self.song_setting(ctx, key, &all.join(", ")).map(|_| {
+                        ctx.args.insert("spotifyBlocked".into(), name.into());
+                    })
+                }
+            }
+            _ => {
+                let rule = SONG_RULES[(super::n(o, "rule") as usize).min(SONG_RULES.len() - 1)];
+                let text = self.expand(ctx, s(o, "value"));
+                self.song_setting(ctx, rule, &text).map(|v| {
+                    ctx.args.insert("spotifyRule".into(), rule.into());
+                    ctx.args.insert("spotifyRuleValue".into(), crate::vars::text(&v).into());
+                })
+            }
+        };
+        if let Err(e) = result {
+            crate::error(format!("Song requests: {e}"));
+        }
+    }
+
+    /// Fade Volume (99845): Spotify's volume to a level, a step at a time over a while.
+    pub(super) async fn spotify_fade(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
+        let to = crate::fmt::parse_number(&self.expand(ctx, s(o, "value")))
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0) as i64;
+        let over = (self.duration_number(ctx, o, "duration").max(0.0) * 1000.0) as u64;
+        let player = match self.music.player(self).await {
+            Ok(p) => p,
+            Err(e) => return crate::error(format!("Spotify: {}", crate::spotify::friendly(&e))),
+        };
+        let from = i64::from(player.volume.unwrap_or(to as u32));
+        // A step every 250 ms at most, and one per percent at most: Spotify takes a call per step.
+        let steps = (over / 250).min(from.abs_diff(to)).max(1);
+        let pause = Duration::from_millis(over / steps);
+        for step in 1..=steps {
+            if step > 1 {
+                tokio::time::sleep(pause).await;
+            }
+            let level = from + (to - from) * step as i64 / steps as i64;
+            if let Err(e) = self.music.volume(self, level as u32, &player.device_id).await {
+                return crate::error(format!("Spotify: {}", crate::spotify::friendly(&e)));
+            }
+        }
+        ctx.args.insert("spotifyVolume".into(), to.to_string().into());
     }
 
     /// Get Song Requests: how many are kept and who asked for what.
@@ -560,6 +716,12 @@ impl Engine {
     async fn song_request(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, user: &str, user_id: &str, lvl: u8) -> Done {
         let music = self.music;
         let failed = |e: String| reject(Reason::Error, crate::spotify::friendly(&e));
+        if !self.song_flag(ctx, o, "open", true) {
+            return Err(reject(
+                Reason::Other("msgClosed"),
+                "Song requests are closed right now.",
+            ));
+        }
         let query = self.song_text(ctx, o, "query");
         if query.trim().is_empty() {
             return Err(reject(Reason::NoQuery, "Please specify a song to add to the queue."));
@@ -1080,6 +1242,97 @@ mod tests {
             let by_number = json!({"operation": "remove", "query": "2", "reply": "%spotifyTitle%"});
             assert_eq!(go(&e, &mut modr, by_number).await, "true");
             assert_eq!(arg(&modr, "spotifyReply"), "two");
+        });
+    }
+
+    #[test]
+    fn requests_close_and_open_and_the_rules_change_in_the_template_s_group() {
+        let music = leak();
+        run(async {
+            let e = engine(music);
+            e.change(|c| crate::templates::songs::made().add_to(c).unwrap());
+            let group = crate::templates::songs::GROUP;
+            let setting = |e: &Rc<Engine>, k: &str| crate::groups::values(&e.config(), group)[k].clone();
+            let mut c = ctx("ana", json!({}));
+            let control = |kind: u64, fields: Value| {
+                let mut o = json!({"type": kind}).as_object().unwrap().clone();
+                o.extend(fields.as_object().unwrap().clone());
+                o
+            };
+            e.one(&mut c, &control(99834, json!({"state": 1}))).await;
+            assert_eq!(setting(&e, "open"), json!(false));
+            let closed = json!({"query": "one", "open": "%group.open%", "msgClosed": "closed, @%user%"});
+            let mut viewer = Ctx {
+                group: group.into(),
+                ..ctx("bia", json!({}))
+            };
+            assert_eq!(go(&e, &mut viewer, closed.clone()).await, "false");
+            assert_eq!(arg(&viewer, "spotifyReply"), "closed, @bia");
+            e.one(&mut c, &control(99834, json!({"state": 2}))).await;
+            assert_eq!(setting(&e, "open"), json!(true), "toggled back open");
+            assert_eq!(go(&e, &mut viewer, closed).await, "true");
+
+            e.one(&mut c, &control(99837, json!({"rule": 1, "value": "7"}))).await;
+            assert_eq!(setting(&e, "maxPerUser"), json!(7));
+            e.one(&mut c, &control(99837, json!({"rule": 0, "value": "Subscribers"})))
+                .await;
+            assert_eq!(setting(&e, "who"), json!("subscribers"));
+            e.one(&mut c, &control(99837, json!({"rule": 0, "value": "nobody here"})))
+                .await;
+            assert_eq!(
+                setting(&e, "who"),
+                json!("subscribers"),
+                "a value it doesn't take is refused"
+            );
+
+            e.one(&mut c, &control(99836, json!({"what": 0, "value": "@Troll"})))
+                .await;
+            e.one(&mut c, &control(99836, json!({"what": 0, "value": "troll"})))
+                .await;
+            e.one(&mut c, &control(99836, json!({"what": 1, "value": "Loud Band"})))
+                .await;
+            assert_eq!(setting(&e, "blockedUsers"), json!("Troll"));
+            assert_eq!(setting(&e, "blockedArtists"), json!("Loud Band"));
+        });
+    }
+
+    #[test]
+    fn spotify_s_volume_fades_in_steps_to_the_level() {
+        let music = leak();
+        music.volume.set(80);
+        run(async {
+            let e = engine(music);
+            let mut c = ctx("ana", json!({}));
+            let started = std::time::Instant::now();
+            let o = json!({"type": 99845, "value": "20", "duration": 0.5})
+                .as_object()
+                .unwrap()
+                .clone();
+            e.one(&mut c, &o).await;
+            assert_eq!(music.volume.get(), 20);
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(240),
+                "two steps, a quarter second apart"
+            );
+            assert_eq!(arg(&c, "spotifyVolume"), "20");
+        });
+    }
+
+    #[test]
+    fn a_viewer_s_requests_are_all_taken_back() {
+        let music = leak();
+        run(async {
+            let e = engine(music);
+            let mut a = ctx("ana", json!({}));
+            for q in ["one", "two"] {
+                go(&e, &mut a, json!({"query": q})).await;
+            }
+            go(&e, &mut ctx("bia", json!({})), json!({"query": "three"})).await;
+            let mut c = ctx("mo", json!({}));
+            let o = json!({"type": 99835, "userLogin": "@ANA"}).as_object().unwrap().clone();
+            e.one(&mut c, &o).await;
+            assert_eq!(arg(&c, "spotifyTakenBack"), "2");
+            assert_eq!(e.songs.borrow().pending().filter(|r| !r.skip).count(), 1);
         });
     }
 

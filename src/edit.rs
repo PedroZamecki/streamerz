@@ -160,6 +160,9 @@ pub fn new_sub(kind: u64) -> Obj {
             o.insert("kick".into(), true.into());
             o.insert("youtube".into(), true.into());
         }
+        99845 => {
+            o.insert("duration".into(), 3.into());
+        }
         // Twitch's own clip length.
         18 | 99545 => {
             o.insert("duration".into(), 30.into());

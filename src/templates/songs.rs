@@ -78,11 +78,19 @@ const REPLIES: &[(&str, &str, &str)] = &[
     ("msgNoVolume", "Reply: bad volume", "@%user% give a volume from 0 to 100."),
     ("msgBanned", "Reply: song blocked by !bansong", "The song %spotifyTitle% has been blocked."),
     ("msgLiked", "Reply: song liked", "The song %spotifyTitle% has been added to your liked songs."),
+    ("msgClosed", "Reply: requests closed", "@%user% song requests are closed right now."),
 ];
 
 fn meta() -> Meta {
     let said = "Can use %user%, %spotifyTitle%, %spotifyArtist%, %spotifyPosition%, %spotifyTimeToPlay%, %spotifyList%, %spotifyRequestedBy%, %spotifyVotes%, %spotifyVolume% and %spotifyError%.";
     let mut variables = vec![
+        number(
+            "open",
+            "Requests open",
+            Kind::Boolean,
+            json!(true),
+            "Off: !sr says the requests are closed",
+        ),
         choice(
             "who",
             "Who can request",
@@ -252,7 +260,7 @@ pub fn made() -> Made {
         }
     }
     let request = json!({
-        "operation": "request", "query": "%rawInput%", "who": "%group.who%",
+        "operation": "request", "query": "%rawInput%", "who": "%group.who%", "open": "%group.open%",
         "maxPerUser": "%group.maxPerUser%", "maxPerSubscriber": "%group.maxPerSubscriber%",
         "unlimitedWho": "%group.unlimitedWho%", "maxLengthMs": "%group.maxLength%",
         "blockExplicit": "%group.blockExplicit%", "explicitWho": "%group.explicitWho%",

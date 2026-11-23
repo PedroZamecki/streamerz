@@ -132,3 +132,29 @@ Reading state does not start a background poll. If Spotify requires permissions 
 ### Example
 
 Enter `-10000` to move back 10 seconds.
+
+## Fade volume
+
+- Kind: sub-action
+- Code: 99845
+- Type: SpotifyFadeVolume
+- Category: Integrations/Spotify/Player
+- Needs: a Spotify login
+
+Moves Spotify's volume to a level little by little, over a while. The action waits for the fade to end. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| To volume (0 to 100) | `value` | The volume to end at. |
+| Over | `duration` | How long the fade takes. Empty: at once. |
+
+### Arguments
+
+- `spotifyVolume`: the volume it ended at, as text.
+
+### Notes
+
+- Spotify takes one call per step, so a step comes every quarter of a second at most.
+

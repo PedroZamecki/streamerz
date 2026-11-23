@@ -713,6 +713,49 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
         99810..=99816 | 99830..=99833 => &[],
         99827 => &[("query", "spotify.query", Text)],
+        99834 => &[(
+            "state",
+            "spotify.requests_state",
+            Pick(&[
+                "spotify.requests_open",
+                "spotify.requests_close",
+                "spotify.requests_toggle",
+            ]),
+        )],
+        99835 => &[("userLogin", "tools.who", Who)],
+        99836 => &[
+            (
+                "what",
+                "spotify.block_what",
+                Pick(&["spotify.block_viewer", "spotify.block_artist"]),
+            ),
+            ("value", "spotify.block_name", Text),
+        ],
+        99837 => &[
+            (
+                "rule",
+                "spotify.rule",
+                Pick(&[
+                    "spotify.rule_who",
+                    "spotify.rule_max_per_user",
+                    "spotify.rule_max_per_subscriber",
+                    "spotify.rule_unlimited_who",
+                    "spotify.rule_max_length",
+                    "spotify.rule_block_explicit",
+                    "spotify.rule_explicit_who",
+                    "spotify.rule_skip_who",
+                    "spotify.rule_skip_own",
+                    "spotify.rule_vote_skip_count",
+                    "spotify.rule_skip_cooldown",
+                    "spotify.rule_control_who",
+                ]),
+            ),
+            ("value", "spotify.rule_value", Text),
+        ],
+        99845 => &[
+            ("value", "spotify.fade_to", Text),
+            ("duration", "spotify.fade_over", Duration(1000)),
+        ],
         99828 => &[
             ("who", "spotify.who", Text),
             ("skipOwn", "spotify.skip_own", Expression(&["true", "false"])),
@@ -753,6 +796,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ),
             ("query", "spotify.query", Text),
             ("who", "spotify.who", Text),
+            ("open", "spotify.open", Expression(&["true", "false"])),
             ("reply", "spotify.reply", Text),
             ("replyDone", "spotify.reply_done", Text),
             ("maxPerUser", "spotify.max_per_user", Text),
@@ -783,6 +827,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("msgDuplicate", "spotify.msg_duplicate", Text),
             ("msgMaxRequests", "spotify.msg_max_requests", Text),
             ("msgSkipCooldown", "spotify.msg_skip_cooldown", Text),
+            ("msgClosed", "spotify.msg_closed", Text),
             ("msgError", "spotify.msg_error", Text),
             ("msgEmpty", "spotify.msg_empty", Text),
             ("msgNoPos", "spotify.msg_no_pos", Text),

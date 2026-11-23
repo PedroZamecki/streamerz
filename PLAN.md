@@ -1043,8 +1043,10 @@ Kept for later in this version, in this order:
 - [x] YouTube: Go Live (testing, live); End Stream was already in.
 - [x] YouTube: Add to Playlist (99666, by the playlist's id or link) and Get Poll Results (99665, the
   poll on the live now, read from the chat).
-- [ ] Spotify and song requests: enable, disable and toggle requests, move one next, clear a user's,
-  block a user or artist, change the rules; fade Spotify's volume.
+- [x] Spotify and song requests: Open or Close Song Requests (99834, the template's new Requests open
+  setting and `msgClosed` reply), Take Back a Viewer's Requests (99835), Block a Viewer or Artist
+  (99836), Change a Song Request Rule (99837) and Fade Volume (99845). Moving a request up the queue is
+  out: Spotify's Web API can't reorder its queue.
 - [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
   offset and balance.
 - Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
