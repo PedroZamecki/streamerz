@@ -128,6 +128,16 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
     if domain == "chat" {
         return super::chat::read(engine, request);
     }
+    // An overlay's own page: opened from the Overlays list, or asked by its group (`overlay:<group>`).
+    let opened = request["view"]["overlay"].as_str().filter(|id| !id.is_empty());
+    if let (super::overlays::DOMAIN, Some(id)) = (domain, opened) {
+        let tab = request["view"]["overlayTab"].as_str().unwrap_or_default();
+        return super::overlays::page(engine, id, tab);
+    }
+    if let Some(group) = domain.strip_prefix("overlay:") {
+        let id = super::overlays::first_page(engine, group)?;
+        return super::overlays::page(engine, &id, request["tab"].as_str().unwrap_or_default());
+    }
     if super::actions::supports(domain) {
         return super::actions::read(engine, request);
     }

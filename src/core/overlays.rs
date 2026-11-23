@@ -441,6 +441,7 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
         icon(top(button("refresh", "btn.refresh", "refresh-cw", false))),
         {"id":"obs_setup", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "form":"overlay:obs_setup:", "hideDisabled":true},
         {"id":"add_to_obs", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "hideDisabled":true},
+        {"id": "open_page", "label": tr("overlays.btn.open_page"), "icon": "panel-right-open", "needs": "row", "view": "overlay"},
         button("copy_url", "overlays.btn.copy_url", "copy", true),
         button("open", "overlays.btn.open", "external-link", true),
         tip(button("test", "overlays.btn.test", "play", true), "overlays.test.tip"),
@@ -459,9 +460,129 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
         danger(confirm(button("delete", "btn.delete", "trash-2", true), tr("overlays.delete_confirm").into(), "btn.delete")),
     ]});
     table["strip"] = true.into();
+    table["open"] = "open_page".into();
     table["detail"] = "".into();
     table["detailHeight"] = 120.into();
     Ok(json!({"domain": DOMAIN, "tables": [table]}))
+}
+
+thread_local! {
+    /// The tab each overlay's page showed last, by group.
+    static LAST_TAB: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
+}
+
+/// The tabs of an overlay's own page, in order; the Alerts tab only for an alert box.
+fn page_tabs(meta: &groups::Meta) -> Vec<&'static str> {
+    let mut tabs = vec!["settings", "test", "media", "live"];
+    if is_alert_box(meta) {
+        tabs.push("alerts");
+    }
+    tabs.push("code");
+    tabs
+}
+
+/// An alert box keeps its rules in a list setting called `rules` (the example, and copies of it).
+pub fn is_alert_box(meta: &groups::Meta) -> bool {
+    meta.template.id.ends_with("alert-box")
+        || meta
+            .variables
+            .iter()
+            .any(|v| v.name == "rules" && v.kind == groups::Kind::List)
+}
+
+/// The row id of an overlay given by its group (its first page), for `core_view` `overlay:<group>`.
+pub fn first_page(engine: &Rc<Engine>, group: &str) -> Result<String, String> {
+    overlays::list(&engine.config())
+        .into_iter()
+        .find(|(g, _)| g == group)
+        .map(|(g, f)| row_id(&g, &f))
+        .ok_or_else(gone)
+}
+
+/// An overlay's own page: what the window draws in place of the list once a row is opened, and what
+/// MCP reads as `overlay:<group>`. `tab` is the one shown (empty: Settings).
+pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
+    let (group, file) = row(engine, id)?;
+    let config = engine.config();
+    let meta = groups::meta(&config, &group);
+    let info = overlays::page_of(&config, &group, &file);
+    let tabs = page_tabs(&meta);
+    // The tab last shown for this overlay, kept by the core so Back and a new window find it again.
+    let remembered = LAST_TAB
+        .with_borrow(|last| last.get(&group).cloned())
+        .unwrap_or_default();
+    let tab = if tab.is_empty() { remembered.as_str() } else { tab };
+    let tab = if tabs.contains(&tab) { tab } else { "settings" };
+    LAST_TAB.with_borrow_mut(|last| last.insert(group.clone(), tab.to_owned()));
+    let options: Vec<Value> = tabs
+        .iter()
+        .map(|t| {
+            json!({"id": t, "label": tr(match *t {
+                "settings" => "overlays.tab.settings",
+                "test" => "overlays.tab.test",
+                "media" => "overlays.tab.media",
+                "live" => "overlays.tab.live",
+                "alerts" => "overlays.tab.alerts",
+                _ => "overlays.tab.code",
+            })})
+        })
+        .collect();
+    let mut toolbar = vec![
+        if info.dock {
+            button("add_to_obs", "overlays.btn.add_to_obs", "monitor-play", true)
+        } else {
+            form_button("obs_setup", "overlays.btn.add_to_obs", "monitor-play", true)
+        },
+        button("copy_url", "overlays.btn.copy_url", "copy", true),
+        button("open", "overlays.btn.open", "external-link", true),
+        button("open_folder", "btn.open_folder", "folder-open", true),
+        form_button("export", "btn.export", "upload", true),
+    ];
+    for b in &mut toolbar {
+        if b["form"].is_string() {
+            b["form"] = format!("{}{id}", b["form"].as_str().unwrap_or_default()).into();
+        }
+    }
+    let body = match tab {
+        "settings" => {
+            let request = json!({"kind": format!("{FORMS}settings:{id}")});
+            let mut form = form_for(engine, &request)?;
+            form["empty"] = tr("overlays.settings.none").into();
+            json!({"form": form})
+        }
+        "code" => {
+            let request = json!({"kind": format!("{FORMS}page:{id}")});
+            json!({"form": form_for(engine, &request)?,
+                "buttons": [button("inspect", "overlays.btn.inspect", "activity", true)]})
+        }
+        "test" => json!({"text": tr("overlays.test.tip"),
+            "buttons": [button("test", "overlays.btn.test", "play", true)]}),
+        "media" => {
+            let rows: Vec<Value> = meta
+                .files
+                .iter()
+                .map(|f| json!({"name": f.name, "size": super::pages::size(f.size)}))
+                .collect();
+            json!({"files": rows, "empty": tr("overlays.media.none")})
+        }
+        _ => json!({"text": tr(if tab == "alerts" { "overlays.alerts.soon" } else { "overlays.live.none" })}),
+    };
+    Ok(json!({"domain": DOMAIN, "overlay": {
+        "id": id,
+        "group": group,
+        "file": file,
+        "title": overlays::page_name(&info),
+        "subtitle": if overlays::page_name(&info) == group { String::new() } else { group.clone() },
+        "back": tr("overlays.back"),
+        "url": overlays::url(&config, &group, &file),
+        "width": if info.width == 0 { 1920 } else { info.width },
+        "height": if info.height == 0 { 1080 } else { info.height },
+        "dock": info.dock,
+        "toolbar": toolbar,
+        "tabs": {"options": options, "selected": tab},
+        "tab": tab,
+        "body": body,
+    }}))
 }
 
 /// Run one of the page's operations on a row.
@@ -1811,6 +1932,67 @@ mod tests {
                 1,
                 "never fall back after a disconnect"
             );
+        });
+    }
+
+    #[test]
+    fn an_overlay_opens_its_own_page_with_tabs_and_its_forms() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let made = edit_form(&e, &json!({"kind": "overlay:new", "changes": [{"field": 0, "value": "Clock"}, {"field": 1, "value": false}]}), false).unwrap();
+            let id = made["saved"].as_str().unwrap().to_owned();
+            let table = &read(&e, DOMAIN).unwrap()["tables"][0];
+            assert_eq!(table["open"], "open_page", "a double click opens the overlay's page");
+            assert!(table["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == "open_page" && a["view"] == "overlay"));
+
+            let request = json!({"domain": DOMAIN, "view": {"overlay": id}});
+            let model = super::super::view::read_request(&e, &request).unwrap();
+            let page = &model["overlay"];
+            assert_eq!(model["domain"], DOMAIN);
+            assert_eq!(page["title"], "Clock");
+            assert_eq!(page["tab"], "settings");
+            let tabs: Vec<_> = page["tabs"]["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].clone())
+                .collect();
+            assert_eq!(
+                tabs,
+                ["settings", "test", "media", "live", "code"],
+                "no Alerts tab but for an alert box"
+            );
+            assert!(page["body"]["form"]["kind"]
+                .as_str()
+                .unwrap()
+                .starts_with("overlay:settings:"));
+            assert!(page["toolbar"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["id"] == "copy_url"));
+            assert_eq!(page["toolbar"][0]["form"], format!("overlay:obs_setup:{id}"));
+
+            let code = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "code"}}),
+            )
+            .unwrap();
+            assert_eq!(code["overlay"]["body"]["form"]["kind"], format!("overlay:page:{id}"));
+            let again =
+                super::super::view::read_request(&e, &json!({"domain": DOMAIN, "view": {"overlay": id}})).unwrap();
+            assert_eq!(again["overlay"]["tab"], "code", "the tab shown last comes back");
+            // MCP asks by the group's name.
+            let by_group =
+                super::super::view::read_request(&e, &json!({"domain": "overlay:Clock", "tab": "media"})).unwrap();
+            assert_eq!(by_group["overlay"]["id"], id);
+            assert!(by_group["overlay"]["body"]["files"].as_array().is_some());
+            assert!(super::super::view::read_request(&e, &json!({"domain": "overlay:Nope"})).is_err());
         });
     }
 

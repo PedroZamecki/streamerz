@@ -43,6 +43,16 @@ text colour for secondary text and `controls/health.rs` for connection state. Us
 existing brand assets. Don't introduce
 local colors, decorative symbols or custom widget styling for one screen.
 
+### An item's own page
+
+When an item has more to it than a dialog holds (an overlay: its preview, settings, tests, files and code),
+opening its row (double-click, Enter, the Open button and its menu item) shows the item's page in place of
+the list, under the same sidebar entry. A Back button above the title (and Escape, and the mouse's back
+button) returns to the list. The title row keeps the item's buttons; tabs under it switch what is shown,
+and the core remembers the tab per item, so Back and a new window find it again. The core gives the page
+as a model (the overlay's is `overlay` in the Overlays read, `controls/overlay.rs` draws it), so MCP reads
+the same page.
+
 ## Page frame, spacing and typography
 
 One frame for every page. The numbers live as tokens in `frontend/src/theme.rs`; a screen uses the token,

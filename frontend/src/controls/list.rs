@@ -40,6 +40,11 @@ pub enum ViewChange {
     },
     /// The page's "Show" combo picked another table.
     Tab(String),
+    /// A row opened as a page of its own (an overlay): `key` in the view is its id.
+    Open {
+        key: String,
+        id: String,
+    },
 }
 impl EventEmitter<ViewChange> for List {}
 impl EventEmitter<super::sections::Navigate> for List {}
@@ -562,6 +567,13 @@ impl List {
             ),
             Action::Custom(index) => {
                 let spec = self.model["actions"][index].clone();
+                if let Some(key) = spec["view"].as_str() {
+                    cx.emit(ViewChange::Open {
+                        key: key.to_owned(),
+                        id: id.clone(),
+                    });
+                    return;
+                }
                 if let Some(page) = spec["navigate"].as_str() {
                     cx.emit(super::sections::Navigate(page.to_owned()));
                     return;
@@ -2567,7 +2579,7 @@ impl Render for List {
 }
 
 /// A read-only name and value table in a dialog.
-pub(super) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
+pub(crate) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
     let title = values["title"].as_str().unwrap_or_default().to_owned();
     let hint = values["hint"].as_str().unwrap_or_default().to_owned();
     let rows: Vec<(String, String)> = values["rows"]

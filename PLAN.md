@@ -1071,7 +1071,7 @@ Message, Timeout, Ban and Unban are Core / Moderation's (99700 to 99706); Remove
 The design, with the costs, codes and open questions, is in [docs/STUDIO_PLAN.md](docs/STUDIO_PLAN.md).
 Nothing loads until it is used: no thread, device, browser or download for someone who never uses it.
 
-- [ ] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
+- [x] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
   preview beside the tabs (Settings, Test, Media, Live, Alerts, Code) wide and above them narrow; a core
   view (`overlay:<group>`) for MCP.
 - [ ] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
