@@ -713,6 +713,10 @@ async fn publish_catalog(engine: Rc<Engine>, connection: String) {
     if let Ok(v) = obs.send_request(Some(&connection), "GetInputList", json!({})).await {
         crate::catalog::set("obs.sources", names(&v, "inputs", "inputName"));
     }
+    // Outputs by name, for the Output sub-action (multistream and vertical canvas plugins add theirs).
+    if let Ok(v) = obs.send_request(Some(&connection), "GetOutputList", json!({})).await {
+        crate::catalog::set("obs.outputs", names(&v, "outputs", "outputName"));
+    }
 }
 
 fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {

@@ -3545,5 +3545,119 @@
         }
       ]
     }
+  },
+  {
+    "name": "obs tools: an output by name, a source locked and toggled, audio sync and balance",
+    "fakes": {
+      "obs": {
+        "GetSceneItemId": {
+          "sceneItemId": 7
+        },
+        "ToggleOutput": {
+          "outputActive": true
+        },
+        "GetSceneItemLocked": {
+          "sceneItemLocked": true
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "obs",
+        "subActions": [
+          {
+            "type": 99766,
+            "outputName": "Vertical",
+            "state": 2
+          },
+          {
+            "type": 99767,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "state": 0
+          },
+          {
+            "type": 99767,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "state": 2
+          },
+          {
+            "type": 99768,
+            "inputName": "Mic",
+            "offset": "-1200"
+          },
+          {
+            "type": 99769,
+            "inputName": "Mic",
+            "balance": "25"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "obs"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "obs",
+          "call": "ToggleOutput",
+          "data": {
+            "outputName": "Vertical"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemLocked",
+          "data": {
+            "sceneName": "Main",
+            "sceneItemId": 7,
+            "sceneItemLocked": true
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "GetSceneItemLocked",
+          "data": {
+            "sceneItemId": 7
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemLocked",
+          "data": {
+            "sceneItemLocked": false
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputAudioSyncOffset",
+          "data": {
+            "inputName": "Mic",
+            "inputAudioSyncOffset": -950
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputAudioBalance",
+          "data": {
+            "inputName": "Mic",
+            "inputAudioBalance": 0.25
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "obs",
+          "after": {
+            "obsOutputActive": true,
+            "obsSourceLocked": false
+          }
+        }
+      ]
+    }
   }
 ]

@@ -280,6 +280,67 @@ impl Engine {
                 .await?;
             }
             // Shows a source for a while, then hides it: one step instead of show, wait, hide.
+            // Output: start, stop or toggle one by name (a multistream or vertical canvas plugin's too).
+            99766 => {
+                let output = text(ctx, "outputName");
+                if output.trim().is_empty() {
+                    return Err("no output named".into());
+                }
+                let request = ["StartOutput", "StopOutput", "ToggleOutput"][(n(o, "state") as usize).min(2)];
+                let got = self
+                    .obs_do(o, ctx, request, json!({"outputName": output.trim()}))
+                    .await?;
+                let active = match got["outputActive"].as_bool() {
+                    Some(on) => on,
+                    None => self
+                        .obs_do(o, ctx, "GetOutputStatus", json!({"outputName": output.trim()}))
+                        .await?["outputActive"]
+                        .as_bool()
+                        .unwrap_or(false),
+                };
+                ctx.args.insert("obsOutputActive".into(), active.into());
+            }
+            // Lock Source: lock, unlock or toggle a source in a scene.
+            99767 => {
+                let (scene, id) = self.obs_item(ctx, o).await?;
+                let item = json!({"sceneName": scene, "sceneItemId": id});
+                let now = if n(o, "state") as u64 == 2 {
+                    self.obs_do(o, ctx, "GetSceneItemLocked", item.clone()).await?["sceneItemLocked"]
+                        .as_bool()
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let locked = new_state(n(o, "state"), now);
+                let mut set = item;
+                set["sceneItemLocked"] = locked.into();
+                self.obs_do(o, ctx, "SetSceneItemLocked", set).await?;
+                ctx.args.insert("obsSourceLocked".into(), locked.into());
+            }
+            // Audio Sync Offset, in milliseconds (OBS takes -950 to 20000).
+            99768 => {
+                let offset = self.obs_number(ctx, o, "offset", "Offset")?.ok_or("no offset given")?;
+                let offset = offset.round().clamp(-950.0, 20_000.0) as i64;
+                self.obs_do(
+                    o,
+                    ctx,
+                    "SetInputAudioSyncOffset",
+                    json!({"inputName": text(ctx, "inputName"), "inputAudioSyncOffset": offset}),
+                )
+                .await?;
+            }
+            // Audio Balance: 0 all left, 50 the middle, 100 all right.
+            99769 => {
+                let balance = self.obs_number(ctx, o, "balance", "Balance")?.unwrap_or(50.0);
+                let balance = (balance.clamp(0.0, 100.0) / 100.0 * 1000.0).round() / 1000.0;
+                self.obs_do(
+                    o,
+                    ctx,
+                    "SetInputAudioBalance",
+                    json!({"inputName": text(ctx, "inputName"), "inputAudioBalance": balance}),
+                )
+                .await?;
+            }
             99765 => {
                 let (scene, id) = self.obs_item(ctx, o).await?;
                 let millis = self.duration_number(ctx, o, "duration").clamp(0.0, 3_600_000.0) as u64;

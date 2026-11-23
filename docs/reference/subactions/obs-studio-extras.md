@@ -366,3 +366,93 @@ Shows a source for a while and hides it again: one step in place of show, wait a
 ### Arguments
 
 None set.
+
+## Output
+
+- Kind: sub-action
+- Code: 99766
+- Type: ObsOutput
+- Category: OBS Studio/Extras
+- Needs: an OBS connection (Stream Apps)
+
+Starts, stops or toggles one of OBS's outputs by name, such as a multistream target or a vertical canvas a plugin adds. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| connectionId | `connectionId` | The OBS connection to use. Empty: any that is connected. |
+| Output | `outputName` | The output's name, as OBS lists it. The list offers the ones OBS has. |
+| State | `state` | Start, stop or toggle. |
+
+### Arguments
+
+- `obsOutputActive`: true when the output is running after the step.
+
+## Lock Source
+
+- Kind: sub-action
+- Code: 99767
+- Type: ObsLockSource
+- Category: OBS Studio/Extras
+- Needs: an OBS connection (Stream Apps)
+
+Locks or unlocks a source in a scene, so it can't be moved by accident. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| connectionId | `connectionId` | The OBS connection to use. Empty: any that is connected. |
+| sceneName | `sceneName` | The scene. |
+| sourceName | `sourceName` | The source in it. |
+| State | `state` | Lock, unlock or toggle. |
+
+### Arguments
+
+- `obsSourceLocked`: true when the source is locked after the step.
+
+## Set Audio Sync Offset
+
+- Kind: sub-action
+- Code: 99768
+- Type: ObsSetAudioSyncOffset
+- Category: OBS Studio/Extras
+- Needs: an OBS connection (Stream Apps)
+
+Sets how much a source's audio is moved in time, to match it to the video. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| connectionId | `connectionId` | The OBS connection to use. Empty: any that is connected. |
+| Source | `inputName` | The audio source. |
+| Offset (ms, -950 to 20000) | `offset` | Milliseconds. Outside OBS's range it's kept at the nearest end. |
+
+### Arguments
+
+None set.
+
+## Set Audio Balance
+
+- Kind: sub-action
+- Code: 99769
+- Type: ObsSetAudioBalance
+- Category: OBS Studio/Extras
+- Needs: an OBS connection (Stream Apps)
+
+Pans a source's audio left or right. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| connectionId | `connectionId` | The OBS connection to use. Empty: any that is connected. |
+| Source | `inputName` | The audio source. |
+| Balance (0 left, 50 middle, 100 right) | `balance` | Where the sound sits. Empty: the middle. |
+
+### Arguments
+
+None set.
+

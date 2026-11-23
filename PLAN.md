@@ -1047,8 +1047,8 @@ Kept for later in this version, in this order:
   setting and `msgClosed` reply), Take Back a Viewer's Requests (99835), Block a Viewer or Artist
   (99836), Change a Song Request Rule (99837) and Fade Volume (99845). Moving a request up the queue is
   out: Spotify's Web API can't reorder its queue.
-- [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
-  offset and balance.
+- [x] OBS: Output by name (99766; the names OBS lists are offered), Lock Source (99767), Set Audio Sync
+  Offset (99768) and Set Audio Balance (99769). Live test with OBS still to do.
 - Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
   a live account to test against.
 - [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.

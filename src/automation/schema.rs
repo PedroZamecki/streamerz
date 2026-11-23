@@ -552,6 +552,35 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "tools.obs_show_for", Duration(1)),
             ("wait", "tools.obs_wait", Bool),
         ],
+        99766 => &[
+            ("connectionId", "field.connection_empty_any", ObsConnection),
+            ("outputName", "tools.obs_output", Suggest("obs.outputs")),
+            (
+                "state",
+                "tools.state",
+                Pick(&["tools.obs_start", "tools.obs_stop", "tools.toggle"]),
+            ),
+        ],
+        99767 => &[
+            ("connectionId", "field.connection_empty_any", ObsConnection),
+            ("sceneName", "field.scene", Suggest("obs.scenes")),
+            ("sourceName", "field.source", Suggest("obs.sources")),
+            (
+                "state",
+                "tools.state",
+                Pick(&["tools.obs_lock", "tools.obs_unlock", "tools.toggle"]),
+            ),
+        ],
+        99768 => &[
+            ("connectionId", "field.connection_empty_any", ObsConnection),
+            ("inputName", "field.source", Suggest("obs.sources")),
+            ("offset", "tools.obs_sync_offset", Text),
+        ],
+        99769 => &[
+            ("connectionId", "field.connection_empty_any", ObsConnection),
+            ("inputName", "field.source", Suggest("obs.sources")),
+            ("balance", "tools.obs_balance", Text),
+        ],
         99780 => &[
             ("input", "tools.td_input", Multi),
             ("pattern", "tools.td_pattern", Text),
