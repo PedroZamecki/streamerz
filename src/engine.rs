@@ -446,7 +446,7 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4018 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35044 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99700..=99706 | 99900..=99904
-            | 99450..=99454 | 99501..=99503 | 99513..=99523 | 99533..=99539 | 99541..=99544 | 99601..=99607 | 99654..=99664 | 99720 | 99721 | 99723 | 99724 | 99726 | 99729..=99733 | 99740..=99743 | 99750..=99765 | 99780..=99787
+            | 99450..=99454 | 99501..=99503 | 99513..=99523 | 99533..=99539 | 99541..=99545 | 99601..=99607 | 99654..=99664 | 99720 | 99721 | 99723 | 99724 | 99726 | 99729..=99733 | 99740..=99743 | 99750..=99765 | 99780..=99787
             | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
             | 1 | 7 | 30001 | 30002 | 99300..=99304
@@ -471,6 +471,33 @@ pub fn uuid() -> String {
     let r = |bits: u32| crate::math::secure_u64() >> (64 - bits);
     let (a, b2, c, d, e) = (r(32), r(16), r(12), r(14), r(48));
     format!("{a:08x}-{b2:04x}-4{c:03x}-{:04x}-{e:012x}", 0x8000 | d)
+}
+
+/// A clip's length for Twitch, 5 to 60 seconds to a tenth; none when unset, so Twitch makes it 30.
+pub fn clip_length(seconds: f64) -> Option<String> {
+    (seconds > 0.0).then(|| {
+        let tenths = (seconds.clamp(5.0, 60.0) * 10.0).round() / 10.0;
+        if tenths.fract() == 0.0 {
+            format!("{tenths:.0}")
+        } else {
+            format!("{tenths:.1}")
+        }
+    })
+}
+
+/// Seconds in a length as Twitch writes a video's (`1h2m3s`); 0 when it can't be read.
+pub fn twitch_seconds(text: &str) -> u64 {
+    let (mut total, mut number) = (0, 0);
+    for c in text.chars() {
+        match c {
+            '0'..='9' => number = number * 10 + u64::from(c as u8 - b'0'),
+            'h' => (total, number) = (total + number * 3600, 0),
+            'm' => (total, number) = (total + number * 60, 0),
+            's' => (total, number) = (total + number, 0),
+            _ => return 0,
+        }
+    }
+    total + number
 }
 
 /// Whether `text` is a UUID (8-4-4-4-12 hex digits), as Twitch's ids are.
@@ -2233,6 +2260,22 @@ pub fn trigger_matches(code: u32, trigger: &Obj, args: &Obj) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_length_is_kept_in_twitch_s_range() {
+        assert_eq!(clip_length(0.0), None);
+        assert_eq!(clip_length(2.0).as_deref(), Some("5"));
+        assert_eq!(clip_length(12.54).as_deref(), Some("12.5"));
+        assert_eq!(clip_length(90.0).as_deref(), Some("60"));
+    }
+
+    #[test]
+    fn a_twitch_video_length_reads_as_seconds() {
+        assert_eq!(twitch_seconds("1h2m3s"), 3723);
+        assert_eq!(twitch_seconds("45s"), 45);
+        assert_eq!(twitch_seconds("10m"), 600);
+        assert_eq!(twitch_seconds("soon"), 0);
+    }
 
     /// A sub-action ticked in COVERAGE.md is one the engine runs (Guest Star and some reward ones were
     /// ticked while `supported` skipped them).

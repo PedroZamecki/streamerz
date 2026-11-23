@@ -160,6 +160,10 @@ pub fn new_sub(kind: u64) -> Obj {
             o.insert("kick".into(), true.into());
             o.insert("youtube".into(), true.into());
         }
+        // Twitch's own clip length.
+        18 | 99545 => {
+            o.insert("duration".into(), 30.into());
+        }
         // Sounds start at full volume and wait for their end, as Streamer.bot's do.
         1 | 7 => {
             o.insert("volume".into(), 100.into());

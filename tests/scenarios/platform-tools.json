@@ -593,6 +593,9 @@
           {
             "type": 583,
             "text": "badword"
+          },
+          {
+            "type": 99545
           }
         ]
       }
@@ -610,6 +613,10 @@
         {
           "platform": "twitch",
           "call": "POST moderation/blocked_terms"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET videos"
         }
       ]
     }
@@ -3204,6 +3211,126 @@
         {
           "platform": "youtube",
           "text": "/go live"
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch: a clip from a VOD, the last stream's end or a moment in a given one",
+    "config": {
+      "twitch": {
+        "broadcaster": {
+          "userId": "1",
+          "login": "me",
+          "displayName": "Me",
+          "token": {
+            "accessToken": "a",
+            "scope": [
+              "channel:manage:clips"
+            ]
+          }
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {
+        "GET videos": {
+          "data": [
+            {
+              "id": "v9",
+              "title": "Last night",
+              "duration": "1h2m3s"
+            }
+          ]
+        },
+        "POST videos/clips": {
+          "data": [
+            {
+              "id": "VodClip",
+              "edit_url": "https://clips.twitch.tv/VodClip/edit"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "latest",
+        "subActions": [
+          {
+            "type": 99545,
+            "duration": 20
+          }
+        ]
+      },
+      {
+        "name": "given",
+        "subActions": [
+          {
+            "type": 99545,
+            "videoId": "https://www.twitch.tv/videos/v9/",
+            "offset": 10,
+            "duration": 45.04,
+            "title": "Best of %user%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "latest"
+      },
+      {
+        "run": "given",
+        "args": {
+          "user": "ana"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "call": "GET videos",
+          "query": {
+            "user_id": "{broadcaster_id}",
+            "type": "archive"
+          }
+        },
+        {
+          "call": "POST videos/clips",
+          "query": {
+            "editor_id": "{broadcaster_id}",
+            "vod_id": "v9",
+            "vod_offset": "3723",
+            "duration": "20",
+            "title": "Last night"
+          }
+        },
+        {
+          "call": "POST videos/clips",
+          "query": {
+            "vod_id": "v9",
+            "vod_offset": "45",
+            "duration": "45",
+            "title": "Best of ana"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "latest",
+          "after": {
+            "createClipSuccess": true,
+            "createClipId": "VodClip",
+            "createClipUrl": "https://clips.twitch.tv/VodClip",
+            "createClipEditUrl": "https://clips.twitch.tv/VodClip/edit"
+          }
+        },
+        {
+          "action": "given",
+          "after": {
+            "createClipSuccess": true
+          }
         }
       ]
     }

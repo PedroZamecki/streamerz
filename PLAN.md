@@ -1031,8 +1031,10 @@ Kept for later in this version, in this order:
 
 - [x] Twitch: Check AutoMod Status, Get Shared Chat, Get Channel Info for any channel, Get Latest Video,
   Chat Mode for a While (puts the chat back after the time).
-- [ ] Twitch: Create Clip's title and duration and a clip from a VOD (the Twitch change behind them isn't
-  confirmed in Twitch's docs yet: check first), sending to this chat only in a Shared Chat.
+- [x] Twitch: Create Clip's title and duration, and Create Clip From VOD (99545, Twitch's
+  `videos/clips`, with the `channel:manage:clips` permission asked under More permissions). Sending to
+  this chat only in a Shared Chat is out: Twitch takes `for_source_only` only with an app token, which
+  needs a client secret a desktop program can't keep.
 - [x] Core / Text and Data: regex match and replace, change text, split, JSON value, counter, cooldown gate,
   format duration.
 - [ ] Core: list operations and get and set the clipboard (the clipboard is the window's, not the core's).
@@ -1042,8 +1044,8 @@ Kept for later in this version, in this order:
   block a user or artist, change the rules; fade Spotify's volume.
 - [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
   offset and balance.
-- [ ] Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway (needs a live account
-  to test).
+- Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
+  a live account to test against.
 - [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
 - [ ] Quality of life: chat mode for a while, then back; one step to update the stream everywhere.
 - Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio

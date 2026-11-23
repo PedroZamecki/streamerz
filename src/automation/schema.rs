@@ -127,7 +127,6 @@ pub type F = (&'static str, &'static str, W);
 pub fn preserved_fields(kind: u64) -> &'static [&'static str] {
     match kind {
         5 => &["overwrite", "count"],
-        18 => &["title", "duration"],
         _ => &[],
     }
 }
@@ -406,6 +405,12 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
                 "tools.video_kind",
                 Pick(&["tools.video_past", "tools.video_upload", "tools.video_highlight"]),
             ),
+        ],
+        99545 => &[
+            ("videoId", "tools.clip_video", Text),
+            ("offset", "tools.clip_ends_at", Duration(1000)),
+            ("duration", "tools.clip_length", Duration(1000)),
+            ("title", "tools.clip_title_video", Text),
         ],
         99544 => &[
             (
@@ -811,7 +816,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("gameId", "field.game_id", Text),
         ],
         17 => &[("description", "field.description", Text)],
-        18 => &[("hasDelay", "automation.clip_delay", Bool)],
+        18 => &[
+            ("title", "tools.clip_title_stream", Text),
+            ("duration", "tools.clip_length", Duration(1000)),
+            ("hasDelay", "automation.clip_delay", Bool),
+        ],
         19 => &[("duration", "automation.duration_duration", Duration(1000))],
         20 => &[
             ("userLogin", "tools.who", Who),

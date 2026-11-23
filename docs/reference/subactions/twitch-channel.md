@@ -86,6 +86,8 @@ Makes a clip of the live stream and adds its link to the arguments.
 
 | Field | Key | What it holds |
 | --- | --- | --- |
+| Title | `title` | The clip's title. Empty: the stream's title. |
+| Length | `duration` | How long the clip is, 5 to 60 seconds. Empty: 30 seconds. |
 | Allow a delayed clip | `hasDelay` | Lets Twitch include a delay when creating the clip. Off when omitted. |
 
 ### Arguments
@@ -93,11 +95,12 @@ Makes a clip of the live stream and adds its link to the arguments.
 - `createClipSuccess`: true when Twitch made the clip, else false.
 - `clipId`, `createClipId`: the clip ID.
 - `createClipUrl`: the link to the clip.
+- `createClipEditUrl`: the link to edit and publish the clip, for 24 hours.
 - `createClipCreatedAt`: when Streamerz made the clip, as an ISO date and time.
 
 ### Notes
 
-- Streamerz sends only the delay setting to Twitch (`hasDelay`, off when missing). It doesn't send `title` or `duration` yet, so the clip's title and length are not set by these fields.
+- Twitch makes the clip from the last seconds of the stream, and only while live.
 
 ## Add Viewer Count
 
@@ -346,3 +349,30 @@ Finds a channel's latest video: the last stream, upload or highlight. This sub-a
 
 - `videoFound`: true when there is one.
 - `videoId`, `videoTitle`, `videoUrl`, `videoDuration` (as Twitch writes it, `1h2m3s`), `videoCreatedAt`, `videoViews`, `videoThumbnail`.
+
+## Create Clip From VOD
+
+- Kind: sub-action
+- Code: 99545
+- Type: TwitchCreateClipFromVod
+- Category: Twitch/Channel
+- Needs: a Twitch login with the clips permission (Accounts, More permissions)
+
+Makes a clip from a past stream, or from earlier in this one. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Video | `videoId` | The video's ID or link. Empty: the last stream (this one, while live). |
+| Ends at | `offset` | Where the clip ends, from the video's start. Empty: its end. |
+| Length | `duration` | How long the clip is, 5 to 60 seconds. Empty: 30 seconds. |
+| Title | `title` | The clip's title. Empty: the video's title. |
+
+### Arguments
+
+- `createClipSuccess`: true when Twitch made the clip, else false.
+- `clipId`, `createClipId`: the clip ID.
+- `createClipUrl`: the link to the clip.
+- `createClipEditUrl`: the link to edit and publish the clip, for 24 hours.
+- `createClipCreatedAt`: when Streamerz made the clip, as an ISO date and time.

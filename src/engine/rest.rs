@@ -1028,20 +1028,21 @@ impl Engine {
             // Create Clip (18)
             18 => {
                 let delay = b(o, "hasDelay", false);
+                let title = self.expand(ctx, s(o, "title")).trim().to_string();
+                let length = super::clip_length(self.duration_number(ctx, o, "duration"));
                 if let Some(tw) = self.twitch() {
-                    let res = tw
-                        .helix(
-                            "POST",
-                            "clips",
-                            vec![
-                                ("broadcaster_id", "{broadcaster_id}"),
-                                ("has_delay", if delay { "true" } else { "false" }),
-                            ],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await;
+                    let mut query = vec![
+                        ("broadcaster_id", "{broadcaster_id}"),
+                        ("has_delay", if delay { "true" } else { "false" }),
+                    ];
+                    // Empty: Twitch names it after the stream and makes it 30 seconds long.
+                    if !title.is_empty() {
+                        query.push(("title", title.as_str()));
+                    }
+                    if let Some(length) = &length {
+                        query.push(("duration", length.as_str()));
+                    }
+                    let res = tw.helix("POST", "clips", query, None, false, true).await;
                     ctx.args.insert("createClipSuccess".into(), res.is_ok().into());
                     match res {
                         Ok(val) => {
@@ -1050,6 +1051,8 @@ impl Engine {
                                 ctx.args.insert("createClipId".into(), id.into());
                                 ctx.args
                                     .insert("createClipUrl".into(), format!("https://clips.twitch.tv/{id}").into());
+                                ctx.args
+                                    .insert("createClipEditUrl".into(), val["data"][0]["edit_url"].clone());
                                 ctx.args
                                     .insert("createClipCreatedAt".into(), super::globals::iso_now().into());
                             }

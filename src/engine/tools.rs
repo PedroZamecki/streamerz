@@ -29,6 +29,7 @@ pub const TWITCH_EXTRA_SCOPES: &[&str] = &[
     "user:manage:chat_color",
     "user:manage:blocked_users",
     "channel:manage:schedule",
+    "channel:manage:clips",
 ];
 
 /// The extra Twitch permission a sub-action needs, if any.
@@ -39,6 +40,7 @@ pub fn twitch_extra_scope(kind: u64) -> Option<&'static str> {
         99533 => "user:manage:chat_color",
         99534 | 99535 => "user:manage:blocked_users",
         99536..=99539 => "channel:manage:schedule",
+        99545 => "channel:manage:clips",
         _ => return None,
     })
 }
@@ -916,6 +918,63 @@ impl Engine {
                 ] {
                     ctx.args.insert(arg.into(), v[key].clone());
                 }
+            }
+            // Create Clip From VOD: a past stream's moment, or an earlier one in this stream.
+            99545 => {
+                let given = text("videoId");
+                // A link to the video works as well as its id.
+                let given = given
+                    .trim()
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let mut title = text("title").trim().to_string();
+                ctx.args.insert("createClipSuccess".into(), false.into());
+                let mut offset = self.duration_number(ctx, o, "offset").max(0.0) as u64;
+                let length = super::clip_length(self.duration_number(ctx, o, "duration")).unwrap_or("30".into());
+                let mut video = given.clone();
+                if video.is_empty() || offset == 0 || title.is_empty() {
+                    let q: &[(&str, &str)] = if given.is_empty() {
+                        &[("user_id", "{broadcaster_id}"), ("type", "archive"), ("first", "1")]
+                    } else {
+                        &[("id", given.as_str())]
+                    };
+                    let got = self.helix_call("GET", "videos", q, None, false).await?;
+                    let v = &got["data"][0];
+                    video = v["id"].as_str().ok_or("no past stream to clip")?.to_string();
+                    if offset == 0 {
+                        // Its end: the latest moment, while the stream is still going.
+                        offset = super::twitch_seconds(v["duration"].as_str().unwrap_or_default());
+                    }
+                    if title.is_empty() {
+                        title = v["title"].as_str().unwrap_or_default().to_string();
+                    }
+                }
+                // Twitch wants the end at least the clip's length in.
+                let offset = offset
+                    .max(length.parse::<f64>().unwrap_or(30.0).ceil() as u64)
+                    .to_string();
+                let q = [
+                    ("editor_id", "{broadcaster_id}"),
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("vod_id", video.as_str()),
+                    ("vod_offset", offset.as_str()),
+                    ("duration", length.as_str()),
+                    ("title", title.as_str()),
+                ];
+                let got = self.helix_call("POST", "videos/clips", &q, None, false).await?;
+                let id = got["data"][0]["id"].as_str().ok_or("Twitch made no clip")?;
+                ctx.args.insert("createClipSuccess".into(), true.into());
+                ctx.args.insert("clipId".into(), id.into());
+                ctx.args.insert("createClipId".into(), id.into());
+                ctx.args
+                    .insert("createClipUrl".into(), format!("https://clips.twitch.tv/{id}").into());
+                ctx.args
+                    .insert("createClipEditUrl".into(), got["data"][0]["edit_url"].clone());
+                ctx.args
+                    .insert("createClipCreatedAt".into(), super::globals::iso_now().into());
             }
             // Chat Mode for a While: turns a mode on, and puts the chat back as it was after the time.
             99544 => {
