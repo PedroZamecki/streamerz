@@ -516,7 +516,7 @@ impl Engine {
             99650..=99699 => self.youtube_tool(ctx, o, kind).await,
             99740..=99749 => self.discord_tool(ctx, o, kind).await,
             99750..=99779 => self.obs_tool(ctx, o, kind).await,
-            99720..=99733 => {
+            99720..=99734 => {
                 self.every_platform(ctx, o, kind).await;
                 Ok(())
             }
@@ -1664,15 +1664,49 @@ impl Engine {
         }
         let multi = platforms.len() > 1;
         for platform in &platforms {
-            let Some(sub) = self.platform_sub(ctx, o, kind, platform) else {
+            // Update Stream: the title, the category and the tags, each where it was given and the
+            // platform has it.
+            let subs: Vec<Obj> = if kind == 99734 {
+                let given = |k: &str| match o.get(k) {
+                    Some(Value::Array(list)) => !list.is_empty(),
+                    Some(v) => !crate::vars::text(v).trim().is_empty(),
+                    None => false,
+                };
+                [(99729, "title"), (99730, "category"), (99734, "tags")]
+                    .into_iter()
+                    .filter(|(_, k)| given(k))
+                    .filter_map(|(code, _)| {
+                        if code == 99734 {
+                            let mut sub = Obj::new();
+                            sub.insert("tags".into(), o["tags"].clone());
+                            let tags_code: u64 = match platform.as_str() {
+                                "twitch" => 252,
+                                "kick" => 35032,
+                                "youtube" => 99654,
+                                _ => return None,
+                            };
+                            sub.insert("type".into(), tags_code.into());
+                            sub.insert("enabled".into(), true.into());
+                            Some(sub)
+                        } else {
+                            self.platform_sub(ctx, o, code, platform)
+                        }
+                    })
+                    .collect()
+            } else {
+                self.platform_sub(ctx, o, kind, platform).into_iter().collect()
+            };
+            if subs.is_empty() {
                 crate::warn(format!(
                     "{}: {platform} can't do this, skipped",
                     crate::types::name(crate::types::SUB_ACTIONS, kind as u32).unwrap_or("Sub-action")
                 ));
                 continue;
-            };
+            }
             let before: Vec<String> = ctx.args.keys().cloned().collect();
-            let _ = self.one(ctx, &sub).await;
+            for sub in &subs {
+                let _ = self.one(ctx, sub).await;
+            }
             // Several platforms: each one's values also under its name (twitchIsLive...).
             if multi {
                 let added: Vec<(String, Value)> = ctx

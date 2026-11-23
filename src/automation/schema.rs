@@ -729,6 +729,12 @@ fn tool_fields(kind: u64) -> Option<&'static [F]> {
         99729 => &[PLATFORMS_FIELD, TITLE_FIELD],
         99730 => &[PLATFORMS_FIELD, ("category", "tools.category", Text)],
         99731 => &[PLATFORMS_FIELD],
+        99734 => &[
+            PLATFORMS_FIELD,
+            ("title", "tools.update_title", Text),
+            ("category", "tools.update_category", Text),
+            ("tags", "tools.update_tags", Lines),
+        ],
         99732 => &[PLATFORMS_FIELD, WHO_FIELD, ("text", "tools.shoutout_text", Multi)],
         _ => return None,
     })

@@ -1052,7 +1052,8 @@ Kept for later in this version, in this order:
 - Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
   a live account to test against.
 - [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
-- [ ] Quality of life: chat mode for a while, then back; one step to update the stream everywhere.
+- [x] Quality of life: chat mode for a while, then back (99544); one step to update the stream
+  everywhere (Update Stream, 99734: title, category and tags on each platform picked).
 - Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
   (per desktop), screen capture, TikTok moderation (needs a live test).
 

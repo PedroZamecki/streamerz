@@ -503,6 +503,7 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (99731, "AllGetStreamInfo"),
     (99732, "AllShoutout"),
     (99733, "AllGetUserInfoForTarget"),
+    (99734, "AllUpdateStream"),
     (99740, "DiscordEmbedWebhook"),
     (99741, "DiscordEditMessage"),
     (99742, "DiscordDeleteMessage"),
@@ -2786,6 +2787,12 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         "Get User Info for Target",
         "Every Platform/User",
         &["platforms", "userLogin"],
+    ),
+    (
+        99734,
+        "Update Stream",
+        "Every Platform/Stream",
+        &["platforms", "title", "category", "tags"],
     ),
     (
         99740,

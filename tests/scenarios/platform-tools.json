@@ -3659,5 +3659,117 @@
         }
       ]
     }
+  },
+  {
+    "name": "every platform: Update Stream sets the title, category and tags given, and leaves the rest",
+    "fakes": {
+      "twitch": {
+        "GET games": {
+          "data": [
+            {
+              "id": "743",
+              "name": "Chess",
+              "box_art_url": "https://x/{width}x{height}.jpg"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "update",
+        "subActions": [
+          {
+            "type": 99734,
+            "platforms": [
+              "twitch"
+            ],
+            "title": "Chess with %user%",
+            "category": "chess",
+            "tags": [
+              "Chess",
+              "%lang%"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "title only",
+        "subActions": [
+          {
+            "type": 99734,
+            "platforms": [
+              "twitch"
+            ],
+            "title": "Just a title",
+            "category": "",
+            "tags": []
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "update",
+        "args": {
+          "user": "ana",
+          "lang": "English"
+        }
+      },
+      {
+        "run": "title only"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "title": "Chess with ana"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET games",
+          "query": {
+            "name": "chess"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "game_id": "743"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "tags": [
+              "Chess",
+              "English"
+            ]
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "title": "Just a title"
+          }
+        }
+      ],
+      "notCalls": [
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "tags": []
+          }
+        }
+      ]
+    }
   }
 ]
