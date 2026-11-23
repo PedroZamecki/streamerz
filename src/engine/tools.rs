@@ -55,6 +55,15 @@ pub const CONTENT_LABELS: [&str; 6] = [
     "ProfanityVulgarity",
 ];
 
+/// A YouTube playlist's id from the id itself or a link to it (`...?list=PL...`).
+fn playlist_id(text: &str) -> String {
+    let text = text.trim();
+    match text.split_once("list=") {
+        Some((_, rest)) => rest.split(['&', '#']).next().unwrap_or_default().to_string(),
+        None => text.to_string(),
+    }
+}
+
 /// A user as typed or filled in: no `@`, no spaces around.
 fn login(text: &str) -> String {
     text.trim().trim_start_matches('@').trim().to_string()
@@ -1932,11 +1941,31 @@ impl Engine {
     }
 
     async fn youtube_tool(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> Result<(), String> {
+        // Get Poll Results: the poll on the live now, as the chat shows it (no call to YouTube).
+        if kind == 99665 {
+            let poll = crate::youtube::current_poll();
+            ctx.args.insert("pollFound".into(), (!poll.is_empty()).into());
+            ctx.args.extend(poll);
+            return Ok(());
+        }
         let yt = self.youtube_start();
         let broadcast = self.expand(ctx, s(o, "broadcast"));
         let who = self.expand(ctx, s(o, "userLogin"));
         let enc = crate::commands::url_encode;
         match kind {
+            // Add to Playlist: the broadcast's video at the end of one of the channel's playlists.
+            99666 => {
+                let given = self.expand(ctx, s(o, "playlist"));
+                let playlist = playlist_id(&given);
+                if playlist.is_empty() {
+                    return Err("no playlist given".into());
+                }
+                let body = json!({"snippet": {"playlistId": playlist, "resourceId": {"kind": "youtube#video", "videoId": "{video}"}}});
+                let got = yt
+                    .data("POST", &broadcast, "playlistItems?part=snippet", Some(body))
+                    .await?;
+                ctx.args.insert("playlistItemId".into(), got["id"].clone());
+            }
             // Go Live: moves the broadcast to testing, or live.
             99664 => {
                 let stage = ["testing", "live"][(n(o, "stage") as usize).min(1)];

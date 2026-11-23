@@ -1,6 +1,7 @@
 //! Text and data sub-actions Streamer.bot only has as C# or not at all: a regex match or replace, a
 //! change to a text, splitting a list, reading a JSON value, a counter, a cooldown gate and a duration
-//! as text. Streamerz-only codes 99780-99799, category Core/Text & Data.
+//! as text, a list kept as a global, and the system clipboard. Streamerz-only codes 99780-99799,
+//! category Core/Text & Data (the clipboard's in Core/System).
 
 use super::{b, n, s, Ctx, Engine};
 use crate::model::Obj;
@@ -120,6 +121,199 @@ pub fn gate(key: &str, wait: u64, now: u64) -> u64 {
     })
 }
 
+/// The most items a list keeps (the oldest go first).
+const MOST_ITEMS: usize = 1000;
+
+/// A list operation on `items`; what it gives back, if anything. 0 add, 1 remove, 2 has, 3 item at
+/// (from 0, negative from the end), 4 random, 5 count, 6 clear, 7 take the first, 8 all joined.
+pub fn list_op(items: &mut Vec<String>, op: u64, value: &str) -> Option<String> {
+    let same = |item: &String| item.to_lowercase() == value.to_lowercase();
+    match op {
+        0 => {
+            items.push(value.to_string());
+            let over = items.len().saturating_sub(MOST_ITEMS);
+            items.drain(..over);
+            None
+        }
+        1 => {
+            let at = items.iter().position(same)?;
+            Some(items.remove(at))
+        }
+        2 => items.iter().find(|i| same(i)).cloned(),
+        3 => {
+            let at = value.trim().parse::<i64>().ok()?;
+            let at = if at < 0 { items.len() as i64 + at } else { at };
+            items.get(usize::try_from(at).ok()?).cloned()
+        }
+        4 => (!items.is_empty()).then(|| items[crate::math::secure_u64() as usize % items.len()].clone()),
+        5 => Some(items.len().to_string()),
+        6 => {
+            items.clear();
+            None
+        }
+        7 => (!items.is_empty()).then(|| items.remove(0)),
+        _ => Some(items.join(if value.is_empty() { ", " } else { value })),
+    }
+}
+
+/// The system clipboard's text. Linux asks wl-paste (Wayland) or xclip / xsel (X11).
+#[cfg(not(windows))]
+async fn clipboard_read() -> Result<String, String> {
+    let mut last = String::new();
+    for (program, args) in clipboard_programs(false) {
+        match tokio::process::Command::new(program)
+            .args(args)
+            .kill_on_drop(true)
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => return Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+            // wl-paste says so when the clipboard is empty.
+            Ok(out) if String::from_utf8_lossy(&out.stderr).contains("Nothing is copied") => return Ok(String::new()),
+            Ok(out) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            Err(_) => {}
+        }
+    }
+    Err(if last.is_empty() {
+        NO_CLIPBOARD.to_string()
+    } else {
+        last
+    })
+}
+
+/// Puts text on the system clipboard. The program forks and keeps the text there after it returns.
+#[cfg(not(windows))]
+async fn clipboard_write(text: &str) -> Result<(), String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    for (program, args) in clipboard_programs(true) {
+        let Ok(mut child) = tokio::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+        return match child.wait().await {
+            Ok(status) if status.success() => Ok(()),
+            _ => Err(format!("{program} could not set the clipboard")),
+        };
+    }
+    Err(NO_CLIPBOARD.into())
+}
+
+#[cfg(not(windows))]
+const NO_CLIPBOARD: &str = "no clipboard program found: install wl-clipboard (Wayland) or xclip (X11)";
+
+/// The programs to try, the session's own first.
+#[cfg(not(windows))]
+fn clipboard_programs(write: bool) -> Vec<(&'static str, &'static [&'static str])> {
+    let wayland = (
+        if write { "wl-copy" } else { "wl-paste" },
+        if write { &[][..] } else { &["--no-newline"][..] },
+    );
+    let x11 = [
+        (
+            "xclip",
+            if write {
+                &["-selection", "clipboard", "-i"][..]
+            } else {
+                &["-selection", "clipboard", "-o"][..]
+            },
+        ),
+        (
+            "xsel",
+            if write {
+                &["--clipboard", "--input"][..]
+            } else {
+                &["--clipboard", "--output"][..]
+            },
+        ),
+    ];
+    let mut list = Vec::new();
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        list.push(wayland);
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        list.extend(x11);
+    }
+    list
+}
+
+#[cfg(windows)]
+async fn clipboard_read() -> Result<String, String> {
+    use windows_sys::Win32::System::{
+        DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+        Memory::{GlobalLock, GlobalUnlock},
+        Ole::CF_UNICODETEXT,
+    };
+    // SAFETY: the clipboard is opened and closed here, and the locked memory is read up to its NUL.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("the clipboard is in use by another program".into());
+        }
+        let handle = GetClipboardData(u32::from(CF_UNICODETEXT));
+        let mut text = String::new();
+        if !handle.is_null() {
+            let wide = GlobalLock(handle) as *const u16;
+            if !wide.is_null() {
+                let mut len = 0;
+                while *wide.add(len) != 0 {
+                    len += 1;
+                }
+                text = String::from_utf16_lossy(std::slice::from_raw_parts(wide, len));
+                GlobalUnlock(handle);
+            }
+        }
+        CloseClipboard();
+        Ok(text)
+    }
+}
+
+#[cfg(windows)]
+async fn clipboard_write(text: &str) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            Ole::CF_UNICODETEXT,
+        },
+    };
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    // SAFETY: the memory is sized for `wide`; the clipboard owns it once SetClipboardData takes it.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("the clipboard is in use by another program".into());
+        }
+        EmptyClipboard();
+        let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        let mut done = false;
+        if !memory.is_null() {
+            let to = GlobalLock(memory) as *mut u16;
+            if !to.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), to, wide.len());
+                GlobalUnlock(memory);
+                done = !SetClipboardData(u32::from(CF_UNICODETEXT), memory).is_null();
+            }
+            if !done {
+                GlobalFree(memory);
+            }
+        }
+        CloseClipboard();
+        if done {
+            Ok(())
+        } else {
+            Err("the clipboard could not be set".into())
+        }
+    }
+}
+
 fn cut(text: String) -> String {
     if text.len() > MOST {
         text.chars().take(MOST).collect()
@@ -129,6 +323,30 @@ fn cut(text: String) -> String {
 }
 
 impl Engine {
+    /// Get Clipboard (99789) into a variable, or Set Clipboard (99790) to a text.
+    pub(super) async fn clipboard_sub(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) {
+        let result = if kind == 99790 {
+            let value = self.expand(ctx, s(o, "text"));
+            match crate::scenario::fakes::clipboard(Some(&value)) {
+                Some(r) => r.map(|_| ()),
+                None => clipboard_write(&value).await,
+            }
+        } else {
+            let got = match crate::scenario::fakes::clipboard(None) {
+                Some(r) => r,
+                None => clipboard_read().await,
+            };
+            got.map(|got| {
+                let var = self.simple(ctx, s(o, "variableName"));
+                let var = if var.trim().is_empty() { "clipboard" } else { var.trim() };
+                ctx.args.insert(var.to_string(), cut(got).into());
+            })
+        };
+        if let Err(e) = result {
+            crate::error(format!("Clipboard: {e}"));
+        }
+    }
+
     /// Runs a text or data sub-action; false to stop the action (a cooldown still on).
     pub(super) fn data_tool(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> bool {
         let text = |ctx: &Ctx, key: &str| self.expand(ctx, s(o, key));
@@ -257,6 +475,31 @@ impl Engine {
                     return false;
                 }
             }
+            // List: a list kept as a global; `<name>`, `<name>Found` and `<name>Count`.
+            99788 => {
+                let global = text(ctx, "name").trim().to_string();
+                if global.is_empty() {
+                    crate::error("List: no name given".to_string());
+                    return true;
+                }
+                let persisted = b(o, "persisted", true);
+                let mut items: Vec<String> = match self.global_value(&global, persisted) {
+                    Some(Value::Array(list)) => list
+                        .iter()
+                        .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let op = n(o, "operation") as u64;
+                let got = list_op(&mut items, op, &text(ctx, "value"));
+                if matches!(op, 0 | 1 | 6 | 7) {
+                    self.put_global(&global, serde_json::json!(items), persisted);
+                }
+                let var = name(ctx, "list");
+                ctx.args.insert(format!("{var}Found"), got.is_some().into());
+                ctx.args.insert(format!("{var}Count"), items.len().into());
+                ctx.args.insert(var, got.unwrap_or_default().into());
+            }
             99787 => {
                 let var = name(ctx, "duration");
                 let secs = crate::fmt::parse_number(&text(ctx, "seconds")).unwrap_or(0.0).max(0.0) as u64;
@@ -272,6 +515,34 @@ impl Engine {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_list_keeps_its_newest_thousand_and_counts_from_the_end() {
+        let mut items: Vec<String> = Vec::new();
+        for i in 0..1005 {
+            list_op(&mut items, 0, &i.to_string());
+        }
+        assert_eq!(items.len(), 1000);
+        assert_eq!(list_op(&mut items, 3, "0").as_deref(), Some("5"));
+        assert_eq!(list_op(&mut items, 3, "-1").as_deref(), Some("1004"));
+        assert_eq!(list_op(&mut items, 3, "-2000"), None);
+        assert_eq!(list_op(&mut items, 1, "nope"), None);
+        assert_eq!(list_op(&mut items, 5, "").as_deref(), Some("1000"));
+    }
+
+    /// Run by hand in a desktop session: it changes the real clipboard.
+    #[test]
+    #[ignore]
+    fn the_system_clipboard_takes_and_gives_back_a_text() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            clipboard_write("Streamerz clipboard check").await.unwrap();
+            assert_eq!(clipboard_read().await.unwrap(), "Streamerz clipboard check");
+        });
+    }
 
     #[test]
     fn a_json_path_walks_keys_and_indexes() {

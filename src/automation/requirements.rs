@@ -205,6 +205,10 @@ pub fn sub_action(code: u32) -> Vec<Need> {
         if local {
             return Vec::new();
         }
+        // The poll on the live is read from the chat, which needs no login.
+        if code == 99665 {
+            return vec![Need::Service(service, Level::Connected)];
+        }
         let mut needs = vec![Need::Service(service, Level::Login)];
         if let Some(feature) = twitch_category_feature(category) {
             needs.push(Need::TwitchPlan(feature));

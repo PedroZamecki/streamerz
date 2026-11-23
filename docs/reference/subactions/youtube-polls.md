@@ -53,3 +53,29 @@ None set.
 
 - Only polls made by Streamerz can be ended.
 - The Broadcast field is saved but not used.
+
+## Get Poll Results
+
+- Kind: sub-action
+- Code: 99665
+- Type: YouTubeGetPollResults
+- Category: YouTube/Polls
+- Needs: a YouTube channel or video set, and a live broadcast (no login)
+
+Gives the poll on the live now, with its votes so far, as the chat shows it. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `pollFound`: true when a poll is on the live now.
+- `poll.id`, `poll.question`, `question`, `poll.options.count`.
+- `poll.option0.text`, `poll.option0.votePercentage`, `poll.option0.voteRatio`, `poll.option0.votes`, and the same for each option, counting from 0.
+- `poll.totalVotes`, `poll.winningOption.text`, `poll.winningOption.votes`.
+
+### Notes
+
+- YouTube gives the share of each option, not the vote count, so each `votes` is worked out from the share and the total.
+

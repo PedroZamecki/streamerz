@@ -144,6 +144,11 @@ impl Engine {
             .unwrap_or(0.0)
     }
 
+    /// A global's value as it is, for the List sub-action.
+    pub(super) fn global_value(&self, name: &str, persisted: bool) -> Option<Value> {
+        self.read_global(name, persisted, None)
+    }
+
     fn read_global(&self, name: &str, persisted: bool, user: Option<&User>) -> Option<Value> {
         let c = self.cfg.borrow();
         let st = self.st.borrow();

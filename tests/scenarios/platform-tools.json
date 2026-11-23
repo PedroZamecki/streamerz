@@ -3334,5 +3334,216 @@
         }
       ]
     }
+  },
+  {
+    "name": "core: a list kept as a global, added to, checked, read, taken from and joined",
+    "actions": [
+      {
+        "name": "list",
+        "subActions": [
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "%user%",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "Bia",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "Caio",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 2,
+            "value": "bia",
+            "persisted": false,
+            "variableName": "has"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 3,
+            "value": "-1",
+            "persisted": false,
+            "variableName": "last"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 1,
+            "value": "BIA",
+            "persisted": false,
+            "variableName": "gone"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 7,
+            "persisted": false,
+            "variableName": "next"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 8,
+            "value": " | ",
+            "persisted": false,
+            "variableName": "all"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 3,
+            "value": "5",
+            "persisted": false,
+            "variableName": "none"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "list",
+        "args": {
+          "user": "Ana"
+        }
+      }
+    ],
+    "expect": {
+      "runs": [
+        {
+          "action": "list",
+          "after": {
+            "has": "Bia",
+            "hasFound": true,
+            "last": "Caio",
+            "gone": "Bia",
+            "next": "Ana",
+            "nextCount": 1,
+            "all": "Caio",
+            "allCount": 1,
+            "none": "",
+            "noneFound": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "core: the clipboard read into a variable and set to a filled-in text",
+    "fakes": {
+      "clipboard": {
+        "GET": "copied text"
+      }
+    },
+    "actions": [
+      {
+        "name": "clip",
+        "subActions": [
+          {
+            "type": 99789
+          },
+          {
+            "type": 99790,
+            "text": "Hi %user%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "clip",
+        "args": {
+          "user": "ana"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "clipboard",
+          "call": "GET"
+        },
+        {
+          "platform": "clipboard",
+          "call": "SET",
+          "text": "Hi ana"
+        }
+      ],
+      "runs": [
+        {
+          "action": "clip",
+          "after": {
+            "clipboard": "copied text"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "youtube: the live's video added to a playlist by its link, and no poll to read",
+    "fakes": {
+      "youtube": {
+        "POST playlistItems?part=snippet": {
+          "id": "item1"
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "yt",
+        "subActions": [
+          {
+            "type": 99666,
+            "playlist": "https://www.youtube.com/playlist?list=PLabc&si=x"
+          },
+          {
+            "type": 99665
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "yt"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "youtube",
+          "call": "POST playlistItems?part=snippet",
+          "body": {
+            "snippet": {
+              "playlistId": "PLabc",
+              "resourceId": {
+                "kind": "youtube#video",
+                "videoId": "{video}"
+              }
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "yt",
+          "after": {
+            "playlistItemId": "item1",
+            "pollFound": false
+          }
+        }
+      ]
+    }
   }
 ]

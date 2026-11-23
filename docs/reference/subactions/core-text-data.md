@@ -201,3 +201,35 @@ Writes a number of seconds as time: a clock, short, or in words. This sub-action
 ### Arguments
 
 - The variable named (default `duration`) holds the text.
+
+## List
+
+- Kind: sub-action
+- Code: 99788
+- Type: ListChange
+- Category: Core/Text & Data
+- Needs: nothing
+
+Keeps a list in a global and works on it in one step: add, remove, check, pick one or join them all. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| List name (a global) | `name` | The global that holds the list. |
+| operation | `operation` | Add, remove, check it has, get the item at a position, get one at random, count, empty it, take the first out, or get them all. |
+| Item (a position from 0, or a separator for all) | `value` | The item to add, remove or look for; the position to get (from 0, negative from the end); or what goes between them all (empty: a comma). |
+| Keep it after a restart | `persisted` | On: the global stays after a restart. |
+| Save the result in (variable name) | `variableName` | The name of the variable that gets the result. Empty: `list`. |
+
+### Arguments
+
+- The variable named (default `list`) holds the item found, removed or taken, the count, or them all.
+- `listFound`: true when there was something to give (the variable's name plus `Found`).
+- `listCount`: how many items the list has now (the variable's name plus `Count`).
+
+### Notes
+
+- Remove and check compare without case, so `Ana` finds `ana`.
+- A list keeps up to 1000 items: the oldest go first.
+

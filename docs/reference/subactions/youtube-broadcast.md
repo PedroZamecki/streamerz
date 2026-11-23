@@ -200,3 +200,25 @@ None set.
 ### Notes
 
 - The stream must already be coming in, as YouTube requires. Dev mode keeps it instead of going live.
+
+## Add to Playlist
+
+- Kind: sub-action
+- Code: 99666
+- Type: YouTubeAddToPlaylist
+- Category: YouTube/Broadcast
+- Needs: the broadcaster's YouTube login (an owner or moderator of the chat)
+
+Adds the broadcast's video to the end of one of the channel's playlists. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Broadcast | `broadcast` | Which broadcast: empty for the live one, or a video id. |
+| Playlist (its id or link) | `playlist` | The playlist's id (`PL...`), or a link to it. |
+
+### Arguments
+
+- `playlistItemId`: the video's place in the playlist, as YouTube names it.
+

@@ -1037,9 +1037,12 @@ Kept for later in this version, in this order:
   needs a client secret a desktop program can't keep.
 - [x] Core / Text and Data: regex match and replace, change text, split, JSON value, counter, cooldown gate,
   format duration.
-- [ ] Core: list operations and get and set the clipboard (the clipboard is the window's, not the core's).
+- [x] Core: List (99788: a list kept as a global) and Get and Set Clipboard (99789, 99790). The clipboard
+  is the system's, asked by the core (Win32 on Windows; wl-clipboard, xclip or xsel on Linux), not the
+  window's: the window is closed while Streamerz is hidden, and a chat command still has to reach it.
 - [x] YouTube: Go Live (testing, live); End Stream was already in.
-- [ ] YouTube: add a stream to a playlist, poll results.
+- [x] YouTube: Add to Playlist (99666, by the playlist's id or link) and Get Poll Results (99665, the
+  poll on the live now, read from the chat).
 - [ ] Spotify and song requests: enable, disable and toggle requests, move one next, clear a user's,
   block a user or artist, change the rules; fade Spotify's volume.
 - [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
