@@ -1043,6 +1043,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzOverlays"
         | "StreamerzOverlayPublish"
         | "StreamerzSound"
+        | "StreamerzSpeech"
         | "StreamerzManageActionGroup"
         | "StreamerzActionGroups"
         | "StreamerzGroupIcon"
@@ -1199,6 +1200,10 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             )
         }
         "StreamerzSound" => match crate::sound::request(req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
+        "StreamerzSpeech" => match e.speech_request(req) {
             Ok(v) => ok(&id, v),
             Err(m) => error(&id, &m),
         },
@@ -2462,7 +2467,10 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     if method == "POST" && path == "/overlays/call" {
         let (status, answer) = match crate::overlays::avatar(e, &body).await {
             Some(answer) => answer,
-            None => crate::overlays::call(e, &body),
+            None => match crate::overlays::speak(e, &body).await {
+                Some(answer) => answer,
+                None => crate::overlays::call(e, &body),
+            },
         };
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }

@@ -23,6 +23,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("chat.send", "Send chat messages as you"),
     ("actions.run", "Run the actions of its own group"),
     ("values.write", "Store values in its own group"),
+    ("voice.speak", "Speak text aloud with the voices of this computer"),
 ];
 
 /// The token a group's pages call back with: only a page Streamerz served (or saved) has it, and it
@@ -709,6 +710,32 @@ pub fn url(c: &Config, group: &str, file: &str) -> String {
     url_at(&base(c), group, file)
 }
 
+thread_local! {
+    /// Speeches made for overlay pages (Speak to an overlay, `streamerz.speak`): served at
+    /// `/overlays/-/speech/<id>` for two minutes, then dropped.
+    static SPEECHES: std::cell::RefCell<Vec<(u64, std::time::Instant, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keeps a speech for the overlay pages to load; its address.
+pub fn keep_speech(c: &Config, wav: Vec<u8>) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    SPEECHES.with_borrow_mut(|all| {
+        all.retain(|(_, made, _)| made.elapsed() < std::time::Duration::from_secs(120));
+        all.push((id, std::time::Instant::now(), wav));
+    });
+    format!("{}/overlays/-/speech/{id}", base(c))
+}
+
+fn speech(name: &str) -> Option<Served> {
+    let id: u64 = name.strip_prefix("speech/")?.trim_end_matches(".wav").parse().ok()?;
+    SPEECHES.with_borrow(|all| {
+        all.iter()
+            .find(|(i, made, _)| *i == id && made.elapsed() < std::time::Duration::from_secs(120))
+            .map(|(_, _, wav)| Served::Bytes(200, "audio/wav", wav.clone()))
+    })
+}
+
 /// Where an overlay's controls dock is served.
 pub fn controls_url(c: &Config, group: &str) -> String {
     format!("{}/overlays/{}/-/controls", base(c), encode(group))
@@ -850,7 +877,7 @@ pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>)
     let name = crate::donations::urlencoding_decode(parts.next().unwrap_or(""));
     let missing = || Served::Bytes(404, "text/plain; charset=utf-8", b"No such overlay file".to_vec());
     if group == BUILT_IN {
-        return built_in(&name).unwrap_or_else(missing);
+        return speech(&name).or_else(|| built_in(&name)).unwrap_or_else(missing);
     }
     // The overlay's live controls as a page for an OBS dock.
     if name == "-/controls" {
@@ -981,6 +1008,46 @@ fn built_in(name: &str) -> Option<Served> {
 /// `POST /overlays/call` with `op: "avatar"` `{platform, userId}`: the picture of someone in the chat,
 /// asked from the platform once and remembered (the same lookup as the Chat page's user card). Needs
 /// `chat.read` or `alerts.read`. None: the request is another op, for `call`.
+/// `streamerz.speak(text, {voice})`: the speech as a WAV for the page to play (in step with its own
+/// alert), at an address kept two minutes. Needs `voice.speak`.
+pub async fn speak(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
+    let req = serde_json::from_slice::<Value>(body).ok()?;
+    if req["op"] != "speak" {
+        return None;
+    }
+    let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let (group, said) = (text("group"), text("text"));
+    let (voice, speed, pitch) = {
+        let c = e.config();
+        if group.is_empty() || !groups::exists(&c, &group) || text("token") != token(&c, &group) {
+            return Some((
+                403,
+                json!({"ok": false, "error": "this page is not one of Streamerz's overlays"}),
+            ));
+        }
+        if let Err(error) = allowed(&c, &group, "voice.speak") {
+            return Some((403, json!({"ok": false, "error": error})));
+        }
+        let voice = Some(text("voice"))
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| c.voices.voice.clone());
+        let num = |k: &str, d: f64| req[k].as_f64().filter(|n| n.is_finite()).unwrap_or(d);
+        (voice, num("speed", c.voices.speed), num("pitch", c.voices.pitch))
+    };
+    let said: String = said.chars().take(1000).collect();
+    if said.trim().is_empty() {
+        return Some((400, json!({"ok": false, "error": "there is no text to say"})));
+    }
+    Some(match crate::voice::speak(&said, &voice, speed, pitch).await {
+        Ok(wav) => {
+            let ms = crate::engine::wav_length_ms(&wav);
+            let url = keep_speech(&e.config(), wav);
+            (200, json!({"ok": true, "url": url, "durationMs": ms}))
+        }
+        Err(error) => (500, json!({"ok": false, "error": error})),
+    })
+}
+
 pub async fn avatar(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
     let req = serde_json::from_slice::<Value>(body).ok()?;
     if req["op"] != "avatar" {
@@ -1883,6 +1950,67 @@ mod tests {
         let page = String::from_utf8(page).unwrap();
         assert_eq!((status, kind), (200, "text/html; charset=utf-8"));
         assert!(page.contains("Work on a page") && !page.contains("__GUIDE__"));
+    }
+
+    #[test]
+    fn a_page_speaks_only_with_its_permission() {
+        use crate::engine::tests::{engine, run};
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.change(|c| {
+                groups::create(c, "Talk");
+                let mut meta = groups::meta(c, "Talk");
+                meta.files.push(groups::File {
+                    name: "index.html".into(),
+                    ..Default::default()
+                });
+                let _ = groups::set_meta(c, "Talk", meta);
+            });
+            let token = token(&e.config(), "Talk");
+            let ask = |body: Value| body.to_string().into_bytes();
+            assert!(
+                speak(&e, &ask(json!({"op": "avatar"}))).await.is_none(),
+                "another call goes on"
+            );
+            let (status, _) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": "x", "text": "hi"})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 403, "a page that isn't the overlay's");
+            let (status, answer) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": token, "text": "hi"})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 403, "{answer}");
+            assert!(answer["error"].as_str().unwrap().contains("voice.speak"), "{answer}");
+            e.change(|c| {
+                let mut meta = groups::meta(c, "Talk");
+                meta.permissions = vec!["voice.speak".into()];
+                let _ = groups::set_meta(c, "Talk", meta);
+            });
+            let (status, _) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": token, "text": "  "})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 400, "nothing to say");
+            // A speech kept for the pages is served at its address for a while.
+            let url = keep_speech(&e.config(), b"RIFFdata".to_vec());
+            let path = url
+                .split("/overlays/")
+                .nth(1)
+                .map(|p| format!("/overlays/{p}"))
+                .unwrap();
+            assert!(matches!(
+                file_with(&e.config(), &path, &Default::default()),
+                Served::Bytes(200, "audio/wav", _)
+            ));
+        });
     }
 
     #[test]

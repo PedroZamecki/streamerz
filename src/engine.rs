@@ -450,11 +450,12 @@ pub fn supported(kind: u32) -> bool {
             | 99450..=99454 | 99501..=99503 | 99513..=99523 | 99533..=99539 | 99541..=99545 | 99601..=99607 | 99654..=99666 | 99720 | 99721 | 99723 | 99724 | 99726 | 99729..=99734 | 99740..=99743 | 99750..=99769 | 99780..=99790
             | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99881 | 99810..=99824 | 99827..=99837 | 99840..=99875
-            | 1 | 7 | 30001 | 30002 | 99300..=99306
+            | 1 | 7 | 30001 | 30002 | 99300..=99306 | 99320..=99327
     )
 }
 
 pub(crate) use rest::{poll_args, prediction_args};
+pub use speech::wav_length_ms;
 pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
 /// A UTC civil date and time from Unix seconds.
@@ -2045,6 +2046,7 @@ impl Engine {
                     }
                 }
                 k if sounds::handles(k) => self.sound_sub(ctx, o, k).await,
+                k if speech::handles(k) => self.speech_sub(ctx, o, k).await,
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
                 99450..=99499 | 99500..=99699 | 99720..=99779 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
                     if !self.tools(ctx, o, kind).await {

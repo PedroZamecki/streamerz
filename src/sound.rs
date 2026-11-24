@@ -14,7 +14,6 @@ mod pulse;
 #[cfg(windows)]
 mod wasapi;
 
-#[cfg(test)]
 pub use decode::sine_wav;
 pub use decode::{info, EXTENSIONS};
 pub use mixer::{End, Ended};

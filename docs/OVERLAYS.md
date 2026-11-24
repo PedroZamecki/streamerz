@@ -252,6 +252,7 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.on(topic, fn)` | `fn(value, old)` runs with the topic's current value, then at every change. `old` is true for the value from before the page opened: a page that acts on a change (spin the wheel) skips it. |
 | `streamerz.event("Source.Type", fn)` | `fn(data)` runs for any Streamerz event, such as `Spotify.TrackChanged` or `Twitch.Follow`. `Twitch.*` is every event of a source. |
 | `streamerz.onSettings(fn)` | `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. |
+| `streamerz.speak(text, {voice, speed, pitch})` | Resolves with an `<audio>` of the text spoken by a voice of this computer (the default voice when none is given), for the page to play in step with what it shows. Needs `voice.speak`. |
 | `streamerz.control(name, fn)` | `fn(value, old)` with a live control's value now (old is undefined) and at every change; a button calls it when pressed. `streamerz.control.set(name, value)` sets one, to keep a toggle in step with the page. |
 | `streamerz.controls` | The live controls' values now, by name. |
 | `streamerz.place(el, position)` | Puts an element where a `position` setting says, absolutely, as wide as its content. |
@@ -310,6 +311,7 @@ page of another overlay, or one Streamerz did not serve, is refused:
 | `chat.send` | Send chat messages as you |
 | `actions.run` | Run the actions connected to it |
 | `values.write` | Store values of its own |
+| `voice.speak` | Speak text aloud with the voices of this computer (`streamerz.speak`) |
 
 ## Files
 

@@ -226,6 +226,7 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
         e.allow_prompts(false);
         // A scenario plays its sounds silently, at the speed they would be heard.
         crate::sound::silence();
+        crate::voice::offline();
         let fk = fakes::install(&e, s.get("fakes").unwrap_or(&Value::Null), http);
         // As the app starts them (each only when set up or used).
         e.watchers();

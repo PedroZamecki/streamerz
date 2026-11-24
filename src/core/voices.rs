@@ -48,6 +48,18 @@ pub fn table(engine: &Rc<Engine>) -> Value {
     how["top"] = true.into();
     let mut refresh = button("voices_refresh", "btn.refresh", "refresh-cw", false);
     refresh["top"] = true.into();
+    let state = engine.speech_state();
+    let paused = state["paused"] == true;
+    let mut pause = button(
+        "speech_pause",
+        if paused { "voices.resume" } else { "voices.pause" },
+        if paused { "play" } else { "pause" },
+        false,
+    );
+    pause["top"] = true.into();
+    let mut clear = button("speech_clear", "voices.clear", "eraser", false);
+    clear["top"] = true.into();
+    clear["enabled"] = (state["waiting"].as_u64().unwrap_or(0) > 0).into();
     let mut t = super::pages::table(
         "sounds_voices",
         tr("sounds.show.voices"),
@@ -61,14 +73,28 @@ pub fn table(engine: &Rc<Engine>) -> Value {
         rows,
         vec![
             how,
+            pause,
+            clear,
             refresh,
             say,
             button("voice_default", "voices.make_default", "star", true),
-            button("stop_all", "sounds.stop", "square", false),
+            button("speech_stop", "voices.stop", "square", false),
         ],
     );
     t["domain"] = json!(super::sounds::DOMAIN);
-    t["intro"] = intro.into();
+    // What waits and whether speech is paused or off, with the voices' own intro.
+    let mut said = intro;
+    let waiting = state["waiting"].as_u64().unwrap_or(0);
+    if waiting > 0 {
+        said = format!("{said} {}", trf("voices.waiting", &[("count", &waiting.to_string())]));
+    }
+    if paused {
+        said = format!("{said} {}", tr("voices.paused"));
+    }
+    if state["enabled"] == false {
+        said = format!("{said} {}", tr("voices.off"));
+    }
+    t["intro"] = said.into();
     t["search"] = true.into();
     t["open"] = "voice_say".into();
     t
@@ -77,6 +103,13 @@ pub fn table(engine: &Rc<Engine>) -> Value {
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Option<Result<Value, String>> {
     Some(match action {
         "voices_refresh" => listed(true).map(|v| json!({"accepted": true, "count": v.len()})),
+        "speech_stop" => Ok(json!({"accepted": true, "stopped": engine.speech_stop()})),
+        "speech_clear" => Ok(json!({"accepted": true, "cleared": engine.speech_clear()})),
+        "speech_pause" => {
+            let paused = engine.speech_state()["paused"] == true;
+            engine.speech_pause(!paused);
+            Ok(json!({"accepted": true}))
+        }
         "voice_default" => {
             let id = id.to_string();
             engine.change(|c| c.voices.voice = id);

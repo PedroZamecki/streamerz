@@ -1,0 +1,172 @@
+[
+  {
+    "name": "speech: Speak filters and waits for its turn, the triggers hear it, a file is written, the queue is paused, turned off and cleared, a viewer gets a voice",
+    "actions": [
+      {
+        "name": "talk",
+        "subActions": [
+          {
+            "type": 99320,
+            "text": "hello https://x.io there !!!",
+            "prefix": "%user% says",
+            "skipLinks": true,
+            "finishBeforeContinuing": true
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "spoke %speechDurationMs% %speechReason%"
+          },
+          {
+            "type": 99320,
+            "text": "!sr a song",
+            "skipCommands": true
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "command skipped %speechSkipped%"
+          },
+          {
+            "type": 99320,
+            "text": "visit https://a.b now",
+            "skipLinks": "%skip%",
+            "maxRepeat": "%most%",
+            "finishBeforeContinuing": true
+          },
+          {
+            "type": 99320,
+            "text": "soooooo good",
+            "maxRepeat": "%most%",
+            "finishBeforeContinuing": true
+          },
+          {
+            "type": 99321,
+            "text": "to a file",
+            "file": "{tmp}/speech.wav"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "file %speechDurationMs%"
+          },
+          {
+            "type": 99327
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "voices %voiceCount%"
+          },
+          {
+            "type": 99326,
+            "source": 0,
+            "voice": "en"
+          },
+          {
+            "type": 99324,
+            "state": 1
+          },
+          {
+            "type": 99324,
+            "state": 0
+          },
+          {
+            "type": 99325,
+            "state": 0
+          },
+          {
+            "type": 99320,
+            "text": "not said",
+            "finishBeforeContinuing": true
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "while off %speechReason%"
+          },
+          {
+            "type": 99325,
+            "state": 1
+          },
+          {
+            "type": 99323
+          },
+          {
+            "type": 99322
+          }
+        ]
+      },
+      {
+        "name": "started",
+        "triggers": [
+          {
+            "type": 99320
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "started: %text%"
+          },
+          {
+            "type": 99320,
+            "text": "echo",
+            "finishBeforeContinuing": false
+          }
+        ]
+      },
+      {
+        "name": "ended",
+        "triggers": [
+          {
+            "type": 99321
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "ended: %reason%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "talk",
+        "args": {
+          "user": "ana",
+          "userId": "1",
+          "userType": "twitch",
+          "skip": "True",
+          "most": "2"
+        },
+        "wait": 3000
+      }
+    ],
+    "expect": {
+      "log": [
+        "started: ana says hello there !!!",
+        "ended: finished",
+        "spoke 500 finished",
+        "command skipped True",
+        "started: visit now",
+        "started: soo good",
+        "file 300",
+        "voices 1",
+        "while off skipped"
+      ],
+      "config": {
+        "user_globals": {
+          "twitch:1": {
+            "values": {
+              "ttsVoice": "en"
+            }
+          }
+        }
+      }
+    }
+  }
+]

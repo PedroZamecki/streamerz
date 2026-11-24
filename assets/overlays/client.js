@@ -393,6 +393,11 @@
     // streamerz.set("wins", 3) and streamerz.get("wins"): values of the group, kept across restarts.
     set: (name, value) => call("set", { name, value }),
     get: name => call("get", { name }).then(r => r.value),
+    // streamerz.speak("Thanks for the raid!", {voice: "pt-BR"}).then(audio => audio.play()): the text
+    // spoken by a voice of this computer, as an <audio> to play in step with the page (the browser
+    // source's sound). Needs voice.speak; speed and pitch around 1 as well.
+    speak: (text, options = {}) =>
+      call("speak", { text: String(text), ...options }).then(r => Object.assign(new Audio(r.url), { durationMs: r.durationMs })),
     // streamerz.publish("score", {home: 1}): set a topic for every page listening with on().
     publish: (topic, value) => call("publish", { topic, value }),
     // streamerz.log("text"): a line in Streamerz's log (OBS has no console to look at).

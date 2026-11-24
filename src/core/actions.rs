@@ -931,6 +931,10 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
             if *key == "sound.devices" {
                 crate::catalog::set("sound.devices", crate::sound::outputs());
             }
+            if *key == "voices" {
+                let voices = crate::voice::voices().unwrap_or_default();
+                crate::catalog::set("voices", voices.into_iter().map(|v| (v.id, v.name)).collect());
+            }
             typed(crate::catalog::choices(key))
         }
         W::Expression(values) => typed(values.iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect()),

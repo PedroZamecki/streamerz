@@ -2732,7 +2732,8 @@ mod tests {
                     "alerts.read",
                     "chat.send",
                     "actions.run",
-                    "values.write"
+                    "values.write",
+                    "voice.speak"
                 ]
             );
             let changes = json!([{"field": 0, "value": "Big clock"}, {"field": 1, "value": "800"}, {"field": 2, "value": "200"}, {"field": 6, "value": true}]);

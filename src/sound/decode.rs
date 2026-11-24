@@ -192,8 +192,7 @@ pub fn info(path: &Path) -> Result<Info, String> {
     Ok(info)
 }
 
-/// A WAV file of PCM 16 bits, for tests: `frames` of a sine at `hz`.
-#[cfg(test)]
+/// A WAV file of PCM 16 bits: `frames` of a sine at `hz` (tests, and the voice of offline scenarios).
 pub fn sine_wav(rate: u32, channels: u16, hz: f32, frames: u32) -> Vec<u8> {
     let data = frames * channels as u32 * 2;
     let mut w = Vec::with_capacity(44 + data as usize);

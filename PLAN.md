@@ -1153,8 +1153,14 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   unpacked package, not installed; `docs/VOICES.md`.
 - [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
   downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
-- [ ] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
-  99320 and 99321, `streamerz.speak`, the Read chat aloud template.
+- [x] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
+  99320 and 99321, `streamerz.speak`, the Read chat aloud template. Done (`engine/speech.rs`): a queue
+  for each output and each overlay, run only while it has speeches; the filters as Speak's fields (a
+  switch or a number may be a variable, as the template's `%group.x%`); `ttsVoice` per viewer; pause,
+  off, stop and clear; a speech an action these triggers ran fires neither; `streamerz.speak` behind
+  `voice.speak`, served two minutes at `/overlays/-/speech/<id>`; the request `StreamerzSpeech` and the
+  MCP tool `speak`; the queue's controls on the Voices; a scenario with an offline voice, and the real
+  espeak-ng speaking two sentences in turn.
 - [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
   first), effects.
 - [ ] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,

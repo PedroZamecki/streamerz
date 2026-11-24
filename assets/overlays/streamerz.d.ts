@@ -277,6 +277,8 @@ declare namespace Streamerz {
     publish(topic: string, value: unknown): Promise<unknown>;
     /** A line in Streamerz's Log (OBS has no console to look at). */
     log(text: string): Promise<unknown>;
+    /** Text spoken by a voice of this computer, as an audio to play (needs `voice.speak`). */
+    speak(text: string, options?: { voice?: string; speed?: number; pitch?: number }): Promise<HTMLAudioElement & { durationMs?: number }>;
   }
 }
 

@@ -83,6 +83,25 @@ impl Engine {
         })
     }
 
+    /// A viewer's own voice (the persisted user variable `ttsVoice`): 1 the one who ran the action, 2
+    /// the target user.
+    pub(super) fn user_voice(&self, ctx: &Ctx, source: i64) -> Option<String> {
+        let user = Self::user(ctx, source)?;
+        self.read_global("ttsVoice", true, Some(&user))
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// Gives a viewer a voice of their own (empty: back to the default). False with no user.
+    pub(super) fn set_user_voice(self: &Rc<Self>, ctx: &Ctx, source: i64, voice: &str) -> bool {
+        let Some(user) = Self::user(ctx, source) else {
+            return false;
+        };
+        let v = (!voice.trim().is_empty()).then(|| Value::from(voice.trim()));
+        self.write_global(ctx, "ttsVoice", true, Some(&user), v);
+        true
+    }
+
     pub(super) fn global_get(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
         let name = self.simple(ctx, s(o, "variableName"));
         let dest = self.simple(ctx, s(o, "destinationVariable"));

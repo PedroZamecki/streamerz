@@ -68,6 +68,14 @@ fn command(args: &[&str]) -> std::process::Command {
 
 /// The system's voices, or why there are none (espeak-ng isn't installed).
 pub fn voices() -> Result<Vec<Voice>, String> {
+    if OFFLINE.get() {
+        return Ok(vec![Voice {
+            id: "en".into(),
+            name: "English".into(),
+            language: "en".into(),
+            gender: String::new(),
+        }]);
+    }
     #[cfg(windows)]
     return windows_voices();
     #[cfg(not(windows))]
@@ -132,8 +140,23 @@ fn parse_espeak_voices(text: &str) -> Vec<Voice> {
         .collect()
 }
 
+thread_local! {
+    /// Offline scenarios speak with a beep of a tenth of a second a word instead of a voice (on the
+    /// scenario's thread, where its engine runs).
+    static OFFLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn offline() {
+    OFFLINE.set(true);
+}
+
 /// Speech as a WAV: `speed` and `pitch` around 1, as the voice speaks.
 pub async fn speak(text: &str, voice: &str, speed: f64, pitch: f64) -> Result<Vec<u8>, String> {
+    if OFFLINE.get() {
+        let words = text.split_whitespace().count().max(1) as u32;
+        let _ = (voice, speed, pitch);
+        return Ok(crate::sound::sine_wav(16_000, 1, 440.0, 1_600 * words));
+    }
     let speed = if speed.is_finite() { speed.clamp(0.5, 3.0) } else { 1.0 };
     let pitch = if pitch.is_finite() { pitch.clamp(0.5, 1.5) } else { 1.0 };
     #[cfg(windows)]
