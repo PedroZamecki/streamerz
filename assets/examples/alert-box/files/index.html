@@ -194,7 +194,14 @@ function pump() {
 
 function seconds(item) {
   const own = (Number(item.rule.seconds) || 6) * 1000;
-  return S.untilSound && item.soundMs ? Math.max(own, item.soundMs) : own;
+  // The voice speaks after the sound: the alert stays until it has spoken.
+  const heard = (item.soundMs || 0) + (item.voiceMs || 0);
+  return (S.untilSound && item.soundMs) || item.voiceMs ? Math.max(own, heard + 300) : own;
+}
+
+// A rule's words with the alert's filled in, as plain text (for the voice).
+function said(text, w) {
+  return String(text).replace(/%(\w+)%/g, (all, k) => (k in w ? w[k] : all));
 }
 
 // --- Drawing one alert. --------------------------------------------------------------------------
@@ -278,6 +285,24 @@ function show(item) {
     audio.play().catch(() => {});
     item.audio = audio;
   }
+  // Say aloud: spoken by a voice of this computer, after the sound (needs voice.speak).
+  if (rule.say && rule.say.trim()) {
+    streamerz
+      .speak(said(rule.say, w), rule.voice ? { voice: rule.voice } : {})
+      .then(voice => {
+        if (item.leaving) return;
+        voice.volume = Math.min(1, Number(S.volume ?? 100) / 100);
+        voice.muted = !!S.muted;
+        item.voice = voice;
+        item.voiceMs = voice.durationMs || 0;
+        clearTimeout(item.timer);
+        item.timer = setTimeout(() => leave(item), seconds(item));
+        const start = () => voice.play().catch(() => {});
+        if (item.audio && !item.audio.ended) item.audio.addEventListener("ended", start, { once: true });
+        else start();
+      })
+      .catch(e => streamerz.log("Say aloud: " + e.message));
+  }
   item.timer = setTimeout(() => leave(item), seconds(item));
   streamerz.publish(topic("state"), state());
 }
@@ -287,6 +312,7 @@ function leave(item) {
   item.leaving = true;
   clearTimeout(item.timer);
   if (item.audio) item.audio.pause();
+  if (item.voice) item.voice.pause();
   const el = item.el;
   const out = (S.animOut || "Fade").replace(" ", "-");
   el.classList.remove("coming");

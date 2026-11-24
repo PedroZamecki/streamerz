@@ -7,6 +7,7 @@ use crate::send;
 use crate::theme::{self, CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
+    menu::{ContextMenuExt, PopupMenuItem},
     scroll::ScrollableElement,
     switch::Switch,
     ActiveTheme, Disableable, Icon, Sizable, WindowExt,
@@ -500,11 +501,16 @@ impl OverlayPage {
         let spec_for_click = spec.clone();
         let label = spec["label"].as_str().unwrap_or_default().to_owned();
         let icon = spec["icon"].as_str().unwrap_or("circle").to_owned();
-        Button::new(("overlay-button", index))
+        let button = Button::new(("overlay-button", index))
             .h(px(CONTROL_HEIGHT))
             .icon(Icon::empty().path(format!("icons/{icon}.svg")).size(px(13.)))
-            .label(label)
-            .on_click(cx.listener(move |page, _, window, cx| page.press(&spec_for_click, window, cx)))
+            .on_click(cx.listener(move |page, _, window, cx| page.press(&spec_for_click, window, cx)));
+        // A row's lesser buttons are their icon, named on hover (and in the right-click menu).
+        if spec["iconOnly"] == true {
+            button.tooltip(label.clone()).accessibility_label(label)
+        } else {
+            button.label(label)
+        }
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
@@ -761,8 +767,30 @@ impl OverlayPage {
                     .into_any_element()
             }),
         };
+        // The right-click menu has the row's buttons.
+        let specs: Vec<Value> = row["button"]
+            .as_object()
+            .map(|_| row["button"].clone())
+            .into_iter()
+            .chain(row["buttons"].as_array().cloned().unwrap_or_default())
+            .collect();
+        let owner = cx.entity().downgrade();
         div()
             .id(("overlay-row", at))
+            .context_menu(move |mut menu, _, _| {
+                for spec in &specs {
+                    let (spec, owner) = (spec.clone(), owner.clone());
+                    let icon = spec["icon"].as_str().unwrap_or("circle").to_owned();
+                    menu = menu.item(
+                        PopupMenuItem::new(spec["label"].as_str().unwrap_or_default().to_owned())
+                            .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |page, cx| page.press(&spec, window, cx));
+                            }),
+                    );
+                }
+                menu
+            })
             .flex()
             .items_center()
             .justify_between()

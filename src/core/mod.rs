@@ -16,6 +16,7 @@ pub mod moderation_settings;
 pub mod moderation_suspicious;
 pub mod navigation;
 pub mod outputs;
+pub mod overlay_alerts;
 pub mod overlay_media;
 pub mod overlay_test;
 pub mod overlays;

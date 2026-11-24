@@ -271,6 +271,7 @@ try {
   await values("Alert box", { pick: "One of the matching rules, by weight", rules: [
     { when: "Follow", from: "Any", min: 0, max: 0, text: "A", picture: "", sound: "", volume: 80, seconds: 6, weight: 1 },
     { when: "Follow", from: "Any", min: 0, max: 0, text: "B", picture: "", sound: "", volume: 80, seconds: 6, weight: 3 }] });
+  check(await t.until("streamerz.settings.rules?.[1]?.text === 'B'"), "the page has the new rules: " + await t.js("JSON.stringify(streamerz.settings.rules?.map(r => r.text))"));
   const counts = JSON.parse(await t.js("(() => { const c = {A: 0, B: 0}; for (let i = 0; i < 4000; i++) c[alertBox.pick({kind: 'follow', platform: 'kick', args: {}}).text]++; return JSON.stringify(c); })()"));
   check(counts.B > counts.A * 2 && counts.B < counts.A * 4, "by weight, B three times as often as A: " + JSON.stringify(counts));
   // Your own HTML, with what a viewer typed kept as text.
@@ -298,6 +299,25 @@ try {
   check((await draft("save")).status === "ok" && await t.until("document.body.className === 'top center'") && await p.until("document.body.className === 'top center'"), "save shows it everywhere");
   check((await draft("get")).draft && Object.keys((await draft("get")).draft).length === 0, "and the draft is gone");
   await values("Alert box", { position: "Center" });
+  // Say aloud: a rule's words spoken by a voice of this computer (the instance needs espeak-ng on its
+  // PATH for this; without it the page logs why and shows the alert as before).
+  const rules = boxDefaults.rules;
+  await values("Alert box", { rules: rules.map(r => (r.when === "Raid" ? { ...r, say: "Welcome raiders from %user%" } : r)) });
+  check(await t.until("streamerz.settings.rules?.some(r => r.say)"), "the page has the rule that speaks");
+  // (The page's own control: a topic sends nothing when its value is the one it had.)
+  // A tab behind another one doesn't animate: the alerts that leave would never be gone.
+  await t.cmd("Page.bringToFront");
+  await t.js("alertBox.control({do: 'resume'}); alertBox.control({do: 'clear'}); 1");
+  await t.until("alertBox.showing.length === 0 && alertBox.waiting.length === 0");
+  await t.js("alertBox.take({kind: 'raid', platform: 'twitch', user: 'Rae', args: {viewers: 7}}); 1");
+  const voices = await ask({ request: "StreamerzSpeech", op: "voices" });
+  if (voices.status !== "ok") console.log("skip a rule says its words aloud: no voice here (" + voices.error + ")");
+  const spoke = voices.status !== "ok" || await t.until("alertBox.showing[0]?.voice?.src?.includes('/overlays/-/speech/')", 5000);
+  check(spoke, "a rule says its words aloud: " + await t.js("JSON.stringify({showing: alertBox.showing.length, waiting: alertBox.waiting.length, rule: alertBox.showing[0]?.rule?.say, voice: alertBox.showing[0]?.voice?.src})") +
+    (spoke ? "" : " " + JSON.stringify(await ask({ request: "GetLog", lines: 8 })).slice(0, 600)));
+  check(voices.status !== "ok" || await t.js("alertBox.showing[0]?.voiceMs > 500"), "and the alert stays while it speaks: " + await t.js("alertBox.showing[0]?.voiceMs"));
+  await values("Alert box", { rules });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
   check(p.errors.length === 0, "the preview has no page errors " + p.errors.join(" | "));
   await p.close();
   await done(t, "alert-box");

@@ -1163,11 +1163,17 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   espeak-ng speaking two sentences in turn.
 - [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
   first), effects.
-- [ ] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
+- [x] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
   sound, voice, layout, animations and code, the Alerts tab editor, Play this rule. Done: the example
   Alert box (rules as a `list` setting, weights, the queue, gift bomb and TikTok combo merges, a control
-  topic, place, layout, animations, sound, Extra CSS and Card HTML), 44 browser checks with drafts; the Alerts tab
-  editing the same rules, voice and Play this rule are still to do.
+  topic, place, layout, animations, sound, Extra CSS and Card HTML), 44 browser checks with drafts; the
+  Alerts tab (`core/overlay_alerts.rs`: rows with pictures, a form made from the rules' columns with
+  the overlay's pictures, sounds and the voices to pick, Move up, Delete, Add, all as a draft), Play this
+  rule (an event made up to match its kind, platform and amount), Say aloud and Voice on each rule
+  (spoken after the sound through `streamerz.speak`; the alert stays while it speaks; checked in a
+  browser with the real espeak-ng). Rows saved before a column was added keep their values (the new cell
+  takes its default: they were dropped before). The overlay page's rows got a right-click menu with
+  their buttons, and lesser buttons as icons named on hover.
 - [ ] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
   ones updated.
 - [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,

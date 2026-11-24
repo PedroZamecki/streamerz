@@ -206,6 +206,19 @@ left out:
 setting, for the ones from there on. `showIf` shows a setting only while another one (a choice or a
 check box) has a value: `"showIf": {"setting": "look", "is": "Custom color"}`.
 
+### The Alerts tab
+
+An alert box (an overlay whose rules are a `list` setting called `rules`, as the Alert box example)
+gets an **Alerts** tab on its page: a row for each rule with its picture, **Play this rule** (an event
+made up to match it, on the preview), Edit, Move up and Delete, and **Add a rule**. The rule's form has
+its columns: when and from where, the amounts, the text, a picture and a sound picked from the overlay's
+files (or brought in with Browse), and **Say aloud** with a **Voice**: words spoken after the sound by a
+voice of this computer (the page needs `voice.speak`). Changes are a draft, as on Settings: the preview
+shows them at once and Save sends them to OBS.
+
+A row added to a `list` setting after rules were saved is fine: a saved row with no cell for a new
+column takes the column's default.
+
 ### Live controls
 
 Settings are what is set before going live; **controls** are what is changed while live. An overlay

@@ -1543,7 +1543,6 @@
   "overlays.settings.none": "Este overlay não tem configurações.",
   "overlays.media.none": "Este overlay ainda não tem arquivos.",
   "overlays.live.none": "Este overlay não tem controles ao vivo. Um overlay os declara no seu modelo, em controls: o guia explica como.",
-  "overlays.alerts.soon": "Por enquanto, as regras de alerta ficam na aba Configurações.",
   "overlays.btn.add_to_obs": "Adicionar ao OBS",
   "overlays.btn.open": "Abrir no navegador",
   "overlays.btn.page": "Página e permissões",
@@ -2822,5 +2821,16 @@
   "voices.stop": "Parar de falar",
   "voices.waiting": "{count} esperando para ser dito.",
   "voices.paused": "A fala está pausada.",
-  "voices.off": "A fala está desligada (Set Speech Enabled)."
+  "voices.off": "A fala está desligada (Set Speech Enabled).",
+  "overlays.alerts.at_least": "pelo menos {n}",
+  "overlays.alerts.at_most": "no máximo {n}",
+  "overlays.alerts.says": "diz: {text}",
+  "overlays.alerts.play": "Tocar esta regra",
+  "overlays.alerts.delete_confirm": "Apagar a regra {rule}?",
+  "overlays.alerts.intro": "Cada alerta usa a primeira regra que combina com ele (ou uma pelo peso, como diz Qual regra toca). As mudanças aparecem na prévia na hora; Salvar as manda para o OBS.",
+  "overlays.alerts.none": "Nenhuma regra ainda: cada alerta aparece como vem. Adicione uma regra.",
+  "overlays.alerts.add": "Adicionar uma regra",
+  "overlays.alerts.not_alert_box": "Este overlay não tem regras (uma configuração de lista chamada rules).",
+  "overlays.alerts.gone": "Essa regra não existe mais.",
+  "overlays.alerts.edit_title": "Regra: {rule}"
 }

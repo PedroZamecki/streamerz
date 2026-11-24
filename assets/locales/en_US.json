@@ -1543,7 +1543,6 @@
   "overlays.settings.none": "This overlay has no settings.",
   "overlays.media.none": "This overlay has no files yet.",
   "overlays.live.none": "This overlay has no live controls. An overlay declares them in its template, as controls: the guide says how.",
-  "overlays.alerts.soon": "The alert rules are on the Settings tab for now.",
   "overlays.btn.add_to_obs": "Add to OBS",
   "overlays.btn.open": "Open in browser",
   "overlays.btn.page": "Page and permissions",
@@ -2822,5 +2821,16 @@
   "voices.stop": "Stop speaking",
   "voices.waiting": "{count} waiting to be said.",
   "voices.paused": "Speech is paused.",
-  "voices.off": "Speech is off (Set Speech Enabled)."
+  "voices.off": "Speech is off (Set Speech Enabled).",
+  "overlays.alerts.at_least": "at least {n}",
+  "overlays.alerts.at_most": "at most {n}",
+  "overlays.alerts.says": "says: {text}",
+  "overlays.alerts.play": "Play this rule",
+  "overlays.alerts.delete_confirm": "Delete the rule {rule}?",
+  "overlays.alerts.intro": "Each alert takes the first rule that matches it (or one by weight, as Which rule plays says). Changes show on the preview at once; Save sends them to OBS.",
+  "overlays.alerts.none": "No rules yet: every alert is shown as it comes. Add a rule.",
+  "overlays.alerts.add": "Add a rule",
+  "overlays.alerts.not_alert_box": "This overlay has no rules (a list setting called rules).",
+  "overlays.alerts.gone": "That rule is gone.",
+  "overlays.alerts.edit_title": "Rule: {rule}"
 }

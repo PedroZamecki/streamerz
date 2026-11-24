@@ -86,6 +86,20 @@
             "default": 80
           },
           {
+            "name": "say",
+            "label": "Say aloud",
+            "kind": "text",
+            "default": "",
+            "description": "Spoken after the sound with a voice of this computer (%user%, %amount%...). Empty: nothing said"
+          },
+          {
+            "name": "voice",
+            "label": "Voice",
+            "kind": "text",
+            "default": "",
+            "description": "Empty: the default of Sounds, Voices"
+          },
+          {
             "name": "seconds",
             "label": "Seconds",
             "kind": "number",
@@ -109,7 +123,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Sub",
@@ -121,7 +137,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Resub",
@@ -133,7 +151,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Gift bomb",
@@ -145,7 +165,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 8,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Gift sub",
@@ -157,7 +179,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Cheer",
@@ -169,7 +193,9 @@
             "sound": "sounds/chime.wav",
             "volume": 100,
             "seconds": 9,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Cheer",
@@ -181,7 +207,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Raid",
@@ -193,7 +221,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 9,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Super Chat",
@@ -205,7 +235,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Member",
@@ -217,7 +249,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "TikTok gift",
@@ -229,7 +263,9 @@
             "sound": "sounds/chime.wav",
             "volume": 80,
             "seconds": 5,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Reward",
@@ -241,7 +277,9 @@
             "sound": "",
             "volume": 80,
             "seconds": 6,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           },
           {
             "when": "Any",
@@ -253,7 +291,9 @@
             "sound": "",
             "volume": 80,
             "seconds": 5,
-            "weight": 1
+            "weight": 1,
+            "say": "",
+            "voice": ""
           }
         ],
         "description": "One alert a line: When | From | At least | At most | Text | Picture | Sound | Volume | Seconds | Weight. The first rule that matches plays (or one by weight, below). At most 0 has no end. The text fills in %user%, %amount%, %event%, %message%, %gift%, %months%, %tier%, %coins% and %platform%. Picture and Sound are files of this overlay (img/star.svg) or web addresses; a video plays muted, its sound is the rule's Sound."
@@ -574,11 +614,12 @@
       }
     ],
     "permissions": [
-      "alerts.read"
+      "alerts.read",
+      "voice.speak"
     ],
     "template": {
       "id": "streamerz.example.alert-box",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": "Streamerz",
       "pages": [
         {

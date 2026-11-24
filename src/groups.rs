@@ -450,11 +450,12 @@ impl Def {
                     );
                     min <= a && a <= b && b <= max
                 }))
+            // A row made before a column was added has no cell for it: it takes the column's default.
             && (self.kind != Kind::List
                 || v.as_array().into_iter().flatten().all(|row| {
                     self.columns
                         .iter()
-                        .all(|column| row.get(&column.name).is_some_and(|cell| column.accepts(cell)))
+                        .all(|column| row.get(&column.name).is_none_or(|cell| column.accepts(cell)))
                 }))
     }
 
@@ -1323,7 +1324,16 @@ pub fn values(c: &Config, group: &str) -> Obj {
     let mut out = Obj::new();
     for d in settings_defs(&meta(c, group)) {
         let v = stored.and_then(|s| s.get(&d.name)).filter(|v| d.accepts(v));
-        out.insert(d.name.clone(), v.cloned().unwrap_or(d.default));
+        let mut v = v.cloned().unwrap_or(d.default.clone());
+        // Rows get the cells of columns added since they were made.
+        if d.kind == Kind::List {
+            for row in v.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+                for column in &d.columns {
+                    row.entry(column.name.clone()).or_insert_with(|| column.default.clone());
+                }
+            }
+        }
+        out.insert(d.name.clone(), v);
     }
     for (k, v) in stored.into_iter().flatten() {
         out.entry(k.clone()).or_insert_with(|| v.clone());
@@ -1698,6 +1708,41 @@ pub fn import_meta(c: &mut Config, groups: &Obj) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_made_before_a_column_was_added_keep_their_values() {
+        let mut c = Config::default();
+        create(&mut c, "Box");
+        let column = |name: &str, default: Value| Def {
+            name: name.into(),
+            label: name.into(),
+            kind: Kind::Text,
+            default,
+            ..Def::default()
+        };
+        let rules = Def {
+            name: "rules".into(),
+            label: "Rules".into(),
+            kind: Kind::List,
+            default: json!([]),
+            columns: vec![column("text", json!("")), column("say", json!(""))],
+            ..Def::default()
+        };
+        set_meta(
+            &mut c,
+            "Box",
+            Meta {
+                variables: vec![rules],
+                ..Meta::default()
+            },
+        )
+        .unwrap();
+        // Saved when the rows had no Say aloud.
+        c.action_group_variables
+            .insert("Box".into(), json!({"rules": [{"text": "mine"}]}));
+        let rows = &values(&c, "Box")["rules"];
+        assert_eq!(rows, &json!([{"text": "mine", "say": ""}]));
+    }
 
     fn def(name: &str, kind: Kind, default: Value) -> Def {
         Def {
@@ -2099,7 +2144,11 @@ mod tests {
             .parse("a | 1 | #fff000 | more")
             .unwrap_err()
             .contains("more than 3"));
-        assert!(!list.accepts(&json!([{"label": "x"}])), "a row has every column");
+        // A row may lack a column (one added since): it takes the column's default.
+        assert!(
+            list.accepts(&json!([{"label": "x"}])),
+            "a cell left out takes its default"
+        );
         assert!(!list.accepts(&json!([{"label": "x", "weight": "many", "color": "#ffffff"}])));
         // What can't be a setting is refused when the group is saved.
         let with = |d: Def| Meta {

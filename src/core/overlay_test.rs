@@ -101,6 +101,11 @@ fn alert_for(engine: &Rc<Engine>, code: u32, args: &Obj) -> Option<Value> {
     Some(json!(["Chat.Alert", alert_value(engine, code, args, &line, &avatar)]))
 }
 
+/// Sends one made-up event to this overlay's pages (Play this rule).
+pub fn play(engine: &Rc<Engine>, group: &str, code: u32, args: &Obj) -> Result<(), String> {
+    send_one(engine, group, code, args, 0)
+}
+
 /// Sends `code` with `args` to `target` (0 this overlay, 1 every overlay, 2 a real event).
 fn send_one(engine: &Rc<Engine>, group: &str, code: u32, args: &Obj, target: u64) -> Result<(), String> {
     if target == 2 {

@@ -2122,7 +2122,7 @@ fn platform_name(platform: &str) -> &'static str {
 
 /// A file of this computer picked for a `file` setting, as a file of the group: its name made
 /// portable, with a number when one of that name is there already.
-fn bring_in(
+pub(super) fn bring_in(
     meta: &crate::groups::Meta,
     def: &crate::groups::Def,
     path: &str,

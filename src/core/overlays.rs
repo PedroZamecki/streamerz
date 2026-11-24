@@ -467,6 +467,10 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
 }
 
 /// Whether an overlay is edited with Show on OBS while I edit on (each change kept at once).
+pub fn live_edit_on(group: &str) -> bool {
+    live_edit(group)
+}
+
 fn live_edit(group: &str) -> bool {
     LIVE_EDIT.with_borrow(|live| live.contains(group))
 }
@@ -623,7 +627,7 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
         }
         "media" => vec![super::overlay_media::section(engine, &group, id)],
         "live" => live_sections(&config, &group, id),
-        _ => vec![json!({"text": tr("overlays.alerts.soon")})],
+        _ => vec![super::overlay_alerts::section(engine, &group, id)],
     };
     // A form button of a section asks for its form for this overlay.
     let mut sections = sections;
@@ -913,6 +917,11 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
     if action.starts_with("media_") {
         let (group, _) = row(engine, id)?;
         return super::overlay_media::act(engine, &group, action);
+    }
+    // The Alerts tab's rules.
+    if action.starts_with("rule_") {
+        let (group, _) = row(engine, id)?;
+        return super::overlay_alerts::act(engine, &group, action);
     }
     // The Test tab's sets, song and replay.
     if action.starts_with("set:") || action.starts_with("replay:") || action.starts_with("song_") {
@@ -1375,6 +1384,11 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             ))
         }
         "test" => Ok(super::overlay_test::form(kind)),
+        "rule" => {
+            let (row_id, index) = id.split_once('|').unwrap_or((id.as_str(), "new"));
+            let (group, _) = row(engine, row_id)?;
+            super::overlay_alerts::form(engine, &group, kind.clone(), index)
+        }
         "media_add" | "media_rename" | "media_replace" => {
             let (row_id, file) = id.split_once('|').unwrap_or((id.as_str(), ""));
             row(engine, row_id)?;
@@ -1482,6 +1496,14 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
     if name == "test" {
         let (group, _) = row(engine, &id)?;
         return super::overlay_test::send(engine, &group, request);
+    }
+    if name == "rule" {
+        let (row_id, index) = id.split_once('|').unwrap_or((id.as_str(), "new"));
+        let (group, _) = row(engine, row_id)?;
+        if preview {
+            return Ok(json!({"item": {}, "json": "{}"}));
+        }
+        return super::overlay_alerts::save(engine, &group, index, request);
     }
     if matches!(name.as_str(), "media_add" | "media_rename" | "media_replace") {
         let (row_id, file) = id.split_once('|').unwrap_or((id.as_str(), ""));
