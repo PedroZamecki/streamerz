@@ -80,6 +80,9 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
                 let flags = draft.get(*key).and_then(Value::as_u64).unwrap_or(0) & !bit;
                 (if enabled { flags | bit } else { flags }).into()
             }
+            // A slider gives a number, a box its text.
+            W::Int if value.is_number() => json!(value.as_f64().unwrap_or(0.0).round() as i64),
+            W::Num if value.is_number() => value.clone(),
             W::Int => {
                 let input = input()?.trim();
                 if input.is_empty() {

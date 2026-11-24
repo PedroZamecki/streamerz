@@ -378,6 +378,9 @@ fn new_action(engine: &Rc<Engine>, name: &str, file: &str, volume: f64, device: 
 }
 
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
+    if let Some(done) = super::voices::act(engine, action, id) {
+        return done;
+    }
     let accepted = Ok(json!({"accepted": true}));
     let file_name = |path: &str| {
         Path::new(path)
@@ -559,7 +562,7 @@ fn form_json(kind: &str, title: &str, fields: &[F], item: Value) -> Value {
     let fields: Vec<Value> = fields
         .iter()
         .map(|(key, label, widget)| {
-            let mut field = json!({"key": key, "label": tr(label), "widget": widget,
+            let mut field = json!({"key": key, "label": crate::automation::schema::field_label(label), "widget": widget,
                 "holds": widget.about(), "value": crate::automation::edits::shown(widget, object.get(*key))});
             if matches!(widget, W::Suggest(_)) {
                 // Default by a word of its own (an empty id is Other's, for a name typed).

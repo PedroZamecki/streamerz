@@ -140,6 +140,8 @@ pub(crate) fn field_label(label: &'static str) -> &'static str {
         || label.starts_with("tools.")
         || label.starts_with("field.")
         || label.starts_with("overlay.")
+        || label.starts_with("sounds.")
+        || label.starts_with("voices.")
     {
         return crate::i18n::tr(label);
     }

@@ -73,6 +73,7 @@ pub mod types;
 mod update;
 mod usergroups;
 mod vars;
+mod voice;
 mod webcast;
 #[cfg(not(windows))]
 mod x11input;
@@ -186,6 +187,9 @@ pub struct Config {
     /// The Output settings of the Sounds page: the default and monitor devices, the master volume.
     #[serde(default)]
     sounds: sound::Settings,
+    /// How the voices speak by default (the Voices of the Sounds page).
+    #[serde(default)]
+    voices: voice::Settings,
     /// The live controls of each overlay as they are now (`meta.template.controls`), by group then
     /// control. Kept apart from its settings, so sharing an overlay never carries them.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -295,6 +299,7 @@ impl Default for Config {
             action_group_icons: Map::new(),
             action_groups: Map::new(),
             sounds: sound::Settings::default(),
+            voices: voice::Settings::default(),
             overlay_controls: Map::new(),
             overlay_key: String::new(),
             user_globals: Map::new(),

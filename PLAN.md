@@ -1144,7 +1144,13 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   Add to Board; the Board's pads (sound, volume, output), its dock at `/sounds/board` signed with a key;
   Output with a test sound for each device; MCP through `core_view`/`core_action` `sounds`. A pad's key
   is an action's hotkey trigger (New action with this sound), not a key of its own.
-- [ ] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player.
+- [x] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player. Done
+  (`src/voice.rs`): espeak-ng started for each speech (the text on stdin, never read as an option; the
+  install command for the system when it is missing), the Windows voices through WinRT; the WAV's
+  sizes put right (espeak-ng streams it as endless); the Voices of the Sounds page with Say, Make
+  default and the default speed, pitch and volume (`voices` in the settings file). Checked with the
+  real espeak-ng 1.52 (141 voices, Portuguese of Brazil spoken through the player), run from its
+  unpacked package, not installed; `docs/VOICES.md`.
 - [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
   downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
 - [ ] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
