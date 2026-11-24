@@ -2711,5 +2711,7 @@
   "overlays.live.hint": "Mudados ao vivo: cada controle vale na hora, em todas as páginas deste overlay, no OBS também.",
   "overlays.live.dock": "Doca para o OBS",
   "overlays.live.dock_how": "Os mesmos controles como uma doca do OBS: no OBS, Docas, Docas de navegador personalizadas, cole este endereço.",
-  "overlays.live.dock_address": "Doca de controles"
+  "overlays.live.dock_address": "Doca de controles",
+  "field.sound_overlay_file": "Som (um dos arquivos do overlay, ou um endereço da web)",
+  "field.sound_device_any": "Dispositivo (vazio: qualquer um)"
 }

@@ -153,9 +153,23 @@ pub async fn run(e: Rc<Engine>) {
     let mut last = None;
     let mut last_extra = None;
     let mut deck: Option<(crate::streamdeck::Settings, Option<tokio::task::AbortHandle>)> = None;
+    // The sound outputs are followed only while an action listens for Sound Device Changed.
+    let mut devices: Option<tokio::task::AbortHandle> = None;
     let notify = retry_notify();
     loop {
         let retry = SERVER_RETRY.swap(0, std::sync::atomic::Ordering::SeqCst);
+        match (e.wants_device_events(), devices.is_some()) {
+            (true, false) => {
+                devices =
+                    Some(tokio::task::spawn_local(crate::engine::sounds::follow_devices(e.clone())).abort_handle());
+            }
+            (false, true) => {
+                if let Some(h) = devices.take() {
+                    h.abort();
+                }
+            }
+            _ => {}
+        }
         // The Stream Deck plugin's server: on only when turned on, restarted when its settings change.
         let now_deck = rx.borrow().stream_deck.clone();
         if deck.as_ref().map(|d| &d.0) != Some(&now_deck) || (retry & RETRY_STREAM_DECK) != 0 {

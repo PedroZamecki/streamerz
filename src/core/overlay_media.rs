@@ -146,7 +146,7 @@ pub fn act(engine: &Rc<Engine>, group: &str, action: &str) -> Result<Value, Stri
     let path = groups::file_path(&config, group, name).ok_or_else(|| tr("overlays.media.gone").to_owned())?;
     match op {
         "media_play" => {
-            crate::sound::play(&path, &format!("media:{group}"), "", 1.0)?;
+            crate::sound::play(&path, &format!("media:{group}"), "Monitor", 1.0)?;
             Ok(json!({"accepted": true}))
         }
         "media_stop" => {

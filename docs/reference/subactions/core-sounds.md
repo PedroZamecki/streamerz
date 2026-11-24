@@ -240,3 +240,56 @@ Reads a sound file's length and format without playing it. Streamerz only.
 ### Notes
 
 - A file that can't be read writes why in the log and sets nothing.
+
+## Play Sound In Overlay
+
+- Kind: sub-action
+- Code: 99305
+- Type: PlaySoundInOverlay
+- Category: Core/Sounds
+- Needs: the HTTP server on, and a page of the overlay open (in OBS, for OBS to hear it)
+
+Plays a sound on an overlay's open pages instead of on this computer's output: the browser source plays it, so OBS mixes it with that source, with its own volume and filters. The page needs no code for it. Streamerz only.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Overlay | `overlay` | The overlay's name. Variables are filled in. |
+| Sound | `soundFile` | One of the overlay's files (`sounds/ding.mp3`) or a web address. Variables are filled in. |
+| Volume | `volume` | 0 to 100. |
+| Sound name | `soundName` | A name, so Stop Sound Playback can stop it. |
+
+### Arguments
+
+- `overlayPages`: how many pages of the overlay were open to play it.
+
+### Notes
+
+- Stop All Sound Playback and Stop Sound Playback also stop the sounds overlays play.
+- A file that isn't one of the overlay's writes why in the log.
+
+## Set Sound Device
+
+- Kind: sub-action
+- Code: 99306
+- Type: SetSoundDevice
+- Category: Core/Sounds
+- Needs: nothing
+
+Chooses the output that Default means for Streamerz: every Play Sound left on Default plays there from now on. It is kept in the Sounds page's Output settings. Streamerz only.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Device | `device` | The output's name, picked from the list or typed. `Default` or empty: the system's default again. Variables are filled in. |
+
+### Arguments
+
+None set.
+
+### Notes
+
+- A sound already playing stays where it is; the next one goes to the new device.
+- An output that isn't there when a sound plays: the sound plays on the system's default and the log says so.

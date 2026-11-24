@@ -202,3 +202,64 @@ impl Drop for Wasapi {
         }
     }
 }
+
+/// Told by Windows when an output comes, goes, or is turned on or off: a word on `tx` each time.
+#[windows::core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
+struct Notifier(tokio::sync::mpsc::UnboundedSender<()>);
+
+impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        _: &PCWSTR,
+        _: windows::Win32::Media::Audio::DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        let _ = self.0.send(());
+        Ok(())
+    }
+    fn OnDeviceAdded(&self, _: &PCWSTR) -> windows::core::Result<()> {
+        let _ = self.0.send(());
+        Ok(())
+    }
+    fn OnDeviceRemoved(&self, _: &PCWSTR) -> windows::core::Result<()> {
+        let _ = self.0.send(());
+        Ok(())
+    }
+    fn OnDefaultDeviceChanged(
+        &self,
+        _: windows::Win32::Media::Audio::EDataFlow,
+        _: windows::Win32::Media::Audio::ERole,
+        _: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnPropertyValueChanged(
+        &self,
+        _: &PCWSTR,
+        _: &windows::Win32::Foundation::PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+/// Listening for outputs that come and go, until dropped.
+pub struct DeviceWatch {
+    en: IMMDeviceEnumerator,
+    client: windows::Win32::Media::Audio::IMMNotificationClient,
+}
+
+impl Drop for DeviceWatch {
+    fn drop(&mut self) {
+        // SAFETY: the callback registered in `watch`, on the same enumerator.
+        unsafe {
+            let _ = self.en.UnregisterEndpointNotificationCallback(&self.client);
+        }
+    }
+}
+
+pub fn watch(tx: tokio::sync::mpsc::UnboundedSender<()>) -> Result<DeviceWatch, String> {
+    let en = enumerator()?;
+    let client: windows::Win32::Media::Audio::IMMNotificationClient = Notifier(tx).into();
+    // SAFETY: a live enumerator and a COM object that lives as long as the watch.
+    unsafe { en.RegisterEndpointNotificationCallback(&client) }.map_err(|e| e.to_string())?;
+    Ok(DeviceWatch { en, client })
+}

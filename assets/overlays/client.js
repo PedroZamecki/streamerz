@@ -51,6 +51,16 @@
         const { name, value, old } = d.data;
         if (C.controls && !(d.data.value === undefined)) C.controls[name] = value;
         fire("control:" + name, value, old);
+      } else if (e.source === "Sound") {
+        // Play Sound In Overlay: the page plays it itself, so OBS mixes it with this source.
+        const a = new Audio(whole(d.data.url));
+        a.volume = Math.max(0, Math.min(1, +d.data.volume || 0));
+        sounds.add(a);
+        a.onended = a.onerror = () => sounds.delete(a);
+        a.szName = d.data.name || "";
+        a.play().catch(() => sounds.delete(a));
+      } else if (e.source === "SoundStop") {
+        for (const a of sounds) if (!d.data.name || a.szName.toLowerCase() === d.data.name.toLowerCase()) (a.pause(), sounds.delete(a));
       } else if (e.source === "Play") {
         // Play on a settings form: the animation of that setting again, where streamerz.animate used it.
         replay(d.data.name);
@@ -111,6 +121,8 @@
     shake: [{ t: "none" }, { t: "translateX(-10px)" }, { t: "translateX(10px)" }, { t: "translateX(-10px)" }, { t: "translateX(10px)" }, { t: "none" }],
   };
   const played = Object.create(null);
+  // Sounds an action plays on this page (Play Sound In Overlay), until they end or are stopped.
+  const sounds = new Set();
   const replay = name => {
     for (const el of played[name] || []) if (el.isConnected) streamerz.animate(el, streamerz.settings[name]);
   };

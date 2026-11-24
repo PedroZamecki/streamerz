@@ -200,5 +200,89 @@
         "ended music finished"
       ]
     }
+  },
+  {
+    "name": "sounds: Set Sound Device chooses Default, an overlay plays a sound on its pages, a device that came runs its trigger",
+    "config": {
+      "action_groups": {
+        "Board": {
+          "files": [
+            {
+              "name": "ding.wav"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "setup",
+        "subActions": [
+          {
+            "type": 99306,
+            "device": "Headphones"
+          },
+          {
+            "type": 99305,
+            "overlay": "Board",
+            "soundFile": "ding.wav",
+            "volume": 50,
+            "soundName": "ding"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "pages %overlayPages%"
+          },
+          {
+            "type": 99305,
+            "overlay": "Board",
+            "soundFile": "nothing.wav"
+          }
+        ]
+      },
+      {
+        "name": "came",
+        "triggers": [
+          {
+            "type": 99302,
+            "device": "usb"
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "device %deviceName% %available%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "setup"
+      },
+      {
+        "fire": 99302,
+        "args": {
+          "device": "usb",
+          "deviceName": "USB Audio",
+          "available": true
+        },
+        "ran": 1
+      }
+    ],
+    "expect": {
+      "config": {
+        "sounds": {
+          "device": "Headphones"
+        }
+      },
+      "log": [
+        "pages 0",
+        "Play Sound In Overlay: nothing.wav is not one of Board's files",
+        "device USB Audio True"
+      ]
+    }
   }
 ]

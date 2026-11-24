@@ -2711,5 +2711,7 @@
   "overlays.live.hint": "Changed while live: each control is set at once, on every page of this overlay, in OBS too.",
   "overlays.live.dock": "Dock for OBS",
   "overlays.live.dock_how": "The same controls as a dock of OBS: in OBS, Docks, Custom Browser Docks, paste this address.",
-  "overlays.live.dock_address": "Controls dock"
+  "overlays.live.dock_address": "Controls dock",
+  "field.sound_overlay_file": "Sound (one of the overlay's files, or a web address)",
+  "field.sound_device_any": "Device (empty: any)"
 }

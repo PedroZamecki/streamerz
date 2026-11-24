@@ -60,3 +60,30 @@ Once for every sound that started, when it ends.
 ### Notes
 
 - A failed sound also writes why in the log.
+
+## Sound Device Changed
+
+- Kind: trigger
+- Code: 99302
+- Type: SoundDeviceChanged
+- Category: Core/Sounds
+- Needs: nothing
+
+Fires when a sound output comes or goes: headphones plugged in, a USB interface turned off.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Device | `device` | Only this output, by its name (empty: any). |
+
+### Arguments
+
+- `device`: the output's name, as Play Sound and Set Sound Device take it.
+- `deviceName`: the name the system shows for it.
+- `available`: `True` when it came, `False` when it went.
+- Plus `triggerId`, `triggerName`, `triggerCategory` and `eventSource`.
+
+### When
+
+Each time the system says an output was added or removed. Streamerz listens only while an action that is on has this trigger: on Linux through PulseAudio (`pactl subscribe`, which PipeWire answers too), on Windows through the system's device notifications. Nothing is asked in between.

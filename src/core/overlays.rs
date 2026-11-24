@@ -900,7 +900,7 @@ pub fn press(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             let path = groups::file_path(&config, group, file)
                 .or_else(|| Some(std::path::PathBuf::from(file)).filter(|p| p.is_absolute() && p.is_file()))
                 .ok_or_else(|| tr("overlays.media.gone").to_owned())?;
-            crate::sound::play(&path, &format!("media:{group}"), "", volume as f32)?;
+            crate::sound::play(&path, &format!("media:{group}"), "Monitor", volume as f32)?;
             Ok(json!({"accepted": true}))
         }
     }

@@ -385,7 +385,7 @@ pub fn trigger_categorize(name: &str) -> String {
         "Core/User Groups".into()
     } else if name.starts_with("Quote") {
         "Core/Quotes".into()
-    } else if name == "SoundStarted" || name == "SoundEnded" {
+    } else if name == "SoundStarted" || name == "SoundEnded" || name == "SoundDeviceChanged" {
         "Core/Sounds".into()
     } else if name == "OverlayControlChanged" {
         "Core/Overlays".into()

@@ -364,6 +364,8 @@ fn about(event: &Value, data: &Value) -> String {
         ("Reload", _) => "A file was saved: the page loads again".into(),
         ("Play", _) => format!("Play the animation {}", text(&data["name"])),
         ("Control", _) => format!("{} = {}", text(&data["name"]), short(&data["value"])),
+        ("Sound", _) => format!("Play {}", text(&data["url"])),
+        ("SoundStop", _) => "Stop its sounds".into(),
         ("Overlay", topic) => format!("{topic} = {}", short(data)),
         _ => short(data),
     }
@@ -1197,6 +1199,8 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
         subs.insert("Test".into(), std::iter::once(group.clone()).collect());
         subs.insert("Play".into(), std::iter::once(group.clone()).collect());
         subs.insert("Control".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Sound".into(), std::iter::once(group.clone()).collect());
+        subs.insert("SoundStop".into(), std::iter::once(group.clone()).collect());
         subs.insert("Reload".into(), std::iter::once(group).collect());
     }
     subs

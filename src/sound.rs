@@ -31,8 +31,53 @@ pub const RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 /// Frames written at a time: 20 ms.
 const CHUNK: usize = 960;
-/// Sounds at once, on every device together.
+/// Sounds at once, on every device together, when the Output setting says nothing else.
 pub const MAX_AT_ONCE: usize = 16;
+
+/// The Output settings of the Sounds page (`sounds` in the settings file).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Settings {
+    /// What Default means for Streamerz (empty: the system's default).
+    pub device: String,
+    /// Where previews play (Play on the Media tab, the Library, a form): the streamer hears them, OBS
+    /// doesn't capture them when it is another device. Empty: the same as Default.
+    pub monitor: String,
+    /// Every sound's volume, 0 to 100.
+    pub master: f64,
+    /// Sounds at once, on every device together.
+    pub max_at_once: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            device: String::new(),
+            monitor: String::new(),
+            master: 100.0,
+            max_at_once: MAX_AT_ONCE,
+        }
+    }
+}
+
+fn settings() -> MutexGuard<'static, Settings> {
+    static SETTINGS: OnceLock<Mutex<Settings>> = OnceLock::new();
+    SETTINGS
+        .get_or_init(|| Mutex::new(Settings::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Use these Output settings from now on (the settings file's, at start and when they change).
+pub fn configure(s: &Settings) {
+    if (s.master - settings().master).abs() > f64::EPSILON || master() != volume(s.master) {
+        set_master(volume(s.master), 0);
+    }
+    *settings() = Settings {
+        max_at_once: s.max_at_once.clamp(1, 64),
+        ..s.clone()
+    };
+}
 
 /// Where the mix goes. `write` blocks until the frames are taken.
 pub trait Output {
@@ -125,7 +170,15 @@ static MASTER: AtomicU32 = AtomicU32::new(0x3f80_0000);
 pub fn device_key(device: &str) -> String {
     let d = device.trim();
     if d.is_empty() || d.eq_ignore_ascii_case("Application Default") || d.eq_ignore_ascii_case("Default") {
-        String::new()
+        // Default is the device the Output settings chose (Set Sound Device), else the system's.
+        settings().device.clone()
+    } else if d.eq_ignore_ascii_case("Monitor") {
+        let m = settings().monitor.clone();
+        if m.is_empty() {
+            settings().device.clone()
+        } else {
+            m
+        }
     } else {
         d.to_string()
     }
@@ -168,8 +221,9 @@ pub fn play(file: &Path, name: &str, device: &str, volume: f32) -> Result<Starte
     let key = device_key(device);
     let mut p = player();
     let busy: usize = p.devices.values().map(|m| lock(m).voices.len()).sum();
-    if busy >= MAX_AT_ONCE {
-        return Err(format!("{MAX_AT_ONCE} sounds are already playing"));
+    let most = settings().max_at_once;
+    if busy >= most {
+        return Err(format!("{most} sounds are already playing"));
     }
     let opener = p.opener;
     let mixer = p
@@ -350,13 +404,114 @@ pub fn resolve(path: &str) -> PathBuf {
     crate::config_path().parent().map_or(p.clone(), |dir| dir.join(&p))
 }
 
-/// The names of the outputs a sound can be played on. Windows lists them; on Linux the PulseAudio
-/// sink names are typed (`pactl list short sinks`), so the list is empty.
+/// The names of the outputs a sound can be played on.
 pub fn devices() -> Vec<String> {
+    outputs().into_iter().map(|(name, _)| name).collect()
+}
+
+/// The outputs a sound can be played on: the name a sub-action keeps and the one shown. Windows
+/// lists its endpoints; on Linux PulseAudio (or PipeWire, which answers it) lists its sinks through
+/// `pactl`, asked only when a list is wanted.
+pub fn outputs() -> Vec<(String, String)> {
     #[cfg(windows)]
-    return wasapi::devices();
+    return wasapi::devices().into_iter().map(|d| (d.clone(), d)).collect();
+    #[cfg(target_os = "linux")]
+    return pactl_sinks();
     #[allow(unreachable_code)]
     Vec::new()
+}
+
+/// Waits until the system says an output came or went (PulseAudio's `pactl subscribe` on Linux, the
+/// endpoint notifications on Windows), then returns true; false when it can't listen. Nothing is
+/// asked in between: no poll.
+pub struct DeviceEvents {
+    #[cfg(target_os = "linux")]
+    lines: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    #[cfg(target_os = "linux")]
+    _child: tokio::process::Child,
+    #[cfg(windows)]
+    rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    #[cfg(windows)]
+    _watch: wasapi::DeviceWatch,
+}
+
+impl DeviceEvents {
+    pub fn start() -> Result<Self, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut cmd = std::process::Command::new("pactl");
+            cmd.arg("subscribe");
+            let mut child = tokio::process::Command::from(crate::sandbox::on_host(cmd))
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("pactl: {e}"))?;
+            let out = child.stdout.take().ok_or("pactl gave no output")?;
+            use tokio::io::AsyncBufReadExt;
+            Ok(Self {
+                lines: tokio::io::BufReader::new(out).lines(),
+                _child: child,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let watch = wasapi::watch(tx)?;
+            Ok(Self { rx, _watch: watch })
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        Err("sound outputs aren't followed on this system".into())
+    }
+
+    /// The next time an output came or went.
+    pub async fn next(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        loop {
+            match self.lines.next_line().await {
+                Ok(Some(line)) if is_sink_event(&line) => return true,
+                Ok(Some(_)) => continue,
+                _ => return false,
+            }
+        }
+        #[cfg(windows)]
+        return self.rx.recv().await.is_some();
+        #[allow(unreachable_code)]
+        false
+    }
+}
+
+/// A line of `pactl subscribe` about an output that came or went.
+#[cfg(any(target_os = "linux", test))]
+fn is_sink_event(line: &str) -> bool {
+    line.contains(" on sink #") && (line.contains("'new'") || line.contains("'remove'"))
+}
+
+#[cfg(target_os = "linux")]
+fn pactl_sinks() -> Vec<(String, String)> {
+    let mut cmd = std::process::Command::new("pactl");
+    cmd.args(["-f", "json", "list", "sinks"]);
+    let Ok(out) = crate::sandbox::on_host(cmd).output() else {
+        return Vec::new();
+    };
+    sinks_from_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `pactl -f json list sinks`: each sink's name and description.
+#[cfg(any(target_os = "linux", test))]
+fn sinks_from_json(text: &str) -> Vec<(String, String)> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(text).unwrap_or_default();
+    list.iter()
+        .filter_map(|s| {
+            let name = s["name"].as_str()?.to_string();
+            let shown = s["description"]
+                .as_str()
+                .filter(|d| !d.is_empty())
+                .unwrap_or(&name)
+                .to_string();
+            Some((name, shown))
+        })
+        .collect()
 }
 
 fn playing_json(p: &Playing) -> serde_json::Value {
@@ -389,7 +544,7 @@ pub fn request(req: &serde_json::Value) -> Result<serde_json::Value, String> {
                 "playing": playing().iter().map(playing_json).collect::<Vec<_>>(),
                 "devices": devices,
                 "master": (master() * 100.0).round(),
-                "maxAtOnce": MAX_AT_ONCE,
+                "maxAtOnce": settings().max_at_once,
                 "openOutputs": open_devices(),
                 "formats": EXTENSIONS,
             }))
@@ -458,6 +613,45 @@ pub fn pick_from_folder(folder: &Path, recursive: bool, avoid: Option<&str>) -> 
 /// The player is one for the process: tests that play take turns.
 #[cfg(test)]
 pub(crate) static TURN: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn default_and_monitor_follow_the_output_settings() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        configure(&Settings {
+            device: "Speakers".into(),
+            monitor: "Headphones".into(),
+            ..Settings::default()
+        });
+        assert_eq!(device_key(""), "Speakers");
+        assert_eq!(device_key("Default"), "Speakers");
+        assert_eq!(device_key("Monitor"), "Headphones");
+        assert_eq!(device_key("USB"), "USB");
+        configure(&Settings {
+            device: "Speakers".into(),
+            ..Settings::default()
+        });
+        assert_eq!(device_key("Monitor"), "Speakers", "no monitor: previews go to Default");
+        configure(&Settings::default());
+        assert_eq!(device_key(""), "");
+        let sinks = r#"[{"name":"alsa_output.hdmi","description":"HDMI Audio"},{"name":"usb"}]"#;
+        assert_eq!(
+            sinks_from_json(sinks),
+            vec![
+                ("alsa_output.hdmi".to_string(), "HDMI Audio".to_string()),
+                ("usb".into(), "usb".into())
+            ]
+        );
+        assert!(sinks_from_json("not json").is_empty());
+        assert!(is_sink_event("Event 'new' on sink #61"));
+        assert!(is_sink_event("Event 'remove' on sink #61"));
+        assert!(!is_sink_event("Event 'change' on sink #61"));
+        assert!(!is_sink_event("Event 'new' on sink-input #9"));
+    }
+}
 
 #[cfg(test)]
 mod tests {

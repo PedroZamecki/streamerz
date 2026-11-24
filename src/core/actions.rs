@@ -926,7 +926,13 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
             names.dedup();
             typed(names.into_iter().map(|name| (name.clone(), name)).collect())
         }
-        W::Suggest(key) | W::Entity(key) => typed(crate::catalog::choices(key)),
+        W::Suggest(key) | W::Entity(key) => {
+            // The sound outputs are asked for when a form wants them (nothing listens for them before).
+            if *key == "sound.devices" {
+                crate::catalog::set("sound.devices", crate::sound::outputs());
+            }
+            typed(crate::catalog::choices(key))
+        }
         W::Expression(values) => typed(values.iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect()),
         W::Who => typed(vec![
             ("%userName%".into(), tr("tools.who_sender").into()),

@@ -183,6 +183,9 @@ pub struct Config {
     action_group_icons: model::Obj,
     /// What each action group declares besides its values: settings, files, commands and timers.
     action_groups: model::Obj,
+    /// The Output settings of the Sounds page: the default and monitor devices, the master volume.
+    #[serde(default)]
+    sounds: sound::Settings,
     /// The live controls of each overlay as they are now (`meta.template.controls`), by group then
     /// control. Kept apart from its settings, so sharing an overlay never carries them.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -291,6 +294,7 @@ impl Default for Config {
             action_group_variables: Map::new(),
             action_group_icons: Map::new(),
             action_groups: Map::new(),
+            sounds: sound::Settings::default(),
             overlay_controls: Map::new(),
             overlay_key: String::new(),
             user_globals: Map::new(),
@@ -1491,6 +1495,7 @@ fn main() {
     backup::on_start();
     let (mut cfg, corrupt_config) = load_from_with_report(&config_path());
     tiktok_bridge::restore_pairing(&mut cfg);
+    sound::configure(&cfg.sounds);
     MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
     cleanup_first_words();
     if brand::IS_DEV {

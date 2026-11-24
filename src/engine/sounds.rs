@@ -12,13 +12,16 @@ use std::rc::Rc;
 
 pub const T_SOUND_STARTED: u32 = 99300;
 pub const T_SOUND_ENDED: u32 = 99301;
+pub const T_SOUND_DEVICE_CHANGED: u32 = 99302;
 
 /// The sub-actions this module runs.
 pub fn handles(kind: u64) -> bool {
-    matches!(kind, 1 | 7 | 30001 | 30002 | 99300..=99304)
+    matches!(kind, 1 | 7 | 30001 | 30002 | 99300..=99306)
 }
 
 thread_local! {
+    /// The overlays sounds were played on (Play Sound In Overlay), for the stops to reach them.
+    static OVERLAY_SOUNDS: RefCell<std::collections::HashSet<String>> = RefCell::new(Default::default());
     /// The last sound each folder gave, so the next pick is another.
     static LAST: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
@@ -82,12 +85,39 @@ impl Engine {
             }
             30001 => {
                 sound::stop(None, 0);
+                self.overlay_sounds_stop(None);
             }
             30002 => {
                 let name = self.expand(ctx, s(o, "soundName"));
                 if let Some(name) = which(&name) {
                     sound::stop(Some(name), 0);
+                    self.overlay_sounds_stop(Some(name));
                 }
+            }
+            // Play Sound In Overlay: the overlay's open pages play it (the browser source's audio, so
+            // OBS mixes it with that source).
+            99305 => {
+                let overlay = self.expand(ctx, s(o, "overlay")).trim().to_string();
+                let file = self.expand(ctx, s(o, "soundFile")).trim().to_string();
+                let name = self.expand(ctx, s(o, "soundName")).trim().to_string();
+                let volume = sound::volume(number(o, "volume", 100.0));
+                match self.overlay_sound(&overlay, &file, &name, volume) {
+                    Ok(pages) => {
+                        ctx.args.insert("overlayPages".into(), pages.into());
+                    }
+                    Err(e) => crate::warn(format!("Play Sound In Overlay: {e}")),
+                }
+            }
+            // Set Sound Device: what Default means for Streamerz from now on (kept in the Output settings).
+            99306 => {
+                let device = self.expand(ctx, s(o, "device")).trim().to_string();
+                let device = if device.eq_ignore_ascii_case("Default") {
+                    String::new()
+                } else {
+                    device
+                };
+                self.change(|c| c.sounds.device = device.clone());
+                sound::configure(&self.config().sounds);
             }
             99300 => {
                 let name = self.expand(ctx, s(o, "soundName"));
@@ -99,7 +129,10 @@ impl Engine {
                 sound::pause(which(&name), kind == 99301);
             }
             99303 => {
-                sound::set_master(sound::volume(number(o, "volume", 100.0)), fade(o));
+                let v = sound::volume(number(o, "volume", 100.0));
+                sound::set_master(v, fade(o));
+                // Kept, as the Output settings keep it.
+                self.change(|c| c.sounds.master = (f64::from(v) * 100.0).round());
             }
             99304 => {
                 let file = resolve(&self.expand(ctx, s(o, "soundFile")));
@@ -118,6 +151,85 @@ impl Engine {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Whether an action listens for Sound Device Changed (then, and only then, outputs are followed).
+    pub fn wants_device_events(&self) -> bool {
+        self.config().actions.actions.iter().any(|a| {
+            a.enabled
+                && a.triggers.iter().any(|t| {
+                    t.get("type").and_then(serde_json::Value::as_u64) == Some(T_SOUND_DEVICE_CHANGED as u64)
+                        && b(t, "enabled", true)
+                })
+        })
+    }
+
+    /// Sound Device Changed for each output that came or went since `known`, which becomes the list now.
+    pub fn sound_devices_changed(self: &Rc<Self>, known: &mut Vec<(String, String)>) {
+        let now = sound::outputs();
+        crate::catalog::set("sound.devices", now.clone());
+        let came = now
+            .iter()
+            .filter(|d| !known.iter().any(|k| k.0 == d.0))
+            .map(|d| (d, true));
+        let went = known
+            .iter()
+            .filter(|k| !now.iter().any(|d| d.0 == k.0))
+            .map(|d| (d, false));
+        let changes: Vec<((String, String), bool)> = came.chain(went).map(|(d, on)| (d.clone(), on)).collect();
+        for ((device, shown), available) in changes {
+            let mut args = Obj::new();
+            args.insert("device".into(), device.clone().into());
+            args.insert("deviceName".into(), shown.into());
+            args.insert("available".into(), available.into());
+            self.fire(
+                T_SOUND_DEVICE_CHANGED,
+                "Sound Device Changed",
+                "Core/Sounds",
+                "sounds",
+                &args,
+                |t| {
+                    let want = s(t, "device").trim();
+                    want.is_empty() || want.eq_ignore_ascii_case(&device)
+                },
+            );
+        }
+        *known = now;
+    }
+
+    /// Plays a sound on the open pages of an overlay: one of its files, or a web address. How many
+    /// pages listen.
+    pub fn overlay_sound(&self, overlay: &str, file: &str, name: &str, volume: f32) -> Result<usize, String> {
+        let config = self.config();
+        if !crate::groups::exists(&config, overlay) {
+            return Err(format!("there is no overlay {overlay}"));
+        }
+        let url = if file.starts_with("https://") || file.starts_with("http://") {
+            file.to_string()
+        } else if crate::groups::meta(&config, overlay)
+            .files
+            .iter()
+            .any(|f| f.name == file)
+        {
+            // Served by Streamerz: the page loads it from where it is served.
+            crate::overlays::url(&config, overlay, file)
+        } else {
+            return Err(format!("{file} is not one of {overlay}'s files nor a web address"));
+        };
+        drop(config);
+        let pages = crate::overlays::open_pages(overlay);
+        OVERLAY_SOUNDS.with_borrow_mut(|g| g.insert(overlay.to_string()));
+        let data = serde_json::json!({"url": url, "volume": volume, "name": name});
+        self.emit("Sound", overlay, || data.clone());
+        Ok(pages)
+    }
+
+    /// Stops the sounds overlays play (of a name, or all).
+    fn overlay_sounds_stop(&self, name: Option<&str>) {
+        let groups: Vec<String> = OVERLAY_SOUNDS.with_borrow(|g| g.iter().cloned().collect());
+        for group in groups {
+            self.emit("SoundStop", &group, || serde_json::json!({"name": name.unwrap_or("")}));
         }
     }
 
@@ -183,6 +295,22 @@ impl Engine {
         } else {
             tokio::task::spawn_local(ended);
         }
+    }
+}
+
+/// Follows the sound outputs while an action listens for Sound Device Changed (started and stopped
+/// by `servers::run` as the actions change).
+pub async fn follow_devices(e: Rc<Engine>) {
+    let mut known = sound::outputs();
+    let mut events = match sound::DeviceEvents::start() {
+        Ok(events) => events,
+        Err(error) => {
+            crate::warn(format!("Sound Device Changed: {error}"));
+            return;
+        }
+    };
+    while events.next().await {
+        e.sound_devices_changed(&mut known);
     }
 }
 
@@ -264,6 +392,6 @@ mod tests {
         assert_eq!(fade(&o), 250);
         o.insert("fadeMs".into(), (-5).into());
         assert_eq!(fade(&o), 0);
-        assert!(handles(1) && handles(7) && handles(30002) && handles(99304) && !handles(99305));
+        assert!(handles(1) && handles(7) && handles(30002) && handles(99304) && !handles(99307));
     }
 }

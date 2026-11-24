@@ -1858,6 +1858,13 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("volume", "field.volume_0_to_100", Int),
             ("fadeMs", "field.fade", Duration(1)),
         ],
+        99305 => &[
+            ("overlay", "overlay.control_overlay", Overlay),
+            ("soundFile", "field.sound_overlay_file", Text),
+            ("volume", "field.volume_0_to_100", Int),
+            ("soundName", "field.sound_name", Text),
+        ],
+        99306 => &[("device", "field.audio_device", Suggest("sound.devices"))],
         99304 => &[("soundFile", "field.sound_file", Text)],
         3 => &[
             ("file", "field.file", Text),
@@ -1962,6 +1969,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
         401 | 402 => &[("commandId", "field.command", Command)],
         701 => &[("timerId", "field.timer", Timer)],
+        99302 => &[("device", "field.sound_device_any", Suggest("sound.devices"))],
         702 | 706 | 99300 | 99301 | 99700..=99703 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
         99881 => &[
             ("overlay", "overlay.control_overlay_any", Overlay),
