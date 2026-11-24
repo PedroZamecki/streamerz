@@ -727,6 +727,19 @@ impl Form {
         }
     }
 
+    /// Whether the fields hold other values than `fields` (a model of the same form) gives: a control
+    /// set somewhere else. Numbers are compared as numbers (100 and 100.0 are one).
+    pub(crate) fn differs_from(&self, fields: &Value, cx: &App) -> bool {
+        (0..self.fields.len()).any(|index| {
+            let Some(now) = self.value(index, cx) else { return false };
+            let given = &fields[index]["value"];
+            match (now.as_f64(), given.as_f64()) {
+                (Some(a), Some(b)) => (a - b).abs() > 1e-6,
+                _ => now != *given,
+            }
+        })
+    }
+
     pub(crate) fn changes(&self, cx: &App) -> Vec<Value> {
         (0..self.fields.len())
             .filter_map(|index| {

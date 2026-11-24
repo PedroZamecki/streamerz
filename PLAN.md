@@ -1122,9 +1122,9 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   an export never carries them); the Live tab sets each one as it changes; the dock at
   `/overlays/<overlay>/-/controls`, with its address and the OBS steps on the Live tab; the page call
   and WebSocket op `control`; the trigger's `from` (window, dock, action, page, mcp); an action that
-  trigger ran doesn't fire it again. The Countdown to example has Show, Size and Add a minute; a
-  scenario, a core test and browser checks of the page and the dock. Left for later: the Live tab
-  showing a value set elsewhere while it is open (it shows it when opened again).
+  trigger ran doesn't fire it again; the Live tab follows a value set elsewhere while it is open. The
+  Countdown to example has Show, Size and Add a minute; a scenario, a core test and browser checks of
+  the page and the dock.
 - [ ] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
   sounds (done: `src/sound.rs`, Symphonia with PulseAudio by dlopen and WASAPI, no audio crate); the
   monitor device and the device list on Linux come with the Sounds page.

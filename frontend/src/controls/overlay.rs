@@ -155,7 +155,12 @@ impl OverlayPage {
         if kind.is_empty() {
             self.form = None;
             self.form_kind.clear();
-        } else if kind != self.form_kind || self.form.is_none() {
+        } else if kind != self.form_kind
+            || self.form.is_none()
+            // The live controls follow a change made elsewhere (a dock, an action).
+            || (model["tab"] == "live"
+                && self.form.as_ref().is_some_and(|f| f.read(cx).differs_from(&form["fields"], cx)))
+        {
             let route = format!("{}:save", self.route);
             let mut value = form.clone();
             value["tall"] = true.into();
