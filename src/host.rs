@@ -31,6 +31,8 @@ pub enum Event {
     Chat,
     Log,
     Image,
+    /// A new picture of the overlay preview.
+    Preview,
     Theme,
     Input,
     Toggle,
@@ -156,6 +158,9 @@ pub fn set_viewers_visible(visible: bool) {
 /// The pixel density emote and avatar pictures are asked for (the renderer scales them).
 pub fn image_scale() -> u8 {
     1
+}
+pub fn preview() {
+    emit(Event::Preview);
 }
 pub fn images_changed() {
     emit(Event::Image);

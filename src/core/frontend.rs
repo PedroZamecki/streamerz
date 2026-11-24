@@ -209,6 +209,7 @@ impl Changes {
             Event::Dev => 64,
             // Another copy was started: the window comes to the front.
             Event::Show => 128,
+            Event::Preview => 256,
             Event::Toggle | Event::Reopen | Event::Restart | Event::Quit => return,
         };
         self.topics.fetch_or(bit, Ordering::Release);
@@ -443,7 +444,7 @@ impl Frontend {
                         pending.insert(serial, reply);
                         protocol::write(&mut self.input, &json!({"event": "frontend.dev", "commandId": serial, "command": command})).await?;
                     }
-                    let names: Vec<_> = [(1, "config"), (2, "chat"), (4, "log"), (8, "images"), (16, "theme"), (32, "prompts"), (128, "raise")].into_iter().filter_map(|(bit, name)| (topics & bit != 0).then_some(name)).collect();
+                    let names: Vec<_> = [(1, "config"), (2, "chat"), (4, "log"), (8, "images"), (16, "theme"), (32, "prompts"), (128, "raise"), (256, "preview")].into_iter().filter_map(|(bit, name)| (topics & bit != 0).then_some(name)).collect();
                     if !names.is_empty() {
                         let mut notification = json!({"event":"core.changed", "topics":names});
                         if topics & 17 != 0 { notification["appearance"] = json!({"dark":crate::host::dark_of(&engine.config()), "animations":engine.config().animations}); }
@@ -475,6 +476,8 @@ impl Frontend {
             },
         };
 
+        // The overlay preview is drawn only by the window: it goes with it.
+        crate::overlay_preview::stop();
         let stopped = stopped_from_outside(&status);
         if stopped && crash_info.is_none() {
             crate::say(format!("The window was closed from outside Streamerz ({status})"));

@@ -406,6 +406,12 @@ impl Frontend {
             }));
         }));
     }
+    /// A new picture of the overlay preview is ready.
+    pub fn preview_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(overlay) = &self.overlay {
+            overlay.update(cx, |overlay, _| overlay.want_frame());
+        }
+    }
     /// Back from an overlay's page to the Overlays list.
     fn close_overlay(&mut self) {
         if let Some(view) = self.view.as_object_mut() {

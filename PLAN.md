@@ -1074,9 +1074,13 @@ Nothing loads until it is used: no thread, device, browser or download for someo
 - [x] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
   preview beside the tabs (Settings, Test, Media, Live, Alerts, Code) wide and above them narrow; a core
   view (`overlay:<group>`) for MCP.
-- [ ] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
+- [x] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
   the preview is on screen, clicks and keys passed on, backgrounds (see-through, dark, light, a picture,
-  the OBS scene once), Open preview in browser; closed when hidden.
+  the OBS scene once), Open preview in browser; closed when hidden. Done: `src/overlay_preview.rs` (the
+  browser's first tab, at most 30 pictures a second, each acknowledged; JPEG, PNG when see-through),
+  `StreamerzPreview`, clicks and the wheel, Fit and 100%, see-through, dark, light and Your scene (one
+  OBS picture when asked), closed on Back, another overlay and the window's close. A picture of the
+  user's choice behind it is left out (Your scene covers the need); the preview's sound is untested.
 - [ ] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
   `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit. Done in
   the core: `?preview=1` pages, the `Draft` feed, `streamerz.preview`, the request op `draft` and MCP

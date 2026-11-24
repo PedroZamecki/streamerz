@@ -822,6 +822,13 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
+        "StreamerzPreview" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzPreview" => match crate::core::overlays::preview(e, req) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
         "StreamerzCoreView" if !authed && e.config().websockets.enable_auth => {
             error(&id, "Authentication required to use this method")
         }

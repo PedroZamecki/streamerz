@@ -585,6 +585,72 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
     }}))
 }
 
+/// `StreamerzPreview`: the live preview of an overlay's page. `op` start (`itemId`, `background`),
+/// stop, frame (`have`: the newest picture after that one) or input (`event`, at the page's own
+/// coordinates).
+pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
+    match request["op"].as_str().unwrap_or_default() {
+        "start" => {
+            let (group, file) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            server_on(engine)?;
+            let config = engine.config();
+            let page = overlays::page_of(&config, &group, &file);
+            crate::overlay_preview::start(crate::overlay_preview::Ask {
+                url: overlays::url(&config, &group, &file),
+                width: if page.width == 0 { 1920 } else { page.width },
+                height: if page.height == 0 { 1080 } else { page.height },
+                background: request["background"].as_str().unwrap_or_default().to_owned(),
+            });
+            Ok(json!({"accepted": true}))
+        }
+        "stop" => {
+            crate::overlay_preview::stop();
+            Ok(json!({"accepted": true}))
+        }
+        "input" => {
+            crate::overlay_preview::input(request["event"].clone());
+            Ok(json!({"accepted": true}))
+        }
+        "frame" => {
+            let mut out = crate::overlay_preview::frame(request["have"].as_u64().unwrap_or(0));
+            if let (Some(out), Value::Object(scene)) = (
+                out.as_object_mut(),
+                crate::overlay_preview::scene(request["haveScene"].as_u64().unwrap_or(0)),
+            ) {
+                out.extend(scene);
+            }
+            Ok(out)
+        }
+        // Your scene: one picture of what OBS shows now, taken when asked (no timer).
+        "scene" => {
+            if engine.config().obs.connections.is_empty() {
+                return Err(tr("overlays.obs.none").into());
+            }
+            let width = request["width"].as_u64().unwrap_or(1280).clamp(8, 3840);
+            let engine = engine.clone();
+            tokio::task::spawn_local(async move {
+                let obs = engine.obs_start();
+                let shot = async {
+                    let now = obs.send_request(None, "GetCurrentProgramScene", json!({})).await?;
+                    let scene = now["currentProgramSceneName"].as_str().unwrap_or_default().to_owned();
+                    obs.send_request(
+                        None,
+                        "GetSourceScreenshot",
+                        json!({"sourceName": scene, "imageFormat": "jpg", "imageWidth": width, "imageCompressionQuality": 80}),
+                    )
+                    .await
+                };
+                match shot.await {
+                    Ok(v) => crate::overlay_preview::set_scene(v["imageData"].as_str().unwrap_or_default()),
+                    Err(e) => crate::warn(format!("Overlay preview: no picture of the scene: {e}")),
+                }
+            });
+            Ok(json!({"accepted": true}))
+        }
+        other => Err(format!("no preview operation {other}")),
+    }
+}
+
 /// Run one of the page's operations on a row.
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
     let accepted = Ok(json!({"accepted": true}));

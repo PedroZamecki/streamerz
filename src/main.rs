@@ -44,6 +44,7 @@ pub mod model;
 mod notify;
 mod oauth;
 pub mod obs;
+mod overlay_preview;
 mod overlay_shot;
 mod overlays;
 mod package;

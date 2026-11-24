@@ -261,6 +261,9 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                             view.request_status();
                             let topics = value["topics"].as_array();
                             view.images_for_forms(topics, cx);
+                            if topics.is_some_and(|topics| topics.iter().any(|topic| topic == "preview")) {
+                                view.preview_changed(cx);
+                            }
                             if view.chat_changed(topics, cx) {
                                 return;
                             }
