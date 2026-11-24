@@ -96,6 +96,14 @@ fn engine_summary(st: &neural::EngineState) -> String {
     }
 }
 
+fn progress_model(st: &neural::EngineState) -> Option<Value> {
+    let dl = st.download.as_ref()?;
+    Some(json!({
+        "percent": dl.percent,
+        "label": engine_summary(st),
+    }))
+}
+
 fn effect_index(effect: &str) -> u64 {
     match effect {
         "echo" => 1,
@@ -294,13 +302,21 @@ pub fn table(engine: &Rc<Engine>) -> Value {
         said = format!("{said} {}", tr("voices.off"));
     }
     t["intro"] = said.into();
+    if let Some(progress) = progress_model(&neural_state) {
+        t["progress"] = progress;
+    }
     t["search"] = true.into();
     t["open"] = "voice_say".into();
     t
 }
 
-/// The Find voices (neural voice catalog) table of the Sounds page.
+/// The Find voices (neural voice catalog) table of the Sounds page, filtered by the view's active toggles.
+#[cfg(test)]
 pub fn catalog_table(engine: &Rc<Engine>) -> Value {
+    catalog_table_with(engine, &Value::Null)
+}
+
+pub fn catalog_table_with(engine: &Rc<Engine>, view: &Value) -> Value {
     let neural_state = neural::state();
     let ui_locale = {
         let loc = engine.config().locale.clone();
@@ -312,8 +328,27 @@ pub fn catalog_table(engine: &Rc<Engine>) -> Value {
     };
     let ui_lang = ui_locale.replace('_', "-").to_ascii_lowercase();
     let ui_prefix = ui_lang.split('-').next().unwrap_or("en").to_string();
+    let active_filters: Vec<String> = view["sounds_voice_catalog"]["hidden"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let commercial_only = active_filters.iter().any(|f| f == "commercial");
+    let my_language_only = active_filters.iter().any(|f| f == "my_language");
+    let installed_only = active_filters.iter().any(|f| f == "installed");
 
-    let mut entries: Vec<&neural::CatalogEntry> = neural::catalog().iter().collect();
+    let mut entries: Vec<&neural::CatalogEntry> = neural::catalog()
+        .iter()
+        .filter(|e| !commercial_only || e.commercial)
+        .filter(|e| {
+            !my_language_only
+                || e.language.eq_ignore_ascii_case("multi")
+                || e.language.to_ascii_lowercase().starts_with(&ui_prefix)
+        })
+        .filter(|e| !installed_only || neural::is_model_installed(&e.id))
+        .collect();
     // Sort UI language first, then Kokoro/Pocket packs, then remaining voices alphabetically.
     entries.sort_by_key(|e| {
         let lang = e.language.to_ascii_lowercase();
@@ -445,6 +480,36 @@ pub fn catalog_table(engine: &Rc<Engine>) -> Value {
     );
     t["domain"] = json!(super::sounds::DOMAIN);
     t["intro"] = format!("{} {}", tr("voices.catalog_intro"), engine_summary(&neural_state)).into();
+    if let Some(progress) = progress_model(&neural_state) {
+        t["progress"] = progress;
+    }
+    let ui_tag = ui_locale.replace('_', "-");
+    t["filter"] = json!({
+        "mode": "toggles",
+        "options": [
+            {
+                "id": "commercial",
+                "label": tr("voices.filter_commercial"),
+                "tip": tr("voices.filter_commercial_tip"),
+                "icon": "shield",
+                "shown": commercial_only,
+            },
+            {
+                "id": "my_language",
+                "label": trf("voices.filter_my_language", &[("language", &ui_tag)]),
+                "tip": tr("voices.filter_my_language_tip"),
+                "icon": "globe",
+                "shown": my_language_only,
+            },
+            {
+                "id": "installed",
+                "label": tr("voices.filter_installed"),
+                "tip": tr("voices.filter_installed_tip"),
+                "icon": "check",
+                "shown": installed_only,
+            },
+        ],
+    });
     t["search"] = true.into();
     t["open"] = "voice_sample".into();
     t
@@ -675,6 +740,7 @@ const MIX_FIELDS: &[F] = &[
 const CLONE_FIELDS: &[F] = &[
     ("name", "voices.custom_name", W::Text),
     ("recording", "voices.recording_file", W::Text),
+    ("record", "voices.record_mic", W::Text),
     ("consent", "voices.recording_consent", W::Bool),
     ("speed", "voices.speed", W::Num),
     ("pitch", "voices.pitch", W::Num),
@@ -934,6 +1000,21 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str) -> Option<Result<Value, St
                 "recording" => {
                     field["browse"] = "file".into();
                     field["tip"] = tr("voices.recording_tip").into();
+                }
+                "record" => {
+                    field["label"] = "".into();
+                    field["buttonLabel"] = tr("voices.record_mic").into();
+                    field["busyLabel"] = tr("voices.recording_now").into();
+                    field["widget"] = json!({"kind": "button", "icon": "mic"});
+                    field["press"] = json!({
+                        "request": {
+                            "request": "StreamerzVoice",
+                            "action": "record_mic",
+                            "seconds": 6,
+                        },
+                        "fillField": "recording",
+                        "replyKey": "path",
+                    });
                 }
                 "voice1" | "voice2" | "voice3" | "voice4" => {
                     let mut choices = Vec::new();
@@ -1300,6 +1381,74 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("54"));
+
+            // Find voices filter toggles narrow by license, UI language, and installation state.
+            let commercial = catalog_table_with(&e, &json!({"sounds_voice_catalog": {"hidden": ["commercial"]}}));
+            let comm_rows = commercial["rows"].as_array().unwrap();
+            assert!(comm_rows.len() < cat_rows.len());
+            assert!(!comm_rows.iter().any(|r| r["id"] == "piper:en_US-lessac"));
+            assert!(!comm_rows.iter().any(|r| r["id"] == "piper:en_US-ryan"));
+            assert_eq!(commercial["filter"]["mode"], "toggles");
+            assert_eq!(commercial["filter"]["options"][0]["shown"], true);
+
+            let my_lang = catalog_table_with(&e, &json!({"sounds_voice_catalog": {"hidden": ["my_language"]}}));
+            let lang_rows = my_lang["rows"].as_array().unwrap();
+            assert!(lang_rows.len() < cat_rows.len());
+            assert!(lang_rows.iter().all(|r| {
+                let l = r["cells"][1].as_str().unwrap_or_default().to_ascii_lowercase();
+                l == "multi" || l.starts_with("en")
+            }));
+
+            let installed_only = catalog_table_with(&e, &json!({"sounds_voice_catalog": {"hidden": ["installed"]}}));
+            assert!(installed_only["rows"].as_array().unwrap().len() <= cat_rows.len());
+
+            // Live progress bar payload mirrors active download state and stays absent when idle.
+            let idle = neural::EngineState {
+                installed: false,
+                version: String::new(),
+                running: false,
+                loaded: None,
+                memory_bytes: 0,
+                disk_bytes: 0,
+                kokoro_installed: false,
+                pocket_installed: false,
+                download: None,
+            };
+            assert!(progress_model(&idle).is_none());
+            let active = neural::EngineState {
+                download: Some(neural::DownloadStatus {
+                    id: "piper:en_US-amy".into(),
+                    label: "Amy".into(),
+                    phase: "downloading".into(),
+                    downloaded: 10 << 20,
+                    total: 20 << 20,
+                    percent: 50,
+                }),
+                ..idle
+            };
+            let bar = progress_model(&active).unwrap();
+            assert_eq!(bar["percent"], 50);
+            assert!(bar["label"].as_str().unwrap().contains("Amy"));
+
+            // In-dialog mic recording button fills the recording field via async StreamerzVoice.
+            let tmp_voice_dir = dir.join("voices");
+            *neural::TEST_DIR.lock().unwrap() = Some(tmp_voice_dir);
+            let pocket_dir = neural::model_dir("pocket:en-v1");
+            std::fs::create_dir_all(&pocket_dir).unwrap();
+            std::fs::write(pocket_dir.join("flow_lm_main.int8.onnx"), b"ok").unwrap();
+            let clone_form = external_form(&e, "voice_clone:").unwrap().unwrap();
+            let rec_btn = clone_form["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["key"] == "record")
+                .unwrap();
+            assert_eq!(rec_btn["widget"]["kind"], "button");
+            assert_eq!(rec_btn["press"]["fillField"], "recording");
+            assert_eq!(rec_btn["press"]["replyKey"], "path");
+            assert_eq!(rec_btn["press"]["request"]["request"], "StreamerzVoice");
+            assert_eq!(rec_btn["press"]["request"]["action"], "record_mic");
+            *neural::TEST_DIR.lock().unwrap() = None;
 
             // The forms' fields are known where a save is read (a save of an unknown kind is refused).
             for kind in [

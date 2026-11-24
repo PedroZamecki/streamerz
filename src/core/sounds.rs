@@ -141,6 +141,10 @@ fn table(
 }
 
 pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
+    read_with(engine, &Value::Null)
+}
+
+pub fn read_with(engine: &Rc<Engine>, view: &Value) -> Result<Value, String> {
     let config = engine.config();
     let outputs = sound::outputs();
     crate::catalog::set("sound.devices", outputs.clone());
@@ -275,7 +279,7 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
     board["open"] = "pad_play".into();
     // Voices: the installed voices and the neural voice catalog.
     let voices = super::voices::table(engine);
-    let voice_catalog = super::voices::catalog_table(engine);
+    let voice_catalog = super::voices::catalog_table_with(engine, view);
     // Output: where sounds go.
     let s = &config.sounds;
     let rows = vec![

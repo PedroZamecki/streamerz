@@ -149,6 +149,9 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
     if domain == "user_card" {
         return super::pages::user_card(engine, request["itemId"].as_str().unwrap_or_default());
     }
+    if super::sounds::supports(domain) {
+        return super::sounds::read_with(engine, &request["view"]);
+    }
     if super::pages::supports(domain) {
         return super::pages::read_with(engine, domain, &request["view"]);
     }
