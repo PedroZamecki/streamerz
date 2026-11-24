@@ -662,3 +662,23 @@ Checked here, by hand and by the checks below, on Linux (PipeWire) with the hidd
 
 espeak-ng is not installed on the computer these checks ran on; to run the speech checks, install it
 (`sudo pacman -S espeak-ng` or your system's), or put a copy on the instance's `PATH` as above.
+
+### Neural voices, custom voices and effects (phases 12, 14 and 17)
+
+Checked locally on Linux (2026-11-24):
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` (root and `voice/`) | Passed. |
+| `cargo clippy --profile ci-test --all-targets -- -D warnings` (root) and `cargo clippy --manifest-path voice/Cargo.toml --all-targets -- -D warnings` | Passed, zero warnings. |
+| `cargo test --profile ci-test -- --test-threads=4` | **815 passed, 0 failed, 13 ignored**: resumable Range downloads with SHA-256 verification (`http::tests`), pure-Rust pitch shifting and echo/radio/robot effects (`voice::effects::tests`), neural catalog hashes/sizes/speakers and fake worker protocol (`voice::neural::tests`), `StreamerzVoice` mixes/clones/consent/effects (`engine::speech::tests`), Voices and Find voices tables, per-row permissions/confirmations, in-place custom voice editing and unsaved previews (`core::voices::tests`), MCP tool validation and dispatch (`mcp::tests`), and all scenarios and i18n checks. |
+| `cargo test --profile ci-test -p streamerz-frontend` | Passed, including narrow 6-tab Show wrapping (`controls::tabs::tests`) and toolbar per-row confirmation lookup (`controls::list::tests::selected_row_record_applies_per_row_confirm_for_toolbar_buttons`). |
+| `cargo test --manifest-path voice/Cargo.toml` | **3 passed, 0 failed** (WAV encoding, Kokoro slot-0 style-vector mixing, `.part` path handling). |
+| `cargo xwin check --locked --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed (type-check only; not run on native Windows). |
+| Live `Streamerz-Voice` + `Streamerz` (`target/fast/Streamerz`) | Real `vits-piper-pt_BR-faber-medium-int8` (84 KB WAV, 107.7 MB worker RAM), real Kokoro `kokoro-int8-multi-lang-v1_0` mix with `echo` (127 KB WAV, 322.6 MB worker RAM), real Pocket TTS `sherpa-onnx-pocket-tts-int8-2026-01-26` clone with consent and `radio` (134 KB WAV, 606.3 MB worker RAM), and `unload` (`worker_running=False`, 0 idle CPU ticks in 3 s before and after; disconnected dev-ui hidden RSS 38.84 MB before, 41.34 MB after unload). |
+| `dev/ui-shot.py` and `dev/ui-smoke.py` (`en_US` and `pt_BR`, `DISPLAY=:99`, software rendering) | Passed in both `en_US` (RSS 25,072 KiB after Hide) and `pt_BR`; narrow (540x800) and wide (1100x800) screenshots of Sounds > Voices, Sounds > Find voices, disabled action states and the wrapped Download license/attribution confirmation dialog checked with zero overflow. |
+| Non-Cargo CI checks (`git diff --check`, `dev/locale.py check`, `node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs`, `node dev/test-subathon-overlay.cjs`, `unittest discover -s dev -p 'test_*.py'`, `dev/scan_secrets.py`, `dev/scan_secrets.py --history`, `dev/package-extensions.py`) | Passed (17 Node tests, 16 Python tests, locales, secrets and extension packages). |
+
+Not run locally: `cargo-audit` and `actionlint` (not installed on this machine), native Windows runtime
+and `Streamerz-Voice.exe` build/run, release packaging/signing/GitHub artifact publication, live OBS
+alert box capture, and the connected Twitch + OBS hidden RSS/CPU comparison.

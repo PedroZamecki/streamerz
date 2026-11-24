@@ -1151,8 +1151,15 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   default and the default speed, pitch and volume (`voices` in the settings file). Checked with the
   real espeak-ng 1.52 (141 voices, Portuguese of Brazil spoken through the player), run from its
   unpacked package, not installed; `docs/VOICES.md`.
-- [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
+- [x] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
   downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
+  Done: `voice/` (`Streamerz-Voice`, sherpa-onnx 1.13.8 statically linked, GPL-3.0-or-later because it
+  bundles espeak-ng while Streamerz stays MIT over stdin/stdout), `assets/voices.json` (24 Piper int8
+  voices across 13 languages, Kokoro 54-voice pack, Pocket TTS pack, verified SHA-256s, sizes, RAM
+  estimates, licenses and non-commercial warnings, sample URLs), resumable Range downloads with progress
+  and cancellation (`src/http.rs`), `src/voice/neural.rs` (lazy start, unload, keepLoaded, Play sample),
+  Sounds > Find voices, and `build.yml`/`lint.yml` publishing `Streamerz-Voice` standalone with its
+  SHA-256 embedded in Streamerz.
 - [x] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
   99320 and 99321, `streamerz.speak`, the Read chat aloud template. Done (`engine/speech.rs`): a queue
   for each output and each overlay, run only while it has speeches; the filters as Speak's fields (a
@@ -1161,8 +1168,11 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   `voice.speak`, served two minutes at `/overlays/-/speech/<id>`; the request `StreamerzSpeech` and the
   MCP tool `speak`; the queue's controls on the Voices; a scenario with an offline voice, and the real
   espeak-ng speaking two sentences in turn.
-- [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
-  first), effects.
+- [x] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
+  first), effects. Done: Kokoro weighted style-vector mixing (2 to 4 voices placed into slot 0 of a
+  same-sized `voices-mixed.bin`), Pocket TTS local cloning from WAV/MP3/OGG/M4A/FLAC decoded via
+  Symphonia (or Linux mic recording via `parec`) with mandatory consent check, pure-Rust WAV pitch shift
+  and audio effects (`echo`, `radio`, `robot`) in `src/voice/effects.rs`, and forms on Sounds > Voices.
 - [x] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
   sound, voice, layout, animations and code, the Alerts tab editor, Play this rule. Done: the example
   Alert box (rules as a `list` setting, weights, the queue, gift bomb and TikTok combo merges, a control
@@ -1180,8 +1190,12 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   chat aloud (the chat spoken in the browser source, with Reading and Skip as live controls), and the
   Alert box updated (Say aloud, Voice, the Alerts tab); every example gets Extra CSS by itself. 383
   browser checks, the speeches with the real espeak-ng.
-- [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
-  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`).
+- [x] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
+  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`). Done: `StreamerzVoice` WebSocket request
+  and MCP tools `voices`, `voice_install`, `voice_remove` and `voice_mix`, tested by dispatch and unit
+  tests; `VOICES.md`, `MCP.md`, `TESTING.md` and `README.md` updated.
 - [ ] 18. Close: unit tests, scenarios, the smoke in English and pt_BR, real sounds and voices on Windows
   and Linux, the alert box in OBS, hidden RSS and idle CPU before and after (and after a voice is
-  unloaded), Windows check.
+  unloaded), Windows check. Linux checks, en_US and pt_BR smoke, live Piper/Kokoro/Pocket/unload checks
+  and Windows type-check are done; native Windows runtime, connected Twitch + OBS RSS/CPU comparison and
+  OBS live alert box check remain before closing the version.

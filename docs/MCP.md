@@ -43,9 +43,13 @@ on real applications, including in dev mode. Disabled integrations remain off.
 `sounds` lists what Streamerz plays now, its outputs and master volume, and pauses, resumes or turns
 down sounds by name; `sound_play` and `sound_stop` play and stop a file. They use this computer's real
 speakers and fire no trigger (see `docs/SOUNDS.md`). The Sounds page (Playing, Library, Board, Voices,
-Output) is `core_view` and `core_action` with the domain `sounds`. `speak` says a text with a voice of
-this computer, in turn with the other speeches, and stops, clears, pauses or turns speech off; `voices`
-lists the voices (see `docs/VOICES.md`).
+Find voices, Output) is `core_view` and `core_action` with the domain `sounds`. `speak` says a text with
+an installed system, neural or custom voice, in turn with the other speeches, and stops, clears, pauses or
+turns speech off. `voices` lists installed voices, the built-in neural catalog, custom voices and neural
+engine state (and supports `unload`, `sample`, `cancel` and `record_mic`); `voice_install` and
+`voice_remove` install or delete the neural engine or a voice model (ask the user before downloading);
+`voice_mix` creates Kokoro voice mixes, Pocket TTS voice clones (with `consent: true`) and effect voices
+(echo, radio, robot). See `docs/VOICES.md`.
 
 An overlay's own page is `core_view overlays` with `view: {"overlay": "<group>:<file>", "overlayTab":
 "settings|test|media|live|alerts|code"}`; its forms and buttons go through `entity_form`, `edit_entity`
