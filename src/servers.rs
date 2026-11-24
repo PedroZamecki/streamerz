@@ -819,7 +819,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             } else if crate::core::rewards::supports(get("domain")) {
                 crate::core::rewards::act(e, get("action"), get("itemId"))
             } else if crate::core::sounds::supports(get("domain")) {
-                crate::core::sounds::act(e, get("action"), get("itemId"))
+                crate::core::sounds::act_req(e, req)
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
             } else if crate::core::moderation::supports(get("domain")) {

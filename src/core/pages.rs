@@ -1383,7 +1383,7 @@ pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crat
     if let Some(fields) = super::sounds::external_fields(kind) {
         return Some(fields);
     }
-    if let Some(fields) = super::voices::external_fields(kind) {
+    if let Some(fields) = super::voices::external_fields(engine, kind) {
         return Some(fields);
     }
     if kind == "global" {

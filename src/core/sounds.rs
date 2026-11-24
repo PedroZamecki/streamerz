@@ -273,8 +273,9 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
         ],
     );
     board["open"] = "pad_play".into();
-    // Voices: the engines and voices (system voices, then neural ones).
+    // Voices: the installed voices and the neural voice catalog.
     let voices = super::voices::table(engine);
+    let voice_catalog = super::voices::catalog_table(engine);
     // Output: where sounds go.
     let s = &config.sounds;
     let rows = vec![
@@ -305,7 +306,7 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
             top(button("test_monitor", "sounds.test_monitor", "headphones", false)),
         ],
     );
-    let tables = vec![playing, library, board, voices, output];
+    let tables = vec![playing, library, board, voices, voice_catalog, output];
     let options: Vec<Value> = tables
         .iter()
         .map(|t| json!({"id": t["kind"], "label": t["title"]}))
@@ -375,6 +376,15 @@ fn new_action(engine: &Rc<Engine>, name: &str, file: &str, volume: f64, device: 
     let made = action.name.clone();
     engine.change(|c| c.actions.actions.push(action));
     Ok(json!({"accepted": true, "saved": id, "message": trf("sounds.action_made", &[("name", &made)])}))
+}
+
+pub fn act_req(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let action = req["action"].as_str().unwrap_or_default();
+    let id = req["itemId"].as_str().unwrap_or_default();
+    if action == "voice_preview" {
+        return super::voices::preview(engine, id, &req["value"]);
+    }
+    act(engine, action, id)
 }
 
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
@@ -775,6 +785,7 @@ mod tests {
                     "sounds_library",
                     "sounds_board",
                     "sounds_voices",
+                    "sounds_voice_catalog",
                     "sounds_output"
                 ]
             );
