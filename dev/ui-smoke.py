@@ -240,7 +240,7 @@ def main():
                     close = strings["dialogs.close"]
                     return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                 def layout_pass():
-                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Sounds", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                         if args.page and page.casefold() != args.page.casefold():
                             continue
                         for width, height in ((1100, 800), (540, 700)):
