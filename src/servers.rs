@@ -818,6 +818,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::overlays::act(e, get("action"), get("itemId"))
             } else if crate::core::rewards::supports(get("domain")) {
                 crate::core::rewards::act(e, get("action"), get("itemId"))
+            } else if crate::core::sounds::supports(get("domain")) {
+                crate::core::sounds::act(e, get("action"), get("itemId"))
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
             } else if crate::core::moderation::supports(get("domain")) {
@@ -2403,6 +2405,19 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             .await?;
         return tcp.shutdown().await;
     }
+    // The Sounds page's Board as an OBS dock, with its key.
+    if method == "GET" && path == "/sounds/board" {
+        let token = query
+            .split('&')
+            .find_map(|p| p.strip_prefix("token="))
+            .unwrap_or_default()
+            .to_string();
+        let page = crate::core::sounds::board_page(&e.config(), &token);
+        return match page {
+            Some(html) => crate::overlays::respond(&mut tcp, 200, "text/html; charset=utf-8", html.as_bytes()).await,
+            None => crate::overlays::respond(&mut tcp, 403, "text/plain; charset=utf-8", b"Not the Board's dock").await,
+        };
+    }
     if method == "GET" && (path == "/overlays" || path.starts_with("/overlays/")) {
         if path == "/overlays/events" {
             let upgrade = h("upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
@@ -2439,6 +2454,10 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
+    }
+    if method == "POST" && path == "/sounds/board/play" {
+        let (status, answer) = crate::core::sounds::board_press(e, &body);
+        return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }
     if method == "POST" && path == "/overlays/call" {
         let (status, answer) = match crate::overlays::avatar(e, &body).await {

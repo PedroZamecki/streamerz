@@ -68,6 +68,7 @@ pub fn supports(domain: &str) -> bool {
         || super::stream::supports(domain)
         || super::sections::supports(domain)
         || super::rewards::supports(domain)
+        || super::sounds::supports(domain)
 }
 
 /// The crash report's trail: the page the frontend opened last, noted when it changes. Whether the
@@ -110,6 +111,7 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
     if note_page(domain) && domain == "rewards" {
         super::rewards::opened(engine);
     }
+    super::sounds::opened(domain);
     if let Some((page_id, _, _)) = super::navigation::NAV
         .iter()
         .flat_map(|(_, _, pages)| pages.iter())
@@ -180,6 +182,9 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     }
     if super::rewards::supports(domain) {
         return super::rewards::read(engine);
+    }
+    if super::sounds::supports(domain) {
+        return super::sounds::read(engine);
     }
     let kinds: &[&str] = match domain {
         "commands" => &["command"],

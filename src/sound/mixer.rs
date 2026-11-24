@@ -116,6 +116,7 @@ impl Mixer {
         if let Some(done) = voice.done.take() {
             let _ = done.send(Ended { why, error: None });
         }
+        super::changed();
     }
 
     /// End every sound because the device failed.

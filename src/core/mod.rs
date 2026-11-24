@@ -34,11 +34,13 @@ pub mod rewards;
 pub mod sections;
 pub mod setting_fields;
 pub mod settings;
+pub mod sounds;
 pub mod status;
 pub mod stream;
 pub mod timers;
 pub mod undo;
 pub mod view;
+pub mod voices;
 
 /// Submit an engine operation to its existing single-thread runtime.
 pub fn submit(

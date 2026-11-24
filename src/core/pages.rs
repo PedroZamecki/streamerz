@@ -1420,6 +1420,9 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str, item_id: &str) -> Option<R
     if let Some(form) = super::rewards::external_form(engine, kind) {
         return Some(form);
     }
+    if let Some(form) = super::sounds::external_form(engine, kind) {
+        return Some(form);
+    }
     if kind == "global" {
         return Some(
             global_item(engine, item_id).and_then(|item| crate::automation::entities::form_of("global", item)),
@@ -1509,6 +1512,9 @@ pub fn save_external(
         return Some(saved);
     }
     if let Some(saved) = super::rewards::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::sounds::save_external(engine, kind, item.clone()) {
         return Some(saved);
     }
     if kind == "global" {

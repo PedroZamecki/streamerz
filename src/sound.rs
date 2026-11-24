@@ -47,6 +47,9 @@ pub struct Settings {
     pub master: f64,
     /// Sounds at once, on every device together.
     pub max_at_once: usize,
+    /// The Board's pads, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub board: Vec<Pad>,
 }
 
 impl Default for Settings {
@@ -56,6 +59,7 @@ impl Default for Settings {
             monitor: String::new(),
             master: 100.0,
             max_at_once: MAX_AT_ONCE,
+            board: Vec::new(),
         }
     }
 }
@@ -66,6 +70,33 @@ fn settings() -> MutexGuard<'static, Settings> {
         .get_or_init(|| Mutex::new(Settings::default()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+}
+
+/// A pad of the Sounds page's Board: a sound one press away.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Pad {
+    pub id: String,
+    pub label: String,
+    pub file: String,
+    /// 0 to 100 (0 is read as 100: a pad nobody set plays at full volume).
+    pub volume: f64,
+    /// Empty: Default.
+    pub device: String,
+}
+
+/// Whether the Sounds page is open: then a sound that starts or ends says so to the window.
+static WATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn watch(on: bool) {
+    WATCHED.store(on, Ordering::Relaxed);
+}
+
+/// What plays changed: the Sounds page reads it again (nothing is told while it is closed).
+pub(crate) fn changed() {
+    if WATCHED.load(Ordering::Relaxed) {
+        crate::host::changed();
+    }
 }
 
 /// Use these Output settings from now on (the settings file's, at start and when they change).
@@ -243,6 +274,8 @@ pub fn play(file: &Path, name: &str, device: &str, volume: f32) -> Result<Starte
         })
         .clone();
     lock(&mixer).voices.push(voice);
+    drop(p);
+    changed();
     Ok(Started { id, duration_ms, ended })
 }
 
@@ -315,6 +348,32 @@ pub fn stop(name: Option<&str>, fade_ms: u64) -> usize {
         .values()
         .map(|m| lock(m).stop(|v| matches(v, name), fade_ms))
         .sum()
+}
+
+/// Stop one sound by its id (the Sounds page), at once or over `fade_ms`.
+pub fn stop_id(id: u64, fade_ms: u64) -> usize {
+    let p = player();
+    p.devices.values().map(|m| lock(m).stop(|v| v.id == id, fade_ms)).sum()
+}
+
+/// Pause or resume one sound by its id.
+pub fn pause_id(id: u64, paused: bool) {
+    for m in player().devices.values() {
+        for v in lock(m).voices.iter_mut().filter(|v| v.id == id) {
+            v.paused = paused;
+        }
+    }
+    changed();
+}
+
+/// Change one sound's volume by its id, over `fade_ms`.
+pub fn set_volume_id(id: u64, volume: f32, fade_ms: u64) {
+    for m in player().devices.values() {
+        for v in lock(m).voices.iter_mut().filter(|v| v.id == id && !v.stopping) {
+            v.volume.to(volume, fade_ms);
+        }
+    }
+    changed();
 }
 
 /// Pause or resume the sounds of a name (every sound for None). How many.
@@ -903,6 +962,8 @@ mod tests {
 
     #[test]
     fn volumes_and_devices_read_as_streamer_bot_writes_them() {
+        // Default follows the Output settings, which other tests change.
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(volume(100.0), 1.0);
         assert_eq!(volume(50.0), 0.5);
         assert_eq!(volume(0.25), 0.25);

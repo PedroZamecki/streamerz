@@ -36,16 +36,40 @@ folders**). It doesn't pick the same sound twice in a row while the folder has a
 | Pause Sound, Resume Sound | Pauses the sounds of a name (or all) where they are, and plays them on |
 | Set Master Volume | Changes the volume of every sound, now and later |
 | Get Sound Info | Reads a file's length and format into arguments, without playing it |
+| Play Sound In Overlay | Plays a file on an overlay's open pages: the browser source plays it, so OBS mixes it with that source |
+| Set Sound Device | Chooses the output Default means for Streamerz (kept in Output) |
 
 The triggers **Sound Started** and **Sound Ended** (Core > Sounds) run an action when a sound starts and
 when it ends, with its name, file and why it ended (`finished`, `stopped` or `failed`). A sound played by
-an action these triggers ran fires neither of them again.
+an action these triggers ran fires neither of them again. **Sound Device Changed** runs one when an output
+comes or goes (headphones plugged in), with `device`, `deviceName` and `available`; Streamerz listens for
+that only while an action has the trigger.
+
+## The Sounds page
+
+**Sounds** (Automation) shows one part at a time, picked with **Show**:
+
+- **Playing**: what plays now, its output, where it is and its volume. Stop, Pause or Resume, Volume, and
+  Stop all; the right-click menu has the same.
+- **Library**: every sound Streamerz knows: those the actions play, those of the overlays, and those of the
+  `sounds` folder beside `streamerz.json` (Add a sound copies one there, Open folder shows it). Play (on the
+  monitor), Copy path, Used by, New action with this sound (an action with Play Sound ready, for a hotkey,
+  a Stream Deck key or a command) and Add to Board. A file an action names that isn't there says so.
+- **Board**: pads one press away, each with its sound, volume and output. Play, Edit, Move up, Delete, and
+  New action with this sound. **Copy the dock's address** gives the Board as an OBS dock (Docks, Custom
+  Browser Docks): a button for each pad, signed with a key of this computer, so only it plays them.
+- **Voices**: the voices that speak (text to speech).
+- **Output**: the Default device, the **monitor** device (where previews play: the streamer hears them,
+  OBS doesn't capture them when it is another device), the master volume and how many sounds play at
+  once, with a test sound for each device.
 
 ## Outputs
 
-**Audio device** in Play Sound picks the output. Leave it empty for the system's default. On Windows it is
-the name Windows shows for the output (`Speakers (Realtek(R) Audio)`); on Linux it is the PulseAudio or
-PipeWire sink name (`pactl list short sinks`). An output that isn't connected plays on the default instead.
+**Audio device** in Play Sound picks the output, from the list of this computer's outputs or typed. Leave
+it empty (Default) for the one the Output settings chose, else the system's default. On Windows it is the
+name Windows shows for the output (`Speakers (Realtek(R) Audio)`); on Linux it is the PulseAudio or
+PipeWire sink name, listed by its description. An output that isn't connected plays on the default
+instead. `Monitor` as a device plays on the monitor device.
 
 On Linux, sounds need PulseAudio or PipeWire (with its PulseAudio service, as every desktop has it).
 

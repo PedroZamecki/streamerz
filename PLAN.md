@@ -1125,14 +1125,25 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   trigger ran doesn't fire it again; the Live tab follows a value set elsewhere while it is open. The
   Countdown to example has Show, Size and Add a minute; a scenario, a core test and browser checks of
   the page and the dock.
-- [ ] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
+- [x] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
   sounds (done: `src/sound.rs`, Symphonia with PulseAudio by dlopen and WASAPI, no audio crate); the
-  monitor device and the device list on Linux come with the Sounds page.
-- [ ] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
+  monitor device and the device list on Linux come with the Sounds page. Done: the Output settings
+  (`sounds` in the settings file: Default, monitor, master volume, sounds at once), `Monitor` as a
+  device for previews, the outputs listed through `pactl` (PipeWire answers it) only when a list is
+  wanted, by their descriptions.
+- [x] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
   pause, resume, master volume, info, play in an overlay, device); triggers 99300 to 99302. Done: 1, 7,
   30001, 30002, 99300 to 99304, triggers 99300 and 99301, `StreamerzSound` and the MCP tools `sounds`,
-  `sound_play`, `sound_stop`; 99305, 99306 and 99302 come with live controls and the Sounds page.
-- [ ] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output.
+  `sound_play`, `sound_stop`; Play Sound In Overlay (99305: the page plays it, the stops reach it), Set
+  Sound Device (99306, kept in Output; Set Master Volume is kept too), and Sound Device Changed (99302)
+  from `pactl subscribe` on Linux and the endpoint notifications on Windows, listened to only while an
+  action that is on has the trigger (checked live with a null sink added and removed).
+- [x] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output. Done (`core/sounds.rs`): one
+  page with Show; Playing refreshes as sounds start and end, only while the page shows; the Library
+  from the actions, the overlays and the `sounds` folder, with Used by, New action with this sound and
+  Add to Board; the Board's pads (sound, volume, output), its dock at `/sounds/board` signed with a key;
+  Output with a test sound for each device; MCP through `core_view`/`core_action` `sounds`. A pad's key
+  is an action's hotkey trigger (New action with this sound), not a key of its own.
 - [ ] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player.
 - [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
   downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
