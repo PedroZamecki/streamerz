@@ -1081,10 +1081,13 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   `StreamerzPreview`, clicks and the wheel, Fit and 100%, see-through, dark, light and Your scene (one
   OBS picture when asked), closed on Back, another overlay and the window's close. A picture of the
   user's choice behind it is left out (Your scene covers the need); the preview's sound is untested.
-- [ ] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
+- [x] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
   `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit. Done in
   the core: `?preview=1` pages, the `Draft` feed, `streamerz.preview`, the request op `draft` and MCP
-  `overlay_draft`, checked in a browser; the editor's form and the leaving question come with phase 1.
+  `overlay_draft`, checked in a browser. In the editor: each change of the form (`Edited`) is a draft
+  the preview shows at once, the form shows the draft again after a new window, Revert and Save while
+  there is one, Show on OBS while I edit (each change kept at once), and Back, Escape and the mouse's
+  back button ask Save, Discard or Cancel.
 - [ ] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
   overlay or as a real event (`isTest`); saved sequences in `template.test`; replay of real events;
   topics, countdowns and songs; what the page logged.

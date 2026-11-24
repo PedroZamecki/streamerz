@@ -158,7 +158,7 @@ pub struct Form {
 impl Form {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let fields = model["fields"]
+        let fields: Vec<Field> = model["fields"]
             .as_array()
             .into_iter()
             .flatten()
@@ -447,6 +447,52 @@ impl Form {
                 }
             })
             .collect();
+        // Every value the person changes says so (Edited), for pages that follow the form as it is filled.
+        for field in &fields {
+            let text = |input: &Entity<InputState>, subs: &mut Vec<Subscription>, cx: &mut Context<Self>| {
+                subs.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.emit(Edited);
+                    }
+                }));
+            };
+            match field {
+                Field::Text(input) => text(input, &mut subscriptions, cx),
+                Field::Multi(area) | Field::Lines { area, .. } => {
+                    subscriptions.push(cx.subscribe(area, |_, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            cx.emit(Edited);
+                        }
+                    }))
+                }
+                Field::Pick(select) => {
+                    subscriptions.push(cx.subscribe(select, |_, _, _: &SelectEvent<Vec<String>>, cx| cx.emit(Edited)))
+                }
+                Field::Choice { select, input, .. } => {
+                    subscriptions.push(
+                        cx.subscribe(select, |_, _, _: &SelectEvent<SearchableVec<ChoiceItem>>, cx| {
+                            cx.emit(Edited)
+                        }),
+                    );
+                    if let Some(input) = input {
+                        text(input, &mut subscriptions, cx);
+                    }
+                }
+                Field::Font { select, .. } => subscriptions.push(
+                    cx.subscribe(select, |_, _, _: &SelectEvent<SearchableVec<String>>, cx| {
+                        cx.emit(Edited)
+                    }),
+                ),
+                Field::Color(state) => {
+                    subscriptions.push(cx.subscribe(state, |_, _, _: &ColorPickerEvent, cx| cx.emit(Edited)))
+                }
+                Field::Slider(state) => {
+                    subscriptions.push(cx.subscribe(state, |_, _, _: &SliderEvent, cx| cx.emit(Edited)))
+                }
+                Field::Gallery(gallery) => subscriptions.push(cx.observe(gallery, |_, _, cx| cx.emit(Edited))),
+                Field::Bool(_) | Field::Checks { .. } => {}
+            }
+        }
         // A type that has no form opens as JSON.
         let json_editor = (model["jsonOnly"] == true).then(|| {
             cx.new(|cx| {
@@ -549,7 +595,7 @@ impl Form {
         }
     }
 
-    fn changes(&self, cx: &App) -> Vec<Value> {
+    pub(crate) fn changes(&self, cx: &App) -> Vec<Value> {
         (0..self.fields.len())
             .filter_map(|index| {
                 let value = self.value(index, cx)?;
@@ -617,6 +663,11 @@ fn wrapped(text: &str, line: f32, width: f32) -> f32 {
 }
 /// A form's fix button asks for another page.
 impl EventEmitter<super::sections::Navigate> for Form {}
+
+/// A value of the form was changed by the person (typed, picked, ticked, dragged), for a page that
+/// shows changes as they are made (an overlay's preview).
+pub struct Edited;
+impl EventEmitter<Edited> for Form {}
 
 impl Render for Form {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -848,6 +899,7 @@ impl Render for Form {
                                         .disabled(self.pending || self.model["fields"][index]["disabled"] == true)
                                         .on_click(cx.listener(move |form, checked, _, cx| {
                                             form.fields[field_index] = Field::Bool(*checked);
+                                            cx.emit(Edited);
                                             cx.notify();
                                         })),
                                 ),
@@ -966,6 +1018,7 @@ impl Render for Form {
                                                         *slot = *checked;
                                                     }
                                                 }
+                                                cx.emit(Edited);
                                                 cx.notify();
                                             })),
                                     ),

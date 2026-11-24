@@ -420,11 +420,9 @@ impl Frontend {
         }
     }
     pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // An overlay's page goes back to its list first.
-        if self.overlay.is_some() {
-            self.close_overlay();
-            self.request_read();
-            cx.notify();
+        // An overlay's page goes back to its list first (asking when there is a draft).
+        if let Some(overlay) = self.overlay.clone() {
+            overlay.update(cx, |overlay, cx| overlay.leave(window, cx));
             return;
         }
         if self.history_index > 0 {

@@ -1852,8 +1852,14 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
 // Group settings: the description and the values by form, the definitions, files and members as JSON.
 
 pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value {
+    group_settings_form_with(config, group, &Obj::new())
+}
+
+/// The settings form with some values shown in place of the saved ones (an overlay's draft).
+pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over: &Obj) -> Value {
     let (meta, mut warnings) = crate::groups::inspect_meta(config, group);
-    let values = crate::groups::values(config, group);
+    let mut values = crate::groups::values(config, group);
+    values.extend(over.clone());
     let stored = config.action_group_variables.get(group).and_then(Value::as_object);
     let mut meta_issue_noted = false;
     let mut fields = vec![json!({"key": "description", "label": tr("dialogs.export.description"),
@@ -2126,6 +2132,76 @@ fn bring_in(
     Ok((file, name))
 }
 
+/// The setting values a settings form's `changes` give (field 0, the description, goes into `meta`).
+/// For a draft, a file of this computer isn't brought in (that waits for Save).
+pub(super) fn settings_changes(meta: &mut crate::groups::Meta, request: &Value, draft: bool) -> Result<Obj, String> {
+    let mut values = Obj::new();
+    for change in request["changes"].as_array().ok_or("changes: an array")? {
+        let index = change["field"]
+            .as_u64()
+            .ok_or_else(|| tr("forms.invalid_field").to_owned())? as usize;
+        let value = &change["value"];
+        if index == 0 {
+            meta.description = value
+                .as_str()
+                .ok_or_else(|| tr("forms.invalid_field").to_owned())?
+                .to_owned();
+            continue;
+        }
+        let def = meta
+            .variables
+            .get(index - 1)
+            .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
+        let parsed = match def.kind {
+            crate::groups::Kind::Boolean => value.as_bool().map(Value::from),
+            crate::groups::Kind::Choice => value
+                .as_u64()
+                .and_then(|at| def.options.get(at as usize))
+                .map(|option| Value::from(option.clone())),
+            // Dragged, so a step off the ends or between two steps is put back in place.
+            crate::groups::Kind::Slider => value.as_f64().map(|n| {
+                let (min, max, step) = def.range();
+                let n = (((n - min) / step).round() * step + min).clamp(min, max);
+                crate::groups::Kind::Number
+                    .parse(&format!("{n:.6}"))
+                    .unwrap_or(json!(n))
+            }),
+            crate::groups::Kind::Platforms => Some(value.clone()).filter(|v| def.accepts(v)),
+            // A file of this computer is brought into the overlay; one of its own, or a web
+            // address, is taken as it is.
+            crate::groups::Kind::File => {
+                let typed = value
+                    .as_str()
+                    .ok_or_else(|| tr("forms.invalid_field").to_owned())?
+                    .trim()
+                    .trim_matches('"');
+                let own = meta.files.iter().any(|f| f.name == typed);
+                if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
+                    Some(json!(typed))
+                } else if draft {
+                    continue;
+                } else {
+                    let (file, name) = bring_in(meta, def, typed)?;
+                    meta.files.push(file);
+                    Some(json!(name))
+                }
+            }
+            // What is wrong in a row is said with its line.
+            crate::groups::Kind::List => Some(
+                def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
+                    .map_err(|error| format!("{}: {error}", def.label))?,
+            ),
+            _ => value.as_str().and_then(|text| def.parse(text).ok()),
+        };
+        let (name, label) = (def.name.clone(), def.label.clone());
+        values.insert(
+            name,
+            parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &label)]))?,
+        );
+    }
+    Ok(values)
+}
+
 pub(super) fn group_settings_edit(
     engine: &Rc<Engine>,
     group: &str,
@@ -2142,67 +2218,7 @@ pub(super) fn group_settings_edit(
         meta = serde_json::from_str(text)
             .map_err(|error| trf("dialogs.not_valid_json", &[("error", &error.to_string())]))?;
     } else {
-        for change in request["changes"].as_array().ok_or("changes: an array")? {
-            let index = change["field"]
-                .as_u64()
-                .ok_or_else(|| tr("forms.invalid_field").to_owned())? as usize;
-            let value = &change["value"];
-            if index == 0 {
-                meta.description = value
-                    .as_str()
-                    .ok_or_else(|| tr("forms.invalid_field").to_owned())?
-                    .to_owned();
-                continue;
-            }
-            let def = meta
-                .variables
-                .get(index - 1)
-                .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
-            let parsed = match def.kind {
-                crate::groups::Kind::Boolean => value.as_bool().map(Value::from),
-                crate::groups::Kind::Choice => value
-                    .as_u64()
-                    .and_then(|at| def.options.get(at as usize))
-                    .map(|option| Value::from(option.clone())),
-                // Dragged, so a step off the ends or between two steps is put back in place.
-                crate::groups::Kind::Slider => value.as_f64().map(|n| {
-                    let (min, max, step) = def.range();
-                    let n = (((n - min) / step).round() * step + min).clamp(min, max);
-                    crate::groups::Kind::Number
-                        .parse(&format!("{n:.6}"))
-                        .unwrap_or(json!(n))
-                }),
-                crate::groups::Kind::Platforms => Some(value.clone()).filter(|v| def.accepts(v)),
-                // A file of this computer is brought into the overlay; one of its own, or a web
-                // address, is taken as it is.
-                crate::groups::Kind::File => {
-                    let typed = value
-                        .as_str()
-                        .ok_or_else(|| tr("forms.invalid_field").to_owned())?
-                        .trim()
-                        .trim_matches('"');
-                    let own = meta.files.iter().any(|f| f.name == typed);
-                    if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
-                        Some(json!(typed))
-                    } else {
-                        let (file, name) = bring_in(&meta, def, typed)?;
-                        meta.files.push(file);
-                        Some(json!(name))
-                    }
-                }
-                // What is wrong in a row is said with its line.
-                crate::groups::Kind::List => Some(
-                    def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
-                        .map_err(|error| format!("{}: {error}", def.label))?,
-                ),
-                _ => value.as_str().and_then(|text| def.parse(text).ok()),
-            };
-            let (name, label) = (def.name.clone(), def.label.clone());
-            values.insert(
-                name,
-                parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &label)]))?,
-            );
-        }
+        values = settings_changes(&mut meta, request, false)?;
     }
     drop(config);
     if preview {

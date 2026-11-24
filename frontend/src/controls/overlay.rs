@@ -8,6 +8,7 @@ use crate::theme::{self, CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, SPACE_MD, SPAC
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     scroll::ScrollableElement,
+    switch::Switch,
     ActiveTheme, Disableable, Icon, Sizable, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -34,6 +35,8 @@ pub struct OverlayPage {
     /// The tab's form (Settings, Code), kept while the tab and its kind stay the same.
     form: Option<Entity<Form>>,
     form_kind: String,
+    /// Each change of the settings form goes to the preview as a draft.
+    _form_edits: Option<Subscription>,
     /// A form asked by a toolbar button (Add to OBS, Export), shown as a dialog.
     dialog: Option<Entity<Form>>,
     focus: FocusHandle,
@@ -104,6 +107,7 @@ impl OverlayPage {
             route,
             form: None,
             form_kind: String::new(),
+            _form_edits: None,
             dialog: None,
             focus: cx.focus_handle(),
             preview_key: String::new(),
@@ -142,7 +146,20 @@ impl OverlayPage {
         } else if kind != self.form_kind || self.form.is_none() {
             let route = format!("{}:save", self.route);
             let value = form.clone();
-            self.form = Some(cx.new(|cx| Form::new(value, route, window, cx)));
+            let new = cx.new(|cx| Form::new(value, route, window, cx));
+            // The settings are drafts as they are changed: the preview shows them before Save.
+            self._form_edits = (model["tab"] == "settings").then(|| {
+                let route = self.route.clone();
+                let id = model["id"].clone();
+                cx.subscribe(&new, move |_, form, _: &super::form::Edited, cx| {
+                    let changes = form.read(cx).changes(cx);
+                    send(
+                        json!({"request": "StreamerzPreview", "op": "draft", "itemId": id, "changes": changes,
+                        "id": format!("{route}:draft")}),
+                    );
+                })
+            });
+            self.form = Some(new);
             self.form_kind = kind;
         }
         self.model = model;
@@ -254,6 +271,15 @@ impl OverlayPage {
     /// The core's answer to one of this page's requests; true when the page should be read again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+            if operation == "draft" {
+                if let Some(form) = &self.form {
+                    form.update(cx, |form, cx| {
+                        form.error = Some(err);
+                        cx.notify();
+                    });
+                }
+                return false;
+            }
             if matches!(operation, "preview" | "frame") {
                 self.frame_pending = false;
                 self.preview_note = err.description.clone();
@@ -281,6 +307,18 @@ impl OverlayPage {
                 false
             }
             "preview" => false,
+            "draft" => {
+                self.model["draft"] = value["draft"].clone();
+                cx.notify();
+                false
+            }
+            "revert" => {
+                // The form goes back to the saved values.
+                self.form = None;
+                self.form_kind.clear();
+                true
+            }
+            "live" => true,
             "save" => {
                 // Read again with what was saved: the form is made anew from it.
                 self.form = None;
@@ -622,6 +660,120 @@ impl OverlayPage {
     }
 }
 
+impl OverlayPage {
+    fn draft(&self) -> u64 {
+        self.model["draft"].as_u64().unwrap_or(0)
+    }
+
+    /// Back to the list; with a draft, asks first: Save, Discard or Cancel.
+    pub fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.draft() == 0 {
+            cx.emit(OverlayEvent::Back);
+            return;
+        }
+        let owner = cx.entity().downgrade();
+        let (id, route) = (self.model["id"].clone(), self.route.clone());
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let (save_owner, discard_owner) = (owner.clone(), owner.clone());
+            let (save_id, discard_id, save_route, discard_route) =
+                (id.clone(), id.clone(), route.clone(), route.clone());
+            let buttons = div()
+                .flex()
+                .justify_end()
+                .gap(px(SPACE_SM))
+                .child(
+                    Button::new("leave-cancel")
+                        .label(tr("dialogs.cancel"))
+                        .on_click(|_, window, cx| super::dialog::dismiss(window, cx)),
+                )
+                .child(
+                    Button::new("leave-discard")
+                        .label(tr("overlays.draft.discard"))
+                        .on_click(move |_, window, cx| {
+                            send(
+                                json!({"request": "StreamerzPreview", "op": "revert", "itemId": discard_id,
+                            "id": format!("{discard_route}:revert")}),
+                            );
+                            window.close_dialog(cx);
+                            let _ = discard_owner.update(cx, |_, cx| cx.emit(OverlayEvent::Back));
+                        }),
+                )
+                .child(
+                    Button::new("leave-save")
+                        .primary()
+                        .label(tr("btn.save"))
+                        .on_click(move |_, window, cx| {
+                            send(json!({"request": "StreamerzPreview", "op": "save", "itemId": save_id,
+                            "id": format!("{save_route}:revert")}));
+                            window.close_dialog(cx);
+                            let _ = save_owner.update(cx, |_, cx| cx.emit(OverlayEvent::Back));
+                        }),
+                );
+            let footer = super::dialog::footer(None, buttons, cx);
+            super::dialog::shell(dialog, tr("overlays.draft.leave_title"), 448., window, cx)
+                .child(super::dialog::body(tr("overlays.draft.leave")))
+                .footer(footer)
+        });
+    }
+
+    /// While there is a draft: how many changes, Revert and Save; and Show on OBS while I edit.
+    fn draft_bar(&self, cx: &mut Context<Self>) -> Div {
+        let draft = self.draft();
+        let live = self.model["live"] == true;
+        let id = self.model["id"].clone();
+        let route = self.route.clone();
+        let mut bar = div().flex().flex_wrap().items_center().gap(px(SPACE_SM)).child(
+            Switch::new("overlay-live-edit")
+                .checked(live)
+                .label(tr("overlays.draft.live"))
+                .on_click({
+                    let (id, route) = (id.clone(), route.clone());
+                    move |checked: &bool, _, _| {
+                        send(
+                            json!({"request": "StreamerzPreview", "op": "live", "itemId": id, "on": checked,
+                            "id": format!("{route}:live")}),
+                        );
+                    }
+                }),
+        );
+        if draft > 0 && !live {
+            let form = self.form.clone();
+            bar = bar
+                .child(
+                    div()
+                        .text_size(px(FONT_CAPTION))
+                        .text_color(theme::quiet(cx))
+                        .child(crate::i18n::trf(
+                            "overlays.draft.count",
+                            &[("count", &draft.to_string())],
+                        )),
+                )
+                .child(
+                    Button::new("overlay-revert")
+                        .h(px(CONTROL_HEIGHT))
+                        .icon(Icon::empty().path("icons/rotate-ccw.svg").size(px(13.)))
+                        .label(tr("overlays.draft.revert"))
+                        .on_click(move |_, _, _| {
+                            send(json!({"request": "StreamerzPreview", "op": "revert", "itemId": id,
+                                "id": format!("{route}:revert")}));
+                        }),
+                )
+                .child(
+                    Button::new("overlay-save")
+                        .h(px(CONTROL_HEIGHT))
+                        .primary()
+                        .label(tr("btn.save"))
+                        .on_click(move |_, _, cx| {
+                            if let Some(form) = &form {
+                                form.update(cx, |form, cx| form.submit(false, cx));
+                            }
+                        }),
+                );
+        }
+        bar
+    }
+}
+
 impl Render for OverlayPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = f32::from(window.viewport_size().width);
@@ -633,7 +785,7 @@ impl Render for OverlayPage {
             .ghost()
             .icon(Icon::empty().path("icons/arrow-left.svg").size(px(13.)))
             .label(self.model["back"].as_str().unwrap_or_default().to_owned())
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(OverlayEvent::Back)));
+            .on_click(cx.listener(|page, _, window, cx| page.leave(window, cx)));
         let owner = cx.entity().downgrade();
         let tabs = super::tabs::bar(&self.model["tabs"], window, cx, move |kind, _, cx| {
             let _ = owner.update(cx, |_, cx| cx.emit(OverlayEvent::Tab(kind)));
@@ -652,6 +804,7 @@ impl Render for OverlayPage {
             .min_w_0()
             .min_h_0()
             .flex_1()
+            .child(self.draft_bar(cx))
             .child(tabs)
             .child(panel);
         let content = if wide {
@@ -675,9 +828,9 @@ impl Render for OverlayPage {
         div()
             .id("overlay-page")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|page, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    cx.emit(OverlayEvent::Back);
+                    page.leave(window, cx);
                 }
             }))
             .size_full()

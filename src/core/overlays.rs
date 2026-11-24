@@ -466,7 +466,14 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     Ok(json!({"domain": DOMAIN, "tables": [table]}))
 }
 
+/// Whether an overlay is edited with Show on OBS while I edit on (each change kept at once).
+fn live_edit(group: &str) -> bool {
+    LIVE_EDIT.with_borrow(|live| live.contains(group))
+}
+
 thread_local! {
+    /// The overlays edited with Show on OBS while I edit on.
+    static LIVE_EDIT: std::cell::RefCell<std::collections::HashSet<String>> = Default::default();
     /// The tab each overlay's page showed last, by group.
     static LAST_TAB: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
 }
@@ -546,7 +553,13 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
     let body = match tab {
         "settings" => {
             let request = json!({"kind": format!("{FORMS}settings:{id}")});
+            let draft = engine.overlay_draft(&group);
+            // The form shows the draft, as the preview does: it lives in the core, so it outlasts the window.
             let mut form = form_for(engine, &request)?;
+            if !draft.is_empty() {
+                let shown = super::actions::group_settings_form_with(&config, &group, &draft);
+                form["fields"] = shown["fields"].clone();
+            }
             form["empty"] = tr("overlays.settings.none").into();
             json!({"form": form})
         }
@@ -579,6 +592,8 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
         "height": if info.height == 0 { 1080 } else { info.height },
         "dock": info.dock,
         "toolbar": toolbar,
+        "draft": engine.overlay_draft(&group).len(),
+        "live": live_edit(&group),
         "tabs": {"options": options, "selected": tab},
         "tab": tab,
         "body": body,
@@ -596,7 +611,8 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             let config = engine.config();
             let page = overlays::page_of(&config, &group, &file);
             crate::overlay_preview::start(crate::overlay_preview::Ask {
-                url: overlays::url(&config, &group, &file),
+                // A preview page shows the editor's draft; OBS keeps the saved settings.
+                url: overlays::preview_url(&config, &group, &file),
                 width: if page.width == 0 { 1920 } else { page.width },
                 height: if page.height == 0 { 1080 } else { page.height },
                 background: request["background"].as_str().unwrap_or_default().to_owned(),
@@ -610,6 +626,52 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "input" => {
             crate::overlay_preview::input(request["event"].clone());
             Ok(json!({"accepted": true}))
+        }
+        // The settings form's changes as a draft: preview pages show them at once. With Show on OBS
+        // while I edit, they are kept at once and every page shows them.
+        "draft" => {
+            let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            let mut meta = groups::meta(&engine.config(), &group);
+            let mut values = super::actions::settings_changes(&mut meta, request, true)?;
+            // The description is not a setting the pages see.
+            values.retain(|name, _| meta.variables.iter().any(|v| &v.name == name));
+            let mut current = groups::values(&engine.config(), &group);
+            current.extend(engine.overlay_draft(&group));
+            values.retain(|name, value| current.get(name) != Some(value));
+            if values.is_empty() {
+                return Ok(json!({"draft": engine.overlay_draft(&group).len()}));
+            }
+            engine.overlay_draft_set(&group, &values)?;
+            if live_edit(&group) {
+                engine.overlay_draft_save(&group)?;
+            }
+            Ok(json!({"draft": engine.overlay_draft(&group).len()}))
+        }
+        "revert" => {
+            let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            engine.overlay_draft_revert(&group, None);
+            Ok(json!({"accepted": true, "draft": 0}))
+        }
+        "save" => {
+            let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            let saved = engine.overlay_draft_save(&group)?;
+            Ok(json!({"accepted": true, "saved": saved, "draft": 0}))
+        }
+        "live" => {
+            let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            let on = request["on"].as_bool().unwrap_or(false);
+            LIVE_EDIT.with_borrow_mut(|live| {
+                if on {
+                    live.insert(group.clone());
+                } else {
+                    live.remove(&group);
+                }
+            });
+            // Turned on with a draft: OBS shows it now.
+            if on {
+                engine.overlay_draft_save(&group)?;
+            }
+            Ok(json!({"accepted": true, "live": on}))
         }
         "frame" => {
             let mut out = crate::overlay_preview::frame(request["have"].as_u64().unwrap_or(0));
@@ -1146,6 +1208,8 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
         return super::actions::group_settings_edit(engine, &group, request, preview).map(|mut saved| {
             if saved["saved"].is_string() {
                 saved["saved"] = id.clone().into();
+                // What was saved is the form as it was: no draft is left.
+                engine.overlay_draft_revert(&group, None);
             }
             saved
         });
@@ -2053,6 +2117,50 @@ mod tests {
             let again =
                 super::super::view::read_request(&e, &json!({"domain": DOMAIN, "view": {"overlay": id}})).unwrap();
             assert_eq!(again["overlay"]["tab"], "code", "the tab shown last comes back");
+            // A change in the form is a draft: the page says so and the form shows it, until Revert or Save.
+            let settings = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "settings"}}),
+            )
+            .unwrap();
+            let field = &settings["overlay"]["body"]["form"]["fields"][1];
+            let (key, kind) = (
+                field["key"].as_str().unwrap().to_owned(),
+                field["widget"]["kind"].as_str().unwrap().to_owned(),
+            );
+            let changed = match kind.as_str() {
+                "bool" => json!(!field["value"].as_bool().unwrap()),
+                "color" => json!("#123456"),
+                _ => json!("Draft value"),
+            };
+            let drafted = preview(
+                &e,
+                &json!({"op": "draft", "itemId": id, "changes": [{"field": 1, "value": changed}]}),
+            )
+            .unwrap();
+            assert_eq!(drafted["draft"], 1, "{key} ({kind}) is a draft");
+            let shown = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "settings"}}),
+            )
+            .unwrap();
+            assert_eq!(shown["overlay"]["draft"], 1);
+            assert_eq!(
+                shown["overlay"]["body"]["form"]["fields"][1]["value"], changed,
+                "the form shows the draft"
+            );
+            preview(&e, &json!({"op": "revert", "itemId": id})).unwrap();
+            assert!(e.overlay_draft("Clock").is_empty());
+            preview(
+                &e,
+                &json!({"op": "draft", "itemId": id, "changes": [{"field": 1, "value": changed}]}),
+            )
+            .unwrap();
+            let saved = preview(&e, &json!({"op": "save", "itemId": id})).unwrap();
+            assert_eq!(saved["saved"], 1);
+            assert!(e.overlay_draft("Clock").is_empty());
+            assert_ne!(groups::values(&e.config(), "Clock")[&key], Value::Null);
+
             // MCP asks by the group's name.
             let by_group =
                 super::super::view::read_request(&e, &json!({"domain": "overlay:Clock", "tab": "media"})).unwrap();
