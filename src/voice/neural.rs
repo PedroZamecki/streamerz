@@ -100,6 +100,8 @@ pub static TEST_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 pub static TEST_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 pub static TEST_ENGINE_URL: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
+#[cfg(test)]
+pub static TEST_PAREC: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// File name of the voice worker binary for this OS.
 pub fn binary_name() -> &'static str {
@@ -843,6 +845,26 @@ pub fn import_recording(source: &Path, id: &str) -> Result<(String, u64), String
     Ok((filename, duration_ms))
 }
 
+/// Wraps raw mono 16-bit little-endian PCM bytes in a standard RIFF WAVE header.
+fn encode_pcm_wav(pcm: &[u8], rate: u32) -> Vec<u8> {
+    let data = pcm.len() as u32;
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    wav.extend_from_slice(pcm);
+    wav
+}
+
 /// Records `seconds` (clamped 3..=12) from the default microphone on Linux via `parec` (PulseAudio /
 /// PipeWire) into a temporary 24 kHz mono WAV file that can be passed directly to `import_recording`.
 #[cfg(not(windows))]
@@ -850,9 +872,20 @@ pub async fn record_mic(seconds: u32) -> Result<PathBuf, String> {
     let secs = seconds.clamp(3, 12);
     const RATE: u32 = 24_000;
     let target_bytes = (RATE as usize) * 2 * (secs as usize);
-    let mut cmd = std::process::Command::new("parec");
+    let mut cmd = {
+        #[cfg(test)]
+        if let Some(prog) = TEST_PAREC.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            std::process::Command::new(prog)
+        } else {
+            crate::sandbox::on_host(std::process::Command::new("parec"))
+        }
+        #[cfg(not(test))]
+        {
+            crate::sandbox::on_host(std::process::Command::new("parec"))
+        }
+    };
     cmd.args(["--format=s16le", "--rate=24000", "--channels=1", "--latency-msec=50"]);
-    let mut child = tokio::process::Command::from(crate::sandbox::on_host(cmd))
+    let mut child = tokio::process::Command::from(cmd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -872,29 +905,120 @@ pub async fn record_mic(seconds: u32) -> Result<PathBuf, String> {
     read_res
         .map_err(|_| "Microphone recording timed out.".to_string())?
         .map_err(|e| format!("Microphone recording failed: {e}"))?;
-    let data = pcm.len() as u32;
-    let mut wav = Vec::with_capacity(44 + pcm.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&RATE.to_le_bytes());
-    wav.extend_from_slice(&(RATE * 2).to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data.to_le_bytes());
-    wav.extend_from_slice(&pcm);
+    let wav = encode_pcm_wav(&pcm, RATE);
     let path = std::env::temp_dir().join(format!("streamerz-mic-{}.wav", crate::engine::uuid()));
     std::fs::write(&path, &wav).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
+/// Records `seconds` (clamped 3..=12) from the default Windows microphone via WASAPI shared-mode
+/// capture (event-driven, resampled by Windows to 24 kHz mono 16-bit PCM).
 #[cfg(windows)]
-pub async fn record_mic(_seconds: u32) -> Result<PathBuf, String> {
-    Err("Pick a 5 to 10 second WAV or MP3 recording file on Windows.".into())
+pub async fn record_mic(seconds: u32) -> Result<PathBuf, String> {
+    let secs = seconds.clamp(3, 12);
+    tokio::task::spawn_blocking(move || record_mic_wasapi(secs))
+        .await
+        .map_err(|e| format!("Microphone recording failed: {e}"))?
+}
+
+#[cfg(windows)]
+fn record_mic_wasapi(secs: u32) -> Result<PathBuf, String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::Media::Audio::{
+        eCapture, eConsole, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX, WAVE_FORMAT_PCM,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    const RATE: u32 = 24_000;
+    const AHEAD: i64 = 500_000; // 50 ms in 100 ns units
+    let target_bytes = (RATE as usize) * 2 * (secs as usize);
+    let format = WAVEFORMATEX {
+        wFormatTag: WAVE_FORMAT_PCM as u16,
+        nChannels: 1,
+        nSamplesPerSec: RATE,
+        nAvgBytesPerSec: RATE * 2,
+        nBlockAlign: 2,
+        wBitsPerSample: 16,
+        cbSize: 0,
+    };
+
+    // SAFETY: COM interfaces and event handle are initialized and released on this blocking thread.
+    let pcm = unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("no audio devices: {e}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eCapture, eConsole)
+            .map_err(|e| format!("no default microphone: {e}"))?;
+        let client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("cannot open microphone: {e}"))?;
+        client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                AHEAD,
+                0,
+                &format,
+                None,
+            )
+            .map_err(|e| format!("cannot initialize microphone capture: {e}"))?;
+        let event = CreateEventW(None, false, false, PCWSTR::null()).map_err(|e| e.to_string())?;
+        let capture_result = (|| -> Result<Vec<u8>, String> {
+            client.SetEventHandle(event).map_err(|e| e.to_string())?;
+            let capture: IAudioCaptureClient = client.GetService().map_err(|e| e.to_string())?;
+            client.Start().map_err(|e| e.to_string())?;
+            let mut out = Vec::with_capacity(target_bytes);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs as u64 + 3);
+            while out.len() < target_bytes {
+                if std::time::Instant::now() >= deadline {
+                    let _ = client.Stop();
+                    return Err("Microphone recording timed out.".into());
+                }
+                if WaitForSingleObject(event, 1000) != WAIT_OBJECT_0 {
+                    continue;
+                }
+                loop {
+                    let packet = capture.GetNextPacketSize().map_err(|e| e.to_string())?;
+                    if packet == 0 {
+                        break;
+                    }
+                    let mut ptr = std::ptr::null_mut();
+                    let mut frames = 0u32;
+                    let mut flags = 0u32;
+                    capture
+                        .GetBuffer(&mut ptr, &mut frames, &mut flags, None, None)
+                        .map_err(|e| e.to_string())?;
+                    let want = (target_bytes - out.len()).min((frames as usize) * 2);
+                    if (flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)) != 0 || ptr.is_null() {
+                        out.resize(out.len() + want, 0);
+                    } else {
+                        let slice = std::slice::from_raw_parts(ptr, want);
+                        out.extend_from_slice(slice);
+                    }
+                    capture.ReleaseBuffer(frames).map_err(|e| e.to_string())?;
+                    if out.len() >= target_bytes {
+                        break;
+                    }
+                }
+            }
+            let _ = client.Stop();
+            Ok(out)
+        })();
+        let _ = CloseHandle(event);
+        capture_result?
+    };
+
+    let wav = encode_pcm_wav(&pcm[..target_bytes], RATE);
+    let path = std::env::temp_dir().join(format!("streamerz-mic-{}.wav", crate::engine::uuid()));
+    std::fs::write(&path, &wav).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -1039,6 +1163,43 @@ for line in sys.stdin:
 
         *TEST_DIR.lock().unwrap() = None;
         *TEST_BINARY.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn record_mic_captures_pcm_into_valid_wav_and_imports_cleanly() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("streamerz-mic-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let fake_parec = tmp.join("parec");
+        std::fs::write(
+            &fake_parec,
+            "#!/usr/bin/env python3\nimport math, struct, sys\nrate = 24000\nfor i in range(rate * 4):\n    s = int(8000 * math.sin(2 * math.pi * 440 * i / rate))\n    sys.stdout.buffer.write(struct.pack('<h', s))\nsys.stdout.buffer.flush()\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_parec, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        *TEST_DIR.lock().unwrap() = Some(tmp.join("voices"));
+        *TEST_PAREC.lock().unwrap() = Some(fake_parec);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let wav_path = rt.block_on(record_mic(3)).unwrap();
+        let bytes = std::fs::read(&wav_path).unwrap();
+        assert!(bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE");
+        assert_eq!(bytes.len(), 44 + 24_000 * 2 * 3);
+        let (imported, ms) = import_recording(&wav_path, "custom:mic-test").unwrap();
+        assert!(imported.ends_with(".wav"));
+        assert!((2900..=3100).contains(&ms), "expected ~3000ms, got {ms}");
+
+        *TEST_PAREC.lock().unwrap() = None;
+        *TEST_DIR.lock().unwrap() = None;
+        let _ = std::fs::remove_file(&wav_path);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

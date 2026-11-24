@@ -158,6 +158,8 @@ pub struct Form {
     json_editor: Option<Entity<TextareaState>>,
     pub error: Option<crate::error::StreamerzError>,
     pub pending: bool,
+    /// A field button waiting on an async reply (e.g. microphone recording).
+    busy_button: Option<usize>,
     buttons_view: Entity<FormButtons>,
     /// A file picked with Browse, for its field (set into the box on the next draw, which has the window).
     picked: Option<(usize, String)>,
@@ -589,6 +591,7 @@ impl Form {
             json_editor,
             error: None,
             pending: false,
+            busy_button: None,
             buttons_view: {
                 let weak = cx.entity().downgrade();
                 cx.new(|_| FormButtons(weak))
@@ -700,13 +703,47 @@ impl Form {
             .collect()
     }
 
-    /// Sends a button's request; one that wants the form's value (Play a sound) gets it.
-    fn press(&self, press: &Value, cx: &App) {
+    /// Sends a button's request; one that wants the form's value (Play a sound) gets it, and one
+    /// that fills a field from its async reply (`fillField`) locks the form until the reply returns.
+    fn press(&mut self, index: usize, press: &Value, cx: &mut Context<Self>) {
         let mut request = press["request"].clone();
         if press["withValue"] == true {
             request["value"] = Value::Object(self.by_key(cx));
         }
+        if press["fillField"].is_string() {
+            request["id"] = format!("{}:press:{index}", self.route.replace(":save", "")).into();
+            self.pending = true;
+            self.busy_button = Some(index);
+            self.error = None;
+            cx.notify();
+        }
         send(request);
+    }
+
+    /// Handles the reply for an async field button (`fillField`), populating its target field or
+    /// displaying the error inside the form.
+    pub fn press_reply(&mut self, index: usize, reply: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending = false;
+        self.busy_button = None;
+        if let Some(err) = crate::error::StreamerzError::from_response(reply) {
+            self.error = Some(err);
+            cx.notify();
+            return;
+        }
+        let press = &self.model["fields"][index]["press"];
+        if let Some(field_key) = press["fillField"].as_str() {
+            let reply_key = press["replyKey"].as_str().unwrap_or("path");
+            if let Some(text) = reply[reply_key].as_str() {
+                if let Some(target) = self.model["fields"]
+                    .as_array()
+                    .and_then(|fields| fields.iter().position(|f| f["key"] == field_key))
+                {
+                    self.set_text(target, text, window, cx);
+                    cx.emit(Edited);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Puts the text the core read a box as back in it, without counting it as an edit.
@@ -1558,7 +1595,16 @@ impl Form {
             Field::Button(press) => {
                 let press = press.clone();
                 let model = &self.model["fields"][index];
-                let text = model["buttonLabel"].as_str().unwrap_or(&label).to_owned();
+                let busy = self.busy_button == Some(index);
+                let text = if busy {
+                    model["busyLabel"]
+                        .as_str()
+                        .or_else(|| model["buttonLabel"].as_str())
+                        .unwrap_or(&label)
+                        .to_owned()
+                } else {
+                    model["buttonLabel"].as_str().unwrap_or(&label).to_owned()
+                };
                 let icon = model["widget"]["icon"].as_str().unwrap_or("zap").to_owned();
                 (
                     div()
@@ -1570,7 +1616,7 @@ impl Form {
                                 .icon(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")))
                                 .label(text)
                                 .disabled(self.pending)
-                                .on_click(cx.listener(move |form, _, _, cx| form.press(&press, cx))),
+                                .on_click(cx.listener(move |form, _, _, cx| form.press(index, &press, cx))),
                         )
                         .into_any_element(),
                     CONTROL_HEIGHT,
@@ -2295,6 +2341,52 @@ mod tests {
                 })
                 .unwrap();
             }
+        }
+
+        #[gpui_kit::test]
+        fn press_reply_fills_target_text_field_and_handles_errors(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "From recording",
+                "fields": [
+                    {"key": "recording", "label": "Recording", "value": "", "widget": {"kind": "text"}},
+                    {
+                        "key": "record",
+                        "label": "",
+                        "buttonLabel": "Record from microphone",
+                        "busyLabel": "Recording...",
+                        "widget": {"kind": "button", "icon": "mic"},
+                        "press": {
+                            "request": {"request": "StreamerzVoice", "action": "record_mic", "seconds": 6},
+                            "fillField": "recording",
+                            "replyKey": "path"
+                        }
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                form.update(cx, |form, cx| {
+                    form.pending = true;
+                    form.busy_button = Some(1);
+                    form.press_reply(1, &json!({"status": "ok", "path": "/tmp/mic.wav"}), window, cx);
+                });
+                window.render_frame(cx);
+                assert!(!form.read(cx).pending);
+                assert!(form.read(cx).busy_button.is_none());
+                assert!(form.read(cx).error.is_none());
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("/tmp/mic.wav")));
+
+                form.update(cx, |form, cx| {
+                    form.pending = true;
+                    form.busy_button = Some(1);
+                    form.press_reply(1, &json!({"status": "error", "error": "No microphone"}), window, cx);
+                });
+                window.render_frame(cx);
+                assert!(!form.read(cx).pending);
+                assert!(form.read(cx).error.is_some());
+            })
+            .unwrap();
         }
     }
 }
