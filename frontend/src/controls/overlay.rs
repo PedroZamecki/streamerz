@@ -4,7 +4,7 @@
 use super::form::Form;
 use crate::i18n::tr;
 use crate::send;
-use crate::theme::{self, CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, SPACE_MD, SPACE_SM, SPACE_XS};
+use crate::theme::{self, CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     scroll::ScrollableElement,
@@ -65,6 +65,15 @@ const BACKGROUNDS: [(&str, &str); 4] = [
     ("#f4f4f5", "overlays.preview.light"),
     ("scene", "overlays.preview.scene"),
 ];
+
+/// A model value as text: a string as it is, anything else as JSON (nothing for null).
+fn text_of(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
 
 /// Bytes from base64 (the picture comes in JSON).
 fn base64(text: &str) -> Vec<u8> {
@@ -137,7 +146,10 @@ impl OverlayPage {
     }
 
     pub fn update_model(&mut self, model: Value, window: &mut Window, cx: &mut Context<Self>) {
-        let form = &model["body"]["form"];
+        let form = model["sections"]
+            .as_array()
+            .and_then(|sections| sections.iter().find(|s| s["form"].is_object()))
+            .map_or(&Value::Null, |s| &s["form"]);
         let kind = form["kind"].as_str().unwrap_or_default().to_owned();
         // A form being typed in stays as it is; another tab or overlay brings its own.
         if kind.is_empty() {
@@ -319,6 +331,18 @@ impl OverlayPage {
                 true
             }
             "live" => true,
+            "save" if self.form_kind.starts_with("overlay:test:") => {
+                // Sent: the test form keeps what was typed, for the next one.
+                if let Some(form) = &self.form {
+                    form.update(cx, |form, cx| {
+                        form.pending = false;
+                        cx.notify();
+                    });
+                }
+                let message = value["message"].as_str().unwrap_or_else(|| tr("overlays.test.done"));
+                window.push_notification(message.to_owned(), cx);
+                true
+            }
             "save" => {
                 // Read again with what was saved: the form is made anew from it.
                 self.form = None;
@@ -567,94 +591,137 @@ impl OverlayPage {
             .child(tools)
     }
 
-    fn tab_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let body = &self.model["body"];
-        let mut column = div().flex().flex_col().gap(px(SPACE_MD)).min_w_0();
-        if let Some(text) = body["text"].as_str() {
-            column = column.child(super::page::guide(text, cx));
+    /// The tab's form (the first section with one), with Edit JSON and its own Save (or Send).
+    fn form_block(&self, section: &Value, form: &Entity<Form>, cx: &mut Context<Self>) -> AnyElement {
+        if section["form"]["fields"].as_array().is_some_and(|f| f.is_empty()) {
+            return super::page::guide(section["form"]["empty"].as_str().unwrap_or_default(), cx).into_any_element();
         }
-        if let Some(form) = &self.form {
-            if self.model["body"]["form"]["fields"]
-                .as_array()
-                .is_some_and(|f| f.is_empty())
-            {
-                column = column.child(super::page::guide(
-                    self.model["body"]["form"]["empty"].as_str().unwrap_or_default(),
-                    cx,
-                ));
-            } else {
-                let pending = form.read(cx).pending;
-                let form_for_save = form.clone();
-                let form_for_json = form.clone();
-                column = column.child(form.clone()).child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(SPACE_SM))
-                        .when(form.read(cx).model["json"] != false, |row| {
-                            row.child(
-                                Button::new("overlay-form-json")
-                                    .h(px(CONTROL_HEIGHT))
-                                    .ghost()
-                                    .icon(Icon::empty().path("icons/braces.svg"))
-                                    .label(tr("btn.edit_json"))
-                                    .disabled(pending)
-                                    .on_click(move |_, _, cx| {
-                                        form_for_json.update(cx, |form, cx| form.submit(true, cx))
-                                    }),
-                            )
-                        })
-                        .child(
-                            Button::new("overlay-form-save")
+        let pending = form.read(cx).pending;
+        let label = form.read(cx).model["okLabel"]
+            .as_str()
+            .map_or_else(|| tr("btn.save").to_owned(), str::to_owned);
+        let (form_for_save, form_for_json) = (form.clone(), form.clone());
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(SPACE_SM))
+            .child(form.clone())
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(SPACE_SM))
+                    .when(form.read(cx).model["json"] != false, |row| {
+                        row.child(
+                            Button::new("overlay-form-json")
                                 .h(px(CONTROL_HEIGHT))
-                                .primary()
-                                .label(tr("btn.save"))
+                                .ghost()
+                                .icon(Icon::empty().path("icons/braces.svg"))
+                                .label(tr("btn.edit_json"))
                                 .disabled(pending)
-                                .on_click(move |_, _, cx| form_for_save.update(cx, |form, cx| form.submit(false, cx))),
-                        ),
-                );
-            }
-        }
-        if let Some(files) = body["files"].as_array() {
-            if files.is_empty() {
-                column = column.child(super::page::guide(body["empty"].as_str().unwrap_or_default(), cx));
-            }
-            for (index, file) in files.iter().enumerate() {
-                column = column.child(
-                    div()
-                        .id(("overlay-file", index))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(SPACE_SM))
-                        .px(px(SPACE_SM))
-                        .h(px(CONTROL_HEIGHT))
-                        .rounded(px(4.))
-                        .bg(theme::row_surface(cx))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(FONT_BODY))
-                                .text_color(theme::strong(cx))
-                                .child(file["name"].as_str().unwrap_or_default().to_owned()),
+                                .on_click(move |_, _, cx| form_for_json.update(cx, |form, cx| form.submit(true, cx))),
                         )
-                        .child(
+                    })
+                    .child(
+                        Button::new("overlay-form-save")
+                            .h(px(CONTROL_HEIGHT))
+                            .primary()
+                            .label(label)
+                            .disabled(pending)
+                            .on_click(move |_, _, cx| form_for_save.update(cx, |form, cx| form.submit(false, cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A line of a section's list: what it is, a quiet detail, and its button.
+    fn row(&self, at: usize, row: &Value, cx: &mut Context<Self>) -> AnyElement {
+        let button = row["button"]
+            .is_object()
+            .then(|| self.button(1000 + at, &row["button"], cx).small());
+        div()
+            .id(("overlay-row", at))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(SPACE_SM))
+            .px(px(SPACE_SM))
+            .min_h(px(CONTROL_HEIGHT))
+            .rounded(px(4.))
+            .bg(theme::row_surface(cx))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(FONT_BODY))
+                            .text_color(theme::strong(cx))
+                            .child(text_of(&row["text"])),
+                    )
+                    .when(!text_of(&row["detail"]).is_empty(), |col| {
+                        col.child(
                             div()
-                                .flex_shrink_0()
+                                .truncate()
                                 .text_size(px(FONT_CAPTION))
                                 .text_color(theme::quiet(cx))
-                                .child(file["size"].as_str().unwrap_or_default().to_owned()),
-                        ),
+                                .child(text_of(&row["detail"])),
+                        )
+                    }),
+            )
+            .children(button)
+            .into_any_element()
+    }
+
+    /// The tab's sections: a heading, a guide, the form, buttons and a list, each when it has one.
+    fn tab_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut column = div().flex().flex_col().gap(px(SPACE_LG)).min_w_0();
+        let mut form_drawn = false;
+        let mut rows_seen = 0;
+        let sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        for (index, section) in sections.iter().enumerate() {
+            let mut block = div().flex().flex_col().gap(px(SPACE_SM)).min_w_0();
+            if let Some(title) = section["title"].as_str() {
+                block = block.child(
+                    div()
+                        .text_size(px(theme::FONT_SECTION_TITLE))
+                        .line_height(px(theme::LINE_SECTION_TITLE))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::strong(cx))
+                        .child(title.to_owned()),
                 );
             }
-        }
-        if let Some(buttons) = body["buttons"].as_array() {
-            let mut row = div().flex().flex_wrap().gap(px(SPACE_SM));
-            for (index, spec) in buttons.iter().enumerate() {
-                row = row.child(self.button(100 + index, spec, cx));
+            if let Some(text) = section["text"].as_str() {
+                block = block.child(super::page::guide(text, cx));
             }
-            column = column.child(row);
+            if section["form"].is_object() && !form_drawn {
+                if let Some(form) = self.form.clone() {
+                    block = block.child(self.form_block(section, &form, cx));
+                    form_drawn = true;
+                }
+            }
+            if let Some(buttons) = section["buttons"].as_array() {
+                let mut row = div().flex().flex_wrap().gap(px(SPACE_SM));
+                for (at, spec) in buttons.iter().enumerate() {
+                    row = row.child(self.button(100 * (index + 1) + at, spec, cx));
+                }
+                block = block.child(row);
+            }
+            if let Some(rows) = section["rows"].as_array() {
+                if rows.is_empty() {
+                    block = block.child(super::page::guide(section["empty"].as_str().unwrap_or_default(), cx));
+                }
+                let mut list = div().flex().flex_col().gap(px(SPACE_XS));
+                for row in rows {
+                    list = list.child(self.row(rows_seen, row, cx));
+                    rows_seen += 1;
+                }
+                block = block.child(list);
+            }
+            column = column.child(block);
         }
         column.into_any_element()
     }

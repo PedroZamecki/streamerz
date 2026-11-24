@@ -610,7 +610,8 @@ impl Engine {
 
     /// Credits and users from a trigger that fired.
     pub(super) fn record(self: &Rc<Self>, kind: u32, args: &Obj) {
-        if self.memory_saver {
+        // A test (an overlay's, a trigger's) gives no credits.
+        if self.memory_saver || args.get("isTest") == Some(&Value::Bool(true)) {
             return;
         }
         let name = |k: &str| s(args, k).to_string();

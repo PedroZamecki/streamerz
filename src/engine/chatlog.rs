@@ -1056,6 +1056,8 @@ impl Engine {
             return;
         }
         let Some(line) = event_line(kind, a) else { return };
+        // Kept for the overlay page's Replay.
+        crate::core::overlay_test::remember(kind, a);
         self.emit("Chat", "Alert", || alert_value(self, kind, a, &line, &avatar_of(a)));
         if !shown {
             return;

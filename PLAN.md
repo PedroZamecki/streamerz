@@ -1088,9 +1088,14 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   the preview shows at once, the form shows the draft again after a new window, Revert and Save while
   there is one, Show on OBS while I edit (each change kept at once), and Back, Escape and the mouse's
   back button ask Save, Discard or Cancel.
-- [ ] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
+- [x] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
   overlay or as a real event (`isTest`); saved sequences in `template.test`; replay of real events;
-  topics, countdowns and songs; what the page logged.
+  topics, countdowns and songs; what the page logged. Done (`core/overlay_test.rs`): the event chips as
+  a list, Any trigger by its code, `name=value` lines over made-up values, a burst as one task, the
+  three destinations (a real event asks first when its actions send chat or change OBS, and gives no
+  credits), the ready-made sets (One of each, Gift bomb of 20, Raid of 500, TikTok rose combo, Chat
+  flood), a song playing or paused, any topic, the last 50 real events to replay, and what the pages
+  logged. Left for later: the overlay's own saved sequences and countdown buttons.
 - [ ] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
   waveform, fonts, Used by, Add by Browse or drop, Rename that follows, Replace, Delete that warns.
 - [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,

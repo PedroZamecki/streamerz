@@ -550,7 +550,14 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
             b["form"] = format!("{}{id}", b["form"].as_str().unwrap_or_default()).into();
         }
     }
-    let body = match tab {
+    let section = |title: &str, body: Value| {
+        let mut section = body;
+        if !title.is_empty() {
+            section["title"] = title.into();
+        }
+        section
+    };
+    let sections = match tab {
         "settings" => {
             let request = json!({"kind": format!("{FORMS}settings:{id}")});
             let draft = engine.overlay_draft(&group);
@@ -561,25 +568,78 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
                 form["fields"] = shown["fields"].clone();
             }
             form["empty"] = tr("overlays.settings.none").into();
-            json!({"form": form})
+            vec![json!({"form": form})]
         }
         "code" => {
             let request = json!({"kind": format!("{FORMS}page:{id}")});
-            json!({"form": form_for(engine, &request)?,
-                "buttons": [button("inspect", "overlays.btn.inspect", "activity", true)]})
+            vec![json!({"form": form_for(engine, &request)?,
+                "buttons": [button("inspect", "overlays.btn.inspect", "activity", true)]})]
         }
-        "test" => json!({"text": tr("overlays.test.tip"),
-            "buttons": [button("test", "overlays.btn.test", "play", true)]}),
+        "test" => {
+            let mut sets = vec![button("test", "overlays.test.quick", "play", true)];
+            sets.extend(
+                super::overlay_test::SETS
+                    .iter()
+                    .map(|(id, label)| button(id, label, "play", true)),
+            );
+            let replay: Vec<Value> = super::overlay_test::recent()
+                .into_iter()
+                .map(|e| json!({"text": e["title"], "detail": format!("{} {}", e["at"].as_str().unwrap_or_default(), e["who"].as_str().unwrap_or_default()),
+                    "button": {"id": e["id"], "label": tr("overlays.test.replay"), "icon": "rotate-ccw"}}))
+                .collect();
+            let seen = inspector(engine, &group);
+            let happened: Vec<Value> = seen["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|r| json!({"text": r["name"], "detail": r["value"]}))
+                .collect();
+            vec![
+                {
+                    let mut first = json!({"form": super::overlay_test::form(format!("{FORMS}test:{id}"))});
+                    if overlays::open_pages(&group) == 0 {
+                        first["text"] = tr("overlays.test.no_pages").into();
+                    }
+                    first
+                },
+                section(tr("overlays.test.sets"), json!({"buttons": sets})),
+                section(
+                    tr("overlays.test.song_title"),
+                    json!({"buttons": [
+                        button("song_play", "overlays.test.song_play", "play", true),
+                        button("song_pause", "overlays.test.song_pause", "pause", true),
+                        form_button("topic", "overlays.test.topic", "radio", true),
+                    ]}),
+                ),
+                section(
+                    tr("overlays.test.replay_title"),
+                    json!({"rows": replay, "empty": tr("overlays.test.replay_none")}),
+                ),
+                section(
+                    tr("overlays.test.happened"),
+                    json!({"rows": happened, "empty": seen["hint"]}),
+                ),
+            ]
+        }
         "media" => {
             let rows: Vec<Value> = meta
                 .files
                 .iter()
-                .map(|f| json!({"name": f.name, "size": super::pages::size(f.size)}))
+                .map(|f| json!({"text": f.name, "detail": super::pages::size(f.size)}))
                 .collect();
-            json!({"files": rows, "empty": tr("overlays.media.none")})
+            vec![json!({"rows": rows, "empty": tr("overlays.media.none")})]
         }
-        _ => json!({"text": tr(if tab == "alerts" { "overlays.alerts.soon" } else { "overlays.live.none" })}),
+        _ => vec![json!({"text": tr(if tab == "alerts" { "overlays.alerts.soon" } else { "overlays.live.none" })})],
     };
+    // A form button of a section asks for its form for this overlay.
+    let mut sections = sections;
+    for section in &mut sections {
+        for b in section["buttons"].as_array_mut().into_iter().flatten() {
+            if let Some(prefix) = b["form"].as_str().filter(|f| f.ends_with(':')) {
+                b["form"] = format!("{prefix}{id}").into();
+            }
+        }
+    }
     Ok(json!({"domain": DOMAIN, "overlay": {
         "id": id,
         "group": group,
@@ -596,7 +656,7 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
         "live": live_edit(&group),
         "tabs": {"options": options, "selected": tab},
         "tab": tab,
-        "body": body,
+        "sections": sections,
     }}))
 }
 
@@ -716,6 +776,16 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 /// Run one of the page's operations on a row.
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
     let accepted = Ok(json!({"accepted": true}));
+    // The Test tab's sets, song and replay.
+    if action.starts_with("set:") || action.starts_with("replay:") || action.starts_with("song_") {
+        let (group, _) = row(engine, id)?;
+        return match action {
+            "song_play" => Ok(super::overlay_test::song(engine, &group, true)),
+            "song_pause" => Ok(super::overlay_test::song(engine, &group, false)),
+            a if a.starts_with("set:") => super::overlay_test::run_set(engine, &group, a),
+            a => super::overlay_test::replay(engine, &group, a),
+        };
+    }
     match action {
         "enable_server" => {
             let address = overlays::base(&engine.config());
@@ -1159,6 +1229,16 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 vec![pick],
             ))
         }
+        "test" => Ok(super::overlay_test::form(kind)),
+        "topic" => Ok(form(
+            kind,
+            tr("overlays.test.topic").into(),
+            tr("overlays.test.topic_hint"),
+            vec![
+                field("topic", tr("overlays.test.topic_name"), "text", "".into()),
+                field("value", tr("overlays.test.topic_value"), "multi", "".into()),
+            ],
+        )),
         "import" => Ok(form(
             kind,
             tr("overlays.import.title").into(),
@@ -1214,8 +1294,22 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
             saved
         });
     }
+    if name == "test" {
+        let (group, _) = row(engine, &id)?;
+        return super::overlay_test::send(engine, &group, request);
+    }
     let form = form_for(engine, request)?;
     let item = filled(&form, request)?;
+    if name == "topic" && !preview {
+        let topic = item["topic"].as_str().unwrap_or_default().trim().to_owned();
+        if topic.is_empty() {
+            return Err(trf("forms.invalid_value", &[("label", tr("overlays.test.topic_name"))]));
+        }
+        let text = item["value"].as_str().unwrap_or_default();
+        let value = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_owned()));
+        engine.overlay_publish(&topic, value);
+        return Ok(json!({"accepted": true, "message": tr("overlays.test.done")}));
+    }
     if preview {
         let text = serde_json::to_string_pretty(&item).map_err(|error| error.to_string())?;
         return Ok(json!({"item": item, "json": text}));
@@ -2097,7 +2191,7 @@ mod tests {
                 ["settings", "test", "media", "live", "code"],
                 "no Alerts tab but for an alert box"
             );
-            assert!(page["body"]["form"]["kind"]
+            assert!(page["sections"][0]["form"]["kind"]
                 .as_str()
                 .unwrap()
                 .starts_with("overlay:settings:"));
@@ -2113,7 +2207,10 @@ mod tests {
                 &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "code"}}),
             )
             .unwrap();
-            assert_eq!(code["overlay"]["body"]["form"]["kind"], format!("overlay:page:{id}"));
+            assert_eq!(
+                code["overlay"]["sections"][0]["form"]["kind"],
+                format!("overlay:page:{id}")
+            );
             let again =
                 super::super::view::read_request(&e, &json!({"domain": DOMAIN, "view": {"overlay": id}})).unwrap();
             assert_eq!(again["overlay"]["tab"], "code", "the tab shown last comes back");
@@ -2123,7 +2220,7 @@ mod tests {
                 &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "settings"}}),
             )
             .unwrap();
-            let field = &settings["overlay"]["body"]["form"]["fields"][1];
+            let field = &settings["overlay"]["sections"][0]["form"]["fields"][1];
             let (key, kind) = (
                 field["key"].as_str().unwrap().to_owned(),
                 field["widget"]["kind"].as_str().unwrap().to_owned(),
@@ -2146,7 +2243,7 @@ mod tests {
             .unwrap();
             assert_eq!(shown["overlay"]["draft"], 1);
             assert_eq!(
-                shown["overlay"]["body"]["form"]["fields"][1]["value"], changed,
+                shown["overlay"]["sections"][0]["form"]["fields"][1]["value"], changed,
                 "the form shows the draft"
             );
             preview(&e, &json!({"op": "revert", "itemId": id})).unwrap();
@@ -2161,11 +2258,40 @@ mod tests {
             assert!(e.overlay_draft("Clock").is_empty());
             assert_ne!(groups::values(&e.config(), "Clock")[&key], Value::Null);
 
+            // The Test tab: its form sends one event; a form it can't show says so.
+            let test = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "test"}}),
+            )
+            .unwrap();
+            let sections = test["overlay"]["sections"].as_array().unwrap();
+            assert_eq!(sections[0]["form"]["kind"], format!("overlay:test:{id}"));
+            assert!(sections[1]["buttons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["id"] == "set:raid"));
+            assert_eq!(sections[2]["buttons"][2]["form"], format!("overlay:topic:{id}"));
+            let sent = edit_form(
+                &e,
+                &json!({"kind": format!("overlay:test:{id}"), "changes": [{"field": 3, "value": "1"}]}),
+                false,
+            )
+            .unwrap();
+            assert_eq!(sent["accepted"], true);
+            let any = json!({"kind": format!("overlay:test:{id}"), "changes": [{"field": 0, "value": super::super::overlay_test::EVENTS.len()}, {"field": 1, "value": "706"}]});
+            assert!(
+                edit_form(&e, &any, false).is_err(),
+                "Streamer.bot Started is no alert a page shows"
+            );
+            let topic = json!({"kind": format!("overlay:topic:{id}"), "changes": [{"field": 0, "value": "score"}, {"field": 1, "value": "{\"a\": 1}"}]});
+            assert_eq!(edit_form(&e, &topic, false).unwrap()["accepted"], true);
+
             // MCP asks by the group's name.
             let by_group =
                 super::super::view::read_request(&e, &json!({"domain": "overlay:Clock", "tab": "media"})).unwrap();
             assert_eq!(by_group["overlay"]["id"], id);
-            assert!(by_group["overlay"]["body"]["files"].as_array().is_some());
+            assert!(by_group["overlay"]["sections"][0]["rows"].as_array().is_some());
             assert!(super::super::view::read_request(&e, &json!({"domain": "overlay:Nope"})).is_err());
         });
     }
