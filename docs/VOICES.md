@@ -29,10 +29,12 @@ installs neural voices pays nothing in disk, RAM or CPU.
   int8 voices across 13 languages (including Brazilian Portuguese), the Kokoro multi-language pack
   (54 voices and voice mixing), and Pocket TTS (voice cloning from a short recording).
 - Each entry shows its disk size, measured RAM while loaded, and license. Voices restricted to
-  non-commercial use are marked clearly before downloading.
+  non-commercial use are marked clearly before downloading, and quick filters narrow the catalog by
+  commercial license, your UI language, or installed voices.
 - **Play sample** streams a short preview on the Monitor device without downloading the model.
-- Downloads can be cancelled at any time, resume where they stopped (`Range`), verify SHA-256 before
-  unpacking, and live in `voices/` beside `streamerz.json` (never included in backups or exports).
+- Downloads show a live progress bar, can be cancelled at any time, resume where they stopped (`Range`),
+  verify SHA-256 before unpacking, and live in `voices/` beside `streamerz.json` (never included in
+  backups or exports).
 
 ## Make a voice
 
@@ -41,11 +43,12 @@ On **Sounds**, Show **Voices**:
 - **Mix voices** (Kokoro): blend 2 to 4 Kokoro voices with individual share sliders, language, speed,
   pitch and an optional effect. Saved instantly in settings.
 - **From recording** (Pocket TTS): pick a 5 to 10 second WAV, MP3, OGG, M4A or FLAC recording of one
-  person speaking clearly (or record from the microphone on Linux via `voices` MCP `record_mic`). You must
-  confirm it is your own voice or one you have permission to use. Everything stays on this computer;
-  nothing is uploaded.
+  person speaking clearly, or click **Record from microphone (6s)** directly in the dialog (uses
+  PulseAudio / PipeWire `parec` on Linux and WASAPI capture on Windows). You must confirm it is your own
+  voice or one you have permission to use. Everything stays on this computer; nothing is uploaded.
 - **Voice effect**: save an **Echo**, **Radio** or **Robot** effect with custom speed and pitch over any
   installed system or neural voice.
+- Every custom voice can be previewed before saving (**Preview**) and edited later in place (**Edit**).
 
 ## The Voices view on the Sounds page
 
