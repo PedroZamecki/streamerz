@@ -151,6 +151,133 @@ pub async fn download(
     Err(format!("{url}: too many redirects"))
 }
 
+/// Resumable download into `to` (appending when `to` already holds bytes and the server answers
+/// `206 Partial Content`, else restarting cleanly from byte 0). Calls `on_progress(downloaded, total)`
+/// as chunks arrive; returning `false` cancels at once and keeps the partial file on disk so a later
+/// call resumes where it stopped. Computes the full-file SHA-256 on completion.
+pub async fn download_resumable(
+    url: &str,
+    headers: &[(String, String)],
+    to: &std::path::Path,
+    max: u64,
+    mut on_progress: impl FnMut(u64, Option<u64>) -> bool,
+) -> Result<Download, String> {
+    use sha2::Digest;
+    use std::io::{Read, Write};
+    let mut have = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+    if have > max {
+        have = 0;
+    }
+    let mut url = url.to_string();
+    for _ in 0..6 {
+        let mut req_headers = headers.to_vec();
+        if have > 0 && !req_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("range")) {
+            req_headers.push(("Range".into(), format!("bytes={have}-")));
+        }
+        let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, &req_headers, b""))
+            .await
+            .map_err(|_| format!("{url}: timed out"))??;
+        if let Some(next) = redirect(&url, open.status, &open.headers)? {
+            url = next;
+            continue;
+        }
+        // Range past EOF: restart from 0 cleanly.
+        if open.status == 416 && have > 0 {
+            let _ = std::fs::remove_file(to);
+            have = 0;
+            continue;
+        }
+        let resumed = open.status == 206 && have > 0;
+        let start = if resumed { have } else { 0 };
+        let content_len = open
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<u64>().ok());
+        let total = if resumed {
+            open.headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-range"))
+                .and_then(|(_, v)| v.rsplit_once('/')?.1.parse::<u64>().ok())
+                .or_else(|| content_len.map(|l| start + l))
+        } else {
+            content_len
+        };
+        if open.status != 200 && open.status != 206 {
+            return Ok(Download {
+                status: open.status,
+                len: start,
+                complete: false,
+                sha256: String::new(),
+                magic: Vec::new(),
+            });
+        }
+        let file = if resumed {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(to)
+                .map_err(|e| format!("{}: {e}", to.display()))?
+        } else {
+            std::fs::File::create(to).map_err(|e| format!("{}: {e}", to.display()))?
+        };
+        let mut file = std::io::BufWriter::with_capacity(64 << 10, file);
+        let mut written = start;
+        let mut failed: Option<std::io::Error> = None;
+        let mut cancelled = false;
+        let limit = usize::try_from(max.saturating_sub(start)).unwrap_or(usize::MAX);
+        if !on_progress(written, total) {
+            return Err("cancelled".into());
+        }
+        let (_, complete) = body(&mut open, "GET", limit, &mut |piece: &[u8]| {
+            if cancelled || failed.is_some() {
+                return;
+            }
+            if let Err(e) = file.write_all(piece) {
+                failed = Some(e);
+                return;
+            }
+            written += piece.len() as u64;
+            if !on_progress(written, total) {
+                cancelled = true;
+            }
+        })
+        .await?;
+        let flush_err = file.flush().err();
+        drop(file);
+        if cancelled {
+            return Err("cancelled".into());
+        }
+        if let Some(e) = failed.or(flush_err) {
+            return Err(format!("{}: {e}", to.display()));
+        }
+        // Stream the whole file on disk for its SHA-256 and magic (works identically for resumed files).
+        let mut f = std::fs::File::open(to).map_err(|e| format!("{}: {e}", to.display()))?;
+        let mut hash = sha2::Sha256::new();
+        let mut magic = Vec::with_capacity(4);
+        let mut buf = [0u8; 64 << 10];
+        let mut len = 0u64;
+        loop {
+            let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", to.display()))?;
+            if n == 0 {
+                break;
+            }
+            if magic.len() < 4 {
+                magic.extend_from_slice(&buf[..n.min(4 - magic.len())]);
+            }
+            hash.update(&buf[..n]);
+            len += n as u64;
+        }
+        return Ok(Download {
+            status: 200,
+            len,
+            complete: complete && total.is_none_or(|t| len == t),
+            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+            magic,
+        });
+    }
+    Err(format!("{url}: too many redirects"))
+}
+
 /// The wait before retry `n` (1-based) of something that keeps failing: 1, 2, 4, 8, 15 seconds, then 15.
 pub fn backoff(n: u32) -> std::time::Duration {
     std::time::Duration::from_secs((1u64 << n.saturating_sub(1).min(4)).min(15))
@@ -471,6 +598,74 @@ mod tests {
             let got = download(&url, &[], &dir.join("cut"), 64 << 20).await.unwrap();
             assert!(!got.complete);
             assert_eq!(got.len, 1000);
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A download cut mid-way or cancelled keeps its `.part` file and resumes via `Range`.
+    #[test]
+    fn resumable_download_picks_up_and_verifies_sha256() {
+        use sha2::Digest;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let data: Vec<u8> = (0..128_000usize).map(|i| (i % 241) as u8).collect();
+        let want: String = sha2::Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("streamerz-resume-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        rt.block_on(async {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = l.local_addr().unwrap().port();
+            let served = data.clone();
+            tokio::spawn(async move {
+                // Request 1: cut short after 40 KB; Request 2: serve the rest as 206 Partial Content.
+                for req_idx in 0..2 {
+                    let (mut s, _) = l.accept().await.unwrap();
+                    let mut buf = [0u8; 2048];
+                    let n = s.read(&mut buf).await.unwrap();
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let offset = req
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=")?.split('-').next()?.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if req_idx == 0 {
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", served.len());
+                        s.write_all(head.as_bytes()).await.unwrap();
+                        s.write_all(&served[..40_000]).await.unwrap();
+                    } else {
+                        assert_eq!(offset, 40_000, "second request must resume at 40000");
+                        let rest = &served[offset..];
+                        let head = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n\r\n",
+                            offset,
+                            served.len() - 1,
+                            served.len(),
+                            rest.len()
+                        );
+                        s.write_all(head.as_bytes()).await.unwrap();
+                        s.write_all(rest).await.unwrap();
+                    }
+                }
+            });
+            let url = format!("http://127.0.0.1:{port}/model.tar.bz2");
+            let to = dir.join("model.part");
+            let first = download_resumable(&url, &[], &to, 1 << 20, |_, _| true).await.unwrap();
+            assert!(!first.complete);
+            assert_eq!(first.len, 40_000);
+            let mut saw_progress = false;
+            let second = download_resumable(&url, &[], &to, 1 << 20, |done, total| {
+                if done > 40_000 && total == Some(data.len() as u64) {
+                    saw_progress = true;
+                }
+                true
+            })
+            .await
+            .unwrap();
+            assert!(saw_progress);
+            assert!(second.complete);
+            assert_eq!(second.len, data.len() as u64);
+            assert_eq!(second.sha256, want);
         });
         std::fs::remove_dir_all(dir).unwrap();
     }

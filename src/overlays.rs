@@ -1017,7 +1017,7 @@ pub async fn speak(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
     }
     let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let (group, said) = (text("group"), text("text"));
-    let (voice, speed, pitch) = {
+    let (voice, speed, pitch, voices_cfg) = {
         let c = e.config();
         if group.is_empty() || !groups::exists(&c, &group) || text("token") != token(&c, &group) {
             return Some((
@@ -1032,13 +1032,22 @@ pub async fn speak(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| c.voices.voice.clone());
         let num = |k: &str, d: f64| req[k].as_f64().filter(|n| n.is_finite()).unwrap_or(d);
-        (voice, num("speed", c.voices.speed), num("pitch", c.voices.pitch))
+        (
+            voice,
+            num("speed", c.voices.speed),
+            num("pitch", c.voices.pitch),
+            c.voices.clone(),
+        )
     };
     let said: String = said.chars().take(1000).collect();
     if said.trim().is_empty() {
         return Some((400, json!({"ok": false, "error": "there is no text to say"})));
     }
-    Some(match crate::voice::speak(&said, &voice, speed, pitch).await {
+    let spoken = crate::voice::speak_with(&said, &voice, speed, pitch, &voices_cfg).await;
+    if crate::engine::speech::waiting() == 0 {
+        crate::voice::neural::maybe_unload_idle(voices_cfg.keep_loaded).await;
+    }
+    Some(match spoken {
         Ok(wav) => {
             let ms = crate::engine::wav_length_ms(&wav);
             let url = keep_speech(&e.config(), wav);

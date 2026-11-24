@@ -225,7 +225,12 @@ impl Engine {
                 }
                 next
             });
-            let Some(mut item) = next else { return };
+            let Some(mut item) = next else {
+                if waiting() == 0 {
+                    crate::voice::neural::maybe_unload_idle(self.config().voices.keep_loaded).await;
+                }
+                return;
+            };
             let (length, why) = self.say_item(&item).await;
             if let Some(done) = item.done.take() {
                 let _ = done.send((length, why));
@@ -246,7 +251,8 @@ impl Engine {
     }
 
     async fn say_item(self: &Rc<Self>, item: &Item) -> (Option<u64>, &'static str) {
-        let wav = match crate::voice::speak(&item.text, &item.voice, item.speed, item.pitch).await {
+        let voices_cfg = self.config().voices.clone();
+        let wav = match crate::voice::speak_with(&item.text, &item.voice, item.speed, item.pitch, &voices_cfg).await {
             Ok(wav) => wav,
             Err(e) => {
                 crate::warn(format!("Speak: {e}"));
@@ -386,15 +392,284 @@ impl Engine {
                 Ok(self.speech_state())
             }
             "" | "state" => Ok(self.speech_state()),
-            "voices" => crate::voice::voices().map(|v| json!({"voices": v, "default": self.config().voices.voice})),
+            "voices" => crate::voice::voices_with(&self.config().voices)
+                .map(|v| json!({"voices": v, "default": self.config().voices.voice})),
             other => Err(format!(
                 "unknown op {other}: speak, stop, clear, pause, enable, state or voices"
             )),
         }
     }
 
+    /// The request `StreamerzVoice` (and MCP tools `voices`, `voice_install`, `voice_remove`,
+    /// `voice_mix`): manages neural voices, downloads, unloading, samples and user-made voices.
+    pub async fn voice_request(self: &Rc<Self>, req: &Value) -> Result<Value, String> {
+        let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let num = |k: &str, or: f64| req[k].as_f64().filter(|n| n.is_finite()).unwrap_or(or);
+        match text("op").as_str() {
+            "" | "list" => {
+                let cfg = self.config().voices.clone();
+                let installed = crate::voice::voices_with(&cfg).unwrap_or_default();
+                let catalog: Vec<Value> = crate::voice::neural::catalog()
+                    .iter()
+                    .map(|e| {
+                        json!({
+                            "id": e.id,
+                            "name": e.name,
+                            "engine": e.engine,
+                            "language": e.language,
+                            "gender": e.gender,
+                            "quality": e.quality,
+                            "diskBytes": e.disk_bytes,
+                            "ramMb": e.ram_mb,
+                            "license": e.license,
+                            "commercial": e.commercial,
+                            "attribution": e.attribution,
+                            "sampleUrl": e.sample_url,
+                            "installed": crate::voice::neural::is_model_installed(&e.id),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "default": cfg.voice,
+                    "keepLoaded": cfg.keep_loaded,
+                    "engine": crate::voice::neural::state(),
+                    "installed": installed,
+                    "custom": cfg.custom,
+                    "catalog": catalog,
+                }))
+            }
+            "state" => Ok(serde_json::to_value(crate::voice::neural::state()).unwrap_or_default()),
+            "install" => {
+                let id = text("id");
+                if id.is_empty() || id == "engine" {
+                    crate::voice::neural::install_engine().await?;
+                } else {
+                    crate::voice::neural::install_model(&id).await?;
+                }
+                Ok(json!({"installed": true, "engine": crate::voice::neural::state()}))
+            }
+            "cancel" => Ok(json!({"cancelled": crate::voice::neural::cancel_download()})),
+            "remove" => {
+                let id = text("id");
+                if id.is_empty() {
+                    return Err("id is required".into());
+                }
+                if id == "engine" {
+                    crate::voice::neural::remove_engine().await?;
+                } else if id.starts_with("custom:") {
+                    self.remove_custom_voice(&id)?;
+                } else {
+                    crate::voice::neural::remove_model(&id).await?;
+                }
+                Ok(json!({"removed": id, "engine": crate::voice::neural::state()}))
+            }
+            "unload" => {
+                crate::voice::neural::unload().await;
+                Ok(json!({"unloaded": true, "engine": crate::voice::neural::state()}))
+            }
+            "sample" => {
+                let id = text("id");
+                if id.is_empty() {
+                    return Err("id is required".into());
+                }
+                let path = crate::voice::neural::play_sample(&id).await?;
+                Ok(json!({"playing": true, "file": path.display().to_string()}))
+            }
+            "mix" => {
+                let name = text("name");
+                if name.is_empty() {
+                    return Err("name is required".into());
+                }
+                let parts_raw = req["parts"]
+                    .as_array()
+                    .ok_or("parts must be an array of [speaker, share]")?;
+                let mut mix = Vec::new();
+                for p in parts_raw {
+                    let Some(pair) = p.as_array() else { continue };
+                    let sid = if let Some(n) = pair.first().and_then(Value::as_i64) {
+                        n as i32
+                    } else if let Some(sp_name) = pair.first().and_then(Value::as_str) {
+                        let key = sp_name.strip_prefix("kokoro:").unwrap_or(sp_name);
+                        crate::voice::neural::kokoro_speakers()
+                            .iter()
+                            .find(|s| s.id.eq_ignore_ascii_case(key) || s.name.eq_ignore_ascii_case(key))
+                            .map(|s| s.sid)
+                            .ok_or_else(|| format!("unknown Kokoro speaker {sp_name}"))?
+                    } else {
+                        continue;
+                    };
+                    let share = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+                    if share.is_finite() && share > 0.0 {
+                        mix.push((sid, share));
+                    }
+                }
+                if mix.len() < 2 || mix.len() > 4 {
+                    return Err("A Kokoro mix needs 2 to 4 voices with positive shares.".into());
+                }
+                let lang = {
+                    let l = text("language");
+                    if l.is_empty() {
+                        crate::voice::neural::kokoro_speakers()
+                            .iter()
+                            .find(|s| s.sid == mix[0].0)
+                            .map(|s| s.language.clone())
+                            .unwrap_or_else(|| "en-US".into())
+                    } else {
+                        l
+                    }
+                };
+                let kokoro_lang = {
+                    let kl = text("kokoroLang");
+                    if kl.is_empty() {
+                        kokoro_lang_for(&lang)
+                    } else {
+                        kl
+                    }
+                };
+                let custom = crate::voice::CustomVoice {
+                    id: custom_voice_id(&name, &text("id")),
+                    name,
+                    kind: crate::voice::CustomKind::Mix,
+                    language: lang,
+                    mix,
+                    kokoro_lang,
+                    recording: String::new(),
+                    consent: false,
+                    base_voice: String::new(),
+                    speed: num("speed", 1.0).clamp(0.5, 3.0),
+                    pitch: num("pitch", 1.0).clamp(0.5, 1.5),
+                    effect: validate_effect(&text("effect"))?,
+                };
+                let id = custom.id.clone();
+                self.save_custom_voice(custom.clone());
+                let preview = text("previewText");
+                if !preview.is_empty() {
+                    let cfg = self.config().voices.clone();
+                    self.say_now(&preview, &id, 1.0, 1.0, cfg.volume, "Monitor");
+                }
+                Ok(json!({"saved": id, "voice": custom}))
+            }
+            "clone" => {
+                let name = text("name");
+                if name.is_empty() {
+                    return Err("name is required".into());
+                }
+                if req["consent"] != true {
+                    return Err("You must confirm consent (consent: true) that this is your own voice or one you have permission to use.".into());
+                }
+                let file = text("recording");
+                if file.is_empty() {
+                    return Err("recording file path is required".into());
+                }
+                let id = custom_voice_id(&name, &text("id"));
+                let (filename, duration_ms) =
+                    crate::voice::neural::import_recording(std::path::Path::new(&file), &id)?;
+                let lang = {
+                    let l = text("language");
+                    if l.is_empty() { "en-US".into() } else { l }
+                };
+                let custom = crate::voice::CustomVoice {
+                    id: id.clone(),
+                    name,
+                    kind: crate::voice::CustomKind::Clone,
+                    language: lang,
+                    mix: Vec::new(),
+                    kokoro_lang: String::new(),
+                    recording: filename,
+                    consent: true,
+                    base_voice: String::new(),
+                    speed: num("speed", 1.0).clamp(0.5, 3.0),
+                    pitch: num("pitch", 1.0).clamp(0.5, 1.5),
+                    effect: validate_effect(&text("effect"))?,
+                };
+                self.save_custom_voice(custom.clone());
+                Ok(json!({"saved": id, "durationMs": duration_ms, "voice": custom}))
+            }
+            "effect" => {
+                let name = text("name");
+                if name.is_empty() {
+                    return Err("name is required".into());
+                }
+                let base_voice = text("baseVoice");
+                if base_voice.is_empty() {
+                    return Err("baseVoice is required".into());
+                }
+                if base_voice.starts_with("custom:") {
+                    return Err("baseVoice must be a system or neural voice, not another custom voice.".into());
+                }
+                let effect = validate_effect(&text("effect"))?;
+                let id = custom_voice_id(&name, &text("id"));
+                let lang = {
+                    let l = text("language");
+                    if l.is_empty() {
+                        crate::voice::voices_with(&self.config().voices)
+                            .ok()
+                            .and_then(|all| all.into_iter().find(|v| v.id == base_voice))
+                            .map(|v| v.language)
+                            .unwrap_or_default()
+                    } else {
+                        l
+                    }
+                };
+                let custom = crate::voice::CustomVoice {
+                    id: id.clone(),
+                    name,
+                    kind: crate::voice::CustomKind::Effect,
+                    language: lang,
+                    mix: Vec::new(),
+                    kokoro_lang: String::new(),
+                    recording: String::new(),
+                    consent: false,
+                    base_voice,
+                    speed: num("speed", 1.0).clamp(0.5, 3.0),
+                    pitch: num("pitch", 1.0).clamp(0.5, 1.5),
+                    effect,
+                };
+                self.save_custom_voice(custom.clone());
+                Ok(json!({"saved": id, "voice": custom}))
+            }
+            "record_mic" => {
+                let secs = req["seconds"].as_u64().unwrap_or(6) as u32;
+                let path = crate::voice::neural::record_mic(secs).await?;
+                Ok(json!({"file": path.display().to_string(), "seconds": secs.clamp(3, 12)}))
+            }
+            other => Err(format!(
+                "unknown op {other}: list, state, install, cancel, remove, unload, sample, mix, clone, effect or record_mic"
+            )),
+        }
+    }
+
+    pub fn save_custom_voice(self: &Rc<Self>, voice: crate::voice::CustomVoice) {
+        self.change(|c| match c.voices.custom.iter_mut().find(|v| v.id == voice.id) {
+            Some(existing) => *existing = voice,
+            None => c.voices.custom.push(voice),
+        });
+    }
+
+    pub fn remove_custom_voice(self: &Rc<Self>, id: &str) -> Result<(), String> {
+        let recording = self
+            .config()
+            .voices
+            .custom
+            .iter()
+            .find(|v| v.id == id)
+            .map(|v| v.recording.clone())
+            .ok_or_else(|| format!("no custom voice {id}"))?;
+        self.change(|c| {
+            c.voices.custom.retain(|v| v.id != id);
+            if c.voices.voice == id {
+                c.voices.voice.clear();
+            }
+        });
+        if !recording.is_empty() {
+            let _ = std::fs::remove_file(crate::voice::neural::recordings_dir().join(recording));
+        }
+        Ok(())
+    }
+
     pub fn speech_state(&self) -> Value {
-        json!({"paused": PAUSED.get(), "enabled": !DISABLED.get(), "waiting": waiting()})
+        let speaking = sound::playing().iter().any(|p| p.name == SPEECH);
+        json!({"paused": PAUSED.get(), "enabled": !DISABLED.get(), "waiting": waiting(), "speaking": speaking})
     }
 
     /// The Speak sub-actions.
@@ -448,7 +723,7 @@ impl Engine {
                     crate::warn("Set User Voice: there is no user to give a voice".to_string());
                 }
             }
-            99327 => match crate::voice::voices() {
+            99327 => match crate::voice::voices_with(&self.config().voices) {
                 Ok(voices) => {
                     let list: Vec<Value> = voices
                         .iter()
@@ -544,10 +819,14 @@ impl Engine {
 
     /// Speak To File: the speech as a WAV (the file given, else one in the sounds folder).
     async fn speak_to_file(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, item: Item) {
-        let wav = match crate::voice::speak(&item.text, &item.voice, item.speed, item.pitch).await {
+        let voices_cfg = self.config().voices.clone();
+        let wav = match crate::voice::speak_with(&item.text, &item.voice, item.speed, item.pitch, &voices_cfg).await {
             Ok(wav) => wav,
             Err(e) => return crate::warn(format!("Speak To File: {e}")),
         };
+        if waiting() == 0 {
+            crate::voice::neural::maybe_unload_idle(voices_cfg.keep_loaded).await;
+        }
         let given = self.expand(ctx, s(o, "file")).trim().to_string();
         let path = if given.is_empty() {
             let dir = crate::core::sounds::folder();
@@ -574,6 +853,54 @@ fn number(o: &Obj, key: &str, or: f64) -> f64 {
         })
         .filter(|n| n.is_finite())
         .unwrap_or(or)
+}
+
+pub fn custom_voice_id(name: &str, given: &str) -> String {
+    let given = given.trim();
+    if given.starts_with("custom:") && given.len() > 7 {
+        return given.to_string();
+    }
+    let slug: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let short = crate::engine::uuid();
+    let tail = &short[..short.len().min(6)];
+    if slug.is_empty() {
+        format!("custom:{tail}")
+    } else {
+        format!("custom:{slug}-{tail}")
+    }
+}
+
+pub fn kokoro_lang_for(lang: &str) -> String {
+    match lang.to_ascii_lowercase().as_str() {
+        "en-gb" => "en-gb",
+        "pt-br" | "pt" => "pt-br",
+        "es" | "es-es" | "es-mx" | "es-ar" => "es",
+        "fr" | "fr-fr" => "fr-fr",
+        "it" | "it-it" => "it",
+        "ja" | "ja-jp" => "ja",
+        "hi" | "hi-in" => "hi",
+        "zh" | "zh-cn" | "cmn" => "cmn",
+        _ => "en-us",
+    }
+    .into()
+}
+
+pub fn validate_effect(effect: &str) -> Result<String, String> {
+    let e = effect.trim().to_ascii_lowercase();
+    if e.is_empty() || e == "none" {
+        return Ok(String::new());
+    }
+    if crate::voice::effects::EFFECTS.contains(&e.as_str()) {
+        Ok(e)
+    } else {
+        Err(format!("unknown voice effect {effect:?}: none, echo, radio or robot"))
+    }
 }
 
 /// The names of the emotes of the chat message that started the action (Twitch's `emotes`, Kick's).
@@ -683,5 +1010,86 @@ mod tests {
         wav.extend(vec![0u8; 44100]);
         assert_eq!(wav_length_ms(&wav), Some(1000));
         assert_eq!(wav_length_ms(b"nope"), None);
+    }
+
+    #[test]
+    fn voice_request_manages_catalog_mixes_clones_and_effects() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("streamerz-voice-req-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        *crate::voice::neural::TEST_DIR.lock().unwrap() = Some(tmp.join("voices"));
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let list = e.voice_request(&json!({"op": "list"})).await.unwrap();
+            assert!(list["catalog"].as_array().unwrap().len() >= 20);
+
+            // Kokoro mix validation and save.
+            let bad_mix = e
+                .voice_request(&json!({"op": "mix", "name": "Too Few", "parts": [["af_heart", 1.0]]}))
+                .await;
+            assert!(bad_mix.is_err());
+            let mix = e
+                .voice_request(&json!({
+                    "op": "mix",
+                    "name": "Warm Host",
+                    "parts": [["af_heart", 60], ["am_adam", 40]],
+                    "language": "en-US",
+                    "effect": "echo",
+                }))
+                .await
+                .unwrap();
+            let mix_id = mix["saved"].as_str().unwrap().to_string();
+            assert!(mix_id.starts_with("custom:"));
+            assert_eq!(e.config().voices.custom.len(), 1);
+
+            // Pocket TTS clone requires explicit consent and converts WAV into voices/recordings/.
+            let sample_wav = tmp.join("sample.wav");
+            std::fs::write(&sample_wav, crate::sound::sine_wav(24_000, 1, 300.0, 48_000)).unwrap();
+            let no_consent = e
+                .voice_request(&json!({
+                    "op": "clone",
+                    "name": "My Voice",
+                    "recording": sample_wav.display().to_string(),
+                    "consent": false,
+                }))
+                .await;
+            assert!(no_consent.is_err(), "clone must refuse without consent");
+            let cloned = e
+                .voice_request(&json!({
+                    "op": "clone",
+                    "name": "My Voice",
+                    "recording": sample_wav.display().to_string(),
+                    "consent": true,
+                }))
+                .await
+                .unwrap();
+            let clone_id = cloned["saved"].as_str().unwrap().to_string();
+            assert!(cloned["durationMs"].as_u64().unwrap() >= 1900);
+            let rec_name = cloned["voice"]["recording"].as_str().unwrap();
+            assert!(crate::voice::neural::recordings_dir().join(rec_name).is_file());
+
+            // Effect voice creation and cleanup.
+            let fx = e
+                .voice_request(&json!({
+                    "op": "effect",
+                    "name": "Radio Host",
+                    "baseVoice": "en-US",
+                    "effect": "radio",
+                    "pitch": 0.9,
+                }))
+                .await
+                .unwrap();
+            let fx_id = fx["saved"].as_str().unwrap().to_string();
+            assert_eq!(e.config().voices.custom.len(), 3);
+
+            // Removing custom voices cleans up their recordings too.
+            for id in [mix_id, clone_id, fx_id] {
+                e.voice_request(&json!({"op": "remove", "id": id})).await.unwrap();
+            }
+            assert!(e.config().voices.custom.is_empty());
+            assert!(!crate::voice::neural::recordings_dir().join(rec_name).exists());
+        });
+        *crate::voice::neural::TEST_DIR.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

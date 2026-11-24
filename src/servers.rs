@@ -2030,6 +2030,16 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
                 }
             }
         }
+        "StreamerzVoice" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match e.voice_request(req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
         "StreamerzPlatformApi" => {
             if auth_required && !authed {
                 error(&id, "Authentication required to use this method")

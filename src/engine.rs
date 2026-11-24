@@ -31,7 +31,7 @@ mod processes;
 mod rest;
 mod songs;
 pub(crate) mod sounds;
-mod speech;
+pub(crate) mod speech;
 mod tools;
 mod watchers;
 

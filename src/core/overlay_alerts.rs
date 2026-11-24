@@ -162,7 +162,7 @@ pub fn form(engine: &Rc<Engine>, group: &str, kind: String, index: &str) -> Resu
                     f["browse"] = "file".into();
                 }
                 "voice" => {
-                    let voices = crate::voice::voices().unwrap_or_default();
+                    let voices = crate::voice::voices_with(&config.voices).unwrap_or_default();
                     let mut choices = vec![json!({"id": "Default", "label": tr("sounds.default")})];
                     choices.extend(voices.into_iter().map(|v| json!({"id": v.id, "label": v.name})));
                     f["choices"] = choices.into();

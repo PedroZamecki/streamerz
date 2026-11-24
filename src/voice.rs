@@ -1,22 +1,85 @@
-//! System voices: text to speech with what the system has, nothing to download. On Linux espeak-ng
-//! (`espeak-ng --stdout`, on the host in a Flatpak), on Windows the system's speech synthesis (WinRT).
-//! Either gives a WAV, which Streamerz's own player plays, so a voice goes to any output.
+//! Voices: system voices (espeak-ng on Linux, WinRT SpeechSynthesis on Windows), optional neural
+//! voices (`Streamerz-Voice` over sherpa-onnx: Piper, Kokoro and Pocket TTS), and user-made voices
+//! (Kokoro mixes, Pocket TTS recordings and audio effects).
 //!
-//! Nothing runs until something speaks: espeak-ng is started for each speech and ends with it.
+//! Nothing runs or downloads until it is used: system voices start on demand and neural voices
+//! cost nothing until the user installs them.
+
+pub mod effects;
+pub mod neural;
 
 use serde::{Deserialize, Serialize};
 
-/// A voice of the system.
+/// An installed voice (system, neural, or custom).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Voice {
-    /// What a sub-action keeps: espeak-ng's voice name, Windows's voice name.
+    /// What a sub-action keeps: espeak-ng / Windows voice name, `piper:<id>`, `kokoro:<speaker>`,
+    /// or `custom:<id>`.
     pub id: String,
     /// What is shown.
     pub name: String,
-    /// The language, as the system says it (`pt-br`, `en-US`).
+    /// The language (`pt-BR`, `en-US`, ...).
     pub language: String,
     /// `male`, `female` or empty.
     pub gender: String,
+    /// `system`, `piper`, `kokoro`, or `custom`.
+    pub engine: String,
+}
+
+/// How a custom voice is made.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CustomKind {
+    /// Weighted blend of 2 to 4 Kokoro voices.
+    #[default]
+    Mix,
+    /// Cloned locally from a short voice recording via Pocket TTS.
+    Clone,
+    /// Another voice with saved speed, pitch and effect (echo, radio, robot).
+    Effect,
+}
+
+/// A user-made voice saved in `voices.custom`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomVoice {
+    /// Stable voice id (`custom:<slug>`).
+    pub id: String,
+    pub name: String,
+    pub kind: CustomKind,
+    pub language: String,
+    /// Kokoro mix parts: `(speaker_id, weight)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mix: Vec<(i32, f64)>,
+    /// Kokoro espeak language code (`en-us`, `pt-br`, ...).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kokoro_lang: String,
+    /// Pocket TTS reference WAV file name under `voices/recordings/`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recording: String,
+    /// User confirmed they own the voice or have permission to use it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub consent: bool,
+    /// Base voice id for `CustomKind::Effect`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_voice: String,
+    /// Speed multiplier saved with the voice (default 1.0).
+    #[serde(default = "one")]
+    pub speed: f64,
+    /// Pitch multiplier saved with the voice (default 1.0).
+    #[serde(default = "one")]
+    pub pitch: f64,
+    /// Optional audio effect (`""`, `"echo"`, `"radio"`, `"robot"`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effect: String,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// How the voices speak by default (`voices` in the settings file).
@@ -31,6 +94,12 @@ pub struct Settings {
     pub pitch: f64,
     /// 0 to 100.
     pub volume: f64,
+    /// Keep `Streamerz-Voice` loaded between speeches (on by default while neural voices are used).
+    #[serde(default = "yes")]
+    pub keep_loaded: bool,
+    /// User-made voices (Kokoro mixes, Pocket TTS recordings, effect presets).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom: Vec<CustomVoice>,
 }
 
 impl Default for Settings {
@@ -40,6 +109,8 @@ impl Default for Settings {
             speed: 1.0,
             pitch: 1.0,
             volume: 100.0,
+            keep_loaded: true,
+            custom: Vec::new(),
         }
     }
 }
@@ -66,14 +137,15 @@ fn command(args: &[&str]) -> std::process::Command {
     crate::sandbox::on_host(cmd)
 }
 
-/// The system's voices, or why there are none (espeak-ng isn't installed).
-pub fn voices() -> Result<Vec<Voice>, String> {
+/// System voices only (espeak-ng / WinRT).
+pub fn system_voices() -> Result<Vec<Voice>, String> {
     if OFFLINE.get() {
         return Ok(vec![Voice {
             id: "en".into(),
             name: "English".into(),
             language: "en".into(),
             gender: String::new(),
+            engine: "system".into(),
         }]);
     }
     #[cfg(windows)]
@@ -85,6 +157,45 @@ pub fn voices() -> Result<Vec<Voice>, String> {
             return Err(missing());
         }
         Ok(parse_espeak_voices(&String::from_utf8_lossy(&out.stdout)))
+    }
+}
+
+/// All installed voices: custom voices, installed neural voices, then system voices.
+/// Only returns the system-missing error when no voices of any kind are installed.
+pub fn voices_with(settings: &Settings) -> Result<Vec<Voice>, String> {
+    let mut out: Vec<Voice> = settings
+        .custom
+        .iter()
+        .map(|c| {
+            let tag = match c.kind {
+                CustomKind::Mix => "Mix",
+                CustomKind::Clone => "Recording",
+                CustomKind::Effect => "Effect",
+            };
+            Voice {
+                id: c.id.clone(),
+                name: format!("{} ({tag})", c.name),
+                language: c.language.clone(),
+                gender: String::new(),
+                engine: "custom".into(),
+            }
+        })
+        .collect();
+    if !OFFLINE.get() {
+        out.extend(neural::installed_voices());
+    }
+    match system_voices() {
+        Ok(sys) => {
+            out.extend(sys);
+            Ok(out)
+        }
+        Err(why) => {
+            if out.is_empty() {
+                Err(why)
+            } else {
+                Ok(out)
+            }
+        }
     }
 }
 
@@ -135,6 +246,7 @@ fn parse_espeak_voices(text: &str) -> Vec<Voice> {
                 name: name.replace('_', " "),
                 language: language.to_string(),
                 gender: gender.into(),
+                engine: "system".into(),
             })
         })
         .collect()
@@ -150,15 +262,51 @@ pub fn offline() {
     OFFLINE.set(true);
 }
 
-/// Speech as a WAV: `speed` and `pitch` around 1, as the voice speaks.
-pub async fn speak(text: &str, voice: &str, speed: f64, pitch: f64) -> Result<Vec<u8>, String> {
+/// Speech as a WAV, supporting system voices, installed Piper/Kokoro voices, and saved custom
+/// voices (Kokoro mixes, Pocket TTS recordings, and effect presets).
+pub async fn speak_with(
+    text: &str,
+    voice: &str,
+    speed: f64,
+    pitch: f64,
+    settings: &Settings,
+) -> Result<Vec<u8>, String> {
     if OFFLINE.get() {
         let words = text.split_whitespace().count().max(1) as u32;
-        let _ = (voice, speed, pitch);
+        let _ = (voice, speed, pitch, settings);
         return Ok(crate::sound::sine_wav(16_000, 1, 440.0, 1_600 * words));
     }
+    let voice = voice.trim();
+    if let Some(custom) = settings.custom.iter().find(|c| c.id == voice) {
+        let eff_speed = (speed * custom.speed).clamp(0.5, 3.0);
+        let eff_pitch = (pitch * custom.pitch).clamp(0.5, 1.5);
+        let wav = match custom.kind {
+            CustomKind::Mix => neural::speak_mix(text, &custom.mix, &custom.kokoro_lang, eff_speed, eff_pitch).await?,
+            CustomKind::Clone => neural::speak_clone(text, &custom.recording, eff_speed, eff_pitch).await?,
+            CustomKind::Effect => {
+                if custom.base_voice.starts_with("custom:") {
+                    return Err("An effect voice cannot wrap another custom voice.".into());
+                }
+                speak_base(text, &custom.base_voice, eff_speed, eff_pitch).await?
+            }
+        };
+        return Ok(effects::apply_effect(wav, &custom.effect));
+    }
+    speak_base(text, voice, speed, pitch).await
+}
+
+/// Speech as a WAV (system or installed neural voice, without custom presets).
+#[cfg(test)]
+pub async fn speak(text: &str, voice: &str, speed: f64, pitch: f64) -> Result<Vec<u8>, String> {
+    speak_with(text, voice, speed, pitch, &Settings::default()).await
+}
+
+async fn speak_base(text: &str, voice: &str, speed: f64, pitch: f64) -> Result<Vec<u8>, String> {
     let speed = if speed.is_finite() { speed.clamp(0.5, 3.0) } else { 1.0 };
     let pitch = if pitch.is_finite() { pitch.clamp(0.5, 1.5) } else { 1.0 };
+    if voice.starts_with("piper:") || voice.starts_with("kokoro:") {
+        return neural::speak(text, voice, speed, pitch).await;
+    }
     #[cfg(windows)]
     return windows_speak(text, voice, speed, pitch).await;
     #[cfg(not(windows))]
@@ -214,6 +362,7 @@ fn windows_voices() -> Result<Vec<Voice>, String> {
                 _ => "",
             }
             .into(),
+            engine: "system".into(),
         });
     }
     Ok(out)
@@ -354,7 +503,7 @@ mod tests {
     #[test]
     fn a_missing_espeak_says_how_to_install_it() {
         TEST_PROGRAM.with_borrow_mut(|p| *p = Some("/nowhere/espeak-ng".into()));
-        let got = voices();
+        let got = system_voices();
         TEST_PROGRAM.with_borrow_mut(|p| *p = None);
         let error = got.unwrap_err();
         assert!(error.contains("espeak-ng") && error.contains("sudo"), "{error}");

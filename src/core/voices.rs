@@ -16,7 +16,7 @@ fn listed(refresh: bool) -> Result<Vec<crate::voice::Voice>, String> {
     }
     KNOWN.with_borrow_mut(|known| {
         if refresh || known.is_none() {
-            *known = Some(crate::voice::voices());
+            *known = Some(crate::voice::system_voices());
         }
         known.clone().unwrap_or_else(|| Ok(Vec::new()))
     })

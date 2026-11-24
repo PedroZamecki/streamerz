@@ -192,6 +192,62 @@ pub fn info(path: &Path) -> Result<Info, String> {
     Ok(info)
 }
 
+/// Decodes any supported sound file (WAV, MP3, OGG, M4A, FLAC) into a 16-bit mono 24 kHz WAV,
+/// capped at `max_secs` seconds. Returns `(wav_bytes, duration_ms)`.
+pub fn decode_mono_wav(path: &Path, max_secs: u32) -> Result<(Vec<u8>, u64), String> {
+    let mut source = Source::open(path)?;
+    const TARGET_RATE: u32 = 24_000;
+    let max_out_frames = (TARGET_RATE as usize) * (max_secs.max(1) as usize);
+    let mut mono: Vec<i16> = Vec::new();
+    // Source::read outputs stereo interleaved at super::RATE (48 kHz) -> 2 stereo frames = 1 mono 24 kHz frame.
+    let mut stereo = vec![0f32; 960 * CHANNELS];
+    loop {
+        let frames = source.read(&mut stereo);
+        if frames == 0 {
+            break;
+        }
+        let mut i = 0;
+        while i < frames && mono.len() < max_out_frames {
+            let l0 = stereo[i * 2];
+            let r0 = stereo[i * 2 + 1];
+            let sample = if i + 1 < frames {
+                let l1 = stereo[(i + 1) * 2];
+                let r1 = stereo[(i + 1) * 2 + 1];
+                (l0 + r0 + l1 + r1) * 0.25
+            } else {
+                (l0 + r0) * 0.5
+            };
+            mono.push((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+            i += 2;
+        }
+        if mono.len() >= max_out_frames {
+            break;
+        }
+    }
+    if mono.is_empty() {
+        return Err(format!("{} has no audible sound", path.display()));
+    }
+    let duration_ms = mono.len() as u64 * 1000 / TARGET_RATE as u64;
+    let data = (mono.len() * 2) as u32;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&TARGET_RATE.to_le_bytes());
+    w.extend_from_slice(&(TARGET_RATE * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    for s in mono {
+        w.extend_from_slice(&s.to_le_bytes());
+    }
+    Ok((w, duration_ms))
+}
+
 /// A WAV file of PCM 16 bits: `frames` of a sine at `hz` (tests, and the voice of offline scenarios).
 pub fn sine_wav(rate: u32, channels: u16, hz: f32, frames: u32) -> Vec<u8> {
     let data = frames * channels as u32 * 2;
