@@ -524,12 +524,24 @@ impl List {
         }
         cx.notify();
     }
+    /// Resolves the explicit row (from a context menu or double-click) or the currently selected row
+    /// (from a toolbar/bottom button) so per-row `confirm`, `kind` and `singleton` metadata apply to both.
+    fn row_record(shown: &Value, row: Option<usize>, selected_id: &str) -> Option<Value> {
+        row.and_then(|row| shown["rows"].get(row))
+            .or_else(|| {
+                shown["rows"].as_array().and_then(|rows| {
+                    rows.iter()
+                        .find(|row| !selected_id.is_empty() && row["id"] == selected_id)
+                })
+            })
+            .cloned()
+    }
     fn action(&mut self, action: Action, row: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let shown = match &self.table {
             Some(table) => table.read(cx).delegate().model.clone(),
             None => self.model.clone(),
         };
-        let record = row.and_then(|row| shown["rows"].get(row).cloned());
+        let record = Self::row_record(&shown, row, &self.selected_id);
         let kind = record
             .as_ref()
             .and_then(|row| row["kind"].as_str())
@@ -2637,6 +2649,21 @@ mod tests {
     use crate::theme::{SPACE_MD, SPACE_SM};
     use gpui_kit::div;
     use serde_json::json;
+
+    #[test]
+    fn selected_row_record_applies_per_row_confirm_for_toolbar_buttons() {
+        let model = json!({
+            "rows": [
+                {"id": "a", "confirm": {"download": "Download A (CC0)"}},
+                {"id": "b", "confirm": {"download": "Download B (Non-commercial)"}}
+            ]
+        });
+        let from_menu = List::row_record(&model, Some(0), "b").unwrap();
+        assert_eq!(from_menu["confirm"]["download"], "Download A (CC0)");
+        let from_button = List::row_record(&model, None, "b").unwrap();
+        assert_eq!(from_button["confirm"]["download"], "Download B (Non-commercial)");
+        assert!(List::row_record(&model, None, "").is_none());
+    }
 
     #[test]
     fn f2_prefers_explicit_rename_over_edit_and_respects_row_permissions() {
