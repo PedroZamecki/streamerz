@@ -42,7 +42,16 @@ on real applications, including in dev mode. Disabled integrations remain off.
 
 `sounds` lists what Streamerz plays now, its outputs and master volume, and pauses, resumes or turns
 down sounds by name; `sound_play` and `sound_stop` play and stop a file. They use this computer's real
-speakers and fire no trigger (see `docs/SOUNDS.md`).
+speakers and fire no trigger (see `docs/SOUNDS.md`). The Sounds page (Playing, Library, Board, Voices,
+Output) is `core_view` and `core_action` with the domain `sounds`. `speak` says a text with a voice of
+this computer, in turn with the other speeches, and stops, clears, pauses or turns speech off; `voices`
+lists the voices (see `docs/VOICES.md`).
+
+An overlay's own page is `core_view overlays` with `view: {"overlay": "<group>:<file>", "overlayTab":
+"settings|test|media|live|alerts|code"}`; its forms and buttons go through `entity_form`, `edit_entity`
+and `core_action` as the window's do. `overlay_draft` reads and changes the editor's unsaved settings,
+`overlay_control` reads and sets an overlay's live controls (and gives the address of their dock), and
+the Alerts tab of an alert box is the `alerts` tab of that view.
 
 `agents` discovers clients. `agent_setup` changes the selected client's config;
 ask the user before changing another program. `tiktok_bridge` status is read-only;

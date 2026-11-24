@@ -646,3 +646,19 @@ Linux, 2026-11-16, `python3 -P dev/check.py --windows`:
 - Not run: `cargo audit` and `actionlint` (not installed here), release packaging, the UI smoke, live checks
   on Twitch, Kick, YouTube and TikTok (deferred to the owner), Windows runtime, and the hidden RSS and idle
   CPU measurement with Twitch and OBS connected.
+
+## Version 1.10.0: the overlay studio, sounds and voices
+
+Checked here, by hand and by the checks below, on Linux (PipeWire) with the hidden display (`DISPLAY=:99`).
+
+| Check | Result |
+| --- | --- |
+| `cargo test --locked` | 809 passed, zero failed, 13 ignored: the setting kinds and their fields, Extra CSS, live controls, the Output settings and the device list, the Sounds page and its Board dock, the Voices and the stand-in espeak-ng, the speech queue and filters, the Alerts tab, rows saved before a column was added, and a scenario for every new code (99302, 99305, 99306, 99320 to 99327, 99881) with an offline voice. |
+| `node dev/test-examples.mjs` | 383 checks passed on an isolated instance (WebSocket 8095, HTTP 7495) with espeak-ng on its `PATH`: the new kinds reaching pages (`streamerz.place`, `animate`, `css`, a sound's address and volume, Extra CSS without a reload, Play of an animation, a button's topic), live controls set by request and by their dock, the Scene banner, the Sound board's dock and player, Read chat aloud speaking a message without its link, and an alert rule saying its words aloud while the alert stays. Without a voice on the computer, the two speech checks say they are skipped. |
+| Sound Device Changed | A PulseAudio null sink added and removed fired the trigger with `available` True then False; `pactl subscribe` ran only while an action that is on had the trigger, and ended when it was turned off. |
+| System voices | The real espeak-ng 1.52 (141 voices), unpacked from its Arch package into a scratch folder and put on the dev instance's `PATH` (not installed): the Voices list, Say with Portuguese of Brazil, two speeches in turn through the request, and the speeches in the browser checks. |
+| Window | Every new control and tab checked with screenshots: the setting kinds (presets, parts, the place grid, two-handle range, gradient bar, Keep ratio, code boxes, the gift picker with TikTok's catalog), the Live tab and its dock, the Sounds page's five parts with the real outputs listed by name, the Voices and the Alerts tab with Play this rule. |
+| `cargo xwin check --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed, with the endpoint notifications (`IMMNotificationClient`) and the Windows speech (WinRT). Not run on Windows itself. |
+
+espeak-ng is not installed on the computer these checks ran on; to run the speech checks, install it
+(`sudo pacman -S espeak-ng` or your system's), or put a copy on the instance's `PATH` as above.

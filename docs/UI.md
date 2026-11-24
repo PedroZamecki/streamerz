@@ -53,6 +53,11 @@ and the core remembers the tab per item, so Back and a new window find it again.
 as a model (the overlay's is `overlay` in the Overlays read, `controls/overlay.rs` draws it), so MCP reads
 the same page.
 
+Its tabs show rows (a file, a rule, a made-up event) with a picture or an icon, a line of detail and
+their buttons; a row's lesser buttons are their icon only, named on hover (`iconOnly`), and every row has
+a right-click menu with all its buttons. A tab whose changes are settings (Settings, Alerts) keeps them
+as a draft, with Revert and Save at the top; a tab of live controls (Live) sets each at once.
+
 ## Page frame, spacing and typography
 
 One frame for every page. The numbers live as tokens in `frontend/src/theme.rs`; a screen uses the token,
