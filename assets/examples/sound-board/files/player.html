@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sound board player</title>
+<style>html, body { margin: 0; background: transparent; }</style>
+</head>
+<body>
+<script>
+// Plays what the dock asks for. It shows nothing: put it in a scene (any size) for OBS to hear it.
+let s = {};
+const playing = new Set();
+streamerz.onSettings(next => (s = next));
+streamerz.on(streamerz.group + ".play", (press, old) => {
+  if (old || !press) return;
+  const pad = (s.pads || [])[press.pad];
+  if (!pad || !pad.sound) return;
+  if (s.overlap === false) for (const a of playing) a.pause(), playing.delete(a);
+  const audio = new Audio(pad.sound);
+  audio.volume = Math.min(1, (Number(pad.volume ?? 80) || 0) / 100);
+  playing.add(audio);
+  audio.onended = () => playing.delete(audio);
+  audio.play().catch(e => streamerz.log("Sound board: " + e.message));
+  window.lastPlayed = pad.sound;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+{
+  "format": 1,
+  "name": "Read chat aloud",
+  "meta": {
+    "description": "Reads the chat aloud in the browser source, with a caption of who is being read, so OBS has the voice on its own source. Uses the voices of this computer.",
+    "variables": [
+      {
+        "name": "voice",
+        "label": "Voice",
+        "kind": "text",
+        "default": "",
+        "description": "Empty: the default of Sounds, Voices"
+      },
+      {
+        "name": "prefix",
+        "label": "Said before",
+        "kind": "text",
+        "default": "%user% says",
+        "description": "Empty: nothing"
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ]
+      },
+      {
+        "name": "skipCommands",
+        "label": "Skip commands",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "skipLinks",
+        "label": "Skip links",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "maxLength",
+        "label": "At most this many characters",
+        "kind": "integer",
+        "default": 200,
+        "description": "0: all"
+      },
+      {
+        "name": "volume",
+        "label": "Volume",
+        "kind": "percent",
+        "default": 100
+      },
+      {
+        "name": "caption",
+        "label": "Show who is read",
+        "kind": "boolean",
+        "default": true,
+        "section": "Look"
+      },
+      {
+        "name": "style",
+        "label": "Caption",
+        "kind": "textStyle",
+        "default": {
+          "font": "",
+          "size": 28,
+          "weight": 600,
+          "color": "#ffffff",
+          "outline": 0,
+          "outlineColor": "#000000",
+          "shadow": true
+        }
+      },
+      {
+        "name": "where",
+        "label": "Place",
+        "kind": "position",
+        "default": {
+          "anchor": "bottom",
+          "x": 0,
+          "y": -30
+        }
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.read",
+      "voice.speak"
+    ],
+    "template": {
+      "id": "streamerz.example.chat-aloud",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Read chat aloud",
+          "width": 1280,
+          "height": 200
+        }
+      ],
+      "controls": [
+        {
+          "name": "on",
+          "label": "Reading",
+          "kind": "toggle",
+          "default": true
+        },
+        {
+          "name": "skip",
+          "label": "Skip",
+          "kind": "button",
+          "icon": "skip-forward"
+        }
+      ]
+    }
+  }
+}

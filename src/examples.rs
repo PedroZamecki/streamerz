@@ -56,6 +56,9 @@ pub const ALL: &[Example] = &[
     example!("starting-soon", "index.html", "img/background.svg"),
     example!("control-dock", actions, "dock.html", "banner.html"),
     example!("countdown-to", "index.html", "sounds/chime.wav"),
+    example!("scene-banner", "index.html"),
+    example!("sound-board", "dock.html", "player.html", "sounds/chime.wav"),
+    example!("chat-aloud", "index.html"),
 ];
 
 /// An example as a template, ready to describe or install.

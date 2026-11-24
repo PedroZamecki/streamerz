@@ -1174,8 +1174,12 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   browser with the real espeak-ng). Rows saved before a column was added keep their values (the new cell
   takes its default: they were dropped before). The overlay page's rows got a right-click menu with
   their buttons, and lesser buttons as icons named on hover.
-- [ ] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
-  ones updated.
+- [x] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
+  ones updated. Done: Countdown to (the newer kinds and live controls), Scene banner (a title for each
+  OBS scene), Sound board (a dock and a player page, so OBS mixes the sounds on their own source), Read
+  chat aloud (the chat spoken in the browser source, with Reading and Skip as live controls), and the
+  Alert box updated (Say aloud, Voice, the Alerts tab); every example gets Extra CSS by itself. 383
+  browser checks, the speeches with the real espeak-ng.
 - [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
   `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`).
 - [ ] 18. Close: unit tests, scenarios, the smoke in English and pt_BR, real sounds and voices on Windows

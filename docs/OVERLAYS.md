@@ -91,6 +91,9 @@ page. Each one is short and commented, made to be read:
 | Goal bar | A bar that fills with follows, subs, cheers or TikTok coins, and keeps its count across restarts | `streamerz.alerts` with `kind` and `args`, `streamerz.set`, `streamerz.testing` |
 | Starting soon | A full screen with your picture, a countdown and music | `file` settings (a picture and a sound) |
 | Buttons dock | A dock with a button for each action connected to it, and a banner the buttons show | `streamerz.actions`, `streamerz.run`, an `action` setting, two pages |
+| Scene banner | A title for each OBS scene, shown as the scene changes | the event `ObsStudio.SceneChanged`, a `list` of scenes, `textStyle`, `gradient`, `position` and two `animation` settings |
+| Sound board | A dock of buttons playing the overlay's sounds through a browser source, so OBS mixes them on their own | a dock page, a topic, a second page that only plays sounds |
+| Read chat aloud | The chat spoken in the browser source, one message after another, with a caption of who is read | `streamerz.chat`, `streamerz.speak` (`voice.speak`), live controls Reading and Skip |
 | Countdown to | Counts down to a day and time, then says so with a sound; Try the end shows it now | `datetime`, `textStyle`, `position`, `animation`, `gradient`, `percent`, `sound` and `button` settings, `streamerz.css`, `streamerz.place`, `streamerz.animate` |
 
 Their source is in `assets/examples/<name>`: a `template.json` and a `files` folder, exactly what a

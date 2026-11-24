@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scene banner</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #banner { padding: 14px 28px; border-radius: 12px; font-family: system-ui, sans-serif; white-space: nowrap; }
+  #banner[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="banner" hidden></div>
+<script>
+// When OBS changes scene (ObsStudio.SceneChanged), the banner says what its row says for that scene.
+// The look comes from the newer kinds of setting: streamerz.css, streamerz.place, streamerz.animate.
+let s = {}, timer;
+
+function says(scene) {
+  const row = (s.banners || []).find(b => b.scene.trim().toLowerCase() === String(scene || "").trim().toLowerCase());
+  return row ? row.text : "";
+}
+
+async function show(scene) {
+  const text = says(scene);
+  clearTimeout(timer);
+  if (!banner.hidden) await streamerz.animate(banner, s.leave, { out: true });
+  if (!text) return (banner.hidden = true);
+  banner.textContent = text;
+  banner.hidden = false;
+  streamerz.animate(banner, s.enter);
+  const seconds = Number(s.seconds) || 0;
+  if (seconds > 0)
+    timer = setTimeout(async () => {
+      await streamerz.animate(banner, s.leave, { out: true });
+      banner.hidden = true;
+    }, seconds * 1000);
+}
+
+streamerz.onSettings(next => {
+  s = next;
+  banner.style.cssText = streamerz.css(s.style);
+  banner.style.background = s.background || "transparent";
+  streamerz.place(banner, s.where);
+});
+
+streamerz.event("ObsStudio.SceneChanged", e => show(e.sceneName || e["obs.sceneName"]));
+</script>
+</body>
+</html>

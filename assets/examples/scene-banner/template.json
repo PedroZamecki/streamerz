@@ -1,0 +1,138 @@
+{
+  "format": 1,
+  "name": "Scene banner",
+  "meta": {
+    "description": "A banner that says which part of the stream this is, each time OBS changes scene: a title for each scene, in the style, place and animation you set.",
+    "variables": [
+      {
+        "name": "banners",
+        "label": "Banners",
+        "kind": "list",
+        "default": [
+          {
+            "scene": "Starting soon",
+            "text": "Starting soon"
+          },
+          {
+            "scene": "Just Chatting",
+            "text": "Just chatting"
+          },
+          {
+            "scene": "BRB",
+            "text": "Be right back"
+          }
+        ],
+        "description": "The scene's name in OBS and what the banner says then. A scene not listed shows nothing",
+        "columns": [
+          {
+            "name": "scene",
+            "label": "Scene",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "text",
+            "label": "Says",
+            "kind": "text",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "name": "seconds",
+        "label": "Shown for (seconds)",
+        "kind": "slider",
+        "default": 6,
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "description": "0 keeps it until the next scene"
+      },
+      {
+        "name": "style",
+        "label": "Text",
+        "kind": "textStyle",
+        "section": "Look",
+        "default": {
+          "font": "",
+          "size": 44,
+          "weight": 800,
+          "color": "#ffffff",
+          "outline": 0,
+          "outlineColor": "#000000",
+          "shadow": true
+        }
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "gradient",
+        "default": "linear-gradient(90deg, #0ea5e9, #6366f1)"
+      },
+      {
+        "name": "where",
+        "label": "Place",
+        "kind": "position",
+        "default": {
+          "anchor": "bottom-left",
+          "x": 40,
+          "y": -40
+        }
+      },
+      {
+        "name": "enter",
+        "label": "Comes in with",
+        "kind": "animation",
+        "default": {
+          "name": "slide-right",
+          "durationMs": 500,
+          "delayMs": 0,
+          "easing": "cubic-bezier(0.2, 0.9, 0.1, 1)"
+        }
+      },
+      {
+        "name": "leave",
+        "label": "Goes out with",
+        "kind": "animation",
+        "default": {
+          "name": "fade",
+          "durationMs": 400,
+          "delayMs": 0,
+          "easing": "ease-in"
+        }
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.scene-banner",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "requires": [
+        "obs"
+      ],
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Scene banner",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "test": {
+        "events": [
+          [
+            "ObsStudio.SceneChanged",
+            {
+              "sceneName": "Just Chatting",
+              "obs.oldSceneName": "Starting soon"
+            }
+          ]
+        ]
+      }
+    }
+  }
+}

@@ -92,7 +92,7 @@ try {
   // A dev instance starts with the HTTP server off: the pages are served by it.
   await ask({ request: "StreamerzSave", what: "server_http", item: { autoStart: true, address: "127.0.0.1", port: 7495 } });
   const examples = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
-  check(examples.length === 21, "examples listed: " + examples.map(r => r.id).join(", "));
+  check(examples.length === 24, "examples listed: " + examples.map(r => r.id).join(", "));
   for (const e of examples) check((await act("add_example", e.id, "overlay_examples")).status === "ok", `example ${e.id} added`);
   const again = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
   check(again.every(r => r.cells[2] === "Added" && r.can.add_example === false), "every example says it is here");
@@ -474,6 +474,39 @@ try {
   check(dockTab.errors.length === 0, "the dock has no page errors " + dockTab.errors.join(" | "));
   await dockTab.close();
   await done(t, "countdown-to");
+
+  // Scene banner: a scene change shows its row's words.
+  t = await open("Scene banner", 1280, 720);
+  check((await ask({ request: "StreamerzOverlay", op: "test", overlay: "Scene banner", events: [["ObsStudio.SceneChanged", { sceneName: "BRB" }]] })).status === "ok", "a scene change is sent");
+  check(await t.until("!banner.hidden && banner.textContent === 'Be right back'"), "the banner says the scene's words: " + await t.js("banner.textContent"));
+  check(await t.js("getComputedStyle(banner).fontSize === '44px' && banner.style.background.includes('gradient')"), "in its text style and gradient");
+  await sleep(700);
+  await done(t, "scene-banner");
+
+  // Sound board: a pad of the dock plays on the player page (a browser source).
+  t = await open("Sound board", 300, 200, "player.html");
+  const board = await tab();
+  await board.cmd("Emulation.setDeviceMetricsOverride", { width: 320, height: 300, deviceScaleFactor: 1, mobile: false });
+  const boardRow = (await view()).find(r => r.cells[1] === "Sound board" && r.cells[5].includes("dock.html"));
+  await board.cmd("Page.navigate", { url: boardRow.cells[5] });
+  check(await board.until("pads.querySelectorAll('button').length === 1"), "a pad for each sound");
+  await board.js("pads.querySelector('button').click(); 1");
+  check(await t.until("window.lastPlayed === 'sounds/chime.wav'"), "a press plays its sound on the player");
+  await board.shot("/tmp/szoverlay/example-sound-board-dock.png");
+  check(board.errors.length === 0, "the dock has no page errors " + board.errors.join(" | "));
+  await board.close();
+  await done(t, "sound-board");
+
+  // Read chat aloud: a chat message is spoken (when this computer has a voice).
+  t = await open("Read chat aloud", 1280, 200);
+  const speech = await ask({ request: "StreamerzSpeech", op: "voices" });
+  await ask({ request: "InjectChat", platform: "twitch", user: "ana", userId: "1", text: "hello there https://x.io" });
+  if (speech.status === "ok") {
+    check(await t.until("window.lastSpoken === 'ana says hello there'", 6000), "a message is read, its link left out: " + await t.js("window.lastSpoken"));
+  } else {
+    console.log("skip a message is read: no voice here");
+  }
+  await done(t, "chat-aloud");
 
   // Buttons dock: a button for each connected action; a press shows the banner.
   t = await open("Buttons dock", 1280, 200, "banner.html");
