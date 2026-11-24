@@ -115,7 +115,11 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (installation evidence per browser/profile, socket connection, pairing refusal, TikTok login, versions and protocol compatibility; never returns the pairing token), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "retry", "login", "remove"]}}"#, &[]),
     ("sounds", "The sounds Streamerz plays itself (Play Sound and the rest of Core > Sounds): with no op, what plays now (name, file, device, position, length, volume 0-100, paused), the outputs and the master volume. op pause, resume or volume (0-100, over fadeMs) acts on the sounds of name, every sound when name is empty; master sets the volume of every sound; info reads a file's length, rate and channels without playing it. Plays on this computer's real speakers.", r#"{"op": {"type": "string", "enum": ["list", "pause", "resume", "volume", "master", "info"]}, "name": {"type": "string"}, "volume": {"type": "integer", "minimum": 0, "maximum": 100}, "fadeMs": {"type": "integer", "minimum": 0}, "file": {"type": "string"}}"#, &[]),
     ("sound_play", "Play a sound file (MP3, WAV, OGG, M4A, FLAC) through Streamerz on this computer's real speakers, as Play Sound does but firing no trigger. name lets sound_stop and sounds act on it; device is an output's name (empty: the default); volume 0-100. Several play at once. Returns its soundId and length.", r#"{"file": {"type": "string", "description": "Its path; a relative one is beside streamerz.json"}, "name": {"type": "string"}, "device": {"type": "string"}, "volume": {"type": "integer", "minimum": 0, "maximum": 100}}"#, &["file"]),
-    ("speak", "Speak text aloud with the voices of this computer (espeak-ng on Linux, the system's voices on Windows), in turn with the other speeches on that output: op speak (text, and optionally voice, speed and pitch around 1, volume 0 to 100, device, or overlay to have that overlay's open pages play it), stop (what is said now), clear (what waits), pause (paused true or false), enable (enabled), state, or voices (the installed ones and the default). Speak (sub-action 99320) does it from an action.", r#"{"op": {"type": "string", "enum": ["speak", "stop", "clear", "pause", "enable", "state", "voices"]}, "text": {"type": "string"}, "voice": {"type": "string"}, "speed": {"type": "number"}, "pitch": {"type": "number"}, "volume": {"type": "number"}, "device": {"type": "string"}, "overlay": {"type": "string"}, "paused": {"type": "boolean"}, "enabled": {"type": "boolean"}}"#, &["op"]),
+    ("speak", "Speak text aloud with installed system, neural (Piper, Kokoro) or custom (mix, recording, effect) voices, in turn with other speeches on that output: op speak (text, and optionally voice, speed and pitch around 1, volume 0 to 100, device, or overlay to have that overlay's open pages play it), stop (what is said now), clear (what waits), pause (paused true or false), enable (enabled), state, or voices (the installed ones and the default). Speak (sub-action 99320) does it from an action.", r#"{"op": {"type": "string", "enum": ["speak", "stop", "clear", "pause", "enable", "state", "voices"]}, "text": {"type": "string"}, "voice": {"type": "string"}, "speed": {"type": "number"}, "pitch": {"type": "number"}, "volume": {"type": "number"}, "device": {"type": "string"}, "overlay": {"type": "string"}, "paused": {"type": "boolean"}, "enabled": {"type": "boolean"}}"#, &["op"]),
+    ("voices", "List installed voices (system, Piper, Kokoro, custom), the built-in neural voice catalog (sizes, RAM, licenses, sample URLs), and the neural engine state (running, loaded model, memory in bytes, download progress). op unload stops Streamerz-Voice and returns its RAM; sample plays a catalog sample on Monitor; cancel cancels an active download; record_mic records seconds (3-12) on Linux.", r#"{"op": {"type": "string", "enum": ["list", "state", "unload", "sample", "cancel", "record_mic"]}, "id": {"type": "string"}, "seconds": {"type": "integer", "minimum": 3}}"#, &[]),
+    ("voice_install", "Download and install the optional neural voice engine (id \"engine\") or a catalog model (for example \"piper:pt_BR-faber\", \"kokoro:multi-lang-v1\", \"pocket:en-v1\"). Ask the user first before downloading; downloads resume and verify SHA-256.", r#"{"id": {"type": "string"}}"#, &["id"]),
+    ("voice_remove", "Remove a downloaded neural voice model, a custom voice (\"custom:...\"), or the neural voice engine (\"engine\").", r#"{"id": {"type": "string"}}"#, &["id"]),
+    ("voice_mix", "Create or update a custom voice: op mix blends 2 to 4 Kokoro voices (parts: [[speakerIdOrName, share], ...]); op clone clones a voice locally with Pocket TTS from a WAV/MP3 recording (requires consent: true); op effect saves an audio effect (echo, radio, robot), speed and pitch over a baseVoice.", r#"{"op": {"type": "string", "enum": ["mix", "clone", "effect"]}, "id": {"type": "string"}, "name": {"type": "string"}, "parts": {"type": "array"}, "language": {"type": "string"}, "kokoroLang": {"type": "string"}, "recording": {"type": "string"}, "consent": {"type": "boolean"}, "baseVoice": {"type": "string"}, "speed": {"type": "number"}, "pitch": {"type": "number"}, "effect": {"type": "string", "enum": ["", "none", "echo", "radio", "robot"]}, "previewText": {"type": "string"}}"#, &["op", "name"]),
     ("sound_stop", "Stop the sounds of a name, or every sound when name is empty, at once or over fadeMs. Returns how many.", r#"{"name": {"type": "string"}, "fadeMs": {"type": "integer", "minimum": 0}}"#, &[]),
     ("countdown", "Read a template countdown by its clock ID.", r#"{"clockId": {"type": "string"}}"#, &["clockId"]),
     ("spotify_find", "The track a song name or Spotify link would be: what a viewer's !sr would queue. Adds nothing.", r#"{"query": {"type": "string"}}"#, &["query"]),
@@ -173,6 +177,7 @@ fn validate_arguments(name: &str, args: &Value) -> crate::error::Result<()> {
         let matches_type = |kind: &str| match kind {
             "string" => value.is_string(),
             "integer" => value.is_i64() || value.is_u64(),
+            "number" => value.is_number(),
             "object" => value.is_object(),
             "array" => value.is_array(),
             "boolean" => value.is_boolean(),
@@ -578,6 +583,27 @@ impl Client {
                 req["request"] = "StreamerzSpeech".into();
                 self.ask(req).await
             }
+            "voices" => {
+                let mut req = a.clone();
+                req["request"] = "StreamerzVoice".into();
+                if req["op"].is_null() {
+                    req["op"] = "list".into();
+                }
+                self.ask(req).await
+            }
+            "voice_install" => {
+                self.ask(json!({"request": "StreamerzVoice", "op": "install", "id": s("id")}))
+                    .await
+            }
+            "voice_remove" => {
+                self.ask(json!({"request": "StreamerzVoice", "op": "remove", "id": s("id")}))
+                    .await
+            }
+            "voice_mix" => {
+                let mut req = a.clone();
+                req["request"] = "StreamerzVoice".into();
+                self.ask(req).await
+            }
             "sound_stop" => {
                 self.ask(json!({"request": "StreamerzSound", "op": "stop", "name": s("name"), "fadeMs": a["fadeMs"]}))
                     .await
@@ -783,6 +809,7 @@ mod tests {
         match kind {
             Some("string") => json!("test"),
             Some("integer") => json!(1),
+            Some("number") => json!(1.0),
             Some("boolean") => json!(true),
             Some("array") => json!([]),
             Some("object") => json!({}),
@@ -814,7 +841,11 @@ mod tests {
                     continue;
                 }
                 let mut wrong = args.clone();
-                wrong[key] = json!(1.5);
+                wrong[key] = if schema["type"] == "number" {
+                    json!("not-a-number")
+                } else {
+                    json!(1.5)
+                };
                 assert!(validate_arguments(name, &wrong).is_err(), "{name}.{key}");
             }
             assert!(validate_arguments(name, &Value::Null).is_err(), "{name}");
