@@ -138,9 +138,22 @@ jobs:
         run: |
           cargo fetch --locked
       - if: needs.version.outputs.reuse == ''
+        name: Build Streamerz-Voice (Windows)
+        id: voice_win
+        run: |
+          cargo build --release --locked --manifest-path voice/Cargo.toml
+          mkdir -p dist
+          cp voice/target/release/Streamerz-Voice.exe dist/Streamerz-Voice-windows-x86_64.exe
+          sha=$(sha256sum dist/Streamerz-Voice-windows-x86_64.exe | awk '{print $1}')
+          size=$(stat -c%s dist/Streamerz-Voice-windows-x86_64.exe 2>/dev/null || wc -c < dist/Streamerz-Voice-windows-x86_64.exe)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+      - if: needs.version.outputs.reuse == ''
         run: cargo build --release --locked --bin Streamerz
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+          STREAMERZ_VOICE_SHA256: ${{ steps.voice_win.outputs.sha256 }}
+          STREAMERZ_VOICE_SIZE: ${{ steps.voice_win.outputs.size }}
       # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
       # watcher, Windows line endings), on the PR runner. Reuses release profile artifacts already built.
       - if: github.event_name == 'pull_request'
@@ -208,7 +221,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
-          path: dist/Streamerz-windows-x86_64.exe
+          path: dist/*
           retention-days: 3
 
   linux:
@@ -263,9 +276,22 @@ jobs:
           shared-key: "streamerz-deps"
           cache-all-crates: true
       - if: needs.version.outputs.reuse == ''
+        name: Build Streamerz-Voice (Linux)
+        id: voice_linux
+        run: |
+          cargo build --release --locked --manifest-path voice/Cargo.toml
+          mkdir -p dist
+          cp voice/target/release/Streamerz-Voice dist/Streamerz-Voice-linux-x86_64
+          sha=$(sha256sum dist/Streamerz-Voice-linux-x86_64 | awk '{print $1}')
+          size=$(stat -c%s dist/Streamerz-Voice-linux-x86_64)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+      - if: needs.version.outputs.reuse == ''
         run: cargo build --release --locked
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+          STREAMERZ_VOICE_SHA256: ${{ steps.voice_linux.outputs.sha256 }}
+          STREAMERZ_VOICE_SIZE: ${{ steps.voice_linux.outputs.size }}
           RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
       - if: needs.version.outputs.reuse == ''
         run: dev/appimage.sh "${{ needs.version.outputs.tag || 'dev' }}"

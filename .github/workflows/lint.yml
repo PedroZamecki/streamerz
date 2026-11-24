@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo fmt --check
+      - run: cargo fmt --check && cargo fmt --check --manifest-path voice/Cargo.toml
       - name: Cache apt packages
         uses: actions/cache@v4
         with:
@@ -56,6 +56,8 @@ jobs:
           cache-all-crates: true
       - run: cargo test --profile ci-test --locked
       - run: cargo clippy --profile ci-test --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path voice/Cargo.toml --locked
+      - run: cargo clippy --manifest-path voice/Cargo.toml --all-targets --locked -- -D warnings
       - name: Prune transient build artifacts before caching
         run: |
           rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
