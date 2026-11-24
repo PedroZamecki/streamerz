@@ -129,6 +129,14 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         },
         1009 => v("value"),
         1020 => v("message"),
+        99881 => {
+            let (overlay, control) = (v("overlay"), v("control"));
+            if overlay.is_empty() || control.is_empty() {
+                String::new()
+            } else {
+                format!("{overlay}: {control} = {}", v("value"))
+            }
+        }
         4013 => {
             let b = v("broadcast");
             let f = v("file");

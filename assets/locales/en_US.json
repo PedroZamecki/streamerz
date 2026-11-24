@@ -1542,7 +1542,7 @@
   "overlays.tab.code": "Code",
   "overlays.settings.none": "This overlay has no settings.",
   "overlays.media.none": "This overlay has no files yet.",
-  "overlays.live.none": "This overlay has no live controls.",
+  "overlays.live.none": "This overlay has no live controls. An overlay declares them in its template, as controls: the guide says how.",
   "overlays.alerts.soon": "The alert rules are on the Settings tab for now.",
   "overlays.btn.add_to_obs": "Add to OBS",
   "overlays.btn.open": "Open in browser",
@@ -2702,5 +2702,14 @@
   "overlays.code_section": "Code",
   "overlays.pressed": "Pressed {name}.",
   "overlays.media.no_sound": "Pick a sound first.",
-  "forms.setting_invalid": "{label} is invalid: {error}"
+  "forms.setting_invalid": "{label} is invalid: {error}",
+  "overlay.control_overlay": "Overlay",
+  "overlay.control_overlay_any": "Overlay (empty: any)",
+  "overlay.control_name": "Control",
+  "overlay.control_name_any": "Control (empty: any)",
+  "overlay.control_value": "Value",
+  "overlays.live.hint": "Changed while live: each control is set at once, on every page of this overlay, in OBS too.",
+  "overlays.live.dock": "Dock for OBS",
+  "overlays.live.dock_how": "The same controls as a dock of OBS: in OBS, Docks, Custom Browser Docks, paste this address.",
+  "overlays.live.dock_address": "Controls dock"
 }

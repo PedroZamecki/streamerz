@@ -220,6 +220,12 @@ declare namespace Streamerz {
 
     /** `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. */
     onSettings(fn: (settings: Record<string, Setting>) => void): Api;
+    /** A live control (`meta.template.controls`): `fn(value, old)` now and at every change; `.set` sets one. */
+    readonly control: ((name: string, fn: (value: any, old: any) => void) => Api) & {
+      set(name: string, value: unknown): Promise<unknown>;
+    };
+    /** The live controls' values now, by name. */
+    readonly controls: Record<string, unknown>;
     /** Puts an element where a `position` setting says (absolutely). */
     place(el: HTMLElement, where: Position): HTMLElement;
     /** Plays an `animation` setting on an element (backwards with `out`); resolves when it ends. */

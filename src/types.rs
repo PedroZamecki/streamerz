@@ -593,6 +593,7 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (99874, "SpotifyGetCurrentArtist"),
     (99875, "SpotifyGetCurrentAlbum"),
     (99880, "StreamerzOverlayPublish"),
+    (99881, "StreamerzSetOverlayControl"),
     (99900, "Group"),
     (99901, "IfTrueGroup"),
     (99902, "IfFalseGroup"),
@@ -1115,6 +1116,7 @@ pub const TRIGGERS: &[(u32, &str)] = &[
     (99840, "SpotifyLoginExpired"),
     (99841, "SpotifySongLiked"),
     (99842, "SpotifyPlaylistChanged"),
+    (99881, "OverlayControlChanged"),
 ];
 
 /// Sub-actions as Streamer.bot's editor shows them: code, name, category and the JSON fields of
@@ -3211,6 +3213,12 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
     (99874, "Get Current Artist", "Integrations/Spotify/Browse", &[]),
     (99875, "Get Current Album", "Integrations/Spotify/Browse", &[]),
     (99880, "Overlay", "Core/Overlays", &["topic", "value"]),
+    (
+        99881,
+        "Set Overlay Control",
+        "Core/Overlays",
+        &["overlay", "control", "value"],
+    ),
     (99900, "Group", "", &["subActions", "random", "name", "color"]),
     (
         99903,

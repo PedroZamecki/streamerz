@@ -161,17 +161,39 @@ impl OverlayPage {
             value["tall"] = true.into();
             let new = cx.new(|cx| Form::new(value, route, window, cx));
             // The settings are drafts as they are changed: the preview shows them before Save.
-            self._form_edits = (model["tab"] == "settings").then(|| {
-                let route = self.route.clone();
-                let id = model["id"].clone();
-                cx.subscribe(&new, move |_, form, _: &super::form::Edited, cx| {
+            let (route, id) = (self.route.clone(), model["id"].clone());
+            self._form_edits = match model["tab"].as_str() {
+                Some("settings") => Some(cx.subscribe(&new, move |_, form, _: &super::form::Edited, cx| {
                     let changes = form.read(cx).changes(cx);
                     send(
                         json!({"request": "StreamerzPreview", "op": "draft", "itemId": id, "changes": changes,
                         "id": format!("{route}:draft")}),
                     );
-                })
-            });
+                })),
+                // The live controls: each change is set at once, only the ones that changed since.
+                Some("live") => {
+                    let mut sent: std::collections::HashMap<u64, Value> = Default::default();
+                    Some(cx.subscribe(&new, move |_, form, _: &super::form::Edited, cx| {
+                        let changes: Vec<Value> = form
+                            .read(cx)
+                            .changes(cx)
+                            .into_iter()
+                            .filter(|c| {
+                                let at = c["field"].as_u64().unwrap_or(u64::MAX);
+                                sent.get(&at) != Some(&c["value"])
+                            })
+                            .collect();
+                        for c in &changes {
+                            sent.insert(c["field"].as_u64().unwrap_or(u64::MAX), c["value"].clone());
+                        }
+                        if !changes.is_empty() {
+                            send(json!({"request": "StreamerzPreview", "op": "controls", "itemId": id,
+                                "changes": changes, "id": format!("{route}:controls")}));
+                        }
+                    }))
+                }
+                _ => None,
+            };
             self.form = Some(new);
             self.form_kind = kind;
         }
@@ -328,7 +350,7 @@ impl OverlayPage {
                 self.take_frame(&value, window, cx);
                 false
             }
-            "preview" => false,
+            "preview" | "controls" => false,
             "draft" => {
                 self.model["draft"] = value["draft"].clone();
                 // A moment typed from now (+15m) shows as the day and time it became.
@@ -656,6 +678,10 @@ impl OverlayPage {
     fn form_block(&self, section: &Value, form: &Entity<Form>, cx: &mut Context<Self>) -> AnyElement {
         if section["form"]["fields"].as_array().is_some_and(|f| f.is_empty()) {
             return super::page::guide(section["form"]["empty"].as_str().unwrap_or_default(), cx).into_any_element();
+        }
+        // The live controls are set as they change: no Save.
+        if form.read(cx).model["live"] == true {
+            return div().child(form.clone()).into_any_element();
         }
         let pending = form.read(cx).pending;
         let label = form.read(cx).model["okLabel"]

@@ -46,6 +46,11 @@
         } finally {
           streamerz.testing = false;
         }
+      } else if (e.source === "Control") {
+        // A live control was set (the Live tab, a dock, an action, a page).
+        const { name, value, old } = d.data;
+        if (C.controls && !(d.data.value === undefined)) C.controls[name] = value;
+        fire("control:" + name, value, old);
       } else if (e.source === "Play") {
         // Play on a settings form: the animation of that setting again, where streamerz.animate used it.
         replay(d.data.name);
@@ -304,6 +309,20 @@
       if (s.shadow) out.push("text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6)");
       return out.join("; ") + (out.length ? ";" : "");
     },
+    // streamerz.control("show", (value, old) => ...): a live control of this overlay
+    // (meta.template.controls), now and at every change, wherever it is set: the Live tab, its dock,
+    // an action, another page. A button gives the moment it was pressed. streamerz.control.set("show",
+    // false) sets one (to keep a toggle in step with the page); streamerz.controls holds them all.
+    control: Object.assign(
+      (name, fn) => {
+        (handlers["control:" + name] ||= []).push(fn);
+        if (C.controls && name in C.controls) fn(C.controls[name], undefined);
+        if (!source) connect();
+        return streamerz;
+      },
+      { set: (name, value) => call("control", { name, value, from: window.streamerzDock ? "dock" : "page" }) },
+    ),
+    controls: C.controls || {},
     // streamerz.onSettings(s => ...): the group's settings now, and again whenever one changes in
     // Streamerz (no reload of the page). streamerz.settings always holds the current ones.
     onSettings(fn) {

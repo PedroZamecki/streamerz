@@ -906,6 +906,14 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
                 .map(|name| (name.clone(), name))
                 .collect(),
         ),
+        W::Overlay => {
+            let mut names: Vec<String> = crate::overlays::list(config)
+                .into_iter()
+                .map(|(group, _)| group)
+                .collect();
+            names.dedup();
+            typed(names.into_iter().map(|name| (name.clone(), name)).collect())
+        }
         W::CommandGroup => {
             let mut names: Vec<String> = config
                 .commands

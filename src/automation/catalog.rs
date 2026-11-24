@@ -387,6 +387,8 @@ pub fn trigger_categorize(name: &str) -> String {
         "Core/Quotes".into()
     } else if name == "SoundStarted" || name == "SoundEnded" {
         "Core/Sounds".into()
+    } else if name == "OverlayControlChanged" {
+        "Core/Overlays".into()
     } else if name.contains("Custom")
         || name.starts_with("RawAction")
         || name.starts_with("RawSubAction")

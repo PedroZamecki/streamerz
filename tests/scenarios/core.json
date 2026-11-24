@@ -55,5 +55,29 @@
     ],
     "steps": [{"run": "publish", "args": {"home": "3"}}],
     "expect": {"log": ["published"]}
+  },
+  {
+    "name": "overlay: an action sets a live control, the trigger hears who and what, a wrong value is refused",
+    "config": {"action_groups": {"Board": {"template": {"controls": [
+      {"name": "show", "label": "Show", "kind": "toggle", "default": true},
+      {"name": "size", "label": "Size", "kind": "slider", "min": 50, "max": 150, "default": 100},
+      {"name": "go", "label": "Go", "kind": "button"}
+    ]}}}},
+    "actions": [
+      {"name": "set", "subActions": [
+        {"type": 99881, "overlay": "Board", "control": "show", "value": "false"},
+        {"type": 1020, "logLevel": 2, "message": "set to %controlValue%"},
+        {"type": 99881, "overlay": "Board", "control": "size", "value": "500"},
+        {"type": 1020, "logLevel": 2, "message": "size %controlValue%"},
+        {"type": 99881, "overlay": "Board", "control": "size", "value": "big"},
+        {"type": 99881, "overlay": "Board", "control": "go"}
+      ]},
+      {"name": "changed", "triggers": [{"type": 99881, "overlay": "Board", "control": "show"}], "subActions": [
+        {"type": 1020, "logLevel": 2, "message": "changed %control% from %old% to %value% by %from%"},
+        {"type": 99881, "overlay": "Board", "control": "show", "value": "true"}
+      ]}
+    ],
+    "steps": [{"run": "set", "wait": 500}],
+    "expect": {"log": ["set to False", "size 150", "Set Overlay Control: Size takes a slider value", "changed show from True to False by action"], "notLog": ["by action\nchanged"]}
   }
 ]

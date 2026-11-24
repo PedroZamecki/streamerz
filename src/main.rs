@@ -183,6 +183,10 @@ pub struct Config {
     action_group_icons: model::Obj,
     /// What each action group declares besides its values: settings, files, commands and timers.
     action_groups: model::Obj,
+    /// The live controls of each overlay as they are now (`meta.template.controls`), by group then
+    /// control. Kept apart from its settings, so sharing an overlay never carries them.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    overlay_controls: model::Obj,
     /// This installation's secret behind the tokens overlay pages call back with (`overlays::token`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     overlay_key: String,
@@ -287,6 +291,7 @@ impl Default for Config {
             action_group_variables: Map::new(),
             action_group_icons: Map::new(),
             action_groups: Map::new(),
+            overlay_controls: Map::new(),
             overlay_key: String::new(),
             user_globals: Map::new(),
             global_writes: Map::new(),

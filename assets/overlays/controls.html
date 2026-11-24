@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__: controls</title>
+<style>
+  /* A dock of OBS: Streamerz's colors, one control a line. */
+  html, body { margin: 0; background: #18181b; color: #e4e4e7; font: 13px system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+  .row { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .row > span { flex: 0 0 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a1a1aa; }
+  .row > :not(span) { flex: 1; min-width: 0; }
+  input[type=text], input[type=number], select { background: #09090b; color: inherit; border: 1px solid #3f3f46;
+    border-radius: 6px; padding: 5px 8px; font: inherit; box-sizing: border-box; width: 100%; }
+  input[type=range] { accent-color: #a78bfa; }
+  .row > input[type=color] { width: 40px; height: 28px; border: 0; background: none; padding: 0; flex: 0 0 40px; }
+  button { display: flex; align-items: center; justify-content: center; gap: 6px; background: #27272a; color: inherit;
+    border: 1px solid #3f3f46; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  button:hover { background: #3f3f46; }
+  button img { width: 14px; height: 14px; }
+  .row > .switch { appearance: none; width: 34px; height: 20px; border-radius: 10px; background: #3f3f46; position: relative;
+    cursor: pointer; flex: 0 0 34px; margin: 0; }
+  .row > .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+    background: #e4e4e7; transition: left .15s; }
+  .row > .switch:checked { background: #7c3aed; }
+  .row > .switch:checked::after { left: 17px; }
+  .value { flex: 0 0 auto !important; min-width: 34px; text-align: right; color: #a1a1aa; }
+  p { color: #a1a1aa; margin: 4px 0; }
+</style>
+</head>
+<body>
+<main id="list"></main>
+<script id="defs" type="application/json">__DEFS__</script>
+<script>
+// Made by Streamerz from the overlay's controls (meta.template.controls). Each control follows its value
+// as it changes anywhere (the Live tab, an action, another dock) and sets it when changed here.
+window.streamerzDock = true;
+const defs = JSON.parse(document.getElementById("defs").textContent);
+const el = (tag, props = {}) => Object.assign(document.createElement(tag), props);
+if (!defs.length) list.append(el("p", { textContent: "This overlay has no controls." }));
+for (const d of defs) {
+  const row = el("div", { className: "row" });
+  const set = v => streamerz.control.set(d.name, v).catch(e => console.error(e));
+  if (d.kind === "button") {
+    const b = el("button", { title: d.label });
+    if (d.iconUrl) b.append(el("img", { src: d.iconUrl, alt: "" }));
+    b.append(d.label);
+    b.onclick = () => set(null);
+    row.append(b);
+    list.append(row);
+    continue;
+  }
+  row.append(el("span", { textContent: d.label, title: d.label }));
+  let input, shown;
+  if (d.kind === "toggle") {
+    input = el("input", { type: "checkbox", className: "switch" });
+    input.onchange = () => set(input.checked);
+    row.append(input, el("i"));
+  } else if (d.kind === "slider") {
+    input = el("input", { type: "range", min: d.min, max: d.max, step: d.step });
+    shown = el("span", { className: "value" });
+    input.oninput = () => { shown.textContent = input.value; set(Number(input.value)); };
+    row.append(input, shown);
+  } else if (d.kind === "choice") {
+    input = el("select");
+    for (const o of d.options) input.append(el("option", { value: o, textContent: o }));
+    input.onchange = () => set(input.value);
+    row.append(input);
+  } else if (d.kind === "color") {
+    input = el("input", { type: "color" });
+    input.oninput = () => set(input.value);
+    row.append(input, el("i"));
+  } else {
+    input = el("input", { type: d.kind === "number" ? "number" : "text" });
+    input.onchange = () => set(d.kind === "number" ? Number(input.value) : input.value);
+    row.append(input);
+  }
+  list.append(row);
+  streamerz.control(d.name, v => {
+    if (document.activeElement === input && d.kind !== "toggle") return;
+    if (d.kind === "toggle") input.checked = !!v;
+    else input.value = v ?? "";
+    if (shown) shown.textContent = v;
+  });
+}
+</script>
+</body>
+</html>

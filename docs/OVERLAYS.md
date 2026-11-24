@@ -206,6 +206,28 @@ left out:
 setting, for the ones from there on. `showIf` shows a setting only while another one (a choice or a
 check box) has a value: `"showIf": {"setting": "look", "is": "Custom color"}`.
 
+### Live controls
+
+Settings are what is set before going live; **controls** are what is changed while live. An overlay
+declares them in `meta.template.controls`:
+
+```json
+"controls": [
+  {"name": "show", "label": "Show", "kind": "toggle", "default": true},
+  {"name": "speed", "label": "Speed", "kind": "slider", "min": 1, "max": 10, "default": 5},
+  {"name": "spin", "label": "Spin", "kind": "button", "icon": "rotate-cw"}
+]
+```
+
+Kinds: `button`, `toggle`, `slider` (with `min`, `max`, `step`), `choice` (with `options`), `number`,
+`text` and `color`. They are set from the overlay's **Live** tab, from their dock (Live shows its
+address: in OBS, Docks, Custom Browser Docks), from an action (**Set Overlay Control**, 99881), from a
+page (`streamerz.control.set`) or by an assistant (`overlay_control`). Each change reaches every page of
+the overlay at once and fires **Overlay Control Changed** (99881) with `overlay`, `control`, `value`,
+`old` and `from` (`window`, `dock`, `action`, `page`, `mcp`). Their values are kept across restarts,
+apart from the settings: sharing the overlay shares the controls and their defaults, never what they
+hold now. The Countdown to example has three.
+
 `meta.template.test` is what Test adds for this overlay: `{"topics": {"name": value}, "events":
 [["Chat.Line", {...}]]}`. The Poll example starts a made-up poll and votes in it that way.
 
@@ -230,6 +252,8 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.on(topic, fn)` | `fn(value, old)` runs with the topic's current value, then at every change. `old` is true for the value from before the page opened: a page that acts on a change (spin the wheel) skips it. |
 | `streamerz.event("Source.Type", fn)` | `fn(data)` runs for any Streamerz event, such as `Spotify.TrackChanged` or `Twitch.Follow`. `Twitch.*` is every event of a source. |
 | `streamerz.onSettings(fn)` | `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. |
+| `streamerz.control(name, fn)` | `fn(value, old)` with a live control's value now (old is undefined) and at every change; a button calls it when pressed. `streamerz.control.set(name, value)` sets one, to keep a toggle in step with the page. |
+| `streamerz.controls` | The live controls' values now, by name. |
 | `streamerz.place(el, position)` | Puts an element where a `position` setting says, absolutely, as wide as its content. |
 | `streamerz.animate(el, animation, {out})` | Plays an `animation` setting on an element (backwards with `out: true`, to leave); resolves when it ends. Given the setting itself (`s.enter`), Play on the form plays it again. |
 | `streamerz.css(textStyle)` | A `textStyle` setting as CSS: `el.style.cssText += streamerz.css(s.title)`. |

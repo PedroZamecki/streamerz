@@ -438,6 +438,21 @@ try {
   await values("Countdown to", { where: { anchor: "center", x: 0, y: 0 } });
   check(await t.until("Math.abs((card.getBoundingClientRect().left + card.getBoundingClientRect().right) / 2 - innerWidth / 2) < 2"), "and center is the middle");
   check(await t.js("time.textContent === 'Starting now!' && title.style.display === 'none'"), "a change while the end shows keeps the title hidden");
+  // Its live controls: set by request (as an assistant), and from their dock, the page follows at once.
+  check((await ask({ request: "StreamerzOverlay", op: "control", overlay: "Countdown to", control: "show", value: false })).status === "ok", "a live control is set by request");
+  check(await t.until("card.style.visibility === 'hidden'"), "and the page follows it");
+  const dockTab = await tab();
+  await dockTab.cmd("Emulation.setDeviceMetricsOverride", { width: 320, height: 260, deviceScaleFactor: 1, mobile: false });
+  await dockTab.cmd("Page.navigate", { url: HTTP + "/overlays/Countdown%20to/-/controls" });
+  check(await dockTab.until("document.querySelectorAll('.row').length === 3 && !document.querySelector('.switch').checked && document.querySelector('.switch').offsetWidth === 34"), "the controls dock draws them as they are");
+  await dockTab.js("document.querySelector('.switch').click(); 1");
+  check(await t.until("card.style.visibility === ''"), "a toggle of the dock reaches the page");
+  await dockTab.js("[...document.querySelectorAll('button')].find(b => b.textContent.includes('Add a minute')).click(); 1");
+  await values("Countdown to", { target: Date.now() + 30000 });
+  check(await t.until("/^1:[23]\\d$/.test(time.textContent)", 4000), "a button of the dock adds a minute: " + await t.js("time.textContent"));
+  await dockTab.shot("/tmp/szoverlay/example-countdown-to-dock.png");
+  check(dockTab.errors.length === 0, "the dock has no page errors " + dockTab.errors.join(" | "));
+  await dockTab.close();
   await done(t, "countdown-to");
 
   // Buttons dock: a button for each connected action; a press shows the banner.

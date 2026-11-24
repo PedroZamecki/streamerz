@@ -448,7 +448,7 @@ pub fn supported(kind: u32) -> bool {
             | 35040..=35044 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99700..=99706 | 99900..=99904
             | 99450..=99454 | 99501..=99503 | 99513..=99523 | 99533..=99539 | 99541..=99545 | 99601..=99607 | 99654..=99666 | 99720 | 99721 | 99723 | 99724 | 99726 | 99729..=99734 | 99740..=99743 | 99750..=99769 | 99780..=99790
             | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
-            | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99837 | 99840..=99875
+            | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99881 | 99810..=99824 | 99827..=99837 | 99840..=99875
             | 1 | 7 | 30001 | 30002 | 99300..=99304
     )
 }
@@ -2027,6 +2027,21 @@ impl Engine {
                     let text = self.expand(ctx, s(o, "value"));
                     let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
                     self.overlay_publish(topic.trim(), value);
+                }
+                // Set Overlay Control: the value is typed (true, 5, red) or JSON; a button is pressed.
+                99881 => {
+                    let overlay = self.expand(ctx, s(o, "overlay"));
+                    let control = self.expand(ctx, s(o, "control"));
+                    let text = self.expand(ctx, s(o, "value"));
+                    let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+                    // An action Overlay Control Changed runs doesn't set it off again.
+                    let quiet = ctx.args.get("__source").and_then(Value::as_str) == Some("OverlayControlChanged");
+                    match self.overlay_control_set(overlay.trim(), control.trim(), &value, "action", quiet) {
+                        Ok(set) => {
+                            ctx.args.insert("controlValue".into(), set["value"].clone());
+                        }
+                        Err(e) => crate::warn(format!("Set Overlay Control: {e}")),
+                    }
                 }
                 k if sounds::handles(k) => self.sound_sub(ctx, o, k).await,
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),

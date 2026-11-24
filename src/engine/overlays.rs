@@ -4,6 +4,7 @@
 //! Anything else is published by the Overlay sub-action. A topic nobody listens to costs a map entry.
 
 use super::Engine;
+use crate::model::Obj;
 use serde_json::{json, Map, Value};
 use std::rc::Rc;
 
@@ -85,6 +86,9 @@ impl Engine {
     }
 }
 
+/// Overlay Control Changed: a live control of an overlay was set (Streamerz only).
+pub const T_OVERLAY_CONTROL: u32 = 99881;
+
 /// Drafts: the settings an overlay's editor changed and has not saved. They reach only the pages opened
 /// as a preview (`?preview` in their address): OBS keeps showing the saved ones until Save.
 impl Engine {
@@ -97,6 +101,72 @@ impl Engine {
     pub fn overlay_preview_settings(&self, group: &str) -> Value {
         let draft = self.overlay_draft(group);
         crate::overlays::settings_with(&self.config(), group, &draft)
+    }
+
+    /// Sets a live control of an overlay (`meta.template.controls`): checked, kept (a button is only
+    /// pressed), sent to the overlay's pages and told to actions (Overlay Control Changed, unless
+    /// `quiet`: an action that trigger ran setting a control doesn't run it again). `from` says who:
+    /// `window`, `dock`, `action`, `page` or `mcp`.
+    pub fn overlay_control_set(
+        self: &Rc<Self>,
+        group: &str,
+        name: &str,
+        value: &Value,
+        from: &str,
+        quiet: bool,
+    ) -> Result<Value, String> {
+        let (control, old) = {
+            let config = self.config();
+            if !crate::groups::exists(&config, group) {
+                return Err(format!("there is no overlay {group}"));
+            }
+            crate::groups::controls(&config, group)
+                .into_iter()
+                .find(|(c, _)| c.name == name)
+                .ok_or_else(|| format!("{group} has no control {name}"))?
+        };
+        let value = control.check(value)?;
+        let value = if control.kind == "button" && value.is_null() {
+            json!(crate::fmt::unix_now().as_millis() as u64)
+        } else {
+            value
+        };
+        if control.kind != "button" {
+            self.change(|c| {
+                let all = c.overlay_controls.entry(group.to_string()).or_insert_with(|| json!({}));
+                if !all.is_object() {
+                    *all = json!({});
+                }
+                all[name] = value.clone();
+            });
+        }
+        let old = if control.kind == "button" { Value::Null } else { old };
+        let data = json!({"name": name, "value": value, "old": old, "from": from});
+        self.emit("Control", group, || data.clone());
+        if !quiet {
+            let mut args = Obj::new();
+            args.insert("overlay".into(), group.into());
+            args.insert("control".into(), name.into());
+            args.insert("value".into(), value.clone());
+            args.insert("old".into(), old.clone());
+            args.insert("from".into(), from.into());
+            self.fire(
+                T_OVERLAY_CONTROL,
+                "Overlay Control Changed",
+                "Core/Overlays",
+                "overlays",
+                &args,
+                |t| {
+                    let wants = |k: &str, have: &str| {
+                        t.get(k)
+                            .and_then(Value::as_str)
+                            .is_none_or(|w| w.is_empty() || w == have)
+                    };
+                    wants("overlay", group) && wants("control", name)
+                },
+            );
+        }
+        Ok(json!({"name": name, "value": value, "old": old}))
     }
 
     /// Plays an `animation` setting again on the pages of `group` that use it (`streamerz.animate`).

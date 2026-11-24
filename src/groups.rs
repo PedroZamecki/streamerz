@@ -618,6 +618,143 @@ pub struct Template {
     /// song: `{"topics": {name: value}, "events": [[name, data]]}`.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub test: Value,
+    /// What is changed while live (the Live tab, a dock, actions): shared with the overlay with their
+    /// defaults, never with the values they have now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<Control>,
+}
+
+/// A live control of an overlay: `{"name": "show", "label": "Show", "kind": "toggle", "default": true}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Control {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// One of [`CONTROL_KINDS`].
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub default: Value,
+    /// A slider's or a number's ends and step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    /// What a choice can be.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// A Lucide icon for a button.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+}
+
+/// The kinds a live control can be.
+pub const CONTROL_KINDS: [&str; 7] = ["button", "toggle", "slider", "choice", "number", "text", "color"];
+
+impl Control {
+    pub fn shown_label(&self) -> &str {
+        if self.label.trim().is_empty() {
+            &self.name
+        } else {
+            &self.label
+        }
+    }
+
+    /// A slider's ends and step (0 to 100 by 1 when not given).
+    pub fn range(&self) -> (f64, f64, f64) {
+        let min = self.min.filter(|v| v.is_finite()).unwrap_or(0.0);
+        let max = self.max.filter(|v| v.is_finite()).unwrap_or(100.0).max(min);
+        let step = self.step.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0);
+        (min, max, step)
+    }
+
+    /// What it holds when nothing set it yet.
+    pub fn initial(&self) -> Value {
+        if !self.default.is_null() || self.kind == "button" {
+            return self.default.clone();
+        }
+        match self.kind.as_str() {
+            "toggle" => json!(false),
+            "slider" | "number" => json!(self.range().0),
+            "choice" => self.options.first().cloned().map(Value::from).unwrap_or(Value::Null),
+            "color" => json!("#ffffff"),
+            _ => json!(""),
+        }
+    }
+
+    /// The value as the control keeps it, or why it can't be one. A button takes anything (a press).
+    pub fn check(&self, v: &Value) -> Result<Value, String> {
+        let bad = || format!("{} takes a {} value", self.shown_label(), self.kind);
+        match self.kind.as_str() {
+            "button" => Ok(v.clone()),
+            "toggle" => match v {
+                Value::Bool(b) => Ok(json!(b)),
+                Value::String(s) => Kind::Boolean.parse(s).map_err(|_| bad()),
+                _ => Err(bad()),
+            },
+            "slider" | "number" => {
+                let n = match v {
+                    Value::String(s) => crate::fmt::parse_number(s.trim()),
+                    v => v.as_f64(),
+                }
+                .filter(|n| n.is_finite())
+                .ok_or_else(bad)?;
+                let n = if self.kind == "slider" {
+                    let (min, max, _) = self.range();
+                    n.clamp(min, max)
+                } else {
+                    n
+                };
+                Ok(kinds::tidy(n))
+            }
+            "choice" => v
+                .as_str()
+                .and_then(|s| self.options.iter().find(|o| o.eq_ignore_ascii_case(s.trim())))
+                .map(|o| json!(o))
+                .ok_or_else(|| format!("{} is one of: {}", self.shown_label(), self.options.join(", "))),
+            "color" => v
+                .as_str()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| is_color(s))
+                .map(Value::from)
+                .ok_or_else(bad),
+            _ => Ok(match v {
+                Value::String(s) => json!(s),
+                v => json!(v.to_string()),
+            }),
+        }
+    }
+}
+
+/// The controls of a group and their values now (a control never set has its default).
+pub fn controls(c: &Config, group: &str) -> Vec<(Control, Value)> {
+    let stored = c.overlay_controls.get(group).and_then(Value::as_object);
+    meta(c, group)
+        .template
+        .controls
+        .into_iter()
+        .map(|control| {
+            let now = stored
+                .and_then(|s| s.get(&control.name))
+                .filter(|_| control.kind != "button")
+                .and_then(|v| control.check(v).ok())
+                .unwrap_or_else(|| control.initial());
+            (control, now)
+        })
+        .collect()
+}
+
+/// The controls' values by name, as a page gets them (a button has none).
+pub fn control_values(c: &Config, group: &str) -> Value {
+    Value::Object(
+        controls(c, group)
+            .into_iter()
+            .filter(|(control, _)| control.kind != "button")
+            .map(|(control, v)| (control.name, v))
+            .collect(),
+    )
 }
 
 pub const REQUIRES: &[&str] = &["twitch", "youtube", "kick", "tiktok", "obs", "spotify"];
@@ -680,6 +817,29 @@ pub fn valid_variable_name(name: &str) -> bool {
 
 impl Meta {
     pub fn validate(&self) -> Result<(), String> {
+        let mut controls = HashSet::new();
+        for control in &self.template.controls {
+            if !valid_variable_name(&control.name) || !controls.insert(control.name.as_str()) {
+                return Err(format!("invalid or duplicate control: {}", control.name));
+            }
+            if !CONTROL_KINDS.contains(&control.kind.as_str()) {
+                return Err(format!(
+                    "the control {} is a {}: one of {}",
+                    control.name,
+                    control.kind,
+                    CONTROL_KINDS.join(", ")
+                ));
+            }
+            if control.kind == "choice" && control.options.is_empty() {
+                return Err(format!("the control {} has no options", control.name));
+            }
+            if !control.default.is_null() && control.kind != "button" && control.check(&control.default).is_err() {
+                return Err(format!(
+                    "the default of the control {} is not a {}",
+                    control.name, control.kind
+                ));
+            }
+        }
         let mut names = HashSet::new();
         for d in &self.variables {
             if !valid_variable_name(&d.name) {
@@ -1306,6 +1466,7 @@ pub fn rename(c: &mut Config, old: &str, new: &str) -> bool {
         &mut c.action_group_variables,
         &mut c.action_group_icons,
         &mut c.action_groups,
+        &mut c.overlay_controls,
     ] {
         if let Some(v) = map.remove(old) {
             map.insert(new.into(), v);
@@ -1350,6 +1511,7 @@ fn unlist(c: &mut Config, group: &str) {
 pub fn remove(c: &mut Config, group: &str) {
     unlist(c, group);
     c.action_group_variables.remove(group);
+    c.overlay_controls.remove(group);
     if let Some(dir) = folder(c, group) {
         let _ = std::fs::remove_dir_all(dir);
     }

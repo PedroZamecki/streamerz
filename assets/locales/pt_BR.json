@@ -1542,7 +1542,7 @@
   "overlays.tab.code": "Código",
   "overlays.settings.none": "Este overlay não tem configurações.",
   "overlays.media.none": "Este overlay ainda não tem arquivos.",
-  "overlays.live.none": "Este overlay não tem controles ao vivo.",
+  "overlays.live.none": "Este overlay não tem controles ao vivo. Um overlay os declara no seu modelo, em controls: o guia explica como.",
   "overlays.alerts.soon": "Por enquanto, as regras de alerta ficam na aba Configurações.",
   "overlays.btn.add_to_obs": "Adicionar ao OBS",
   "overlays.btn.open": "Abrir no navegador",
@@ -2702,5 +2702,14 @@
   "overlays.code_section": "Código",
   "overlays.pressed": "{name} apertado.",
   "overlays.media.no_sound": "Escolha um som primeiro.",
-  "forms.setting_invalid": "{label} está inválido: {error}"
+  "forms.setting_invalid": "{label} está inválido: {error}",
+  "overlay.control_overlay": "Overlay",
+  "overlay.control_overlay_any": "Overlay (vazio: qualquer um)",
+  "overlay.control_name": "Controle",
+  "overlay.control_name_any": "Controle (vazio: qualquer um)",
+  "overlay.control_value": "Valor",
+  "overlays.live.hint": "Mudados ao vivo: cada controle vale na hora, em todas as páginas deste overlay, no OBS também.",
+  "overlays.live.dock": "Doca para o OBS",
+  "overlays.live.dock_how": "Os mesmos controles como uma doca do OBS: no OBS, Docas, Docas de navegador personalizadas, cole este endereço.",
+  "overlays.live.dock_address": "Doca de controles"
 }

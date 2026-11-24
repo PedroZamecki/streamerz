@@ -2,7 +2,7 @@
   "format": 1,
   "name": "Countdown to",
   "meta": {
-    "description": "Counts down to a day and time, then says so with a sound. Shows the newer kinds of setting: a moment, text styles, a place on the page, an animation, a gradient, a sound and a button.",
+    "description": "Counts down to a day and time, then says so with a sound. Shows the newer kinds of setting (a moment, text styles, a place on the page, an animation, a gradient, a sound and a button) and live controls: Show, Size and Add a minute, from the Live tab, its dock or an action.",
     "variables": [
       {
         "name": "target",
@@ -10,7 +10,12 @@
         "kind": "datetime",
         "default": 0,
         "description": "The day and time. Type 20:00 for the next 8 PM, or +15m for fifteen minutes from now",
-        "presets": ["+5m", "+15m", "+1h", "20:00"]
+        "presets": [
+          "+5m",
+          "+15m",
+          "+1h",
+          "20:00"
+        ]
       },
       {
         "name": "title",
@@ -29,13 +34,29 @@
         "label": "Title",
         "kind": "textStyle",
         "section": "Look",
-        "default": {"font": "", "size": 28, "weight": 600, "color": "#e4e4e7", "outline": 0, "outlineColor": "#000000", "shadow": true}
+        "default": {
+          "font": "",
+          "size": 28,
+          "weight": 600,
+          "color": "#e4e4e7",
+          "outline": 0,
+          "outlineColor": "#000000",
+          "shadow": true
+        }
       },
       {
         "name": "timeStyle",
         "label": "Time",
         "kind": "textStyle",
-        "default": {"font": "", "size": 72, "weight": 800, "color": "#ffffff", "outline": 0, "outlineColor": "#000000", "shadow": true}
+        "default": {
+          "font": "",
+          "size": 72,
+          "weight": 800,
+          "color": "#ffffff",
+          "outline": 0,
+          "outlineColor": "#000000",
+          "shadow": true
+        }
       },
       {
         "name": "background",
@@ -53,20 +74,32 @@
         "name": "where",
         "label": "Place",
         "kind": "position",
-        "default": {"anchor": "center", "x": 0, "y": 0}
+        "default": {
+          "anchor": "center",
+          "x": 0,
+          "y": 0
+        }
       },
       {
         "name": "enter",
         "label": "Comes in with",
         "kind": "animation",
-        "default": {"name": "pop", "durationMs": 600, "delayMs": 0, "easing": "cubic-bezier(0.34, 1.56, 0.64, 1)"}
+        "default": {
+          "name": "pop",
+          "durationMs": 600,
+          "delayMs": 0,
+          "easing": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        }
       },
       {
         "name": "sound",
         "label": "Sound at the end",
         "kind": "sound",
         "section": "End",
-        "default": {"file": "sounds/chime.wav", "volume": 70}
+        "default": {
+          "file": "sounds/chime.wav",
+          "volume": 70
+        }
       },
       {
         "name": "celebrate",
@@ -77,15 +110,47 @@
       }
     ],
     "files": [
-      {"name": "index.html"},
-      {"name": "sounds/chime.wav"}
+      {
+        "name": "index.html"
+      },
+      {
+        "name": "sounds/chime.wav"
+      }
     ],
     "template": {
       "id": "streamerz.example.countdown-to",
       "version": "1.0.0",
       "author": "Streamerz",
       "pages": [
-        {"file": "index.html", "title": "Countdown to", "width": 1280, "height": 720}
+        {
+          "file": "index.html",
+          "title": "Countdown to",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "controls": [
+        {
+          "name": "show",
+          "label": "Show",
+          "kind": "toggle",
+          "default": true
+        },
+        {
+          "name": "size",
+          "label": "Size (%)",
+          "kind": "slider",
+          "default": 100,
+          "min": 50,
+          "max": 150,
+          "step": 5
+        },
+        {
+          "name": "addMinute",
+          "label": "Add a minute",
+          "kind": "button",
+          "icon": "plus"
+        }
       ]
     }
   }

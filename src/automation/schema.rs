@@ -44,6 +44,8 @@ pub enum W {
     Entity(&'static str),
     /// A name, typed or picked.
     ActionGroup,
+    /// An overlay's name, typed or picked.
+    Overlay,
     CommandGroup,
     /// An object of texts, as `name=value` lines.
     Map,
@@ -105,6 +107,7 @@ impl W {
             Suggest(k) => format!("a name ({k} detected on the connection, or typed)"),
             Entity(k) => format!("an ID ({k}, selected by name, or entered manually)"),
             ActionGroup => "action group name".into(),
+            Overlay => "overlay name".into(),
             CommandGroup => "command group name".into(),
             Map => "object of texts".into(),
             Lines => "list of texts".into(),
@@ -870,6 +873,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("msgNoVolume", "spotify.msg_no_volume", Text),
         ],
         99880 => &[("topic", "overlay.topic", Text), ("value", "overlay.value", Multi)],
+        99881 => &[
+            ("overlay", "overlay.control_overlay", Overlay),
+            ("control", "overlay.control_name", Text),
+            ("value", "overlay.control_value", Text),
+        ],
         99803 => &[
             ("clockId", "countdown.id", Text),
             (
@@ -1955,6 +1963,10 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         401 | 402 => &[("commandId", "field.command", Command)],
         701 => &[("timerId", "field.timer", Timer)],
         702 | 706 | 99300 | 99301 | 99700..=99703 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
+        99881 => &[
+            ("overlay", "overlay.control_overlay_any", Overlay),
+            ("control", "overlay.control_name_any", Text),
+        ],
         709 | 711 | 712 => &[
             ("variableName", "field.variable_none_any", Text),
             ("persisted", "field.persisted", Pick(PERSISTED)),

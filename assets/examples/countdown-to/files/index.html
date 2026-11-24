@@ -16,10 +16,11 @@
 // The settings come from Streamerz (Overlays, this overlay, Settings). They show what the newer kinds
 // give a page: `target` is milliseconds since 1970, the styles become CSS with streamerz.css, the place
 // goes to streamerz.place, the animation to streamerz.animate, and the sound is an address and a volume.
-let s = {}, ended = false, holdUntil = 0;
+// extra: the minutes Add a minute (a live control) put on top of the target.
+let s = {}, ended = false, holdUntil = 0, extra = 0;
 
 function left() {
-  return Math.max(0, (Number(s.target) || 0) - Date.now());
+  return Math.max(0, (Number(s.target) || 0) + extra - Date.now());
 }
 
 function shown(ms) {
@@ -77,6 +78,16 @@ streamerz.onSettings(next => {
 // The button setting: pressing Try the end publishes this topic (old is true for a press from before
 // the page opened, which is skipped).
 streamerz.on(streamerz.group + ".celebrate", (value, old) => old || end(true));
+
+// Live controls (the Live tab, the controls' dock, Set Overlay Control): changed while live, kept
+// apart from the settings. Each gives its value now, then every change.
+streamerz.control("show", on => (card.style.visibility = on === false ? "hidden" : ""));
+streamerz.control("size", percent => (document.body.style.zoom = (Number(percent) || 100) / 100));
+streamerz.control("addMinute", (at, old) => {
+  if (old === undefined) return;
+  extra += 60000;
+  tick();
+});
 
 setInterval(tick, 250);
 </script>

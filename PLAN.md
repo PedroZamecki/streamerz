@@ -1116,8 +1116,15 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   uses most of them; 351 browser checks. Changed from the plan: a position is the grid and two boxes,
   not a dot dragged on a small canvas; a gradient made in the form has two colors (more stay as CSS
   typed by hand). A `file` setting shows the picture picked under its list, and Play for a sound.
-- [ ] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
-  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`.
+- [x] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
+  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`. Done: the
+  seven kinds, checked and kept apart from the settings (`overlay_controls` in the settings file, so
+  an export never carries them); the Live tab sets each one as it changes; the dock at
+  `/overlays/<overlay>/-/controls`, with its address and the OBS steps on the Live tab; the page call
+  and WebSocket op `control`; the trigger's `from` (window, dock, action, page, mcp); an action that
+  trigger ran doesn't fire it again. The Countdown to example has Show, Size and Add a minute; a
+  scenario, a core test and browser checks of the page and the dock. Left for later: the Live tab
+  showing a value set elsewhere while it is open (it shows it when opened again).
 - [ ] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
   sounds (done: `src/sound.rs`, Symphonia with PulseAudio by dlopen and WASAPI, no audio crate); the
   monitor device and the device list on Linux come with the Sounds page.

@@ -135,6 +135,7 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
             | W::Suggest(_)
             | W::Entity(_)
             | W::ActionGroup
+            | W::Overlay
             | W::CommandGroup
             | W::Who
             | W::Message(_)

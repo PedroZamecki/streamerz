@@ -137,6 +137,15 @@ pub fn call(e: &Rc<Engine>, body: &[u8]) -> (u16, Value) {
         "get" => done(Ok(
             json!({"value": groups::values(&c, group).get(text("name")).cloned().unwrap_or(Value::Null)}),
         )),
+        // A live control of its own overlay: from one of its pages, or its dock.
+        "control" => {
+            let from = if text("from") == "dock" { "dock" } else { "page" };
+            let value = req.get("value").cloned().unwrap_or(Value::Null);
+            let name = text("name").to_owned();
+            let group = group.to_owned();
+            drop(c);
+            done(e.overlay_control_set(&group, &name, &value, from, false))
+        }
         "publish" => {
             let topic = text("topic");
             if topic.is_empty() || topic.len() > 100 {
@@ -354,6 +363,7 @@ fn about(event: &Value, data: &Value) -> String {
         ("Settings", _) => "Its settings changed".into(),
         ("Reload", _) => "A file was saved: the page loads again".into(),
         ("Play", _) => format!("Play the animation {}", text(&data["name"])),
+        ("Control", _) => format!("{} = {}", text(&data["name"]), short(&data["value"])),
         ("Overlay", topic) => format!("{topic} = {}", short(data)),
         _ => short(data),
     }
@@ -372,7 +382,12 @@ impl Open {
         };
         let mut events: Vec<String> = subs
             .iter()
-            .filter(|(source, _)| !matches!(source.as_str(), "Overlay" | "Test" | "Reload" | "Settings" | "Play"))
+            .filter(|(source, _)| {
+                !matches!(
+                    source.as_str(),
+                    "Overlay" | "Test" | "Reload" | "Settings" | "Play" | "Control"
+                )
+            })
             .flat_map(|(source, kinds)| kinds.iter().map(move |kind| format!("{source}.{kind}")))
             .collect();
         events.sort();
@@ -692,6 +707,11 @@ pub fn url(c: &Config, group: &str, file: &str) -> String {
     url_at(&base(c), group, file)
 }
 
+/// Where an overlay's controls dock is served.
+pub fn controls_url(c: &Config, group: &str) -> String {
+    format!("{}/overlays/{}/-/controls", base(c), encode(group))
+}
+
 pub fn url_at(base: &str, group: &str, file: &str) -> String {
     // A file's folders stay as they are, so the page's relative links work.
     let file: Vec<String> = file.split('/').map(encode).collect();
@@ -700,8 +720,14 @@ pub fn url_at(base: &str, group: &str, file: &str) -> String {
 
 /// The page with Streamerz's script added at the top of its head. `server` is empty when the page is
 /// served by Streamerz, and its address in a copy saved to disk.
+#[cfg(test)]
 pub fn page(html: &str, settings: &Value, group: &str, server: &str, token: &str) -> String {
-    let config = json!({"server": server, "settings": settings, "group": group, "token": token})
+    page_with(html, settings, &json!({}), group, server, token)
+}
+
+/// The same, with the overlay's live controls as they are now (`streamerz.control`).
+pub fn page_with(html: &str, settings: &Value, controls: &Value, group: &str, server: &str, token: &str) -> String {
+    let config = json!({"server": server, "settings": settings, "controls": controls, "group": group, "token": token})
         .to_string()
         .replace("</", "<\\/");
     let script = format!("<script>{}</script>", CLIENT.replace("__STREAMERZ__", &config));
@@ -824,6 +850,13 @@ pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>)
     if group == BUILT_IN {
         return built_in(&name).unwrap_or_else(missing);
     }
+    // The overlay's live controls as a page for an OBS dock.
+    if name == "-/controls" {
+        if !groups::exists(c, &group) {
+            return missing();
+        }
+        return Served::Bytes(200, "text/html; charset=utf-8", controls_dock(c, &group).into_bytes());
+    }
     let kind = mime(&name);
     if !kind.starts_with("text/html") {
         if let Some(path) = groups::file_path(c, &group, &name) {
@@ -836,14 +869,43 @@ pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>)
     if kind.starts_with("text/html") {
         let html = String::from_utf8_lossy(&bytes);
         let settings = settings_with(c, &group, draft);
+        let controls = groups::control_values(c, &group);
         return Served::Bytes(
             200,
             kind,
-            page(&html, &settings, &group, "", &token(c, &group)).into_bytes(),
+            page_with(&html, &settings, &controls, &group, "", &token(c, &group)).into_bytes(),
         );
     }
     Served::Bytes(200, kind, bytes)
 }
+
+/// The page of an overlay's live controls, for an OBS dock (`/overlays/<overlay>/-/controls`): a
+/// control for each, drawn from their declarations, set as they are changed.
+pub fn controls_dock(c: &Config, group: &str) -> String {
+    let defs: Vec<Value> = groups::controls(c, group)
+        .into_iter()
+        .map(|(control, _)| {
+            let mut def = serde_json::to_value(&control).unwrap_or_default();
+            def["label"] = control.shown_label().into();
+            let (min, max, step) = control.range();
+            def["min"] = json!(min);
+            def["max"] = json!(max);
+            def["step"] = json!(step);
+            if !control.icon.is_empty() {
+                def["iconUrl"] = format!("/overlays/-/icons/ffffff/{}.svg", control.icon).into();
+            }
+            def
+        })
+        .collect();
+    let html = CONTROLS_DOCK.replace("__TITLE__", &escape(group)).replace(
+        "__DEFS__",
+        &serde_json::to_string(&defs).unwrap_or_default().replace("</", "<\\/"),
+    );
+    let controls = groups::control_values(c, group);
+    page_with(&html, &json!({}), &controls, group, "", &token(c, group))
+}
+
+const CONTROLS_DOCK: &str = include_str!("../assets/overlays/controls.html");
 
 /// Where the pictures the window is drawn with come from (logos, badges, icons), by path. The program's
 /// start hands it in, so they are in the program once and nothing here knows the window's toolkit.
@@ -1134,6 +1196,7 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
         }
         subs.insert("Test".into(), std::iter::once(group.clone()).collect());
         subs.insert("Play".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Control".into(), std::iter::once(group.clone()).collect());
         subs.insert("Reload".into(), std::iter::once(group).collect());
     }
     subs

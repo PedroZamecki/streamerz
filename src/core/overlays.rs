@@ -622,7 +622,8 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
             ]
         }
         "media" => vec![super::overlay_media::section(engine, &group, id)],
-        _ => vec![json!({"text": tr(if tab == "alerts" { "overlays.alerts.soon" } else { "overlays.live.none" })})],
+        "live" => live_sections(&config, &group, id),
+        _ => vec![json!({"text": tr("overlays.alerts.soon")})],
     };
     // A form button of a section asks for its form for this overlay.
     let mut sections = sections;
@@ -718,6 +719,10 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             }
             Ok(json!({"draft": engine.overlay_draft(&group).len(), "shown": shown}))
         }
+        "controls" => {
+            let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
+            live_changes(engine, &group, request)
+        }
         "revert" => {
             let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
             engine.overlay_draft_revert(&group, None);
@@ -784,10 +789,73 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     }
 }
 
+/// The Live tab: a form of the overlay's controls, each set as it changes, and their OBS dock.
+fn live_sections(config: &crate::Config, group: &str, id: &str) -> Vec<Value> {
+    let controls = groups::controls(config, group);
+    if controls.is_empty() {
+        return vec![json!({"text": tr("overlays.live.none")})];
+    }
+    let fields: Vec<Value> = controls
+        .iter()
+        .map(|(c, v)| {
+            let label = c.shown_label();
+            match c.kind.as_str() {
+                "button" => json!({"key": c.name, "label": label, "widget": {"kind": "button",
+                    "icon": if c.icon.is_empty() { "zap" } else { c.icon.as_str() }},
+                    "buttonLabel": label, "value": null,
+                    "press": {"request": {"request": "StreamerzCoreAction", "domain": "overlays", "table": "overlay",
+                        "action": format!("control:{}", c.name), "itemId": group, "id": "overlay:press"}}}),
+                "toggle" => json!({"key": c.name, "label": label, "widget": {"kind": "bool"}, "value": v.as_bool().unwrap_or(false)}),
+                "slider" => {
+                    let (min, max, step) = c.range();
+                    json!({"key": c.name, "label": label, "widget": {"kind": "slider", "min": min, "max": max, "step": step},
+                        "value": v.as_f64().unwrap_or(min)})
+                }
+                "choice" => json!({"key": c.name, "label": label, "widget": {"kind": "pick", "options": c.options},
+                    "value": c.options.iter().position(|o| v.as_str() == Some(o)).unwrap_or(0)}),
+                "color" => json!({"key": c.name, "label": label, "widget": {"kind": "color"}, "value": v}),
+                _ => json!({"key": c.name, "label": label, "widget": {"kind": "text"},
+                    "value": v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())}),
+            }
+        })
+        .collect();
+    let dock = overlays::controls_url(config, group);
+    vec![
+        json!({"form": {"kind": format!("{FORMS}live:{id}"), "title": tr("overlays.tab.live"), "live": true,
+            "json": false, "hint": tr("overlays.live.hint"), "item": {"id": id}, "fields": fields}}),
+        json!({"title": tr("overlays.live.dock"), "text": tr("overlays.live.dock_how"),
+            "rows": [{"text": tr("overlays.live.dock_address"), "detail": dock, "icon": "panel-right-open",
+                "button": {"id": "control_dock_copy", "label": tr("overlays.btn.copy_url"), "icon": "copy"}}]}),
+    ]
+}
+
+/// The Live tab's changes: each control set as the form now holds it (`changes`: field and value).
+fn live_changes(engine: &Rc<Engine>, group: &str, request: &Value) -> Result<Value, String> {
+    let controls = groups::controls(&engine.config(), group);
+    for change in request["changes"].as_array().into_iter().flatten() {
+        let Some((control, _)) = change["field"].as_u64().and_then(|i| controls.get(i as usize)) else {
+            continue;
+        };
+        let value = match control.kind.as_str() {
+            "choice" => change["value"]
+                .as_u64()
+                .and_then(|i| control.options.get(i as usize))
+                .map(|o| json!(o))
+                .unwrap_or(Value::Null),
+            "button" => continue,
+            _ => change["value"].clone(),
+        };
+        engine.overlay_control_set(group, &control.name, &value, "window", false)?;
+    }
+    Ok(json!({"accepted": true}))
+}
+
 /// A button of a settings form: `press:<setting>` (a `button`), `play:<setting>` (an `animation`
 /// again) or `sound:<setting>` (a `sound` as the form has it now).
 pub fn is_press(action: &str) -> bool {
-    ["press:", "play:", "sound:"].iter().any(|p| action.starts_with(p))
+    ["press:", "play:", "sound:", "control:"]
+        .iter()
+        .any(|p| action.starts_with(p))
 }
 
 /// What a button of a settings form does. `itemId` is the overlay; a sound's `value` is the form's.
@@ -798,6 +866,12 @@ pub fn press(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let config = engine.config();
     if !groups::exists(&config, group) {
         return Err(tr("overlays.gone").to_owned());
+    }
+    // A button of the Live tab: pressed now.
+    if op == "control" {
+        drop(config);
+        engine.overlay_control_set(group, name, &Value::Null, "window", false)?;
+        return Ok(json!({"accepted": true}));
     }
     let def = groups::meta(&config, group)
         .variables
@@ -872,6 +946,13 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
                 crate::oauth::open_browser("https://github.com/PedroZamecki/streamerz/blob/main/docs/OVERLAYS.md");
             }
             accepted
+        }
+        // The Live tab: the address of the controls' dock.
+        "control_dock_copy" => {
+            let (group, _) = row(engine, id)?;
+            let config = engine.config();
+            let dock = overlays::controls_url(&config, &group);
+            Ok(json!({"copy": dock, "message": tr("overlays.copied")}))
         }
         "copy_url" => {
             let (group, file) = row(engine, id)?;
@@ -2000,6 +2081,26 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
             Ok(json!({"draft": engine.overlay_draft(&overlay), "settings": engine.overlay_preview_settings(&overlay),
                 "preview": overlays::preview_url(&config, &overlay, &first)}))
         }
+        // The live controls: their values now, or one set (`control` and `value`; a button is pressed).
+        "control" => {
+            known()?;
+            let control = text("control");
+            if !control.is_empty() {
+                let value = req.get("value").cloned().unwrap_or(Value::Null);
+                engine.overlay_control_set(&overlay, &control, &value, "mcp", false)?;
+            }
+            let config = engine.config();
+            let controls: Vec<Value> = groups::controls(&config, &overlay)
+                .into_iter()
+                .map(|(c, v)| {
+                    let mut def = serde_json::to_value(&c).unwrap_or_default();
+                    def["value"] = v;
+                    def
+                })
+                .collect();
+            Ok(json!({"controls": controls,
+                "dock": overlays::controls_url(&config, &overlay)}))
+        }
         "list" => {
             let config = engine.config();
             let all: Vec<Value> = groups::all(&config)
@@ -2317,6 +2418,76 @@ mod tests {
             .is_err());
             assert!(press(&e, &json!({"itemId": group, "action": "press:nothing"})).is_err());
             assert!(is_press("play:enter") && !is_press("media_play:x"));
+        });
+    }
+
+    #[test]
+    fn live_controls_are_set_from_the_tab_a_dock_a_page_and_mcp() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let example = crate::examples::package("countdown-to").unwrap();
+            let mut group = String::new();
+            e.change(|c| group = crate::package::install(c, &example).unwrap().0);
+            let id = format!("{group}:index.html");
+            // The Live tab: a form of the controls, set as it changes, and the dock's address.
+            let live = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "live"}}),
+            )
+            .unwrap();
+            let sections = &live["overlay"]["sections"];
+            let fields = sections[0]["form"]["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[0]["widget"]["kind"], "bool");
+            assert_eq!(fields[1]["widget"]["kind"], "slider");
+            assert_eq!(fields[2]["press"]["request"]["action"], "control:addMinute");
+            assert!(sections[1]["rows"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .ends_with("/Countdown%20to/-/controls"));
+            preview(&e, &json!({"op": "controls", "itemId": id, "changes": [{"field": 0, "value": false}, {"field": 1, "value": 120.0}]})).unwrap();
+            let c = e.config();
+            assert_eq!(groups::control_values(&c, &group), json!({"show": false, "size": 120}));
+            // Kept apart from the settings: sharing never carries them.
+            assert!(!groups::values(&c, &group).contains_key("show"));
+            drop(c);
+            // A press, the WebSocket op (as MCP), and a page's call.
+            press(&e, &json!({"itemId": group, "action": "control:addMinute"})).unwrap();
+            let read = request(
+                &e,
+                &json!({"op": "control", "overlay": group, "control": "size", "value": "77"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(read["controls"][1]["value"], 77);
+            assert!(request(
+                &e,
+                &json!({"op": "control", "overlay": group, "control": "size", "value": "huge"})
+            )
+            .await
+            .is_err());
+            let token = overlays::token(&e.config(), &group);
+            let body =
+                json!({"op": "control", "group": group, "token": token, "name": "show", "value": true, "from": "dock"});
+            let (status, answer) = overlays::call(&e, body.to_string().as_bytes());
+            assert_eq!((status, &answer["value"]), (200, &json!(true)), "{answer}");
+            // A page gets them as they are; the dock is a page of its own, made from them.
+            let c = e.config();
+            let served = match overlays::file_with(&c, &format!("/overlays/{group}/index.html"), &Default::default()) {
+                overlays::Served::Bytes(_, _, b) => String::from_utf8(b).unwrap(),
+                _ => panic!("not served"),
+            };
+            assert!(
+                served.contains(r#""controls":{"show":true,"size":77}"#),
+                "the page has its controls"
+            );
+            let dock = overlays::controls_dock(&c, &group);
+            assert!(
+                dock.contains("\"name\":\"addMinute\"") && dock.contains("streamerz.control.set"),
+                "{}",
+                &dock[..200]
+            );
         });
     }
 
