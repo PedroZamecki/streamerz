@@ -1,6 +1,14 @@
 //! Lucide icon bodies (ISC license, lucide.dev), shared by presentation adapters.
 
 pub const ICONS: &[(&str, &str)] = &[
+    (
+        "film",
+        r#"<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>"#,
+    ),
+    (
+        "replace",
+        r#"<path d="M14 4a1 1 0 0 1 1-1"/><path d="M15 10a1 1 0 0 1-1-1"/><path d="M21 4a1 1 0 0 0-1-1"/><path d="M21 9a1 1 0 0 1-1 1"/><path d="m3 7 3 3 3-3"/><path d="M6 10V5a2 2 0 0 1 2-2h2"/><rect x="3" y="14" width="7" height="7" rx="1"/>"#,
+    ),
     ("arrow-left", r#"<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>"#),
     (
         "panel-right-open",

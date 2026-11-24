@@ -395,7 +395,41 @@ impl OverlayPage {
     }
 
     /// A toolbar or tab button: its form as a dialog, or the operation run on this overlay.
-    fn press(&self, button: &Value) {
+    fn press(&self, button: &Value, window: &mut Window, cx: &mut App) {
+        // A button that asks first (Delete): the question, then the operation.
+        if let Some(question) = button["confirm"].as_str() {
+            let (question, label) = (
+                question.to_owned(),
+                button["label"].as_str().unwrap_or_default().to_owned(),
+            );
+            let danger = button["danger"] == true;
+            let request = json!({"request": "StreamerzCoreAction", "domain": "overlays", "table": "overlay",
+                "action": button["id"], "itemId": self.id(), "id": format!("{}:act", self.route)});
+            window.open_dialog(cx, move |dialog, window, cx| {
+                let request = request.clone();
+                let confirm = Button::new("overlay-confirm")
+                    .label(label.clone())
+                    .on_click(move |_, window, cx| {
+                        send(request.clone());
+                        window.close_dialog(cx);
+                    });
+                let buttons = div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(SPACE_SM))
+                    .child(
+                        Button::new("overlay-confirm-cancel")
+                            .label(tr("dialogs.cancel"))
+                            .on_click(|_, window, cx| super::dialog::dismiss(window, cx)),
+                    )
+                    .child(if danger { confirm.danger() } else { confirm });
+                let footer = super::dialog::footer(None, buttons, cx);
+                super::dialog::shell(dialog, label.clone(), 448., window, cx)
+                    .child(super::dialog::body(question.clone()))
+                    .footer(footer)
+            });
+            return;
+        }
         if let Some(kind) = button["form"].as_str() {
             send(
                 json!({"request": "StreamerzEntityForm", "kind": kind, "itemId": "", "id": format!("{}:form", self.route)}),
@@ -416,7 +450,7 @@ impl OverlayPage {
             .h(px(CONTROL_HEIGHT))
             .icon(Icon::empty().path(format!("icons/{icon}.svg")).size(px(13.)))
             .label(label)
-            .on_click(cx.listener(move |page, _, _, _| page.press(&spec_for_click)))
+            .on_click(cx.listener(move |page, _, window, cx| page.press(&spec_for_click, window, cx)))
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
@@ -636,9 +670,39 @@ impl OverlayPage {
 
     /// A line of a section's list: what it is, a quiet detail, and its button.
     fn row(&self, at: usize, row: &Value, cx: &mut Context<Self>) -> AnyElement {
-        let button = row["button"]
-            .is_object()
-            .then(|| self.button(1000 + at, &row["button"], cx).small());
+        let mut buttons = div().flex().flex_wrap().justify_end().gap(px(SPACE_XS)).flex_shrink_0();
+        if row["button"].is_object() {
+            buttons = buttons.child(self.button(1000 + at * 10, &row["button"], cx).small());
+        }
+        for (n, spec) in row["buttons"].as_array().into_iter().flatten().enumerate() {
+            buttons = buttons.child(self.button(1000 + at * 10 + n + 1, spec, cx).small());
+        }
+        // A picture of the file, else its kind's icon.
+        let lead = match row["picture"].as_str() {
+            Some(path) => Some(
+                img(std::path::PathBuf::from(path))
+                    .size(px(40.))
+                    .rounded(px(4.))
+                    .object_fit(ObjectFit::Contain)
+                    .flex_shrink_0()
+                    .into_any_element(),
+            ),
+            None => row["icon"].as_str().map(|icon| {
+                div()
+                    .size(px(40.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Icon::empty()
+                            .path(format!("icons/{icon}.svg"))
+                            .size_5()
+                            .text_color(theme::icon_tone(cx)),
+                    )
+                    .into_any_element()
+            }),
+        };
         div()
             .id(("overlay-row", at))
             .flex()
@@ -649,6 +713,8 @@ impl OverlayPage {
             .min_h(px(CONTROL_HEIGHT))
             .rounded(px(4.))
             .bg(theme::row_surface(cx))
+            .py(px(SPACE_XS))
+            .children(lead)
             .child(
                 div()
                     .min_w_0()
@@ -672,7 +738,7 @@ impl OverlayPage {
                         )
                     }),
             )
-            .children(button)
+            .child(buttons)
             .into_any_element()
     }
 

@@ -1096,8 +1096,13 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   credits), the ready-made sets (One of each, Gift bomb of 20, Raid of 500, TikTok rose combo, Chat
   flood), a song playing or paused, any topic, the last 50 real events to replay, and what the pages
   logged. Left for later: the overlay's own saved sequences and countdown buttons.
-- [ ] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
+- [x] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
   waveform, fonts, Used by, Add by Browse or drop, Rename that follows, Replace, Delete that warns.
+  Done (`core/overlay_media.rs`, rows of the overlay page): each file's kind, size and what uses it
+  (settings, list rows and pages), a picture of pictures and GIFs, Play and Stop for sounds through
+  the player, Copy URL, Add by Browse, Rename that the settings follow, Replace, Delete that names what
+  uses it, notices for files over 25 MB and videos OBS can't play. Left for later: the waveform, a
+  picture of videos, font samples, the grid view, dropping files on the window and Play on a device.
 - [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
   `size`, `animation`, `easing`, `gradient`, `textStyle`, `sound`, `event`, `reward`, `gift`,
   `usergroup`, `scene`, `source`, `code`, `json`, `button`, `hidden`, previews on `file`; Extra CSS;

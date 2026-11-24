@@ -621,14 +621,7 @@ pub fn page(engine: &Rc<Engine>, id: &str, tab: &str) -> Result<Value, String> {
                 ),
             ]
         }
-        "media" => {
-            let rows: Vec<Value> = meta
-                .files
-                .iter()
-                .map(|f| json!({"text": f.name, "detail": super::pages::size(f.size)}))
-                .collect();
-            vec![json!({"rows": rows, "empty": tr("overlays.media.none")})]
-        }
+        "media" => vec![super::overlay_media::section(engine, &group, id)],
         _ => vec![json!({"text": tr(if tab == "alerts" { "overlays.alerts.soon" } else { "overlays.live.none" })})],
     };
     // A form button of a section asks for its form for this overlay.
@@ -776,6 +769,11 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 /// Run one of the page's operations on a row.
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
     let accepted = Ok(json!({"accepted": true}));
+    // The Media tab's files.
+    if action.starts_with("media_") {
+        let (group, _) = row(engine, id)?;
+        return super::overlay_media::act(engine, &group, action);
+    }
     // The Test tab's sets, song and replay.
     if action.starts_with("set:") || action.starts_with("replay:") || action.starts_with("song_") {
         let (group, _) = row(engine, id)?;
@@ -1230,6 +1228,46 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             ))
         }
         "test" => Ok(super::overlay_test::form(kind)),
+        "media_add" | "media_rename" | "media_replace" => {
+            let (row_id, file) = id.split_once('|').unwrap_or((id.as_str(), ""));
+            row(engine, row_id)?;
+            let (title, label, value, browse) = match name.as_str() {
+                "media_add" => (
+                    tr("overlays.media.add").to_owned(),
+                    tr("overlays.media.file"),
+                    String::new(),
+                    true,
+                ),
+                "media_replace" => (
+                    trf("overlays.media.replace_title", &[("name", file)]),
+                    tr("overlays.media.file"),
+                    String::new(),
+                    true,
+                ),
+                _ => (
+                    trf("overlays.media.rename_title", &[("name", file)]),
+                    tr("dialogs.name"),
+                    file.to_owned(),
+                    false,
+                ),
+            };
+            let mut input = field("value", label, "text", value.into());
+            if browse {
+                input["browse"] = "file".into();
+            }
+            let mut out = form(
+                kind,
+                title,
+                if browse {
+                    tr("overlays.media.add_hint")
+                } else {
+                    tr("overlays.media.rename_hint")
+                },
+                vec![input],
+            );
+            out["json"] = false.into();
+            Ok(out)
+        }
         "topic" => Ok(form(
             kind,
             tr("overlays.test.topic").into(),
@@ -1297,6 +1335,15 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
     if name == "test" {
         let (group, _) = row(engine, &id)?;
         return super::overlay_test::send(engine, &group, request);
+    }
+    if matches!(name.as_str(), "media_add" | "media_rename" | "media_replace") {
+        let (row_id, file) = id.split_once('|').unwrap_or((id.as_str(), ""));
+        let (group, _) = row(engine, row_id)?;
+        let value = request["changes"][0]["value"].as_str().unwrap_or_default();
+        if preview {
+            return Ok(json!({"item": {"value": value}, "json": "{}"}));
+        }
+        return super::overlay_media::edit(engine, &group, &name, file, value);
     }
     let form = form_for(engine, request)?;
     let item = filled(&form, request)?;
@@ -2286,6 +2333,41 @@ mod tests {
             );
             let topic = json!({"kind": format!("overlay:topic:{id}"), "changes": [{"field": 0, "value": "score"}, {"field": 1, "value": "{\"a\": 1}"}]});
             assert_eq!(edit_form(&e, &topic, false).unwrap()["accepted"], true);
+
+            // The Media tab: a file brought in, renamed (a setting that named it follows) and deleted.
+            let picture = std::env::temp_dir().join(format!("streamerz-media-{}.png", std::process::id()));
+            std::fs::write(&picture, b"not really a png").unwrap();
+            let add = json!({"kind": format!("overlay:media_add:{id}"), "changes": [{"field": 0, "value": picture.display().to_string()}]});
+            edit_form(&e, &add, false).unwrap();
+            let name = picture.file_name().unwrap().to_str().unwrap().to_owned();
+            let media = super::super::view::read_request(
+                &e,
+                &json!({"domain": DOMAIN, "view": {"overlay": id, "overlayTab": "media"}}),
+            )
+            .unwrap();
+            let rows = media["overlay"]["sections"][0]["rows"].as_array().unwrap().clone();
+            assert!(
+                rows.iter()
+                    .any(|r| r["text"] == name.as_str() && r["picture"].is_string()),
+                "{rows:?}"
+            );
+            let rename = json!({"kind": format!("overlay:media_rename:{id}|{name}"), "changes": [{"field": 0, "value": "img/logo.png"}]});
+            edit_form(&e, &rename, false).unwrap();
+            let files: Vec<String> = groups::meta(&e.config(), "Clock")
+                .files
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            assert!(
+                files.contains(&"img/logo.png".to_owned()) && !files.contains(&name),
+                "{files:?}"
+            );
+            act(&e, "media_delete:img/logo.png", &id).unwrap();
+            assert!(!groups::meta(&e.config(), "Clock")
+                .files
+                .iter()
+                .any(|f| f.name == "img/logo.png"));
+            let _ = std::fs::remove_file(&picture);
 
             // MCP asks by the group's name.
             let by_group =
