@@ -685,20 +685,38 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "draft" => {
             let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
             let mut meta = groups::meta(&engine.config(), &group);
-            let mut values = super::actions::settings_changes(&mut meta, request, true)?;
-            // The description is not a setting the pages see.
-            values.retain(|name, _| meta.variables.iter().any(|v| &v.name == name));
             let mut current = groups::values(&engine.config(), &group);
             current.extend(engine.overlay_draft(&group));
+            let mut values = super::actions::settings_changes_from(&mut meta, request, true, &current)?;
+            // The description is not a setting the pages see.
+            let defs = groups::settings_defs(&meta);
+            values.retain(|name, _| defs.iter().any(|v| &v.name == name));
+            // A moment typed from now (`+15m`, `20:00`) goes back in its box as the day and time it
+            // became, or the next change would count from then again.
+            let mut shown = serde_json::Map::new();
+            for change in request["changes"].as_array().into_iter().flatten() {
+                let at = change["field"].as_u64().unwrap_or(0) as usize;
+                let Some(def) = at.checked_sub(1).and_then(|i| defs.get(i)) else {
+                    continue;
+                };
+                if def.kind != groups::Kind::DateTime {
+                    continue;
+                }
+                if let Some(ms) = values.get(&def.name).and_then(Value::as_u64) {
+                    let text = groups::kinds::show_moment(ms);
+                    if change["value"].as_str().map(str::trim) != Some(text.as_str()) {
+                        shown.insert(at.to_string(), text.into());
+                    }
+                }
+            }
             values.retain(|name, value| current.get(name) != Some(value));
-            if values.is_empty() {
-                return Ok(json!({"draft": engine.overlay_draft(&group).len()}));
+            if !values.is_empty() {
+                engine.overlay_draft_set(&group, &values)?;
+                if live_edit(&group) {
+                    engine.overlay_draft_save(&group)?;
+                }
             }
-            engine.overlay_draft_set(&group, &values)?;
-            if live_edit(&group) {
-                engine.overlay_draft_save(&group)?;
-            }
-            Ok(json!({"draft": engine.overlay_draft(&group).len()}))
+            Ok(json!({"draft": engine.overlay_draft(&group).len(), "shown": shown}))
         }
         "revert" => {
             let (group, _) = row(engine, request["itemId"].as_str().unwrap_or_default())?;
@@ -763,6 +781,54 @@ pub fn preview(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             Ok(json!({"accepted": true}))
         }
         other => Err(format!("no preview operation {other}")),
+    }
+}
+
+/// A button of a settings form: `press:<setting>` (a `button`), `play:<setting>` (an `animation`
+/// again) or `sound:<setting>` (a `sound` as the form has it now).
+pub fn is_press(action: &str) -> bool {
+    ["press:", "play:", "sound:"].iter().any(|p| action.starts_with(p))
+}
+
+/// What a button of a settings form does. `itemId` is the overlay; a sound's `value` is the form's.
+pub fn press(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
+    let group = request["itemId"].as_str().unwrap_or_default();
+    let action = request["action"].as_str().unwrap_or_default();
+    let (op, name) = action.split_once(':').ok_or("no setting named")?;
+    let config = engine.config();
+    if !groups::exists(&config, group) {
+        return Err(tr("overlays.gone").to_owned());
+    }
+    let def = groups::meta(&config, group)
+        .variables
+        .into_iter()
+        .find(|d| d.name == name)
+        .ok_or_else(|| format!("{group} has no setting {name}"))?;
+    match op {
+        "press" => {
+            drop(config);
+            let at = crate::fmt::unix_now().as_millis() as u64;
+            engine.overlay_publish(&format!("{group}.{name}"), json!({"pressedAt": at}));
+            Ok(json!({"accepted": true, "message": trf("overlays.pressed", &[("name", &def.label)])}))
+        }
+        "play" => {
+            drop(config);
+            engine.overlay_play(group, name);
+            Ok(json!({"accepted": true}))
+        }
+        _ => {
+            let value = &request["value"];
+            let file = value["file"].as_str().unwrap_or_default().trim().trim_matches('"');
+            let volume = value["volume"].as_f64().unwrap_or(100.0).clamp(0.0, 100.0) / 100.0;
+            if file.is_empty() {
+                return Err(tr("overlays.media.no_sound").to_owned());
+            }
+            let path = groups::file_path(&config, group, file)
+                .or_else(|| Some(std::path::PathBuf::from(file)).filter(|p| p.is_absolute() && p.is_file()))
+                .ok_or_else(|| tr("overlays.media.gone").to_owned())?;
+            crate::sound::play(&path, &format!("media:{group}"), "", volume as f32)?;
+            Ok(json!({"accepted": true}))
+        }
     }
 }
 
@@ -2203,6 +2269,54 @@ mod tests {
                 1,
                 "never fall back after a disconnect"
             );
+        });
+    }
+
+    #[test]
+    fn a_moment_typed_from_now_comes_back_as_its_day_and_buttons_press() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let example = crate::examples::package("countdown-to").unwrap();
+            let mut group = String::new();
+            e.change(|c| group = crate::package::install(c, &example).unwrap().0);
+            let id = format!("{group}:index.html");
+            // Field 1 is Counts down to, a datetime.
+            let drafted = preview(
+                &e,
+                &json!({"op": "draft", "itemId": id, "changes": [{"field": 1, "value": "+15m"}]}),
+            )
+            .unwrap();
+            assert_eq!(drafted["draft"], 1);
+            let text = drafted["shown"]["1"].as_str().unwrap().to_owned();
+            assert_eq!(text.len(), "2030-01-02 20:15:09".len(), "{text}");
+            // The day and time sent back reads as the same moment: no change, nothing to send back.
+            let again = preview(
+                &e,
+                &json!({"op": "draft", "itemId": id, "changes": [{"field": 1, "value": text}]}),
+            )
+            .unwrap();
+            assert_eq!(again["shown"], json!({}));
+            assert_eq!(e.overlay_draft(&group)["target"], groups::kinds::moment(&text).unwrap());
+            // A half typed day is left out of the draft rather than refused.
+            let half = preview(
+                &e,
+                &json!({"op": "draft", "itemId": id, "changes": [{"field": 1, "value": "2030-0"}]}),
+            )
+            .unwrap();
+            assert_eq!(half["draft"], 1);
+
+            // The button setting publishes its topic; Play of a sound needs a file.
+            let pressed = press(&e, &json!({"itemId": group, "action": "press:celebrate"})).unwrap();
+            assert!(pressed["message"].as_str().unwrap().contains("Try the end"));
+            assert!(e.overlay_topics().contains(&format!("{group}.celebrate")));
+            assert!(press(
+                &e,
+                &json!({"itemId": group, "action": "sound:sound", "value": {"file": "", "volume": 50}})
+            )
+            .is_err());
+            assert!(press(&e, &json!({"itemId": group, "action": "press:nothing"})).is_err());
+            assert!(is_press("play:enter") && !is_press("media_play:x"));
         });
     }
 

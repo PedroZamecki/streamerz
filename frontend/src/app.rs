@@ -197,6 +197,9 @@ impl Frontend {
             if let Some(actions) = self.actions.clone() {
                 actions.update(cx, |actions, cx| actions.images_arrived(cx));
             }
+            if let Some(overlay) = self.overlay.clone() {
+                overlay.update(cx, |overlay, cx| overlay.images_arrived(cx));
+            }
         }
     }
     /// The chat streams: its view asks the core for what is new, with no full page read. Returns
@@ -454,6 +457,15 @@ impl Frontend {
                 window.push_notification(tr("ui.saved"), cx);
             }
             cx.notify();
+            return;
+        }
+        // A button of a settings form (a `button` setting, Play): what it did, or why it didn't.
+        if id == "overlay:press" {
+            if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+                window.push_notification(err.summary_line(), cx);
+            } else if let Some(message) = value["message"].as_str() {
+                window.push_notification(message.to_owned(), cx);
+            }
             return;
         }
         if id == "prompts" {

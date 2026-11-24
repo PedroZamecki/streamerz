@@ -1,0 +1,92 @@
+{
+  "format": 1,
+  "name": "Countdown to",
+  "meta": {
+    "description": "Counts down to a day and time, then says so with a sound. Shows the newer kinds of setting: a moment, text styles, a place on the page, an animation, a gradient, a sound and a button.",
+    "variables": [
+      {
+        "name": "target",
+        "label": "Counts down to",
+        "kind": "datetime",
+        "default": 0,
+        "description": "The day and time. Type 20:00 for the next 8 PM, or +15m for fifteen minutes from now",
+        "presets": ["+5m", "+15m", "+1h", "20:00"]
+      },
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Starting in"
+      },
+      {
+        "name": "done",
+        "label": "When it ends",
+        "kind": "text",
+        "default": "Starting now!"
+      },
+      {
+        "name": "titleStyle",
+        "label": "Title",
+        "kind": "textStyle",
+        "section": "Look",
+        "default": {"font": "", "size": 28, "weight": 600, "color": "#e4e4e7", "outline": 0, "outlineColor": "#000000", "shadow": true}
+      },
+      {
+        "name": "timeStyle",
+        "label": "Time",
+        "kind": "textStyle",
+        "default": {"font": "", "size": 72, "weight": 800, "color": "#ffffff", "outline": 0, "outlineColor": "#000000", "shadow": true}
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "gradient",
+        "default": "linear-gradient(135deg, #7c3aed, #db2777)"
+      },
+      {
+        "name": "opacity",
+        "label": "Background opacity",
+        "kind": "percent",
+        "default": 85
+      },
+      {
+        "name": "where",
+        "label": "Place",
+        "kind": "position",
+        "default": {"anchor": "center", "x": 0, "y": 0}
+      },
+      {
+        "name": "enter",
+        "label": "Comes in with",
+        "kind": "animation",
+        "default": {"name": "pop", "durationMs": 600, "delayMs": 0, "easing": "cubic-bezier(0.34, 1.56, 0.64, 1)"}
+      },
+      {
+        "name": "sound",
+        "label": "Sound at the end",
+        "kind": "sound",
+        "section": "End",
+        "default": {"file": "sounds/chime.wav", "volume": 70}
+      },
+      {
+        "name": "celebrate",
+        "label": "Try the end",
+        "kind": "button",
+        "default": null,
+        "description": "Shows the end now, with its sound, without changing the time"
+      }
+    ],
+    "files": [
+      {"name": "index.html"},
+      {"name": "sounds/chime.wav"}
+    ],
+    "template": {
+      "id": "streamerz.example.countdown-to",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {"file": "index.html", "title": "Countdown to", "width": 1280, "height": 720}
+      ]
+    }
+  }
+}

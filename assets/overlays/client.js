@@ -16,8 +16,10 @@
       source.onclose = null;
       source.close();
     }
+    // Saved settings reach every page that listens at all: its Extra CSS follows them.
+    const listened = new Set([...events, "Settings." + C.group]);
     const q = new URLSearchParams({
-      topics: [...topics].join(","), events: [...events].join(","), group: C.group, token: C.token,
+      topics: [...topics].join(","), events: [...listened].join(","), group: C.group, token: C.token,
       page: decodeURIComponent(location.pathname),
     });
     if (preview) q.set("preview", "1");
@@ -44,21 +46,27 @@
         } finally {
           streamerz.testing = false;
         }
+      } else if (e.source === "Play") {
+        // Play on a settings form: the animation of that setting again, where streamerz.animate used it.
+        replay(d.data.name);
       } else if (e.source === "Reload") {
         // A file of this overlay was saved (in an editor, by an assistant): the page loads again.
         location.reload();
       } else if (e.source === "Draft") {
         // The editor changed a setting (not saved yet): a page that follows its settings shows it at
         // once, any other page loads again with it.
-        if (!(handlers["event:Settings." + C.group] || []).length) return location.reload();
+        const follows = (handlers["event:Settings." + C.group] || []).length;
+        if (!follows && !onlyCss(d.data)) return location.reload();
         Object.keys(streamerz.settings).forEach(k => delete streamerz.settings[k]);
         Object.assign(streamerz.settings, d.data);
+        extraCss();
         fire("event:Settings." + C.group, streamerz.settings);
       } else if (e.source === "Settings") {
         // A preview page shows the draft: the saved settings come back through Draft.
         if (preview) return;
         Object.keys(streamerz.settings).forEach(k => delete streamerz.settings[k]);
         Object.assign(streamerz.settings, d.data);
+        extraCss();
         fire("event:Settings." + e.type, streamerz.settings);
       } else {
         const name = e.source + "." + e.type;
@@ -67,6 +75,40 @@
       }
     };
   }
+  // Extra CSS (a setting every overlay has): put after the page's own styles, so it wins.
+  let extraStyle;
+  const extraCss = () => {
+    const css = (C.settings && C.settings.extraCss) || "";
+    if (!extraStyle) {
+      if (!css) return;
+      extraStyle = document.createElement("style");
+      extraStyle.id = "sz-extra-css";
+    }
+    extraStyle.textContent = css;
+    (document.head || document.documentElement).append(extraStyle);
+  };
+  // A draft that changed only the Extra CSS needs no reload, whatever the page does with settings.
+  const onlyCss = data =>
+    Object.keys({ ...data, ...C.settings }).every(k => k === "extraCss" || JSON.stringify(data[k]) === JSON.stringify(C.settings[k]));
+  if (document.readyState === "loading") addEventListener("DOMContentLoaded", extraCss);
+  else extraCss();
+  // The animations of streamerz.animate: keyframes over whatever transform the element has.
+  const moves = {
+    fade: [{ opacity: 0 }, { opacity: 1 }],
+    "slide-up": [{ opacity: 0, t: "translateY(40px)" }, { opacity: 1, t: "none" }],
+    "slide-down": [{ opacity: 0, t: "translateY(-40px)" }, { opacity: 1, t: "none" }],
+    "slide-left": [{ opacity: 0, t: "translateX(40px)" }, { opacity: 1, t: "none" }],
+    "slide-right": [{ opacity: 0, t: "translateX(-40px)" }, { opacity: 1, t: "none" }],
+    zoom: [{ opacity: 0, t: "scale(0.5)" }, { opacity: 1, t: "none" }],
+    pop: [{ opacity: 0, t: "scale(0.3)" }, { opacity: 1, t: "scale(1.1)", offset: 0.7 }, { t: "none" }],
+    bounce: [{ t: "translateY(-60px)", opacity: 0 }, { t: "none", opacity: 1, offset: 0.5 }, { t: "translateY(-15px)", offset: 0.75 }, { t: "none" }],
+    flip: [{ opacity: 0, t: "perspective(600px) rotateY(90deg)" }, { opacity: 1, t: "none" }],
+    shake: [{ t: "none" }, { t: "translateX(-10px)" }, { t: "translateX(10px)" }, { t: "translateX(-10px)" }, { t: "translateX(10px)" }, { t: "none" }],
+  };
+  const played = Object.create(null);
+  const replay = name => {
+    for (const el of played[name] || []) if (el.isConnected) streamerz.animate(el, streamerz.settings[name]);
+  };
   // Ask Streamerz to do something. Resolves with its answer, rejects with why it didn't.
   const call = (op, data) =>
     fetch(C.server + "/overlays/call", {
@@ -212,6 +254,55 @@
       const shown = line.gif || line.picture;
       if (shown) el.append(picture("sz-picture" + (line.huge ? " sz-big" : ""), shown));
       return el;
+    },
+    // streamerz.place(el, s.where): puts an element where a `position` setting says ({anchor, x, y}:
+    // one of nine places of the page, and pixels from it). The element is placed absolutely.
+    place(el, where) {
+      const w = where || {}, a = String(w.anchor || "center");
+      const h = a.endsWith("left") ? "left" : a.endsWith("right") ? "right" : "";
+      const v = a.startsWith("top") ? "top" : a.startsWith("bottom") ? "bottom" : "";
+      // Pinned to its sides (centered with auto margins), so it keeps the width of its content.
+      Object.assign(el.style, {
+        position: "absolute", width: "fit-content", height: "fit-content",
+        left: h === "right" ? "auto" : "0", right: h === "left" ? "auto" : "0",
+        top: v === "bottom" ? "auto" : "0", bottom: v === "top" ? "auto" : "0",
+        marginLeft: h ? "0" : "auto", marginRight: h ? "0" : "auto",
+        marginTop: v ? "0" : "auto", marginBottom: v ? "0" : "auto",
+        transform: `translate(${+w.x || 0}px, ${+w.y || 0}px)`,
+      });
+      return el;
+    },
+    // streamerz.animate(el, s.enter, {out: true}): plays an `animation` setting ({name, durationMs,
+    // delayMs, easing}) on an element, backwards with out (to leave). Resolves when it ends. Given a
+    // setting itself, Play on its form plays it again on this element.
+    animate(el, anim, options = {}) {
+      const a = anim || {}, steps = moves[a.name];
+      const name = Object.keys(streamerz.settings).find(k => streamerz.settings[k] === anim);
+      if (name) {
+        (played[name] ||= new Set()).add(el);
+        // Play comes through the page's feed: open it if the page listens to nothing else.
+        if (!source) connect();
+      }
+      if (!steps || !el.animate) return Promise.resolve();
+      const base = el.style.transform && el.style.transform !== "none" ? el.style.transform + " " : "";
+      const frames = steps.map(({ t, ...f }) => (t ? { ...f, transform: base + (t === "none" ? "" : t) || "none" } : f));
+      const run = el.animate(frames, {
+        duration: Math.max(0, +a.durationMs || 400), delay: Math.max(0, +a.delayMs || 0),
+        easing: a.easing || "ease-out", fill: options.out ? "forwards" : "backwards", direction: options.out ? "reverse" : "normal",
+      });
+      return run.finished.catch(() => {});
+    },
+    // streamerz.css(s.title): a `textStyle` setting as CSS for an element's style:
+    // el.style.cssText += streamerz.css(s.title).
+    css(style) {
+      const s = style || {}, out = [];
+      if (s.font) out.push(`font-family: "${String(s.font).replace(/"/g, "")}"`);
+      if (+s.size) out.push(`font-size: ${+s.size}px`);
+      if (+s.weight) out.push(`font-weight: ${+s.weight}`);
+      if (s.color) out.push(`color: ${s.color}`);
+      if (+s.outline) out.push(`-webkit-text-stroke: ${+s.outline}px ${s.outlineColor || "#000"}`, "paint-order: stroke fill");
+      if (s.shadow) out.push("text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6)");
+      return out.join("; ") + (out.length ? ";" : "");
     },
     // streamerz.onSettings(s => ...): the group's settings now, and again whenever one changes in
     // Streamerz (no reload of the page). streamerz.settings always holds the current ones.

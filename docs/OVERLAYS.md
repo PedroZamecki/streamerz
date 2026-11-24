@@ -91,6 +91,7 @@ page. Each one is short and commented, made to be read:
 | Goal bar | A bar that fills with follows, subs, cheers or TikTok coins, and keeps its count across restarts | `streamerz.alerts` with `kind` and `args`, `streamerz.set`, `streamerz.testing` |
 | Starting soon | A full screen with your picture, a countdown and music | `file` settings (a picture and a sound) |
 | Buttons dock | A dock with a button for each action connected to it, and a banner the buttons show | `streamerz.actions`, `streamerz.run`, an `action` setting, two pages |
+| Countdown to | Counts down to a day and time, then says so with a sound; Try the end shows it now | `datetime`, `textStyle`, `position`, `animation`, `gradient`, `percent`, `sound` and `button` settings, `streamerz.css`, `streamerz.place`, `streamerz.animate` |
 
 Their source is in `assets/examples/<name>`: a `template.json` and a `files` folder, exactly what a
 `.streamerz` file holds when unpacked. `dev/test-examples.mjs` opens each one in a browser.
@@ -161,6 +162,33 @@ settings form draws each kind with its own control:
 | `platforms` | a list of `twitch`, `youtube`, `kick`, `tiktok` | a check box with the logo of each |
 | `action` | the id of one of the actions connected to the overlay (empty: none) | a list of those actions |
 | `list` | rows: a list of objects with one value for each of its `columns` | a box with a row a line, the cells between bars: `Pizza \| 2` |
+| `date` | a day, `YYYY-MM-DD` (empty: none) | a box with Today, Tomorrow and Next week under it |
+| `time` | a time of day, `HH:MM` | a box, with the `presets` you give under it |
+| `datetime` | a moment, in milliseconds since 1970 (0: none) | a box typed as `YYYY-MM-DD HH:MM`, `+15m` or `20:00`, with In 15 minutes, In 1 hour and Tonight at 20:00 (or your `presets`) |
+| `range` | `[from, to]`, between `min` and `max` | a slider with two handles |
+| `percent` | a number from 0 to 100 | a slider with % |
+| `position` | `{anchor, x, y}`: one of nine places (`top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right`) and pixels from it | a 3 by 3 grid and two boxes; `streamerz.place(el, value)` puts an element there |
+| `size` | `{width, height}` in pixels | two boxes and Keep ratio |
+| `animation` | `{name, durationMs, delayMs, easing}`, the name one of `none`, `fade`, `slide-up`, `slide-down`, `slide-left`, `slide-right`, `zoom`, `pop`, `bounce`, `flip`, `shake` | two lists, two boxes and Play (it plays again in the pages); `streamerz.animate(el, value)` plays it |
+| `easing` | a CSS easing (`ease-out`, `cubic-bezier(...)`) | a list |
+| `gradient` | CSS: `linear-gradient(90deg, #7c3aed, #db2777)` | two colors, an angle and a bar showing them |
+| `textStyle` | `{font, size, weight, color, outline, outlineColor, shadow}` | one group of controls; `streamerz.css(value)` gives the CSS |
+| `sound` | `{file, volume}`: one of its sounds and how loud (0 to 100) | its sounds to pick or Browse, a volume and Play |
+| `event` | a list of kinds of events (`follow`, `sub`, `resub`, `giftsub`, `giftbomb`, `cheer`, `raid`, `superchat`, `supersticker`, `member`, `gift`, `share`, `reward`, `powerup`, `announcement`, as `streamerz.alerts` calls them) | a check box with an icon for each |
+| `reward` | `{platform, id, title}` (empty: none) | the rewards of the Twitch and Kick channels |
+| `gift` | `{id, name, coins, picture}` (empty: none) | TikTok's gifts with their pictures, narrowed by typing |
+| `usergroup` | the name of a user group | a list of the user groups |
+| `scene`, `source` | the name of a scene or source in OBS | a list of them while OBS is connected, a box when not |
+| `code` | text; `accept` is `css`, `html` or `js` | a tall box in a fixed-width font |
+| `json` | any value | a box checked as JSON |
+| `button` | nothing | a button: pressing it publishes the topic `<overlay>.<name>` (`streamerz.on("Clock.reset", (v, old) => ...)`) |
+| `hidden` | any value | not drawn: kept and shared with the overlay |
+
+`duration`, `time` and `datetime` take `presets`, the values one click away under the box, as they
+are typed: `"presets": ["30s", "1m", "5m"]`.
+
+Every overlay also has **Extra CSS**, under Code at the end of its settings: CSS that Streamerz puts
+on its pages after their own, so a look changes without opening the files.
 
 A `file` setting reaches a page as the address it is served at, so it goes straight into an `<img>`, an
 `<audio>` or a CSS `url()`. A `list` declares its `columns`, each a setting of a simple kind (`text`,
@@ -202,6 +230,9 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.on(topic, fn)` | `fn(value, old)` runs with the topic's current value, then at every change. `old` is true for the value from before the page opened: a page that acts on a change (spin the wheel) skips it. |
 | `streamerz.event("Source.Type", fn)` | `fn(data)` runs for any Streamerz event, such as `Spotify.TrackChanged` or `Twitch.Follow`. `Twitch.*` is every event of a source. |
 | `streamerz.onSettings(fn)` | `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. |
+| `streamerz.place(el, position)` | Puts an element where a `position` setting says, absolutely, as wide as its content. |
+| `streamerz.animate(el, animation, {out})` | Plays an `animation` setting on an element (backwards with `out: true`, to leave); resolves when it ends. Given the setting itself (`s.enter`), Play on the form plays it again. |
+| `streamerz.css(textStyle)` | A `textStyle` setting as CSS: `el.style.cssText += streamerz.css(s.title)`. |
 | `streamerz.countdown(id, fn)` | A countdown's `{running, remainingMs, deadlineMs, maxMs}` now and at every change. Count from `deadlineMs` in the page: no ticks are sent. |
 | `streamerz.chat(fn, {history, removed})` | Every chat message of every connected platform, the moment it arrives (also what you send from Streamerz), as the Chat page shows it: `{platform, user, userId, color, badges: [{label, url, art, icon}], text, parts: [{t}` or `{e, u, big}], time, msgId, avatar, reply, broadcaster, moderator, vip, subscriber, action, gif, picture, tag}`. The name's color is already readable and the emotes of every provider (the platform's, 7TV, BetterTTV, FrankerFaceZ) are already found. `history` gives the newest ones first; `removed` gets `{platform, msgId, userId}` when a moderator deletes a message or a user's messages. Needs `chat.read`. |
 | `streamerz.alerts(fn, {history})` | What happens in the channels, on every platform: a follow, a sub, a gift, a cheer, a Super Chat, a raid, a reward. A chat line with `{event` (what happened, in words)`, icon` (a Lucide name: `star`, `gift`, `swords`, `user-plus`, `gem`...)`, accent, cost, picture, text}`. One that happens now also has what a page counts with: `kind` (`follow`, `sub`, `resub`, `giftsub`, `giftbomb`, `cheer`, `raid`, `superchat`, `supersticker`, `member`, `gift`, `share`, `reward`, `powerup`, `streak`, `announcement`, `timeout`, `ban`), `trigger` (the trigger's name) and `args` (its arguments: `bits`, `viewers`, `gifts`, `coins`, `amount`...). Needs `alerts.read`. |

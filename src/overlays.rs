@@ -353,6 +353,7 @@ fn about(event: &Value, data: &Value) -> String {
         }
         ("Settings", _) => "Its settings changed".into(),
         ("Reload", _) => "A file was saved: the page loads again".into(),
+        ("Play", _) => format!("Play the animation {}", text(&data["name"])),
         ("Overlay", topic) => format!("{topic} = {}", short(data)),
         _ => short(data),
     }
@@ -371,7 +372,7 @@ impl Open {
         };
         let mut events: Vec<String> = subs
             .iter()
-            .filter(|(source, _)| !matches!(source.as_str(), "Overlay" | "Test" | "Reload" | "Settings"))
+            .filter(|(source, _)| !matches!(source.as_str(), "Overlay" | "Test" | "Reload" | "Settings" | "Play"))
             .flat_map(|(source, kinds)| kinds.iter().map(move |kind| format!("{source}.{kind}")))
             .collect();
         events.sort();
@@ -650,15 +651,27 @@ pub fn settings_with(c: &Config, group: &str, draft: &serde_json::Map<String, Va
     for (name, value) in draft {
         values.insert(name.clone(), value.clone());
     }
+    let address = |file: &str| {
+        (!file.is_empty() && !file.starts_with("https://") && !file.starts_with("http://")).then(|| url(c, group, file))
+    };
     for d in groups::meta(c, group).variables {
-        if d.kind != groups::Kind::File {
-            continue;
-        }
-        if let Some(Value::String(file)) = values.get(&d.name) {
-            if !file.is_empty() && !file.starts_with("https://") && !file.starts_with("http://") {
-                let address = url(c, group, file);
-                values.insert(d.name.clone(), address.into());
+        match d.kind {
+            groups::Kind::File => {
+                if let Some(at) = values.get(&d.name).and_then(Value::as_str).and_then(address) {
+                    values.insert(d.name.clone(), at.into());
+                }
             }
+            // A sound's file is its address too, and its volume from 0 to 1 as an <audio> takes it.
+            groups::Kind::Sound => {
+                if let Some(Value::Object(sound)) = values.get_mut(&d.name) {
+                    if let Some(at) = sound.get("file").and_then(Value::as_str).and_then(address) {
+                        sound.insert("file".into(), at.into());
+                    }
+                    let volume = sound.get("volume").and_then(Value::as_f64).unwrap_or(100.0);
+                    sound.insert("volume".into(), json!(volume.clamp(0.0, 100.0) / 100.0));
+                }
+            }
+            _ => {}
         }
     }
     Value::Object(values.into_iter().collect())
@@ -1120,6 +1133,7 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
             subs.insert("Draft".into(), std::iter::once(group.clone()).collect());
         }
         subs.insert("Test".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Play".into(), std::iter::once(group.clone()).collect());
         subs.insert("Reload".into(), std::iter::once(group).collect());
     }
     subs

@@ -128,6 +128,15 @@ pub fn name_of(id: &str) -> Option<String> {
         .map(|g| g.name.clone())
 }
 
+/// A gift of the list as a `gift` setting keeps it: `{id, name, coins, picture}`.
+pub fn find(id: &str) -> Option<Value> {
+    let c = CATALOG.lock().ok()?;
+    c.gifts
+        .iter()
+        .find(|g| g.id == id)
+        .map(|g| json!({"id": g.id, "name": g.name, "coins": g.coins, "picture": g.picture_url}))
+}
+
 /// What a gift picker says when it has no gifts to show (loading, failed, empty), else None.
 pub fn gallery_status() -> Option<String> {
     use crate::i18n::{tr, trf};

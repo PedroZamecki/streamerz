@@ -32,6 +32,7 @@ pub mod requests;
 pub mod requirements;
 pub mod rewards;
 pub mod sections;
+pub mod setting_fields;
 pub mod settings;
 pub mod status;
 pub mod stream;

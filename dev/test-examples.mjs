@@ -92,7 +92,7 @@ try {
   // A dev instance starts with the HTTP server off: the pages are served by it.
   await ask({ request: "StreamerzSave", what: "server_http", item: { autoStart: true, address: "127.0.0.1", port: 7495 } });
   const examples = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
-  check(examples.length === 20, "examples listed: " + examples.map(r => r.id).join(", "));
+  check(examples.length === 21, "examples listed: " + examples.map(r => r.id).join(", "));
   for (const e of examples) check((await act("add_example", e.id, "overlay_examples")).status === "ok", `example ${e.id} added`);
   const again = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
   check(again.every(r => r.cells[2] === "Added" && r.can.add_example === false), "every example says it is here");
@@ -416,6 +416,29 @@ try {
   check(await t.until("/^\\d+:\\d\\d$/.test(clock.textContent)"), "the countdown runs: " + await t.js("clock.textContent"));
   await sleep(500);
   await done(t, "starting-soon");
+
+  // Countdown to: the newer kinds of setting reach the page as values it can use as they are.
+  t = await open("Countdown to", 1280, 720);
+  await values("Countdown to", { target: Date.now() + 65000 });
+  check(await t.until("/^1:0\\d$/.test(time.textContent)"), "it counts down to a moment: " + await t.js("time.textContent"));
+  check(await t.js("getComputedStyle(time).fontSize === '72px' && getComputedStyle(time).fontWeight === '800'"), "a text style is CSS through streamerz.css");
+  check(await t.js("card.style.getPropertyValue('--bg').startsWith('linear-gradient(135deg')"), "a gradient is CSS");
+  await values("Countdown to", { where: { anchor: "bottom-right", x: -20, y: -30 } });
+  check(await t.until("Math.abs(card.getBoundingClientRect().right - (innerWidth - 20)) < 2 && Math.abs(card.getBoundingClientRect().bottom - (innerHeight - 30)) < 2"),
+    "a position puts it there with streamerz.place: " + await t.js("JSON.stringify(card.getBoundingClientRect())"));
+  check(await t.js("fetch(streamerz.settings.sound.file).then(r => r.status)") === 200 && await t.js("streamerz.settings.sound.volume") === 0.7, "a sound is an address and a volume from 0 to 1");
+  await values("Countdown to", { extraCss: "#card { outline: 3px solid rgb(1, 2, 3); }" });
+  check(await t.until("getComputedStyle(card).outlineColor === 'rgb(1, 2, 3)'"), "Extra CSS reaches the page without a reload");
+  await t.js("window.mark = 1");
+  check((await ask({ request: "StreamerzCoreAction", domain: "overlays", action: "play:enter", itemId: "Countdown to" })).status === "ok", "Play of an animation is sent");
+  check(await t.until("card.getAnimations().length > 0 && window.mark === 1"), "and plays it again on the page, with no reload");
+  check((await ask({ request: "StreamerzCoreAction", domain: "overlays", action: "press:celebrate", itemId: "Countdown to" })).status === "ok", "a button setting is pressed");
+  check(await t.until("time.textContent === 'Starting now!'"), "and the page hears its topic");
+  check(await t.js("time.offsetHeight < 100"), "a placed element keeps the width of its text (one line): " + await t.js("time.offsetHeight"));
+  await values("Countdown to", { where: { anchor: "center", x: 0, y: 0 } });
+  check(await t.until("Math.abs((card.getBoundingClientRect().left + card.getBoundingClientRect().right) / 2 - innerWidth / 2) < 2"), "and center is the middle");
+  check(await t.js("time.textContent === 'Starting now!' && title.style.display === 'none'"), "a change while the end shows keeps the title hidden");
+  await done(t, "countdown-to");
 
   // Buttons dock: a button for each connected action; a press shows the banner.
   t = await open("Buttons dock", 1280, 200, "banner.html");

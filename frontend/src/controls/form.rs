@@ -70,8 +70,19 @@ enum Field {
         ids: Vec<String>,
         labels: Vec<String>,
         brands: Vec<Option<String>>,
+        icons: Vec<Option<String>>,
         on: Vec<bool>,
     },
+    /// Several small controls for one value (a position, a text style): a form of its own, drawn
+    /// inline. Its value is theirs, by key.
+    Parts(Entity<Form>),
+    /// One of nine places on a page, picked on a 3 by 3 grid: its value is the place's number.
+    Anchor {
+        at: usize,
+        labels: Vec<String>,
+    },
+    /// A button: it holds nothing, pressing it sends `press`.
+    Button(Value),
 }
 
 fn finite_f32(value: Option<f64>, default: f32) -> f32 {
@@ -153,6 +164,10 @@ pub struct Form {
     autofocus: bool,
     /// Section headings toggle their fields without changing form values.
     section_toggles: std::collections::HashSet<usize>,
+    /// A size's height over its width while Keep ratio is ticked (parts only).
+    ratio: Option<f64>,
+    /// Set while a part is changed by the form itself (Keep ratio), so it doesn't answer itself.
+    syncing: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl Form {
@@ -276,6 +291,29 @@ impl Form {
                     };
                 }
                 match kind {
+                    "parts" => {
+                        let mut model = json!({"fields": field["widget"]["parts"], "inline": true, "json": false});
+                        for key in ["ratio", "gradient"] {
+                            model[key] = field["widget"][key].clone();
+                        }
+                        let parts = cx.new(|cx| Form::new(model, String::new(), window, cx));
+                        subscriptions.push(cx.subscribe(&parts, |_, _, _: &Edited, cx| {
+                            cx.emit(Edited);
+                            cx.notify();
+                        }));
+                        Field::Parts(parts)
+                    }
+                    "anchor" => Field::Anchor {
+                        at: value.as_u64().unwrap_or(4) as usize,
+                        labels: field["widget"]["options"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
+                    },
+                    "button" => Field::Button(field["press"].clone()),
                     "font" => {
                         let mut names = cx.text_system().all_font_names();
                         names.sort_by_key(|name| name.to_lowercase());
@@ -313,19 +351,22 @@ impl Form {
                         Field::Color(state)
                     }
                     "slider" => {
+                        let range = field["widget"]["range"] == true;
                         let (lo, hi, step, val) = sanitize_slider(
                             field["widget"]["min"].as_f64(),
                             field["widget"]["max"].as_f64(),
                             field["widget"]["step"].as_f64(),
-                            value.as_f64(),
+                            if range { value[0].as_f64() } else { value.as_f64() },
                         );
+                        // Two handles: from and to.
+                        let end = finite_f32(value[1].as_f64(), hi).clamp(val, hi);
                         let state = cx.new(|_| {
-                            SliderState::new()
-                                .max(hi.max(100.))
-                                .min(lo)
-                                .max(hi)
-                                .step(step)
-                                .default_value(val)
+                            let state = SliderState::new().max(hi.max(100.)).min(lo).max(hi).step(step);
+                            if range {
+                                state.default_value((val, end))
+                            } else {
+                                state.default_value(val)
+                            }
                         });
                         subscriptions.push(cx.subscribe(&state, |_, _, _: &SliderEvent, cx| cx.notify()));
                         Field::Slider(state)
@@ -335,11 +376,13 @@ impl Form {
                         let mut ids = Vec::new();
                         let mut labels = Vec::new();
                         let mut brands = Vec::new();
+                        let mut icons = Vec::new();
                         for option in field["widget"]["options"].as_array().into_iter().flatten() {
                             if let Some(id) = option["id"].as_str() {
                                 ids.push(id.to_owned());
                                 labels.push(option["label"].as_str().unwrap_or_default().to_owned());
                                 brands.push(option["brand"].as_str().map(str::to_owned));
+                                icons.push(option["icon"].as_str().map(str::to_owned));
                             }
                         }
                         let ticked: Vec<&str> = value
@@ -353,6 +396,7 @@ impl Form {
                             ids,
                             labels,
                             brands,
+                            icons,
                             on,
                         }
                     }
@@ -374,7 +418,7 @@ impl Form {
                         subscriptions.push(cx.subscribe(&state, |_, _, _: &SelectEvent<Vec<String>>, cx| cx.notify()));
                         Field::Pick(state)
                     }
-                    "multi" | "lines" | "map" => {
+                    "multi" | "lines" | "map" | "code" => {
                         let hint = field["placeholder"].as_str().unwrap_or_default().to_owned();
                         let area = cx.new(|cx| {
                             TextareaState::new(window, cx)
@@ -438,7 +482,9 @@ impl Form {
                             match event {
                                 // A picked image shows as it's typed.
                                 InputEvent::Change if browse_image => cx.notify(),
-                                InputEvent::PressEnter { .. } if !form.pending => form.submit(false, cx),
+                                InputEvent::PressEnter { .. } if !form.pending && form.model["inline"] != true => {
+                                    form.submit(false, cx)
+                                }
                                 _ => {}
                             }
                         }));
@@ -490,7 +536,43 @@ impl Form {
                     subscriptions.push(cx.subscribe(state, |_, _, _: &SliderEvent, cx| cx.emit(Edited)))
                 }
                 Field::Gallery(gallery) => subscriptions.push(cx.observe(gallery, |_, _, cx| cx.emit(Edited))),
-                Field::Bool(_) | Field::Checks { .. } => {}
+                Field::Bool(_) | Field::Checks { .. } | Field::Parts(_) | Field::Anchor { .. } | Field::Button(_) => {}
+            }
+        }
+        // Keep ratio (a size): while it is ticked, one side follows the other.
+        if let Some([width, height, _]) = model["ratio"]
+            .as_array()
+            .and_then(|r| {
+                r.iter()
+                    .map(|i| i.as_u64().map(|i| i as usize))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .and_then(|r| <[usize; 3]>::try_from(r).ok())
+        {
+            for (from, to) in [(width, height), (height, width)] {
+                let (Some(Field::Text(source)), Some(Field::Text(target))) = (fields.get(from), fields.get(to)) else {
+                    continue;
+                };
+                let target = target.clone();
+                subscriptions.push(cx.subscribe_in(
+                    source,
+                    window,
+                    move |form, source, event: &InputEvent, window, cx| {
+                        if !matches!(event, InputEvent::Change) || form.syncing {
+                            return;
+                        }
+                        let (Some(ratio), Some(n)) = (form.ratio, source.read(cx).value().trim().parse::<f64>().ok())
+                        else {
+                            return;
+                        };
+                        let other = if from == width { n * ratio } else { n / ratio.max(1e-9) };
+                        form.syncing = true;
+                        target.update(cx, |target, cx| {
+                            target.set_value(format!("{}", other.round() as i64), window, cx)
+                        });
+                        form.syncing = false;
+                    },
+                ));
             }
         }
         // A type that has no form opens as JSON.
@@ -499,6 +581,7 @@ impl Form {
                 TextareaState::new(window, cx).default_value(model["jsonText"].as_str().unwrap_or_default().to_owned())
             })
         });
+        let inline = model["inline"] == true;
         Self {
             model,
             fields,
@@ -511,8 +594,10 @@ impl Form {
                 cx.new(|_| FormButtons(weak))
             },
             picked: None,
-            autofocus: true,
+            autofocus: !inline,
             section_toggles: std::collections::HashSet::new(),
+            ratio: None,
+            syncing: false,
             _subscriptions: subscriptions,
         }
     }
@@ -524,6 +609,10 @@ impl Form {
         cx.notify();
     }
     pub(super) fn submit(&mut self, preview: bool, cx: &mut Context<Self>) {
+        // A field's parts are saved with the form they are part of.
+        if self.model["inline"] == true {
+            return;
+        }
         let changes = self.model["commitChanges"].clone();
         self.submit_action(preview, &changes, cx);
     }
@@ -557,7 +646,13 @@ impl Form {
             Field::Choice { input: Some(input), .. } => json!(input.read(cx).value().to_string()),
             Field::Gallery(gallery) => json!(gallery.read(cx).selected),
             Field::Color(state) => json!(hex(state.read(cx).value()?)),
-            Field::Slider(state) => json!(tidy(state.read(cx).value().start())),
+            Field::Slider(state) => match state.read(cx).value() {
+                gpui_kit::component::slider::SliderValue::Range(a, b) => json!([tidy(a), tidy(b)]),
+                single => json!(tidy(single.start())),
+            },
+            Field::Parts(parts) => Value::Object(parts.read(cx).by_key(cx)),
+            Field::Anchor { at, .. } => json!(at),
+            Field::Button(_) => return None,
             Field::Checks { ids, on, .. } => json!(ids
                 .iter()
                 .zip(on)
@@ -592,6 +687,43 @@ impl Form {
                 .value(other as usize, cx)
                 .is_some_and(|value| value == when["equals"]),
             None => true,
+        }
+    }
+
+    /// Every field's value by its key: what a field made of parts holds.
+    fn by_key(&self, cx: &App) -> serde_json::Map<String, Value> {
+        (0..self.fields.len())
+            .filter_map(|index| {
+                let key = self.model["fields"][index]["key"].as_str()?.to_owned();
+                Some((key, self.value(index, cx)?))
+            })
+            .collect()
+    }
+
+    /// Sends a button's request; one that wants the form's value (Play a sound) gets it.
+    fn press(&self, press: &Value, cx: &App) {
+        let mut request = press["request"].clone();
+        if press["withValue"] == true {
+            request["value"] = Value::Object(self.by_key(cx));
+        }
+        send(request);
+    }
+
+    /// Puts the text the core read a box as back in it, without counting it as an edit.
+    pub fn set_text(&mut self, index: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Field::Text(input)) = self.fields.get(index) {
+            self.syncing = true;
+            input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+            self.syncing = false;
+        }
+    }
+
+    /// Puts a preset (`value`) in field `index`'s box.
+    fn preset(&mut self, index: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Field::Text(input)) = self.fields.get(index) {
+            input.update(cx, |input, cx| input.set_value(value.to_owned(), window, cx));
+            cx.emit(Edited);
+            cx.notify();
         }
     }
 
@@ -717,6 +849,9 @@ impl Render for Form {
                 }
                 _ => {}
             }
+        }
+        if self.model["inline"] == true {
+            return self.inline(window, cx);
         }
         let mut body = div()
             .id("form-fields")
@@ -914,275 +1049,7 @@ impl Render for Form {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let (editor, height): (AnyElement, f32) = match &self.fields[index] {
-                    Field::Gallery(gallery) => {
-                        (Gallery::field(gallery, label.clone(), self.pending, cx), CONTROL_HEIGHT)
-                    }
-                    Field::Choice {
-                        select,
-                        input,
-                        ids,
-                        other,
-                    } => {
-                        let mut row = div().flex().gap(px(SPACE_SM)).items_center();
-                        let typing = !*other || select.read(cx).selected_value().is_some_and(|&at| at + 1 == ids.len());
-                        // With "Other" in the list, the box shows only once it is picked.
-                        if let Some(input) = input.as_ref().filter(|_| typing || ids.len() <= 1) {
-                            row = row.child(
-                                div().flex_1().min_w_0().child(boxed(
-                                    Input::new(input)
-                                        .small()
-                                        .appearance(false)
-                                        .aria_label(label.clone())
-                                        .disabled(self.pending),
-                                    CONTROL_HEIGHT,
-                                    cx,
-                                )),
-                            );
-                        }
-                        // A field that also takes typed text shows the list only when something was found.
-                        if (input.is_none() || !ids.is_empty()) && !(*other && ids.len() <= 1) {
-                            let picker = Select::new(select)
-                                .small()
-                                .h(px(CONTROL_HEIGHT))
-                                .placeholder(tr("forms.pick_from_list"))
-                                .search_placeholder(tr("lists.search"))
-                                .disabled(self.pending);
-                            row = row.child(div().flex_1().min_w_0().child(picker));
-                        }
-                        // A file of the overlay, or one to bring in from this computer.
-                        if self.model["fields"][index]["browse"].is_string() {
-                            let field_index = index;
-                            row = row.child(
-                                Button::new(("browse", index))
-                                    .small()
-                                    .h(px(CONTROL_HEIGHT))
-                                    .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
-                                    .label(tr("btn.browse"))
-                                    .disabled(self.pending)
-                                    .on_click(cx.listener(move |form, _, _, cx| form.browse(field_index, cx))),
-                            );
-                        }
-                        (row.into_any_element(), CONTROL_HEIGHT)
-                    }
-                    Field::Checks {
-                        ids,
-                        labels,
-                        brands,
-                        on,
-                    } => {
-                        let field_index = index;
-                        // Action and permission lists can contain any number of long names.
-                        let width = (f32::from(window.viewport_size().width).min(560.) - 230.).max(90.);
-                        let mut height = 0.;
-                        let mut row = div().w_full().min_w_0().flex().flex_col().gap(px(SPACE_XS));
-                        if ids.is_empty() {
-                            row = row.child(tr("forms.none"));
-                            height = CONTROL_HEIGHT;
-                        }
-                        for (at, _) in ids.iter().enumerate() {
-                            let name = labels.get(at).cloned().unwrap_or_default();
-                            let brand = brands.get(at).cloned().flatten();
-                            let checked = on.get(at).copied().unwrap_or(false);
-                            let check_id = (index << 16) + at;
-                            height += wrapped(&name, CONTROL_HEIGHT, width - 24.) + SPACE_XS;
-                            row = row.child(
-                                div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_shrink_0()
-                                    .items_center()
-                                    .gap(px(SPACE_XS))
-                                    .min_h(px(CONTROL_HEIGHT))
-                                    .when_some(brand, |box_, brand| {
-                                        box_.child(
-                                            img(format!("brands/{brand}.svg"))
-                                                .id(("check-brand", check_id))
-                                                .size_4()
-                                                .flex_shrink_0(),
-                                        )
-                                    })
-                                    .child(
-                                        Checkbox::new(("check", check_id))
-                                            .small()
-                                            .w_full()
-                                            .min_w_0()
-                                            .label(name)
-                                            .checked(checked)
-                                            .disabled(self.pending)
-                                            .on_click(cx.listener(move |form, checked: &bool, _, cx| {
-                                                if let Some(Field::Checks { on, .. }) = form.fields.get_mut(field_index)
-                                                {
-                                                    if let Some(slot) = on.get_mut(at) {
-                                                        *slot = *checked;
-                                                    }
-                                                }
-                                                cx.emit(Edited);
-                                                cx.notify();
-                                            })),
-                                    ),
-                            );
-                        }
-                        (row.into_any_element(), height)
-                    }
-                    Field::Text(state) => {
-                        let input = Input::new(state)
-                            .small()
-                            .appearance(false)
-                            .aria_label(label.clone())
-                            .disabled(self.pending);
-                        let input = if self.model["fields"][index]["widget"]["kind"] == "secret" {
-                            input.mask_toggle()
-                        } else {
-                            input
-                        };
-                        let browse = self.model["fields"][index]["browse"].as_str().unwrap_or_default();
-                        if browse.is_empty() {
-                            (boxed(input, CONTROL_HEIGHT, cx), CONTROL_HEIGHT)
-                        } else {
-                            // A file's box with Browse beside it; an image shows under it once it's found.
-                            let field_index = index;
-                            let line = div()
-                                .flex()
-                                .gap(px(SPACE_SM))
-                                .child(div().flex_1().min_w_0().child(boxed(input, CONTROL_HEIGHT, cx)))
-                                .child(
-                                    Button::new(("browse", index))
-                                        .small()
-                                        .h(px(CONTROL_HEIGHT))
-                                        .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
-                                        .label(tr("btn.browse"))
-                                        .disabled(self.pending)
-                                        .on_click(cx.listener(move |form, _, _, cx| form.browse(field_index, cx))),
-                                );
-                            let file = state.read(cx).value().trim().trim_matches('"').to_owned();
-                            let image = browse == "image" && !file.is_empty() && std::path::Path::new(&file).is_file();
-                            if image {
-                                let preview = img(std::path::PathBuf::from(file))
-                                    .id(("browse-preview", index))
-                                    .h(px(126.))
-                                    .w(px(224.))
-                                    .rounded(px(4.))
-                                    .object_fit(ObjectFit::Contain);
-                                (
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_2()
-                                        .child(line)
-                                        .child(preview)
-                                        .into_any_element(),
-                                    160.,
-                                )
-                            } else {
-                                (line.into_any_element(), CONTROL_HEIGHT)
-                            }
-                        }
-                    }
-                    Field::Multi(input) => (
-                        boxed(
-                            Textarea::new(input)
-                                .appearance(false)
-                                .aria_label(label.clone())
-                                .h(px(78.))
-                                .disabled(self.pending),
-                            80.,
-                            cx,
-                        ),
-                        80.,
-                    ),
-                    Field::Lines { area, select, .. } => {
-                        let picker = Select::new(select)
-                            .small()
-                            .h(px(CONTROL_HEIGHT))
-                            .placeholder(tr("forms.pick_from_list"))
-                            .search_placeholder(tr("lists.search"))
-                            .disabled(self.pending);
-                        let area = boxed(
-                            Textarea::new(area)
-                                .appearance(false)
-                                .aria_label(label.clone())
-                                .h(px(78.))
-                                .disabled(self.pending),
-                            80.,
-                            cx,
-                        );
-                        (
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(SPACE_SM))
-                                .child(picker)
-                                .child(area)
-                                .into_any_element(),
-                            CONTROL_HEIGHT + SPACE_SM + 80.,
-                        )
-                    }
-                    Field::Pick(input) => (
-                        Select::new(input)
-                            .small()
-                            .h(px(CONTROL_HEIGHT))
-                            .when_some(
-                                self.model["fields"][index]["placeholder"].as_str().map(str::to_owned),
-                                |select, hint| select.placeholder(hint),
-                            )
-                            .disabled(self.pending)
-                            .into_any_element(),
-                        CONTROL_HEIGHT,
-                    ),
-                    Field::Font { select, .. } => (
-                        Select::new(select)
-                            .small()
-                            .h(px(CONTROL_HEIGHT))
-                            .search_placeholder(tr("lists.search"))
-                            .disabled(self.pending)
-                            .into_any_element(),
-                        CONTROL_HEIGHT,
-                    ),
-                    Field::Color(state) => {
-                        let shown = state.read(cx).value().map(hex).unwrap_or_default();
-                        (
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(ColorPicker::new(state).small())
-                                .child(div().text_color(crate::theme::quiet(cx)).child(shown))
-                                .into_any_element(),
-                            CONTROL_HEIGHT,
-                        )
-                    }
-                    Field::Slider(state) => {
-                        let shown = tidy(state.read(cx).value().start()).to_string();
-                        (
-                            div()
-                                .id(("slider-field", index))
-                                .test_support()
-                                .role(Role::Slider)
-                                .aria_label(label.clone())
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(Slider::new(state).disabled(self.pending)),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(52.))
-                                        .flex_shrink_0()
-                                        .text_color(crate::theme::quiet(cx))
-                                        .child(shown),
-                                )
-                                .into_any_element(),
-                            CONTROL_HEIGHT,
-                        )
-                    }
-                    Field::Bool(_) => unreachable!(),
-                };
+                let (editor, height) = self.editor(index, label.clone(), window, cx);
                 // What the field is for, when its maker said: shown over its label.
                 let about = self.model["fields"][index]["tip"].as_str().map(str::to_owned);
                 let variables = self.model["variables"].as_array().cloned().unwrap_or_default();
@@ -1256,7 +1123,13 @@ impl Render for Form {
                 index += 1;
             }
         }
-        let cap = (f32::from(window.viewport_size().height) - 220.).clamp(120., 560.);
+        // In a dialog the form keeps to its size; on a page (`tall`) it takes the room the page has.
+        let room = f32::from(window.viewport_size().height);
+        let cap = if self.model["tall"] == true {
+            (room - 300.).max(120.)
+        } else {
+            (room - 220.).clamp(120., 560.)
+        };
         // Every field counted the gap under it, and the last one has none.
         let height = (wanted - SPACE_SM).max(0.).min(cap);
         let json = self.json_editor.is_some();
@@ -1273,9 +1146,617 @@ impl Render for Form {
             .when(json, |form| form.h(px(height)))
             .when(!json, |form| form.max_h(px(cap)))
             .child(body)
+            .into_any_element()
     }
 }
 
+impl Form {
+    /// The control of field `index` and the height it takes.
+    fn editor(&self, index: usize, label: String, window: &mut Window, cx: &mut Context<Self>) -> (AnyElement, f32) {
+        match &self.fields[index] {
+            Field::Gallery(gallery) => (Gallery::field(gallery, label.clone(), self.pending, cx), CONTROL_HEIGHT),
+            Field::Choice {
+                select,
+                input,
+                ids,
+                other,
+            } => {
+                let mut row = div().flex().gap(px(SPACE_SM)).items_center();
+                let typing = !*other || select.read(cx).selected_value().is_some_and(|&at| at + 1 == ids.len());
+                // With "Other" in the list, the box shows only once it is picked.
+                if let Some(input) = input.as_ref().filter(|_| typing || ids.len() <= 1) {
+                    row = row.child(
+                        div().flex_1().min_w_0().child(boxed(
+                            Input::new(input)
+                                .small()
+                                .appearance(false)
+                                .aria_label(label.clone())
+                                .disabled(self.pending),
+                            CONTROL_HEIGHT,
+                            cx,
+                        )),
+                    );
+                }
+                // A field that also takes typed text shows the list only when something was found.
+                if (input.is_none() || !ids.is_empty()) && !(*other && ids.len() <= 1) {
+                    let picker = Select::new(select)
+                        .small()
+                        .h(px(CONTROL_HEIGHT))
+                        .placeholder(tr("forms.pick_from_list"))
+                        .search_placeholder(tr("lists.search"))
+                        .disabled(self.pending);
+                    row = row.child(div().flex_1().min_w_0().child(picker));
+                }
+                // A file of the overlay, or one to bring in from this computer.
+                if self.model["fields"][index]["browse"].is_string() {
+                    let field_index = index;
+                    row = row.child(
+                        Button::new(("browse", index))
+                            .small()
+                            .h(px(CONTROL_HEIGHT))
+                            .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
+                            .label(tr("btn.browse"))
+                            .disabled(self.pending)
+                            .on_click(cx.listener(move |form, _, _, cx| form.browse(field_index, cx))),
+                    );
+                }
+                // The file picked: Play when it is a sound, its picture under the list when it is one.
+                let model = &self.model["fields"][index];
+                let chosen = self
+                    .value(index, cx)
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let sound = model["sounds"]
+                    .as_array()
+                    .is_some_and(|sounds| sounds.iter().any(|s| s.as_str() == Some(chosen.as_str())));
+                if sound {
+                    let mut request = model["play"]["request"].clone();
+                    request["value"] = json!({"file": chosen, "volume": 100});
+                    row = row.child(
+                        Button::new(("file-play", index))
+                            .small()
+                            .h(px(CONTROL_HEIGHT))
+                            .icon(gpui_kit::component::Icon::empty().path("icons/play.svg"))
+                            .label(tr("btn.play"))
+                            .disabled(self.pending)
+                            .on_click(move |_, _, _| send(request.clone())),
+                    );
+                }
+                match model["pictures"][&chosen].as_str() {
+                    Some(path) => (
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(row)
+                            .child(
+                                img(std::path::PathBuf::from(path))
+                                    .id(("file-picture", index))
+                                    .h(px(96.))
+                                    .w(px(170.))
+                                    .rounded(px(4.))
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                            .into_any_element(),
+                        CONTROL_HEIGHT + 8. + 96.,
+                    ),
+                    None => (row.into_any_element(), CONTROL_HEIGHT),
+                }
+            }
+            Field::Checks {
+                ids,
+                labels,
+                brands,
+                icons,
+                on,
+            } => {
+                let field_index = index;
+                // Action and permission lists can contain any number of long names.
+                let room = (f32::from(window.viewport_size().width).min(560.) - 230.).max(90.);
+                // Many short names (kinds of events) go in as many columns as fit, a line each.
+                let wanted = self.model["fields"][index]["widget"]["columns"]
+                    .as_u64()
+                    .unwrap_or(1)
+                    .max(1) as usize;
+                let columns = wanted.min(((room / 140.) as usize).max(1));
+                let width = room / columns as f32;
+                let mut height = 0.;
+                let mut row = div().w_full().min_w_0().flex().flex_col().gap(px(SPACE_XS));
+                let mut line = div().w_full().min_w_0().flex().gap(px(SPACE_XS));
+                let mut line_height: f32 = 0.;
+                if ids.is_empty() {
+                    row = row.child(tr("forms.none"));
+                    height = CONTROL_HEIGHT;
+                }
+                for (at, _) in ids.iter().enumerate() {
+                    let name = labels.get(at).cloned().unwrap_or_default();
+                    let brand = brands.get(at).cloned().flatten();
+                    let icon = icons.get(at).cloned().flatten();
+                    let checked = on.get(at).copied().unwrap_or(false);
+                    let check_id = (index << 16) + at;
+                    let extra = if icon.is_some() || brand.is_some() { 44. } else { 24. };
+                    line_height = line_height.max(wrapped(&name, CONTROL_HEIGHT, width - extra));
+                    line = line.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap(px(SPACE_XS))
+                            .min_h(px(CONTROL_HEIGHT))
+                            .when_some(brand, |box_, brand| {
+                                box_.child(
+                                    img(format!("brands/{brand}.svg"))
+                                        .id(("check-brand", check_id))
+                                        .size_4()
+                                        .flex_shrink_0(),
+                                )
+                            })
+                            .when_some(icon, |box_, icon| {
+                                box_.child(
+                                    gpui_kit::component::Icon::empty()
+                                        .path(format!("icons/{icon}.svg"))
+                                        .size_4()
+                                        .flex_shrink_0()
+                                        .text_color(crate::theme::quiet(cx)),
+                                )
+                            })
+                            .child(
+                                Checkbox::new(("check", check_id))
+                                    .small()
+                                    .w_full()
+                                    .min_w_0()
+                                    .label(name)
+                                    .checked(checked)
+                                    .disabled(self.pending)
+                                    .on_click(cx.listener(move |form, checked: &bool, _, cx| {
+                                        if let Some(Field::Checks { on, .. }) = form.fields.get_mut(field_index) {
+                                            if let Some(slot) = on.get_mut(at) {
+                                                *slot = *checked;
+                                            }
+                                        }
+                                        cx.emit(Edited);
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+                    // A full line (or the last, with empty places so its columns line up).
+                    if at % columns == columns - 1 || at + 1 == ids.len() {
+                        for _ in (at % columns + 1)..columns {
+                            line = line.child(div().flex_1().min_w_0());
+                        }
+                        row = row.child(std::mem::replace(
+                            &mut line,
+                            div().w_full().min_w_0().flex().gap(px(SPACE_XS)),
+                        ));
+                        height += line_height + SPACE_XS;
+                        line_height = 0.;
+                    }
+                }
+                (row.into_any_element(), height)
+            }
+            Field::Text(state) => {
+                let input = Input::new(state)
+                    .small()
+                    .appearance(false)
+                    .aria_label(label.clone())
+                    .disabled(self.pending);
+                let input = if self.model["fields"][index]["widget"]["kind"] == "secret" {
+                    input.mask_toggle()
+                } else {
+                    input
+                };
+                let browse = self.model["fields"][index]["browse"].as_str().unwrap_or_default();
+                let presets = self.model["fields"][index]["presets"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if !presets.is_empty() {
+                    // Values one click away under the box: Today, In 15 minutes, 5m.
+                    let mut chips = div().flex().flex_wrap().gap(px(SPACE_XS));
+                    for (at, preset) in presets.iter().enumerate() {
+                        let value = preset["value"].as_str().unwrap_or_default().to_owned();
+                        chips = chips.child(
+                            Button::new(("preset", (index << 8) + at))
+                                .xsmall()
+                                .ghost()
+                                .label(preset["label"].as_str().unwrap_or_default().to_owned())
+                                .disabled(self.pending)
+                                .on_click(
+                                    cx.listener(move |form, _, window, cx| form.preset(index, &value, window, cx)),
+                                ),
+                        );
+                    }
+                    let lines = (presets.len() as f32 / 4.).ceil();
+                    let height = CONTROL_HEIGHT + SPACE_XS + lines * 24.;
+                    return (
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(SPACE_XS))
+                            .child(boxed(input, CONTROL_HEIGHT, cx))
+                            .child(chips)
+                            .into_any_element(),
+                        height,
+                    );
+                }
+                if browse.is_empty() {
+                    (boxed(input, CONTROL_HEIGHT, cx), CONTROL_HEIGHT)
+                } else {
+                    // A file's box with Browse beside it; an image shows under it once it's found.
+                    let field_index = index;
+                    let line = div()
+                        .flex()
+                        .gap(px(SPACE_SM))
+                        .child(div().flex_1().min_w_0().child(boxed(input, CONTROL_HEIGHT, cx)))
+                        .child(
+                            Button::new(("browse", index))
+                                .small()
+                                .h(px(CONTROL_HEIGHT))
+                                .icon(gpui_kit::component::Icon::empty().path("icons/folder-open.svg"))
+                                .label(tr("btn.browse"))
+                                .disabled(self.pending)
+                                .on_click(cx.listener(move |form, _, _, cx| form.browse(field_index, cx))),
+                        );
+                    let file = state.read(cx).value().trim().trim_matches('"').to_owned();
+                    let image = browse == "image" && !file.is_empty() && std::path::Path::new(&file).is_file();
+                    if image {
+                        let preview = img(std::path::PathBuf::from(file))
+                            .id(("browse-preview", index))
+                            .h(px(126.))
+                            .w(px(224.))
+                            .rounded(px(4.))
+                            .object_fit(ObjectFit::Contain);
+                        (
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(line)
+                                .child(preview)
+                                .into_any_element(),
+                            160.,
+                        )
+                    } else {
+                        (line.into_any_element(), CONTROL_HEIGHT)
+                    }
+                }
+            }
+            Field::Multi(input) => {
+                // Code is tall and in a fixed-width font.
+                let code = self.model["fields"][index]["widget"]["kind"] == "code";
+                let height = if code { 140. } else { 80. };
+                let area = Textarea::new(input)
+                    .appearance(false)
+                    .aria_label(label.clone())
+                    .h(px(height - 2.))
+                    .disabled(self.pending);
+                let area = if code {
+                    use gpui_kit::component::ActiveTheme;
+                    area.font_family(cx.theme().mono_font_family.clone())
+                } else {
+                    area
+                };
+                (boxed(area, height, cx), height)
+            }
+            Field::Lines { area, select, .. } => {
+                let picker = Select::new(select)
+                    .small()
+                    .h(px(CONTROL_HEIGHT))
+                    .placeholder(tr("forms.pick_from_list"))
+                    .search_placeholder(tr("lists.search"))
+                    .disabled(self.pending);
+                let area = boxed(
+                    Textarea::new(area)
+                        .appearance(false)
+                        .aria_label(label.clone())
+                        .h(px(78.))
+                        .disabled(self.pending),
+                    80.,
+                    cx,
+                );
+                (
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(SPACE_SM))
+                        .child(picker)
+                        .child(area)
+                        .into_any_element(),
+                    CONTROL_HEIGHT + SPACE_SM + 80.,
+                )
+            }
+            Field::Pick(input) => (
+                Select::new(input)
+                    .small()
+                    .h(px(CONTROL_HEIGHT))
+                    .when_some(
+                        self.model["fields"][index]["placeholder"].as_str().map(str::to_owned),
+                        |select, hint| select.placeholder(hint),
+                    )
+                    .disabled(self.pending)
+                    .into_any_element(),
+                CONTROL_HEIGHT,
+            ),
+            Field::Font { select, .. } => (
+                Select::new(select)
+                    .small()
+                    .h(px(CONTROL_HEIGHT))
+                    .search_placeholder(tr("lists.search"))
+                    .disabled(self.pending)
+                    .into_any_element(),
+                CONTROL_HEIGHT,
+            ),
+            Field::Color(state) => {
+                let shown = state.read(cx).value().map(hex).unwrap_or_default();
+                (
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(ColorPicker::new(state).small())
+                        .child(div().text_color(crate::theme::quiet(cx)).child(shown))
+                        .into_any_element(),
+                    CONTROL_HEIGHT,
+                )
+            }
+            Field::Slider(state) => {
+                let suffix = self.model["fields"][index]["widget"]["suffix"]
+                    .as_str()
+                    .unwrap_or_default();
+                let shown = match state.read(cx).value() {
+                    gpui_kit::component::slider::SliderValue::Range(a, b) => {
+                        format!("{} - {}{suffix}", tidy(a), tidy(b))
+                    }
+                    single => format!("{}{suffix}", tidy(single.start())),
+                };
+                (
+                    div()
+                        .id(("slider-field", index))
+                        .test_support()
+                        .role(Role::Slider)
+                        .aria_label(label.clone())
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Slider::new(state).disabled(self.pending)),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(52.))
+                                .flex_shrink_0()
+                                .text_color(crate::theme::quiet(cx))
+                                .child(shown),
+                        )
+                        .into_any_element(),
+                    CONTROL_HEIGHT,
+                )
+            }
+            Field::Parts(parts) => {
+                let height = parts.read(cx).inline_height(cx);
+                (div().w_full().child(parts.clone()).into_any_element(), height)
+            }
+            Field::Anchor { at, labels } => (self.anchor(index, *at, labels, cx), 3. * 12. + 2. * 2.),
+            Field::Button(press) => {
+                let press = press.clone();
+                let model = &self.model["fields"][index];
+                let text = model["buttonLabel"].as_str().unwrap_or(&label).to_owned();
+                let icon = model["widget"]["icon"].as_str().unwrap_or("zap").to_owned();
+                (
+                    div()
+                        .flex()
+                        .child(
+                            Button::new(("field-button", index))
+                                .small()
+                                .h(px(CONTROL_HEIGHT))
+                                .icon(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")))
+                                .label(text)
+                                .disabled(self.pending)
+                                .on_click(cx.listener(move |form, _, _, cx| form.press(&press, cx))),
+                        )
+                        .into_any_element(),
+                    CONTROL_HEIGHT,
+                )
+            }
+            Field::Bool(_) => unreachable!(),
+        }
+    }
+
+    fn part_height(&self, index: usize) -> f32 {
+        match self.fields.get(index) {
+            Some(Field::Anchor { .. }) => 40.,
+            Some(Field::Multi(_)) => 80.,
+            _ => CONTROL_HEIGHT,
+        }
+    }
+
+    /// Lines of parts, by their `line`, in order.
+    fn part_lines(&self) -> Vec<Vec<usize>> {
+        let mut lines: Vec<(u64, Vec<usize>)> = Vec::new();
+        for index in 0..self.fields.len() {
+            let line = self.model["fields"][index]["line"].as_u64().unwrap_or(0);
+            match lines.iter_mut().find(|(n, _)| *n == line) {
+                Some((_, parts)) => parts.push(index),
+                None => lines.push((line, vec![index])),
+            }
+        }
+        lines.into_iter().map(|(_, parts)| parts).collect()
+    }
+
+    /// How tall a form of parts is: each line a caption over its controls, and a gradient's bar.
+    pub fn inline_height(&self, _: &App) -> f32 {
+        let lines = self.part_lines();
+        let tall: f32 = lines
+            .iter()
+            .map(|line| LINE_CAPTION + 2. + line.iter().map(|&i| self.part_height(i)).fold(0., f32::max))
+            .sum();
+        let gaps = SPACE_SM * lines.len().saturating_sub(1) as f32;
+        let bar = if self.model["gradient"].is_array() {
+            12. + SPACE_SM
+        } else {
+            0.
+        };
+        tall + gaps + bar
+    }
+
+    /// A field's parts side by side, a caption over each (see `inline_height`).
+    fn inline(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some((index, path)) = self.picked.take() {
+            if let Some(Field::Choice {
+                select,
+                input: Some(input),
+                ids,
+                ..
+            }) = self.fields.get(index)
+            {
+                if let Some(last) = ids.len().checked_sub(1) {
+                    select.update(cx, |select, cx| select.set_selected_value(&last, window, cx));
+                }
+                input.update(cx, |input, cx| input.set_value(path, window, cx));
+            }
+        }
+        let mut out = div().w_full().flex().flex_col().gap(px(SPACE_SM));
+        for line in self.part_lines() {
+            let mut row = div().w_full().flex().items_start().gap(px(SPACE_SM));
+            for index in line {
+                let label = self.model["fields"][index]["label"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let caption = |text: String, cx: &App| {
+                    div()
+                        .h(px(LINE_CAPTION))
+                        .text_size(px(FONT_CAPTION))
+                        .line_height(px(LINE_CAPTION))
+                        .text_color(crate::theme::quiet(cx))
+                        .truncate()
+                        .child(text)
+                };
+                let cell = div().flex().flex_col().gap(px(2.)).min_w_0();
+                let cell = match &self.fields[index] {
+                    Field::Bool(checked) => {
+                        let ratio = self.model["ratio"].clone();
+                        cell.flex_none().child(caption(String::new(), cx)).child(
+                            div().h(px(CONTROL_HEIGHT)).flex().items_center().child(
+                                Checkbox::new(("part-check", index))
+                                    .small()
+                                    .label(label)
+                                    .checked(*checked)
+                                    .disabled(self.pending)
+                                    .on_click(cx.listener(move |form, checked: &bool, _, cx| {
+                                        form.fields[index] = Field::Bool(*checked);
+                                        // Keep ratio: the sides as they are now.
+                                        if ratio[2].as_u64() == Some(index as u64) {
+                                            let side = |at: &Value, cx: &App| match at
+                                                .as_u64()
+                                                .and_then(|i| form.fields.get(i as usize))
+                                            {
+                                                Some(Field::Text(input)) => {
+                                                    input.read(cx).value().trim().parse::<f64>().ok()
+                                                }
+                                                _ => None,
+                                            };
+                                            form.ratio = match (side(&ratio[0], cx), side(&ratio[1], cx)) {
+                                                (Some(w), Some(h)) if *checked && w > 0. => Some(h / w),
+                                                _ => None,
+                                            };
+                                        }
+                                        cx.emit(Edited);
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                    }
+                    Field::Anchor { .. } | Field::Button(_) => {
+                        let shown = if matches!(self.fields[index], Field::Button(_)) {
+                            String::new()
+                        } else {
+                            label.clone()
+                        };
+                        let (editor, _) = self.editor(index, label, window, cx);
+                        cell.flex_none().child(caption(shown, cx)).child(editor)
+                    }
+                    _ => {
+                        let (editor, _) = self.editor(index, label.clone(), window, cx);
+                        cell.flex_1().child(caption(label, cx)).child(editor)
+                    }
+                };
+                row = row.child(cell);
+            }
+            out = out.child(row);
+        }
+        // A gradient: a bar with its two colors at its angle.
+        if let Some([from, to, angle]) = self.model["gradient"]
+            .as_array()
+            .and_then(|g| <[Value; 3]>::try_from(g.clone()).ok())
+        {
+            let color = |at: &Value, cx: &App| match at.as_u64().and_then(|i| self.fields.get(i as usize)) {
+                Some(Field::Color(state)) => state.read(cx).value(),
+                _ => None,
+            };
+            let turn = match angle.as_u64().and_then(|i| self.fields.get(i as usize)) {
+                Some(Field::Slider(state)) => state.read(cx).value().start(),
+                _ => 90.,
+            };
+            if let (Some(a), Some(b)) = (color(&from, cx), color(&to, cx)) {
+                out = out.child(div().h(px(12.)).w_full().rounded(px(4.)).bg(linear_gradient(
+                    turn,
+                    linear_color_stop(a, 0.),
+                    linear_color_stop(b, 1.),
+                )));
+            }
+        }
+        out.into_any_element()
+    }
+
+    /// Nine places on a 3 by 3 grid; the one picked is filled.
+    fn anchor(&self, index: usize, at: usize, labels: &[String], cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::ActiveTheme;
+        let mut grid = div().flex().flex_col().gap(px(2.));
+        for row in 0..3 {
+            let mut line = div().flex().gap(px(2.));
+            for column in 0..3 {
+                let place = row * 3 + column;
+                let tip = SharedString::from(labels.get(place).cloned().unwrap_or_default());
+                let on = place == at;
+                line = line.child(
+                    div()
+                        .id(("anchor", (index << 4) + place))
+                        .test_support()
+                        .role(Role::Button)
+                        .aria_label(tip.clone())
+                        .size(px(12.))
+                        .rounded(px(2.))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .when(on, |cell| cell.bg(cx.theme().primary).border_color(cx.theme().primary))
+                        .when(!on && !self.pending, |cell| {
+                            cell.hover(|cell| cell.bg(cx.theme().muted)).cursor_pointer()
+                        })
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                        })
+                        .when(!self.pending, |cell| {
+                            cell.on_click(cx.listener(move |form, _, _, cx| {
+                                if let Some(Field::Anchor { at, .. }) = form.fields.get_mut(index) {
+                                    *at = place;
+                                }
+                                cx.emit(Edited);
+                                cx.notify();
+                            }))
+                        }),
+                );
+            }
+            grid = grid.child(line);
+        }
+        grid.into_any_element()
+    }
+}
 impl Form {
     /// The form's buttons, for the dialog's footer: Edit JSON at the left, OK and Cancel at the right.
     pub fn buttons(&self, cx: &mut Context<Self>) -> Div {

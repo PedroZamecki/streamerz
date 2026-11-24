@@ -99,6 +99,11 @@ impl Engine {
         crate::overlays::settings_with(&self.config(), group, &draft)
     }
 
+    /// Plays an `animation` setting again on the pages of `group` that use it (`streamerz.animate`).
+    pub fn overlay_play(&self, group: &str, setting: &str) {
+        self.emit("Play", group, || json!({"name": setting}));
+    }
+
     fn draft_changed(&self, group: &str) {
         let settings = self.overlay_preview_settings(group);
         self.emit("Draft", group, || settings);
@@ -107,10 +112,9 @@ impl Engine {
     /// Change some settings of an overlay's draft, each checked against its setting. The preview pages
     /// follow at once.
     pub fn overlay_draft_set(&self, group: &str, values: &Map<String, Value>) -> Result<(), String> {
-        let meta = crate::groups::meta(&self.config(), group);
+        let defs = crate::groups::settings_defs(&crate::groups::meta(&self.config(), group));
         for (name, value) in values {
-            let def = meta
-                .variables
+            let def = defs
                 .iter()
                 .find(|d| &d.name == name)
                 .ok_or_else(|| format!("{group} has no setting {name}"))?;

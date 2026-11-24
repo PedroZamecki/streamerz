@@ -311,6 +311,16 @@ there, with Other to type a path or an address and Browse beside it (`choices` w
 the empty box and on the label's tip; a mistake is said with its line and column.
 A group's settings get these from what its maker declared (`color`, `slider`, `lines`, `font`, `file`,
 `platforms`, `action`, `list`, `section`, `showIf`).
+Values people often want are one click away under a box (`presets`: Today, In 15 minutes, `5m`), and a
+value typed from now (`+15m`) goes back in the box as the day and time it became. A value made of a few
+small ones (a place, a size, a text style, a sound) is one field of parts (`parts`): each part a control
+with a quiet caption over it, on the lines its maker gave, its value the parts by key. A place on the page
+is picked on a 3 by 3 grid (`anchor`), a range is a slider with two handles (`range`), a percent shows its
+%, a gradient draws a bar with its colors, a size keeps its ratio while Keep ratio is ticked, and code is a
+tall box in a fixed-width font (`code`). Many short check boxes (kinds of events, each with its icon) go in
+as many columns as fit. A button in a form (`button`, with `press`) does one thing at once and says what it
+did in a notification; Play of a sound sends the form's value as it is, not the saved one. A form on a
+page (`tall`) takes the page's height instead of a dialog's.
 
 A label that says what an empty value means (`Gift (blank: any gift)`, `Max coins (0: no limit)`) shows its
 name only, with the meaning in the empty box (`Any gift`). A form's `notes` are quiet lines with an info icon

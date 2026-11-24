@@ -1864,7 +1864,8 @@ pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over
     let mut meta_issue_noted = false;
     let mut fields = vec![json!({"key": "description", "label": tr("dialogs.export.description"),
         "widget": {"kind": "multi"}, "holds": "text", "value": meta.description})];
-    for def in &meta.variables {
+    let defs = crate::groups::settings_defs(&meta);
+    for def in &defs {
         let label = if def.label.trim().is_empty() {
             def.name.clone()
         } else {
@@ -1879,7 +1880,9 @@ pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over
             }
         }
         let value = values.get(&def.name).cloned().unwrap_or(Value::Null);
+        let newer = super::setting_fields::field(config, group, &meta, def, &label, &value);
         let mut field = match def.kind {
+            _ if newer.is_some() => newer.unwrap_or_default(),
             crate::groups::Kind::Boolean => json!({"key": def.name, "label": label, "widget": {"kind": "bool"},
                 "holds": "true/false", "value": value.as_bool().unwrap_or(false)}),
             crate::groups::Kind::Choice => {
@@ -1934,11 +1937,38 @@ pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over
                     .filter(|f| !crate::groups::is_page(&f.name) && crate::groups::accepts_file(&def.accept, &f.name))
                     .map(|f| json!({"id": f.name, "label": f.name}))
                     .collect();
-                json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "other": true,
+                // A picture of each of its pictures, shown under the list for the one picked, and Play
+                // for its sounds.
+                let pictures: serde_json::Map<String, Value> = meta
+                    .files
+                    .iter()
+                    .filter(|f| crate::groups::accepts_file("image", &f.name))
+                    .filter_map(|f| {
+                        let path = crate::groups::file_path(config, group, &f.name)?;
+                        Some((f.name.clone(), path.display().to_string().into()))
+                    })
+                    .collect();
+                let sounds: Vec<&str> = meta
+                    .files
+                    .iter()
+                    .filter(|f| crate::groups::accepts_file("sound", &f.name))
+                    .map(|f| f.name.as_str())
+                    .collect();
+                let mut field = json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "other": true,
                     "browse": if def.accept == "image" { "image" } else { "file" },
                     "placeholder": tr("forms.file.placeholder"),
                     "holds": "the name of one of its files, the path of a file to bring in, or a web address",
-                    "value": current})
+                    "value": current});
+                if !pictures.is_empty() {
+                    field["pictures"] = pictures.into();
+                }
+                if !sounds.is_empty() {
+                    field["sounds"] = json!(sounds);
+                    field["play"] = json!({"request": {"request": "StreamerzCoreAction", "domain": "overlays",
+                        "table": "overlay", "action": format!("sound:{}", def.name), "itemId": group,
+                        "id": "overlay:press"}});
+                }
+                field
             }
             crate::groups::Kind::Platforms => {
                 let options: Vec<Value> = crate::groups::PLATFORMS
@@ -2003,12 +2033,11 @@ pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over
         // Shown only while another field has a value: that field's place in the form, and the value
         // as its control holds it (a choice by its place in the list).
         if let Some(when) = &def.show_if {
-            if let Some(at) = meta
-                .variables
+            if let Some(at) = defs
                 .iter()
                 .position(|other| other.name == when.setting && other.name != def.name)
             {
-                let other = &meta.variables[at];
+                let other = &defs[at];
                 if other.kind == crate::groups::Kind::Choice
                     && !other.options.iter().any(|o| when.is.as_str() == Some(o.as_str()))
                 {
@@ -2133,8 +2162,15 @@ fn bring_in(
 }
 
 /// The setting values a settings form's `changes` give (field 0, the description, goes into `meta`).
-/// For a draft, a file of this computer isn't brought in (that waits for Save).
-pub(super) fn settings_changes(meta: &mut crate::groups::Meta, request: &Value, draft: bool) -> Result<Obj, String> {
+/// For a draft, a file of this computer isn't brought in (that waits for Save), and a value half
+/// typed is left out. `old` is what the settings hold now (a reward keeps its title from it).
+pub(super) fn settings_changes_from(
+    meta: &mut crate::groups::Meta,
+    request: &Value,
+    draft: bool,
+    old: &Obj,
+) -> Result<Obj, String> {
+    let defs = crate::groups::settings_defs(meta);
     let mut values = Obj::new();
     for change in request["changes"].as_array().ok_or("changes: an array")? {
         let index = change["field"]
@@ -2148,10 +2184,35 @@ pub(super) fn settings_changes(meta: &mut crate::groups::Meta, request: &Value, 
                 .to_owned();
             continue;
         }
-        let def = meta
-            .variables
+        let def = defs
             .get(index - 1)
             .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
+        // A file of this computer is brought in (not for a draft: that waits for Save).
+        let mut brought = Vec::new();
+        let mut bring = |typed: &str| -> Result<String, String> {
+            let own = meta.files.iter().any(|f| f.name == typed);
+            if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
+                Ok(typed.to_owned())
+            } else if draft {
+                Err(String::new())
+            } else {
+                let (file, name) = bring_in(meta, def, typed)?;
+                brought.push(file);
+                Ok(name)
+            }
+        };
+        let old_value = old.get(&def.name).cloned().unwrap_or(Value::Null);
+        match super::setting_fields::read(def, value, &old_value, &mut bring) {
+            Some(Ok(v)) => {
+                meta.files.append(&mut brought);
+                values.insert(def.name.clone(), v);
+                continue;
+            }
+            // Half typed while the preview follows: kept for when it reads.
+            Some(Err(_)) if draft => continue,
+            Some(Err(error)) => return Err(error),
+            None => {}
+        }
         let parsed = match def.kind {
             crate::groups::Kind::Boolean => value.as_bool().map(Value::from),
             crate::groups::Kind::Choice => value
@@ -2191,7 +2252,17 @@ pub(super) fn settings_changes(meta: &mut crate::groups::Meta, request: &Value, 
                 def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
                     .map_err(|error| format!("{}: {error}", def.label))?,
             ),
-            _ => value.as_str().and_then(|text| def.parse(text).ok()),
+            _ => match value.as_str().map(|text| def.parse(text)) {
+                Some(Ok(v)) => Some(v),
+                Some(Err(_)) if draft => continue,
+                Some(Err(error)) => {
+                    return Err(trf(
+                        "forms.setting_invalid",
+                        &[("label", &def.label), ("error", &error)],
+                    ))
+                }
+                None => None,
+            },
         };
         let (name, label) = (def.name.clone(), def.label.clone());
         values.insert(
@@ -2218,7 +2289,8 @@ pub(super) fn group_settings_edit(
         meta = serde_json::from_str(text)
             .map_err(|error| trf("dialogs.not_valid_json", &[("error", &error.to_string())]))?;
     } else {
-        values = settings_changes(&mut meta, request, false)?;
+        let old = crate::groups::values(&config, group);
+        values = settings_changes_from(&mut meta, request, false, &old)?;
     }
     drop(config);
     if preview {

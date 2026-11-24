@@ -1103,10 +1103,19 @@ Nothing loads until it is used: no thread, device, browser or download for someo
   the player, Copy URL, Add by Browse, Rename that the settings follow, Replace, Delete that names what
   uses it, notices for files over 25 MB and videos OBS can't play. Left for later: the waveform, a
   picture of videos, font samples, the grid view, dropping files on the window and Play on a device.
-- [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
+- [x] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
   `size`, `animation`, `easing`, `gradient`, `textStyle`, `sound`, `event`, `reward`, `gift`,
   `usergroup`, `scene`, `source`, `code`, `json`, `button`, `hidden`, previews on `file`; Extra CSS;
-  `streamerz.place`, `animate`, `css`.
+  `streamerz.place`, `animate`, `css`. Done: the kinds in `groups/kinds.rs` (checked, typed, shown),
+  their fields in `core/setting_fields.rs` and the form's new controls (presets under a box, fields of
+  parts, the 3 by 3 place grid, two-handle range, % sliders, a gradient bar, Keep ratio, code boxes,
+  icons on check boxes in columns, buttons that press). A moment typed from now (`+15m`) goes back in
+  its box as the day and time it became. Extra CSS for every overlay, live in previews and in OBS;
+  `streamerz.place` (pinned to the sides, as wide as its content), `animate` (with Play from the form)
+  and `css`; a `sound` reaches a page as an address and a volume from 0 to 1. The Countdown to example
+  uses most of them; 351 browser checks. Changed from the plan: a position is the grid and two boxes,
+  not a dot dragged on a small canvas; a gradient made in the form has two colors (more stay as CSS
+  typed by hand). A `file` setting shows the picture picked under its list, and Play for a sound.
 - [ ] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
   Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`.
 - [ ] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named

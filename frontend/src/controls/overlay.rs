@@ -157,7 +157,8 @@ impl OverlayPage {
             self.form_kind.clear();
         } else if kind != self.form_kind || self.form.is_none() {
             let route = format!("{}:save", self.route);
-            let value = form.clone();
+            let mut value = form.clone();
+            value["tall"] = true.into();
             let new = cx.new(|cx| Form::new(value, route, window, cx));
             // The settings are drafts as they are changed: the preview shows them before Save.
             self._form_edits = (model["tab"] == "settings").then(|| {
@@ -192,6 +193,8 @@ impl OverlayPage {
             return;
         }
         self.preview_key = key;
+        // Started again (the server was turned on since): the old reason goes until a new one comes.
+        self.preview_note = tr("overlays.preview.starting").to_owned();
         let behind = if self.background == "scene" {
             "transparent"
         } else {
@@ -282,6 +285,13 @@ impl OverlayPage {
 
     /// The core's answer to one of this page's requests; true when the page should be read again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // A gift setting's picture picker: its pictures or its reloaded list.
+        if let Some((index, what)) = operation.strip_prefix("gallery:").and_then(|rest| rest.split_once(':')) {
+            if let (Some(form), Ok(index)) = (&self.form, index.parse()) {
+                form.update(cx, |form, cx| form.gallery_reply(index, what, &value, cx));
+            }
+            return false;
+        }
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             if operation == "draft" {
                 if let Some(form) = &self.form {
@@ -321,6 +331,16 @@ impl OverlayPage {
             "preview" => false,
             "draft" => {
                 self.model["draft"] = value["draft"].clone();
+                // A moment typed from now (+15m) shows as the day and time it became.
+                if let (Some(form), Some(shown)) = (&self.form, value["shown"].as_object()) {
+                    form.update(cx, |form, cx| {
+                        for (at, text) in shown {
+                            if let (Ok(at), Some(text)) = (at.parse(), text.as_str()) {
+                                form.set_text(at, text, window, cx);
+                            }
+                        }
+                    });
+                }
                 cx.notify();
                 false
             }
@@ -395,6 +415,13 @@ impl OverlayPage {
     }
 
     /// A toolbar or tab button: its form as a dialog, or the operation run on this overlay.
+    /// Pictures the core downloaded: a gift setting's picker asks for its own again.
+    pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &self.form {
+            form.update(cx, |form, cx| form.images_arrived(cx));
+        }
+    }
+
     fn press(&self, button: &Value, window: &mut Window, cx: &mut App) {
         // A button that asks first (Delete): the question, then the operation.
         if let Some(question) = button["confirm"].as_str() {

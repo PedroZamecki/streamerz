@@ -798,6 +798,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::sections::act(e, get("domain"), get("action"))
             } else if crate::core::actions::supports(get("domain")) {
                 crate::core::actions::act(e, req)
+            } else if crate::core::overlays::supports(get("domain")) && crate::core::overlays::is_press(get("action")) {
+                crate::core::overlays::press(e, req)
             } else if crate::core::overlays::supports(get("domain")) {
                 crate::core::overlays::act(e, get("action"), get("itemId"))
             } else if crate::core::rewards::supports(get("domain")) {
