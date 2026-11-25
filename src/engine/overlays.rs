@@ -66,7 +66,7 @@ impl Engine {
 
     /// An ad break started: tell overlays, and that it ended when its time is up.
     pub fn overlay_ad(self: &std::rc::Rc<Self>, seconds: u64, automatic: bool, started: &str) {
-        let ends = crate::templates::clock::now_ms() + seconds * 1000;
+        let ends = crate::templates::clock::now_ms().saturating_add(seconds.saturating_mul(1000));
         self.overlay_publish(
             "ad",
             json!({"running": true, "duration": seconds, "isAutomatic": automatic, "startedAt": started,
@@ -212,18 +212,23 @@ impl Engine {
         Ok(())
     }
 
-    /// Keep the draft: its values are saved and every page, OBS too, shows them.
+    /// Keep the draft: its values are saved and every page, OBS too, shows them. When they can't be
+    /// saved (a setting changed its kind since), the draft stays as it was, so nothing typed is lost.
     pub fn overlay_draft_save(self: &Rc<Self>, group: &str) -> Result<usize, String> {
         let Some(draft) = self.overlay_drafts.borrow_mut().remove(group) else {
             return Ok(0);
         };
         let mut values = crate::groups::values(&self.config(), group);
         let changed = draft.len();
-        values.extend(draft);
+        values.extend(draft.clone());
         let mut result = Ok(());
         self.change(|c| result = crate::groups::set_values(c, group, values));
+        if result.is_err() {
+            self.overlay_drafts.borrow_mut().insert(group.to_string(), draft);
+            return result.map(|_| 0);
+        }
         self.draft_changed(group);
-        result.map(|_| changed)
+        Ok(changed)
     }
 
     /// Drop the draft (or one setting of it): the preview pages show the saved values again.
@@ -274,6 +279,50 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             let v = e.overlay_value("ad").unwrap();
             assert_eq!((v["running"].clone(), v["duration"].clone()), (json!(true), json!(60)));
+        });
+    }
+
+    #[test]
+    fn an_ad_break_of_any_length_does_not_overflow() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.overlay_ad(u64::MAX, false, "");
+            let v = e.overlay_value("ad").unwrap();
+            assert_eq!(
+                (v["running"].clone(), v["endsAt"].clone()),
+                (json!(true), json!(u64::MAX))
+            );
+        });
+    }
+
+    #[test]
+    fn a_draft_that_cant_be_saved_is_kept() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let def = |kind: crate::groups::Kind, default: serde_json::Value| crate::groups::Def {
+                name: "size".into(),
+                label: "Size".into(),
+                kind,
+                default,
+                ..Default::default()
+            };
+            let meta = |kind, default| crate::groups::Meta {
+                description: "d".into(),
+                variables: vec![def(kind, default)],
+                ..Default::default()
+            };
+            e.change(|c| crate::groups::set_meta(c, "Box", meta(crate::groups::Kind::Text, json!("a"))).unwrap());
+            let mut values = serde_json::Map::new();
+            values.insert("size".into(), json!("big"));
+            e.overlay_draft_set("Box", &values).unwrap();
+            // The setting becomes a number before Save: the text can't be kept in it.
+            e.change(|c| crate::groups::set_meta(c, "Box", meta(crate::groups::Kind::Number, json!(1))).unwrap());
+            assert!(e.overlay_draft_save("Box").is_err());
+            assert_eq!(e.overlay_draft("Box")["size"], "big", "the draft is still there");
+            e.overlay_draft_revert("Box", None);
+            assert_eq!(e.overlay_draft_save("Box"), Ok(0));
         });
     }
 
