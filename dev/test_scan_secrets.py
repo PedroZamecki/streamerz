@@ -37,7 +37,8 @@ class HistoryScanTests(unittest.TestCase):
         self.addCleanup(self.root_patch.stop)
 
     def diff(self, line=None, commit=None, path=None):
-        return f"commit {commit or self.commit}\n+++ b/{path or self.path}\n+{self.line if line is None else line}\n"
+        diff = f"commit {commit or self.commit}\n+++ b/{path or self.path}\n@@ -0,0 +1 @@\n+{self.line if line is None else line}\n"
+        return iter(diff.splitlines(keepends=True))
 
     def baseline(self, entry=None):
         (self.root / "dev/secrets-history.json").write_text(json.dumps({"version": 1, "findings": [entry or self.entry]}))
@@ -85,6 +86,35 @@ class HistoryScanTests(unittest.TestCase):
         with patch.object(scanner.subprocess, "run", side_effect=subprocess.CalledProcessError(128, "git")):
             with self.assertRaises(subprocess.CalledProcessError):
                 scanner.git("log", "--all")
+
+    def test_incomplete_git_diff_fails_the_scan(self):
+        with patch.object(scanner, "git_command", return_value=[sys.executable, "-c", "raise SystemExit(7)"]):
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                scanner.main()
+        self.assertEqual(error.exception.returncode, 7)
+
+    def test_added_line_that_looks_like_a_file_header_is_scanned(self):
+        token = "ghp_" + "a" * 36
+        self.assertEqual(scanner.scan(self.diff(line="++ b/" + token), []),
+                         [(f"{self.commit[:8]} {self.path}", "GitHub token")])
+
+    def test_allowlist_does_not_exempt_another_match_on_the_same_line(self):
+        path = self.line + " and " + self.line.replace("developer", "other")
+        allow = [scanner.re.compile(r"/home/" + "developer/")]
+        found = scanner.scan(self.diff(line=path + " ghp_" + "a" * 36), allow)
+        self.assertEqual([rule for _, rule in found], ["GitHub token", self.rule])
+
+    def test_private_file_in_a_directory_with_spaces_is_reported(self):
+        run = lambda *args: subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
+        run("init", "-q")
+        path = self.root / "test data/.env"
+        path.parent.mkdir()
+        path.write_text("placeholder")
+        run("add", str(path))
+        with patch.object(sys, "argv", ["scan_secrets.py"]), patch("builtins.print") as report:
+            with self.assertRaises(SystemExit):
+                scanner.main()
+        report.assert_any_call("A private file: 'test data/.env'")
 
 
 if __name__ == "__main__":
