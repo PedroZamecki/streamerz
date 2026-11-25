@@ -3960,7 +3960,7 @@ pub(crate) fn handle_notification(
                 return;
             }
             let action = es(event, "/action");
-            let d = &event[action.replace("shared_chat_", "")];
+            let d = &event[action];
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_by(&mut args, event, "moderator", "createdBy");
@@ -5271,6 +5271,7 @@ pub(crate) mod tests {
         let watch: &[(u32, &str)] = &[
             (T_SUB, "%tier% %isMultiMonth%"),
             (T_SHARED_CHAT_SUB, "%sourceBroadcasterUsername%"),
+            (T_SHARED_CHAT_USER_BANNED, "%userId% %reason%"),
             (T_CHAT_MODE_EMOTE_ON, "%emoteMode%"),
             (T_CHAT_MODE_SLOW_ON, "%slowModeWaitTime%"),
             (T_CHAT_MODE_SLOW_CHANGED, "%slowModeWaitTime%"),
@@ -5357,6 +5358,11 @@ pub(crate) mod tests {
                 "channel.ban",
                 json!({"user_id": "4", "is_permanent": true, "moderator_user_login": "boss"}),
             );
+            go(
+                "channel.moderate",
+                json!({"action": "shared_chat_ban", "source_broadcaster_user_id": "2",
+                    "shared_chat_ban": {"user_id": "6", "user_login": "sam", "reason": "spam"}}),
+            );
             SEEN.with_borrow_mut(|s| s.title = "old".into());
             go("channel.update", json!({"title": "new", "category_id": ""}));
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -5373,6 +5379,7 @@ pub(crate) mod tests {
             "T 110 1 2 40% Bitsy",
             "T 465 1 badword",
             "T 137 boss",
+            "T 490 6 spam",
             "T 118 old>new True False",
             "T 121 0 2 1",
             "T 121 0 2 2",
