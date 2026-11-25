@@ -37,6 +37,19 @@ pub fn token(c: &Config, group: &str) -> String {
     h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The group a page's call is from, when it carries that group's token; else the answer refusing it.
+fn calling_group<'a>(c: &Config, req: &'a Value) -> Result<&'a str, (u16, Value)> {
+    let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
+    let group = text("group");
+    if group.is_empty() || !groups::exists(c, group) || text("token") != token(c, group) {
+        return Err((
+            403,
+            json!({"ok": false, "error": "this page is not one of Streamerz's overlays"}),
+        ));
+    }
+    Ok(group)
+}
+
 fn allowed(c: &Config, group: &str, permission: &str) -> Result<(), String> {
     if groups::meta(c, group).permissions.iter().any(|p| p == permission) {
         Ok(())
@@ -64,11 +77,11 @@ pub fn call(e: &Rc<Engine>, body: &[u8]) -> (u16, Value) {
         return no(400, "the request is not JSON");
     };
     let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
-    let group = text("group");
     let c = e.config();
-    if group.is_empty() || !groups::exists(&c, group) || text("token") != token(&c, group) {
-        return no(403, "this page is not one of Streamerz's overlays");
-    }
+    let group = match calling_group(&c, &req) {
+        Ok(group) => group,
+        Err(refused) => return refused,
+    };
     let done = |r: Result<Value, String>| match r {
         Ok(mut v) => {
             v["ok"] = true.into();
@@ -637,6 +650,29 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
+/// A part of an address as it was before `encode`: each `%XX` a byte of UTF-8 text (so "Doa%C3%A7%C3%A3o"
+/// is "Doação"), `+` a space as a form sends it. A `%` not followed by two hex digits stays as it is.
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).filter(|h| h.iter().all(u8::is_ascii_hexdigit));
+        match (bytes[i], hex) {
+            (b'%', Some(h)) => {
+                let digit = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
+                out.push(digit(h[0]) << 4 | digit(h[1]));
+                i += 3;
+                continue;
+            }
+            (b'+', _) => out.push(b' '),
+            (b, _) => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -716,22 +752,43 @@ thread_local! {
     static SPEECHES: std::cell::RefCell<Vec<(u64, std::time::Instant, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Keeps a speech for the overlay pages to load; its address.
+/// How long a speech made for the pages is served.
+const SPEECH_KEPT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Keeps a speech for the overlay pages to load; its address. The first one kept starts a task that
+/// drops each when its time is up and ends with the last, so no speech stays in memory for good.
 pub fn keep_speech(c: &Config, wav: Vec<u8>) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    SPEECHES.with_borrow_mut(|all| {
-        all.retain(|(_, made, _)| made.elapsed() < std::time::Duration::from_secs(120));
+    let first = SPEECHES.with_borrow_mut(|all| {
+        let first = all.is_empty();
         all.push((id, std::time::Instant::now(), wav));
+        first
     });
+    if first {
+        tokio::task::spawn_local(async {
+            while let Some(oldest) = SPEECHES.with_borrow(|all| all.first().map(|s| s.1)) {
+                tokio::time::sleep_until((oldest + SPEECH_KEPT).into()).await;
+                forget_speeches(std::time::Instant::now());
+            }
+        });
+    }
     format!("{}/overlays/-/speech/{id}", base(c))
+}
+
+/// Drops the speeches older than `SPEECH_KEPT` at `now`; how many are left.
+fn forget_speeches(now: std::time::Instant) -> usize {
+    SPEECHES.with_borrow_mut(|all| {
+        all.retain(|(_, made, _)| now.saturating_duration_since(*made) < SPEECH_KEPT);
+        all.len()
+    })
 }
 
 fn speech(name: &str) -> Option<Served> {
     let id: u64 = name.strip_prefix("speech/")?.trim_end_matches(".wav").parse().ok()?;
     SPEECHES.with_borrow(|all| {
         all.iter()
-            .find(|(i, made, _)| *i == id && made.elapsed() < std::time::Duration::from_secs(120))
+            .find(|(i, made, _)| *i == id && made.elapsed() < SPEECH_KEPT)
             .map(|(_, _, wav)| Served::Bytes(200, "audio/wav", wav.clone()))
     })
 }
@@ -760,7 +817,8 @@ pub fn page_with(html: &str, settings: &Value, controls: &Value, group: &str, se
         .to_string()
         .replace("</", "<\\/");
     let script = format!("<script>{}</script>", CLIENT.replace("__STREAMERZ__", &config));
-    format!("{}{script}{}", &html[..head_end(html)], &html[head_end(html)..])
+    let (before, after) = html.split_at(head_end(html));
+    format!("{before}{script}{after}")
 }
 
 /// Where the script goes: just inside `<head>`, else after the doctype (before it, a browser would
@@ -791,15 +849,26 @@ fn mime(name: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "avif" => "image/avif",
+        "apng" => "image/apng",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
         "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/ogg; codecs=opus",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
+        "mov" => "video/quicktime",
         "woff2" => "font/woff2",
         "woff" => "font/woff",
         "ttf" => "font/ttf",
-        "txt" => "text/plain; charset=utf-8",
+        "otf" => "font/otf",
+        "wasm" => "application/wasm",
+        "txt" | "ts" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
@@ -808,9 +877,8 @@ fn index(c: &Config) -> String {
     let mut rows = String::new();
     for (g, f) in list(c) {
         rows += &format!(
-            "<li><a href=\"/overlays/{}/{}\">{} / {}</a></li>",
-            encode(&g),
-            encode(&f),
+            "<li><a href=\"{}\">{} / {}</a></li>",
+            url_at("", &g, &f),
             escape(&g),
             escape(&f)
         );
@@ -847,7 +915,7 @@ impl Served {
 /// The overlay a path under `/overlays/` belongs to (not the built-in pictures).
 pub fn group_of(path: &str) -> Option<String> {
     let rest = path.trim_start_matches("/overlays").trim_matches('/');
-    let group = crate::donations::urlencoding_decode(rest.split('/').next()?);
+    let group = decode(rest.split('/').next()?);
     (!group.is_empty() && group != BUILT_IN).then_some(group)
 }
 
@@ -873,8 +941,8 @@ pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>)
         return Served::Bytes(200, "text/html; charset=utf-8", index(c).into_bytes());
     }
     let mut parts = rest.splitn(2, '/');
-    let group = crate::donations::urlencoding_decode(parts.next().unwrap_or(""));
-    let name = crate::donations::urlencoding_decode(parts.next().unwrap_or(""));
+    let group = decode(parts.next().unwrap_or(""));
+    let name = decode(parts.next().unwrap_or(""));
     let missing = || Served::Bytes(404, "text/plain; charset=utf-8", b"No such overlay file".to_vec());
     if group == BUILT_IN {
         return speech(&name).or_else(|| built_in(&name)).unwrap_or_else(missing);
@@ -1016,16 +1084,14 @@ pub async fn speak(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
         return None;
     }
     let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let (group, said) = (text("group"), text("text"));
+    let said = text("text");
     let (voice, speed, pitch, voices_cfg) = {
         let c = e.config();
-        if group.is_empty() || !groups::exists(&c, &group) || text("token") != token(&c, &group) {
-            return Some((
-                403,
-                json!({"ok": false, "error": "this page is not one of Streamerz's overlays"}),
-            ));
-        }
-        if let Err(error) = allowed(&c, &group, "voice.speak") {
+        let group = match calling_group(&c, &req) {
+            Ok(group) => group,
+            Err(refused) => return Some(refused),
+        };
+        if let Err(error) = allowed(&c, group, "voice.speak") {
             return Some((403, json!({"ok": false, "error": error})));
         }
         let voice = Some(text("voice"))
@@ -1063,15 +1129,13 @@ pub async fn avatar(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
         return None;
     }
     let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
-    let (group, platform, user) = (text("group"), text("platform"), text("userId"));
+    let (platform, user) = (text("platform"), text("userId"));
     {
         let c = e.config();
-        if group.is_empty() || !groups::exists(&c, group) || text("token") != token(&c, group) {
-            return Some((
-                403,
-                json!({"ok": false, "error": "this page is not one of Streamerz's overlays"}),
-            ));
-        }
+        let group = match calling_group(&c, &req) {
+            Ok(group) => group,
+            Err(refused) => return Some(refused),
+        };
         if allowed(&c, group, "chat.read").is_err() && allowed(&c, group, "alerts.read").is_err() {
             return Some((
                 403,
@@ -1201,7 +1265,7 @@ pub fn subscriptions(query: &str) -> Subs {
     let mut subs = Subs::new();
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else { continue };
-        let v = crate::donations::urlencoding_decode(&v.replace('+', " "));
+        let v = decode(v);
         for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             match k {
                 "topics" => {
@@ -1223,26 +1287,23 @@ pub fn subscriptions(query: &str) -> Subs {
 /// follows the settings of its own group only. Topics stay open to every page.
 /// The group whose page asks, when the query carries its name and token (`group=` and `token=`).
 fn caller(c: &Config, query: &str) -> Option<String> {
-    let value = |key: &str| {
-        query
-            .split('&')
-            .filter_map(|p| p.split_once('='))
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| crate::donations::urlencoding_decode(&v.replace('+', " ")))
-            .unwrap_or_default()
-    };
-    let group = value("group");
-    (!group.is_empty() && groups::exists(c, &group) && value("token") == token(c, &group)).then_some(group)
+    let group = query_value(query, "group");
+    (!group.is_empty() && groups::exists(c, &group) && query_value(query, "token") == token(c, &group)).then_some(group)
+}
+
+/// A value of an address's query, decoded (empty when it isn't there).
+fn query_value(query: &str, key: &str) -> String {
+    query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| decode(v))
+        .unwrap_or_default()
 }
 
 /// The file a listening page says it is (`page=` is its address's path), for the inspector.
 fn page_file(query: &str, group: &str) -> String {
-    let path = query
-        .split('&')
-        .filter_map(|p| p.split_once('='))
-        .find(|(k, _)| *k == "page")
-        .map(|(_, v)| crate::donations::urlencoding_decode(&v.replace('+', " ")))
-        .unwrap_or_default();
+    let path = query_value(query, "page");
     match path.split_once(&format!("/overlays/{group}/")) {
         Some((_, file)) => file.to_string(),
         None => path.rsplit('/').next().unwrap_or_default().to_string(),
@@ -1262,7 +1323,12 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
             _ => false,
         });
     }
-    if let Some(settings) = subs.get_mut("Settings") {
+    // The page's own settings by the group's whole name: one with a comma in it came apart where the
+    // list of events is split on commas.
+    let own = format!(",Settings.{group},");
+    if known && format!(",{},", query_value(query, "events")).contains(&own) {
+        subs.insert("Settings".into(), std::iter::once(group.clone()).collect());
+    } else if let Some(settings) = subs.get_mut("Settings") {
         settings.retain(|g| known && *g == group);
     }
     subs.retain(|_, kinds| !kinds.is_empty());
@@ -1342,6 +1408,10 @@ fn feed<'a>(e: &'a Rc<Engine>, query: &str) -> Feed<'a> {
     }
 }
 
+/// How long a page may take to take in one message. One that stops reading with its connection left
+/// open (the computer of a remote OBS gone to sleep) is let go, or what waits for it would grow.
+const STALLED: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The live feed as server-sent events (`GET /overlays/events`), until the page closes. Pages use
 /// the WebSocket (`events_ws`): a browser keeps at most six of these open to one address, so the
 /// seventh page would wait forever. This one stays for tools that read a plain stream.
@@ -1361,7 +1431,12 @@ pub async fn events(e: &Rc<Engine>, mut tcp: TcpStream, query: &str) -> std::io:
             m = feed.rx.recv() => {
                 let Some(m) = m else { break Ok(()) };
                 if let Some(open) = &feed.open { sent(&open.0, &m); }
-                if let Err(err) = tcp.write_all(format!("data: {m}\n\n").as_bytes()).await { break Err(err); }
+                let wrote = tokio::time::timeout(STALLED, tcp.write_all(format!("data: {m}\n\n").as_bytes())).await;
+                match wrote {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => break Err(err),
+                    Err(_) => break Err(std::io::ErrorKind::TimedOut.into()),
+                }
             }
             n = tcp.read(&mut buf) => {
                 if !matches!(n, Ok(x) if x > 0) { break Ok(()) }
@@ -1396,7 +1471,10 @@ pub async fn events_ws(e: &Rc<Engine>, mut tcp: TcpStream, query: &str, key: &st
             m = feed.rx.recv() => {
                 let Some(m) = m else { break Ok(()) };
                 if let Some(open) = &feed.open { sent(&open.0, &m); }
-                ws.send(Message::text(m.to_string())).await.map_err(gone)?;
+                tokio::time::timeout(STALLED, ws.send(Message::text(m.to_string())))
+                    .await
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
+                    .map_err(gone)?;
             }
             // Reading also answers the browser's pings; a close or an error ends the feed.
             m = ws.next() => {
@@ -2046,6 +2124,155 @@ mod tests {
             url_at("http://h:1", "My/group", "img/a b.png"),
             "http://h:1/overlays/My%2Fgroup/img/a%20b.png"
         );
+    }
+
+    #[test]
+    fn addresses_decode_as_utf8_text() {
+        assert_eq!(decode("Doa%C3%A7%C3%A3o"), "Doação");
+        assert_eq!(decode("My%20group%2F1.html"), "My group/1.html");
+        assert_eq!(decode("a+b"), "a b", "a space as a form sends it");
+        assert_eq!(decode("a%2Bb"), "a+b");
+        assert_eq!(decode("100%"), "100%", "a % with no hex after it stays");
+        assert_eq!(decode("%zz%4"), "%zz%4");
+        assert_eq!(decode("%+1"), "%+1", "a sign is not a hex digit");
+        assert_eq!(decode("%FF"), "\u{FFFD}", "bytes that aren't UTF-8 don't panic");
+        for name in ["Doação", "Ünïcödé 🎉", "a b/c+d.png", "100% Hype"] {
+            assert_eq!(decode(&encode(name)), name, "{name}");
+        }
+        assert_eq!(query_value("a=1&group=Doa%C3%A7%C3%A3o&token=x", "group"), "Doação");
+        assert_eq!(query_value("a=1", "group"), "");
+        assert_eq!(
+            page_file("page=%2Foverlays%2FDoa%C3%A7%C3%A3o%2Fimg%2Fa.html", "Doação"),
+            "img/a.html"
+        );
+    }
+
+    #[test]
+    fn an_overlay_with_an_accented_name_is_served_and_its_pages_known() {
+        use base64::Engine as _;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = Config::default();
+        groups::create(&mut c, "Alertas de Doação");
+        let meta = groups::Meta {
+            description: "d".into(),
+            files: vec![
+                groups::File {
+                    name: "index.html".into(),
+                    content: base64::engine::general_purpose::STANDARD.encode("<p>oi</p>"),
+                    ..Default::default()
+                },
+                groups::File {
+                    name: "star.svg".into(),
+                    content: base64::engine::general_purpose::STANDARD.encode("<svg/>"),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        groups::set_meta(&mut c, "Alertas de Doação", meta).unwrap();
+        let page = url_at("", "Alertas de Doação", "index.html");
+        assert_eq!(group_of(&page).as_deref(), Some("Alertas de Doação"));
+        let (status, kind, body) = file(&c, &page).read();
+        assert_eq!((status, kind), (200, "text/html; charset=utf-8"));
+        assert!(String::from_utf8(body).unwrap().contains("<p>oi</p>"));
+        let (status, kind, _) = file(&c, &url_at("", "Alertas de Doação", "star.svg")).read();
+        assert_eq!((status, kind), (200, "image/svg+xml"));
+        // Its pages listen with their group's name and token, encoded as a browser does.
+        let query = format!(
+            "topics=a&group={}&token={}",
+            encode("Alertas de Doação"),
+            token(&c, "Alertas de Doação")
+        );
+        assert_eq!(caller(&c, &query).as_deref(), Some("Alertas de Doação"));
+        let _ = groups::set_meta(&mut c, "Alertas de Doação", groups::Meta::default());
+    }
+
+    #[test]
+    fn a_group_with_a_comma_in_its_name_hears_its_own_settings() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = Config::default();
+        groups::create(&mut c, "Goals, subs");
+        let meta = groups::Meta {
+            description: "d".into(),
+            ..Default::default()
+        };
+        groups::set_meta(&mut c, "Goals, subs", meta).unwrap();
+        // As the page script sends it: the list joined with commas, then encoded whole.
+        let query = format!(
+            "events={}&group={}&token={}",
+            encode("Twitch.Follow,Settings.Goals, subs"),
+            encode("Goals, subs"),
+            token(&c, "Goals, subs")
+        );
+        let subs = permitted(&c, subscriptions(&query), &query);
+        assert_eq!(subs["Settings"].iter().collect::<Vec<_>>(), ["Goals, subs"]);
+        assert!(subs["Twitch"].contains("Follow"));
+        // Another group's settings stay closed to it.
+        let other = format!(
+            "events={}&group={}&token={}",
+            encode("Settings.Other"),
+            encode("Goals, subs"),
+            token(&c, "Goals, subs")
+        );
+        assert!(!permitted(&c, subscriptions(&other), &other).contains_key("Settings"));
+        let _ = groups::set_meta(&mut c, "Goals, subs", groups::Meta::default());
+    }
+
+    #[test]
+    fn the_index_links_pages_in_folders_as_paths() {
+        use base64::Engine as _;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = Config::default();
+        groups::create(&mut c, "My Box");
+        let meta = groups::Meta {
+            description: "d".into(),
+            files: vec![groups::File {
+                name: "pages/chat.html".into(),
+                content: base64::engine::general_purpose::STANDARD.encode("<p>x</p>"),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        groups::set_meta(&mut c, "My Box", meta).unwrap();
+        let html = index(&c);
+        assert!(html.contains("href=\"/overlays/My%20Box/pages/chat.html\""), "{html}");
+        let _ = groups::set_meta(&mut c, "My Box", groups::Meta::default());
+    }
+
+    #[test]
+    fn files_are_served_with_their_type() {
+        for (name, kind) in [
+            ("a.HTML", "text/html; charset=utf-8"),
+            ("lib/x.mjs", "text/javascript; charset=utf-8"),
+            ("p.avif", "image/avif"),
+            ("clip.mov", "video/quicktime"),
+            ("chime.flac", "audio/flac"),
+            ("voice.m4a", "audio/mp4"),
+            ("font.otf", "font/otf"),
+            ("game.wasm", "application/wasm"),
+            ("streamerz.d.ts", "text/plain; charset=utf-8"),
+            ("README", "application/octet-stream"),
+        ] {
+            assert_eq!(mime(name), kind, "{name}");
+        }
+    }
+
+    #[test]
+    fn speeches_are_dropped_when_their_time_is_up() {
+        let c = Config::default();
+        SPEECHES.with_borrow_mut(Vec::clear);
+        let now = std::time::Instant::now();
+        let old = now.checked_sub(SPEECH_KEPT + std::time::Duration::from_secs(1));
+        let Some(old) = old else { return };
+        SPEECHES.with_borrow_mut(|all| all.push((0, old, vec![1, 2, 3])));
+        crate::engine::tests::run(async {
+            let url = keep_speech(&c, b"RIFF".to_vec());
+            assert!(url.contains("/overlays/-/speech/"));
+        });
+        assert_eq!(forget_speeches(now), 1, "the old one goes, the new one stays");
+        assert!(speech("speech/0").is_none());
+        let later = now + SPEECH_KEPT + std::time::Duration::from_secs(1);
+        assert_eq!(forget_speeches(later), 0, "and goes in its turn");
     }
 
     #[test]
