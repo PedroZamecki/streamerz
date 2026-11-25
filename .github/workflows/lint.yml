@@ -11,6 +11,9 @@ on:
       - 'SECURITY.md'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: lint-${{ github.ref }}
   cancel-in-progress: true
@@ -65,6 +68,8 @@ jobs:
           find target -type f -name "*.d" -delete 2>/dev/null || true
       - name: Test extension lifecycle and platform checks
         run: node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs
+      - name: Test development helpers and release scripts
+        run: python3 -P -m unittest discover -s dev -p 'test_*.py'
 
   commits:
     runs-on: ubuntu-latest

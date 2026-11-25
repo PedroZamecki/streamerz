@@ -46,6 +46,8 @@ def main():
             ["cargo", "build", "--release", "--locked"],
             ["target/release/Streamerz", "--scenario", "tests/scenarios"],
             ["sh", "dev/appimage.sh", "dev"],
+            ["dev/packages.sh", "dev"],
+            ["bash", "dev/check-packages.sh"],
         ]
     failures = []
     for command in checks:

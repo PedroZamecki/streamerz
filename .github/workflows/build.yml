@@ -13,25 +13,8 @@ name: build
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - '.githooks/**'
-      - 'commitlint.config.mjs'
-      - 'CONTRIBUTING.md'
-      - 'LOCALIZATION.md'
-      - 'SECURITY.md'
   pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - '.githooks/**'
-      - 'commitlint.config.mjs'
-      - 'CONTRIBUTING.md'
-      - 'LOCALIZATION.md'
-      - 'SECURITY.md'
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 # Read only by default: only the release job writes (a fork's pull request never can).
@@ -55,57 +38,29 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.next.outputs.tag }}
+      last: ${{ steps.next.outputs.last }}
       tree: ${{ steps.tree.outputs.hash }}
       reuse: ${{ steps.reuse.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: tree
         shell: bash
-        run: echo "hash=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
-      - id: next
-        shell: bash
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          BASE_REF: ${{ github.base_ref }}
         run: |
-          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
-          last=${last:-v0.0.0}
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            log=$(git log "origin/$BASE_REF..HEAD" --format=%s 2>/dev/null || true)
-            if [ -z "$log" ]; then log="$PR_TITLE"; fi
-          else
-            log=$(git log ${last:+"$last.."}HEAD --format=%s)
-          fi
-          IFS=. read -r major minor patch <<< "${last#v}"
-          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)); minor=0; patch=0
-          elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)); patch=0
-          elif grep -qE '^(fix|perf)(\([^)]*\))?:' <<< "$log"; then patch=$((patch + 1))
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "no feat/fix since $last: no release"; exit 0
-          else
-            patch=$((patch + 1))
-          fi
-          echo "next release: v$major.$minor.$patch"
-          echo "tag=v$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+          hash=$(git rev-parse HEAD^{tree})
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      - id: next
+        run: bash dev/release-version.sh "$GITHUB_EVENT_NAME"
       # On main: the pull request run that already built this exact tree and version, if any.
       - id: reuse
         if: github.event_name == 'push' && steps.next.outputs.tag != ''
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          want="${{ steps.next.outputs.tag }}-${{ steps.tree.outputs.hash }}"
-          for id in $(gh run list --workflow build.yml --event pull_request --status success --limit 40 \
-                        --repo "${{ github.repository }}" --json databaseId --jq '.[].databaseId'); do
-            names=$(gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" --jq '.artifacts[].name')
-            if grep -qx "streamerz-windows-$want" <<< "$names" && grep -qx "streamerz-linux-$want" <<< "$names"; then
-              echo "reusing the binaries of run $id"
-              echo "run=$id" >> "$GITHUB_OUTPUT"
-              break
-            fi
-          done
+          GH_REPO: ${{ github.repository }}
+          ARTIFACT_KEY: ${{ steps.next.outputs.tag }}-${{ steps.tree.outputs.hash }}
+        run: bash dev/release-reuse.sh "$ARTIFACT_KEY"
   windows:
     needs: [version]
     if: (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
@@ -124,6 +79,8 @@ jobs:
           github-token: ${{ github.token }}
       - if: needs.version.outputs.reuse == ''
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Set up sccache
         if: needs.version.outputs.reuse == ''
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -161,8 +118,8 @@ jobs:
           mkdir -p dist
           cp target/release/Streamerz.exe dist/Streamerz-windows-x86_64.exe
       # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
-      # watcher, Windows line endings), on the PR runner. Keeps the same env so Cargo reuses build.rs output.
-      - if: github.event_name == 'pull_request'
+      # watcher, Windows line endings). The same env lets Cargo reuse build.rs output.
+      - if: needs.version.outputs.reuse == ''
         name: Run the unit tests on Windows
         run: cargo test --release --locked --bin Streamerz
         env:
@@ -170,7 +127,7 @@ jobs:
           STREAMERZ_VOICE_SHA256: ${{ steps.voice_win.outputs.sha256 }}
           STREAMERZ_VOICE_SIZE: ${{ steps.voice_win.outputs.size }}
       # Every scenario (tests/scenarios) on the exe just built, on real Windows.
-      - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
+      - if: needs.version.outputs.reuse == ''
         name: Run the scenarios on the Windows exe
         run: ./dist/Streamerz-windows-x86_64.exe --scenario tests/scenarios
       - if: needs.version.outputs.reuse == ''
@@ -228,6 +185,7 @@ jobs:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
           path: dist/*
           retention-days: 3
+          if-no-files-found: error
 
   linux:
     needs: [version]
@@ -244,6 +202,8 @@ jobs:
           github-token: ${{ github.token }}
       - if: needs.version.outputs.reuse == ''
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Set up sccache
         if: needs.version.outputs.reuse == ''
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -299,6 +259,9 @@ jobs:
           STREAMERZ_VOICE_SIZE: ${{ steps.voice_linux.outputs.size }}
           RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
       - if: needs.version.outputs.reuse == ''
+        name: Run the scenarios on the Linux binary
+        run: target/release/Streamerz --scenario tests/scenarios
+      - if: needs.version.outputs.reuse == ''
         run: dev/appimage.sh "${{ needs.version.outputs.tag || 'dev' }}"
       - if: needs.version.outputs.reuse == ''
         name: Stage Linux release assets
@@ -311,15 +274,11 @@ jobs:
         run: dev/packages.sh "${{ needs.version.outputs.tag || 'dev' }}"
       - if: needs.version.outputs.reuse == ''
         name: Check the Linux packages
+        shell: bash
         run: |
-          dpkg-deb --contents dist/Streamerz-linux-x86_64.deb | grep -q '/usr/bin/Streamerz$'
-          dpkg-deb --contents dist/Streamerz-linux-x86_64.deb | grep -q '/etc/apt/sources.list.d/streamerz.sources$'
-          tar --zstd -tf dist/Streamerz-linux-x86_64.pkg.tar.zst | grep -qx 'usr/bin/Streamerz'
           sudo apt-get install -y --no-install-recommends rpm > /dev/null
-          rpm -qlp dist/Streamerz-linux-x86_64.rpm | grep -qx '/etc/yum.repos.d/streamerz.repo'
-          cmp target/release/Streamerz dist/Streamerz-linux-x86_64
+          bash dev/check-packages.sh
           test -s dist/Streamerz-Voice-linux-x86_64
-          flatpak repo target/flatpak/repo
       - name: Prune transient build artifacts before caching
         if: needs.version.outputs.reuse == ''
         run: |
@@ -330,6 +289,7 @@ jobs:
           name: streamerz-linux-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
           path: dist/*
           retention-days: 3
+          if-no-files-found: error
 
   release:
     needs: [version, windows, linux]
@@ -347,6 +307,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: streamerz-*-${{ needs.version.outputs.tag }}-${{ needs.version.outputs.tree }}
@@ -354,14 +315,18 @@ jobs:
           merge-multiple: true
       # Sign the repositories (the key is the PACKAGES_GPG_KEY secret; packaging/streamerz.asc is its
       # public half), lay out the Pages site, and make the .flatpak from the signed Flatpak repository.
-      - name: Sign the Linux repositories
-        env:
-          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
+      - name: Install repository tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends flatpak createrepo-c apt-utils > /dev/null
+      - name: Import the repository signing key
+        shell: bash
+        env:
+          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
+        run: |
           printf '%s\n' "$PACKAGES_GPG_KEY" | gpg --batch --import
-          dev/publish-repos.sh "${{ needs.version.outputs.tag }}" artifacts
+      - name: Sign the Linux repositories
+        run: dev/publish-repos.sh "${{ needs.version.outputs.tag }}" artifacts
       - uses: actions/upload-pages-artifact@v5
         with:
           path: target/site
@@ -370,11 +335,13 @@ jobs:
       # Notes list every commit since the last tag (GitHub's generator only lists pull requests).
       - name: Write release notes
         shell: bash
+        env:
+          LAST_TAG: ${{ needs.version.outputs.last }}
         run: |
-          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          last=$LAST_TAG
           : > notes.md
           section() {
-            lines=$(git log ${last:+"$last..HEAD"} --no-merges --format='- %s (%h)' -E --grep="$2" || true)
+            lines=$(git log "${last:+$last..}HEAD" --no-merges --format='- %s (%h)' -E --grep="$2")
             if [ -n "$lines" ]; then printf '## %s\n\n%s\n\n' "$1" "$lines" >> notes.md; fi
           }
           section "Breaking changes" '^[a-z]+(\([^)]*\))?!:'

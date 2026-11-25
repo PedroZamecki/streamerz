@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Packs target/release/Streamerz for Linux, every way a release ships it (into dist/), beside the
 # AppImage (dev/appimage.sh). Nothing is compiled: each one holds the same program.
 #   Streamerz-linux-x86_64              the program alone; it updates itself, like the Windows exe
@@ -10,7 +10,7 @@
 #                                       (dev/publish-repos.sh)
 # Usage: dev/packages.sh [version]   (needs flatpak; nfpm is downloaded when missing; STREAMERZ_BIN
 # names another program to pack)
-set -eu
+set -euo pipefail
 bin=${STREAMERZ_BIN:-target/release/Streamerz}
 ver=${1:-dev}
 clean=${ver#v}
@@ -22,8 +22,16 @@ nfpm_version=2.48.0
 
 mkdir -p dist target/packaging "$tools"
 nfpm=$(command -v nfpm || echo "$tools/nfpm")
-[ -x "$nfpm" ] || curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v$nfpm_version/nfpm_${nfpm_version}_Linux_x86_64.tar.gz" \
-    | tar -xz -C "$tools" nfpm
+if [[ ! -x $nfpm ]]; then
+    (
+        download=$(mktemp -d "$tools/.nfpm.XXXXXX")
+        trap 'rm -rf "$download"' EXIT
+        curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v$nfpm_version/nfpm_${nfpm_version}_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$download" nfpm
+        test -x "$download/nfpm"
+        mv -f "$download/nfpm" "$nfpm"
+    )
+fi
 
 # The program alone.
 install -m755 "$bin" dist/Streamerz-linux-x86_64
@@ -60,8 +68,12 @@ printf '[Application]\nname=%s\nruntime=org.freedesktop.Platform/x86_64/26.08\ns
 # appstreamcli's compose is here (CI installs it); without it the Flatpak installs and updates the same.
 if appstreamcli compose --help > /dev/null 2>&1; then
     # PNG icons, which every client reads (newer appstreamcli makes JPEG XL unless told).
-    png=$(appstreamcli compose --help | grep -q -- --image-format && echo --image-format=png || true)
-    appstreamcli compose $png --origin="$id" --result-root="$build/files" \
+    help=$(appstreamcli compose --help)
+    png=()
+    if [[ $help == *--image-format* ]]; then
+        png=(--image-format=png)
+    fi
+    appstreamcli compose "${png[@]}" --origin="$id" --result-root="$build/files" \
         --data-dir="$build/files/share/app-info/xmls" --icons-dir="$build/files/share/app-info/icons/flatpak" \
         --prefix=/ "$build/files" > /dev/null
 fi
