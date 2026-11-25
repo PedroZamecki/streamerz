@@ -827,4 +827,115 @@ mod tests {
         let date = field(&config, "Clock", &Meta::default(), &def(Kind::Date), "D", &json!("")).unwrap();
         assert_eq!(date["presets"][0]["value"], kinds::day_from_today(0));
     }
+
+    fn sent(d: &Def, value: Value, old: Value) -> Result<Value, String> {
+        let mut keep = |t: &str| Ok(t.to_owned());
+        read(d, &value, &old, &mut keep).unwrap()
+    }
+
+    #[test]
+    fn sliders_snap_to_their_step_and_stay_in_range() {
+        let mut d = def(Kind::Range);
+        d.min = Some(0.0);
+        d.max = Some(10.0);
+        d.step = Some(0.5);
+        // Sent backwards, off the step and past the end: ordered, snapped and clamped.
+        assert_eq!(sent(&d, json!([12, 2.3]), Value::Null), Ok(json!([2.5, 10])));
+        assert!(sent(&d, json!([1]), Value::Null).is_err());
+        assert!(sent(&d, json!(["a", 2]), Value::Null).is_err());
+        // The field shows a stored pair clamped too, the default ends when there is none.
+        let config = crate::Config::default();
+        let f = field(&config, "g", &Meta::default(), &d, "S", &json!([-5, 4])).unwrap();
+        assert_eq!(f["value"], json!([0.0, 4.0]));
+        let f = field(&config, "g", &Meta::default(), &d, "S", &json!("x")).unwrap();
+        assert_eq!(f["value"], json!([0.0, 10.0]));
+        let mut p = def(Kind::Percent);
+        p.step = Some(5.0);
+        assert_eq!(sent(&p, json!(42), Value::Null), Ok(json!(40)));
+        assert_eq!(sent(&p, json!(130), Value::Null), Ok(json!(100)));
+        assert!(sent(&p, json!("half"), Value::Null).is_err());
+        // A step of zero or below falls back to 1, never a division by zero.
+        p.step = Some(0.0);
+        assert_eq!(sent(&p, json!(33.4), Value::Null), Ok(json!(33)));
+    }
+
+    #[test]
+    fn parts_are_read_back_into_their_values() {
+        let d = def(Kind::Gradient);
+        assert_eq!(
+            sent(
+                &d,
+                json!({"from": "#ff0000", "to": "#00ff00", "angle": 45}),
+                Value::Null
+            ),
+            Ok(json!(kinds::gradient_css(45.0, &["#ff0000".into(), "#00ff00".into()])))
+        );
+        assert!(sent(&d, json!({"from": "red;}", "to": "#00ff00", "angle": 45}), Value::Null).is_err());
+        assert!(sent(&d, json!(5), Value::Null).is_err());
+        assert_eq!(
+            sent(&d, json!("  radial-gradient(red, blue) "), Value::Null),
+            Ok(json!("radial-gradient(red, blue)"))
+        );
+        let t = def(Kind::TextStyle);
+        let style = json!({"font": "Inter", "size": "24", "weight": 99, "color": "#ffffff",
+            "outline": "", "outlineColor": "#000000", "shadow": true});
+        let styled = sent(&t, style, Value::Null).unwrap();
+        assert_eq!(styled["weight"], 900, "a weight past the list is the heaviest");
+        assert_eq!(styled["size"], 24);
+        assert_eq!(styled["outline"], 0, "an empty box is 0");
+        assert!(sent(&t, json!({"color": "nope", "outlineColor": "#000000"}), Value::Null).is_err());
+        let a = def(Kind::Animation);
+        assert!(sent(&a, json!({"name": 99, "durationMs": "1", "delayMs": "0"}), Value::Null).is_err());
+        assert!(
+            sent(&a, json!({"name": 0, "durationMs": "-5", "delayMs": "0"}), Value::Null).is_err(),
+            "no negative lengths"
+        );
+        // An easing past the list keeps the old one.
+        let kept = sent(
+            &a,
+            json!({"name": 0, "durationMs": "1", "delayMs": "0", "easing": 99}),
+            json!({"easing": "steps(3)"}),
+        );
+        assert_eq!(kept.unwrap()["easing"], "steps(3)");
+        let s = def(Kind::Sound);
+        let mut brought = Vec::new();
+        let mut bring = |t: &str| {
+            brought.push(t.to_owned());
+            Ok(format!("sounds/{t}"))
+        };
+        let got = read(
+            &s,
+            &json!({"file": " \"ding.mp3\" ", "volume": 40.4}),
+            &Value::Null,
+            &mut bring,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(got, json!({"file": "sounds/ding.mp3", "volume": 40}));
+        assert_eq!(brought, ["ding.mp3"], "the quotes a pasted path has are dropped");
+    }
+
+    #[test]
+    fn a_reward_or_gift_is_read_from_its_id_and_bad_text_is_refused() {
+        let r = def(Kind::Reward);
+        assert_eq!(sent(&r, json!(""), Value::Null), Ok(json!({})));
+        assert!(sent(&r, json!("orkut:1"), Value::Null).is_err());
+        assert!(sent(&r, json!("no-colon"), Value::Null).is_err());
+        assert!(sent(&r, json!(7), Value::Null).is_err());
+        // An id no longer listed keeps the title it had.
+        let old = json!({"platform": "twitch", "id": "gone-id", "title": "Hydrate"});
+        assert_eq!(
+            sent(&r, json!("twitch:gone-id"), old),
+            Ok(json!({"platform": "twitch", "id": "gone-id", "title": "Hydrate"}))
+        );
+        let g = def(Kind::Gift);
+        assert_eq!(sent(&g, json!("  "), Value::Null), Ok(json!({})));
+        let old = json!({"id": "zz-test-gift", "name": "Rose", "coins": 1, "picture": ""});
+        assert_eq!(sent(&g, json!("zz-test-gift"), old.clone()), Ok(old));
+        let j = def(Kind::Json);
+        assert!(sent(&j, json!("{nope"), Value::Null).is_err());
+        assert_eq!(sent(&j, json!("[1, 2]"), Value::Null), Ok(json!([1, 2])));
+        let e = def(Kind::Event);
+        assert!(sent(&e, json!(["follow", "not-an-event"]), Value::Null).is_err());
+    }
 }
