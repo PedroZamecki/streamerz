@@ -29,6 +29,11 @@ pub enum Kind {
     Automation,
 }
 static ENABLED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(15);
+static SILENCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Suppresses OS notifications while running headless scenarios.
+pub fn silence(on: bool) {
+    SILENCED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 pub fn configure(s: Settings) {
     let bits =
         u8::from(s.login) | (u8::from(s.updates) << 1) | (u8::from(s.streams) << 2) | (u8::from(s.automation) << 3);
@@ -48,6 +53,9 @@ pub fn send(kind: Kind, title: &str, body: &str) {
 
 /// Shows a critical notification regardless of category toggles (e.g., UI crash recovery).
 pub fn critical(title: &str, body: &str) {
+    if SILENCED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let (title, body) = (title.to_string(), body.to_string());
     tokio::task::spawn_local(async move {
         if let Err(e) = show(&title, &body).await {
@@ -112,7 +120,7 @@ impl Toast {
 
 /// Shows `t`, without waiting; a click on it calls `clicked` (on this thread).
 pub fn toast(t: Toast, clicked: impl FnOnce(&Toast) + 'static) {
-    if !enabled(Kind::Automation) {
+    if SILENCED.load(std::sync::atomic::Ordering::Relaxed) || !enabled(Kind::Automation) {
         return;
     }
     tokio::task::spawn_local(async move {

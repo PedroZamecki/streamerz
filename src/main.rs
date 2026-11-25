@@ -1594,7 +1594,10 @@ fn main() {
     let crash_tx = cmd_tx.clone();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     let backend = move || {
-        tokio::task::LocalSet::new().block_on(&rt, async move {
+        // Keep the Tokio runtime entered while LocalSet drops so tasks holding zbus streams clean up safely.
+        let _enter = rt.enter();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 save_later(c);
             });
@@ -1625,7 +1628,9 @@ fn main() {
             #[cfg(unix)]
             tokio::task::spawn_local(ended(e.clone()));
             core::parent::run(e.clone(), &mut cmd_rx, &mut shell_rx, shell_tx).await;
-        })
+        });
+        drop(local);
+        drop(_enter);
     };
     backend();
     cleanup_dev();

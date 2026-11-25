@@ -220,7 +220,10 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
         .build()
         .expect("runtime");
     crate::capture(true);
-    let failures = tokio::task::LocalSet::new().block_on(&rt, async {
+    crate::notify::silence(true);
+    let _enter = rt.enter();
+    let local = tokio::task::LocalSet::new();
+    let failures = local.block_on(&rt, async {
         let e = Engine::with_music(Arc::new(tokio::sync::watch::channel(cfg).0), |_| {}, &fakes::MUSIC);
         e.dev_mode();
         e.allow_prompts(false);
@@ -283,6 +286,9 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
         }
         failures
     });
+    drop(local);
+    drop(_enter);
+    crate::notify::silence(false);
     fakes::uninstall();
     Outcome { name, failures }
 }
