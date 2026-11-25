@@ -144,4 +144,49 @@ mod tests {
         assert!(!book.groups.contains_key("Games"), "an empty group goes away");
         assert!(book.is_empty() == book.groups.is_empty());
     }
+
+    #[test]
+    fn anonymous_redemptions_count_for_the_reward_only() {
+        let mut book = Book::default();
+        assert_eq!(book.redeemed("twitch:a", ""), (1, 0));
+        assert!(book.counters["twitch:a"].users.is_empty());
+        assert_eq!(book.count("twitch:none", "5"), (0, 0));
+        book.reset("twitch:none", false);
+        assert!(book.counters.contains_key("twitch:a"), "resetting another leaves it");
+    }
+
+    #[test]
+    fn group_names_are_trimmed_and_platforms_kept_apart() {
+        let mut book = Book::default();
+        book.set_group("twitch:a", "  Games ");
+        book.set_group("twitch:a", "Games");
+        assert_eq!(book.groups.len(), 1);
+        assert_eq!(book.groups["Games"], ["twitch:a"], "once, under the trimmed name");
+        assert_eq!(book.in_group("twitch", " games "), ["a"]);
+        assert!(book.in_group("kick", "Games").is_empty());
+        book.set_group("twitch:b", "   ");
+        assert_eq!(book.group_of("twitch:b"), None, "a blank name is no group");
+        assert_eq!(key("kick", "01H"), "kick:01H");
+    }
+
+    #[test]
+    fn the_book_saves_only_what_it_has() {
+        let empty = serde_json::to_value(Book::default()).unwrap();
+        assert_eq!(empty, serde_json::json!({}));
+        let mut book = Book::default();
+        book.redeemed("twitch:a", "5");
+        book.set_group("twitch:a", "G");
+        book.made.push("kick:x".into());
+        let v = serde_json::to_value(&book).unwrap();
+        assert_eq!(
+            v["counters"]["twitch:a"],
+            serde_json::json!({"count": 1, "users": {"5": 1}})
+        );
+        assert_eq!(v["groups"]["G"][0], "twitch:a");
+        let back: Book = serde_json::from_value(v).unwrap();
+        assert_eq!(back, book);
+        // Fields missing or unknown in a saved file are fine.
+        let old: Book = serde_json::from_value(serde_json::json!({"counters": {"t:x": {}}, "future": 1})).unwrap();
+        assert_eq!(old.count("t:x", "5"), (0, 0));
+    }
 }
