@@ -280,6 +280,18 @@ pub(super) fn state_of(o: &Obj) -> f64 {
     }
 }
 
+/// The cursor for the page after `page` of a Helix list, if there is one. An empty page or the cursor
+/// it was asked with is the end: following it would ask for the same page forever.
+fn next_cursor(page: &Value, after: &str) -> Option<String> {
+    let next = page["pagination"]["cursor"]
+        .as_str()
+        .filter(|c| !c.is_empty() && *c != after)?;
+    page["data"]
+        .as_array()
+        .is_some_and(|d| !d.is_empty())
+        .then(|| next.to_string())
+}
+
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
@@ -419,9 +431,9 @@ impl Engine {
             }
             let got = tw.helix("GET", path, query, None, false, true).await?;
             items.extend(got["data"].as_array().cloned().unwrap_or_default());
-            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-            if after.is_empty() || items.len() >= 1000 {
-                return Ok(items);
+            match next_cursor(&got, &after) {
+                Some(next) if items.len() < 1000 => after = next,
+                _ => return Ok(items),
             }
         }
     }
@@ -449,9 +461,9 @@ impl Engine {
             if let Some(term) = hit {
                 return Ok(term["id"].as_str().map(str::to_string));
             }
-            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-            if after.is_empty() {
-                return Ok(None);
+            match next_cursor(&got, &after) {
+                Some(next) => after = next,
+                None => return Ok(None),
             }
         }
     }
@@ -5829,6 +5841,16 @@ mod tests {
             ),
             [0, 1, 1, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn helix_pages_end_where_twitch_would_repeat() {
+        let page = |data: Value, cursor: &str| json!({"data": data, "pagination": {"cursor": cursor}});
+        assert_eq!(next_cursor(&page(json!([1]), "b"), "a").as_deref(), Some("b"));
+        assert_eq!(next_cursor(&page(json!([1]), "a"), "a"), None);
+        assert_eq!(next_cursor(&page(json!([]), "b"), "a"), None);
+        assert_eq!(next_cursor(&page(json!([1]), ""), "a"), None);
+        assert_eq!(next_cursor(&json!({"data": [1]}), ""), None);
     }
 
     #[test]
