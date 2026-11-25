@@ -834,6 +834,7 @@ fn stale_after(welcome: &Value) -> Duration {
     Duration::from_secs(keep + 20)
 }
 
+/// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
 pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
     !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
 }
@@ -2300,27 +2301,6 @@ async fn create_sub(
     Sub::Made
 }
 
-fn unescape_irc_tag(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    let mut chars = v.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some(':') => out.push(';'),
-                Some('s') => out.push(' '),
-                Some('\\') => out.push('\\'),
-                Some('r') => out.push('\r'),
-                Some('n') => out.push('\n'),
-                Some(other) => out.push(other),
-                None => {}
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Parse an IRCv3 `PRIVMSG` line (e.g. from `recent-messages.robotty.de`) into a historical chat `Line`.
 fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
     let fragments = event.pointer("/message/fragments")?.as_array()?;
@@ -2334,67 +2314,30 @@ fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
 }
 
 pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate::engine::chatlog::Line> {
-    let raw = raw.trim_end_matches(['\r', '\n']);
-    let (tags_part, rest) = if let Some(r) = raw.strip_prefix('@') {
-        r.split_once(' ')?
-    } else {
-        ("", raw)
-    };
-    let rest = rest.trim_start();
-    let (prefix, cmd_rest) = if let Some(r) = rest.strip_prefix(':') {
-        r.split_once(' ')?
-    } else {
-        ("", rest)
-    };
-    let login = prefix.split('!').next().unwrap_or("");
-    let cmd_rest = cmd_rest.trim_start();
-    let after_cmd = cmd_rest.strip_prefix("PRIVMSG ")?;
-    // The text follows ` :`, except a one-word message, which IRC sends without the colon.
-    let (_, trailing) = after_cmd.split_once(" :").or_else(|| after_cmd.split_once(' '))?;
-    let mut text = trailing.to_string();
-    let mut action = false;
-    if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
-        text = act.to_string();
-        action = true;
+    let m = crate::irc::parse(raw)?;
+    // Deleted by a moderator since: not shown again.
+    if m.command != "PRIVMSG" || m.text.is_empty() || m.tag("rm-deleted") == "1" {
+        return None;
     }
-
-    let mut msg_id = String::new();
-    let mut user_id = String::new();
-    let mut display_name = String::new();
-    let mut color = String::new();
-    let mut badges_raw = String::new();
-    let mut emotes_raw = String::new();
-    let mut gifs_raw = String::new();
-    let mut sent_ts: Option<i64> = None;
-    let mut reply = crate::engine::chatlog::Reply::default();
-
-    for kv in tags_part.split(';') {
-        let Some((k, v)) = kv.split_once('=') else { continue };
-        match k {
-            "id" => msg_id = v.to_string(),
-            "user-id" => user_id = v.to_string(),
-            "display-name" => display_name = unescape_irc_tag(v),
-            "color" => color = v.to_string(),
-            "badges" => badges_raw = v.to_string(),
-            "emotes" => emotes_raw = v.to_string(),
-            "gifs" => gifs_raw = unescape_irc_tag(v),
-            "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
-            // Deleted by a moderator since: not shown again.
-            "rm-deleted" if v == "1" => return None,
-            "reply-parent-display-name" => reply.user = unescape_irc_tag(v),
-            "reply-parent-msg-body" => reply.text = unescape_irc_tag(v),
-            _ => {}
-        }
-    }
+    let login = m.login.as_str();
+    let (text, action) = crate::irc::split_action(&m.text);
+    let text = text.to_string();
+    let msg_id = m.tag("id").to_string();
+    let user_id = m.tag("user-id").to_string();
+    let display_name = m.tag("display-name").to_string();
+    let mut color = m.tag("color").to_string();
+    let (badges_raw, emotes_raw, gifs_raw) = (m.tag("badges"), m.tag("emotes"), m.tag("gifs"));
+    let sent_ts = m.tag("tmi-sent-ts").parse::<i64>().ok();
+    let reply = crate::engine::chatlog::Reply {
+        user: m.tag("reply-parent-display-name").to_string(),
+        text: m.tag("reply-parent-msg-body").to_string(),
+    };
 
     let user = if display_name.is_empty() {
         login.to_string()
     } else {
         display_name
     };
-    if user.is_empty() && text.is_empty() {
-        return None;
-    }
     if color.is_empty() {
         color = default_user_color(if !login.is_empty() { login } else { &user }).to_string();
     }
@@ -2443,7 +2386,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         }
     }
 
-    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, &emotes_raw, &gifs_raw)}});
+    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, emotes_raw, gifs_raw)}});
     let gif = standalone_gif(&gif_event, &text).unwrap_or("").to_string();
     let reply = (!reply.user.is_empty()).then_some(reply);
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
