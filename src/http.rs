@@ -23,6 +23,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_BODY: usize = 16 << 20;
+/// The most a response's head (or a chunk's size line) may take: a server can't make it grow forever.
+const MAX_HEAD: usize = 64 << 10;
 
 /// scheme, host, port, path and query.
 fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
@@ -420,10 +422,14 @@ struct Open {
 async fn once(method: &str, url: &str, headers: &[(String, String)], body_bytes: &[u8]) -> Result<Response, String> {
     let mut open = open(method, url, headers, body_bytes).await?;
     let mut out = Vec::new();
-    body(&mut open, method, MAX_BODY, &mut |piece: &[u8]| {
+    let (_, complete) = body(&mut open, method, MAX_BODY, &mut |piece: &[u8]| {
         out.extend_from_slice(piece)
     })
     .await?;
+    // Half an answer would pass for the whole one (a JSON cut short, a file missing its end).
+    if !complete {
+        return Err(format!("{url}: the answer was cut short or is over 16 MB"));
+    }
     Ok(Response {
         status: open.status,
         headers: open.headers,
@@ -478,33 +484,51 @@ async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
     io.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
     io.write_all(body).await.map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
-    // Read the head.
-    let head_end = loop {
-        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-            break i;
+    loop {
+        if let Some((status, headers, len)) = head(&raw).map_err(|e| format!("{url}: {e}"))? {
+            let rest = raw.split_off(len);
+            // An interim answer (100 Continue, 103 Early Hints) comes before the real one.
+            if (100..200).contains(&status) && status != 101 {
+                raw = rest;
+                continue;
+            }
+            return Ok(Open {
+                status,
+                headers,
+                io,
+                rest,
+            });
         }
         if read_more(&mut io, &mut raw).await? == 0 {
             return Err(format!("{url}: connection closed"));
         }
+    }
+}
+
+/// A response's status, its headers, and how many bytes its head took.
+type Head = (u16, Vec<(String, String)>, usize);
+
+/// The status, headers and length of the response head at the start of `raw`, once all of it came.
+fn head(raw: &[u8]) -> Result<Option<Head>, String> {
+    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return if raw.len() > MAX_HEAD {
+            Err("the answer's head is too long".into())
+        } else {
+            Ok(None)
+        };
     };
-    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+    let head = String::from_utf8_lossy(&raw[..end]);
     let mut lines = head.split("\r\n");
     let status = lines
         .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| format!("{url}: not an HTTP response"))?;
-    let headers: Vec<(String, String)> = lines
+        .and_then(|l| l.strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok())
+        .filter(|s| (100..600).contains(s))
+        .ok_or("not an HTTP response")?;
+    let headers = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         .collect();
-    let rest = raw.split_off(head_end + 4);
-    Ok(Open {
-        status,
-        headers,
-        io,
-        rest,
-    })
+    Ok(Some((status, headers, end + 4)))
 }
 
 /// Hands the body to `sink` piece by piece, up to `limit` bytes: its length, and whether all of it came.
@@ -520,7 +544,16 @@ async fn body(
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.clone())
     };
-    let chunked = get("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
+    // These never have a body, whatever their headers say.
+    if method == "HEAD" || matches!(open.status, 204 | 304) {
+        return Ok((0, true));
+    }
+    // Chunked is always the last coding ("gzip, chunked").
+    let chunked = get("transfer-encoding").is_some_and(|v| {
+        v.rsplit(',')
+            .next()
+            .is_some_and(|c| c.trim().eq_ignore_ascii_case("chunked"))
+    });
     let length = get("content-length").and_then(|v| v.parse::<usize>().ok());
     let io = &mut open.io;
     let mut buf = std::mem::take(&mut open.rest);
@@ -531,17 +564,19 @@ async fn body(
                 if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
                     break i;
                 }
-                if read_more(io, &mut buf).await? == 0 {
+                if buf.len() > MAX_HEAD || read_more(io, &mut buf).await? == 0 {
                     return Ok((total, false));
                 }
             };
-            let size = String::from_utf8_lossy(&buf[..line_end]);
-            let size = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16).unwrap_or(0);
+            // A size that isn't one is a broken body, not its end.
+            let Some(size) = chunk_size(&buf[..line_end]) else {
+                return Ok((total, false));
+            };
             buf.drain(..line_end + 2);
             if size == 0 {
                 return Ok((total, true));
             }
-            if total + size > limit {
+            if size > limit - total {
                 return Ok((total, false));
             }
             let mut left = size;
@@ -563,11 +598,7 @@ async fn body(
             buf.drain(..2);
         }
     }
-    let want = match length {
-        Some(len) => len,
-        None if open.status == 204 || open.status == 304 || method == "HEAD" => return Ok((0, true)),
-        None => usize::MAX,
-    };
+    let want = length.unwrap_or(usize::MAX);
     loop {
         let take = buf.len().min(want - total).min(limit - total);
         if take > 0 {
@@ -586,6 +617,15 @@ async fn body(
             return Ok((total, length.is_none()));
         }
     }
+}
+
+/// A chunk's size line ("1a" or "1a;name=value"), in hex.
+fn chunk_size(line: &[u8]) -> Option<usize> {
+    let size = std::str::from_utf8(line).ok()?.split(';').next()?.trim();
+    if size.is_empty() || !size.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    usize::from_str_radix(size, 16).ok()
 }
 
 /// One read, which may take up to [`TIMEOUT`].
@@ -711,6 +751,149 @@ mod tests {
         assert_eq!(start("items 1-2/3"), None);
         assert_eq!(start("bytes -5/9"), None);
         assert_eq!(range_start(&[]), None);
+    }
+
+    #[test]
+    fn response_heads() {
+        let (status, headers, len) = head(b"HTTP/1.1 200 OK\r\nA: 1\r\nb:  two \r\nbad line\r\n\r\nbody")
+            .unwrap()
+            .unwrap();
+        assert_eq!((status, len), (200, 45));
+        assert_eq!(headers, [("A".into(), "1".into()), ("b".into(), "two".into())]);
+        assert_eq!(head(b"HTTP/1.0 404\r\n\r\n").unwrap().unwrap().0, 404);
+        assert_eq!(head(b"HTTP/1.1 200 OK\r\nA: 1\r\n").unwrap(), None);
+        for bad in [
+            &b"SSH-2.0 200 x\r\n\r\n"[..],
+            b"HTTP/1.1 abc\r\n\r\n",
+            b"HTTP/1.1 99\r\n\r\n",
+            b"\r\n\r\n",
+        ] {
+            assert!(head(bad).is_err(), "{bad:?}");
+        }
+        // A head that never ends can't grow without bound.
+        assert!(head(&vec![b'a'; MAX_HEAD + 1]).is_err());
+        assert_eq!(head(&vec![b'a'; MAX_HEAD]).unwrap(), None);
+    }
+
+    #[test]
+    fn chunk_sizes() {
+        assert_eq!(chunk_size(b"1a"), Some(26));
+        assert_eq!(chunk_size(b"1A ; name=value"), Some(26));
+        assert_eq!(chunk_size(b"0"), Some(0));
+        for bad in [&b""[..], b"zz", b"+5", b"-1", b"ffffffffffffffffff", b"\xff"] {
+            assert_eq!(chunk_size(bad), None, "{bad:?}");
+        }
+    }
+
+    /// The body each raw answer gives a GET (or `method`) with a `limit`, and whether all of it came.
+    fn decode(wire: &[u8], method: &str, limit: usize) -> Result<(Vec<u8>, bool), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (status, headers, len) = head(wire)?.ok_or("no head")?;
+            let mut open = Open {
+                status,
+                headers,
+                io: Box::new(tokio::io::join(tokio::io::empty(), tokio::io::sink())),
+                rest: wire[len..].to_vec(),
+            };
+            let mut out = Vec::new();
+            let (n, complete) = body(&mut open, method, limit, &mut |p: &[u8]| out.extend_from_slice(p)).await?;
+            assert_eq!(n, out.len());
+            Ok((out, complete))
+        })
+    }
+
+    #[test]
+    fn bodies_by_length_chunks_or_end() {
+        let ok = |wire: &[u8]| decode(wire, "GET", 100).unwrap();
+        assert_eq!(
+            ok(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcdef"),
+            (b"abc".to_vec(), true)
+        );
+        assert_eq!(
+            ok(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nabc"),
+            (b"abc".to_vec(), false)
+        );
+        assert_eq!(ok(b"HTTP/1.0 200 OK\r\n\r\nto the end"), (b"to the end".to_vec(), true));
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, Chunked\r\n\r\n3;x=y\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
+        assert_eq!(ok(chunked), (b"abcde".to_vec(), true));
+        // Cut short, over the limit, or a size that isn't one: never reported as all of it.
+        let te = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        for (rest, got) in [
+            ("3\r\nabc\r\n", "abc"),
+            ("3\r\nab", "ab"),
+            ("3\r\nabc\r\nzz\r\nmore\r\n0\r\n\r\n", "abc"),
+            ("ffffffffffffffff\r\nabc", ""),
+            ("3\r\nabc\r\n65\r\n", "abc"),
+        ] {
+            assert_eq!(
+                ok(format!("{te}{rest}").as_bytes()),
+                (got.as_bytes().to_vec(), false),
+                "{rest:?}"
+            );
+        }
+        let long_size = format!("{te}{}", "1".repeat(MAX_HEAD + 1));
+        assert_eq!(ok(long_size.as_bytes()), (Vec::new(), false));
+        assert_eq!(
+            decode(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nabcde", "GET", 2).unwrap(),
+            (b"ab".to_vec(), false)
+        );
+    }
+
+    #[test]
+    fn some_answers_have_no_body_whatever_they_say() {
+        let empty = (Vec::new(), true);
+        assert_eq!(
+            decode(b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n", "HEAD", 100).unwrap(),
+            empty
+        );
+        assert_eq!(
+            decode(b"HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\n", "GET", 100).unwrap(),
+            empty
+        );
+        assert_eq!(
+            decode(
+                b"HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n",
+                "GET",
+                100
+            )
+            .unwrap(),
+            empty
+        );
+    }
+
+    /// An interim 100 or 103 is skipped; a cut or oversized answer is an error, not half a body.
+    #[test]
+    fn requests_skip_interim_answers_and_refuse_partial_bodies() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = l.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let replies: [&[u8]; 2] = [
+                    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort",
+                ];
+                for r in replies {
+                    let (mut s, _) = l.accept().await.unwrap();
+                    let _ = s.read(&mut [0u8; 1024]).await;
+                    s.write_all(r).await.unwrap();
+                }
+            });
+            let url = format!("http://127.0.0.1:{port}/");
+            let r = request("POST", &url, &[], b"x").await.unwrap();
+            assert_eq!((r.status, r.text().as_str()), (200, "ok"));
+            assert!(r.headers.iter().all(|(k, _)| k != "Link"));
+            let cut = request("GET", &url, &[], b"").await;
+            assert!(matches!(cut, Err(e) if e.contains("cut short")));
+        });
     }
 
     /// Text from chat often lands in a Fetch URL address: it must reach the server as one request.
