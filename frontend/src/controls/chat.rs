@@ -63,6 +63,22 @@ fn for_each_line_url(line: &Value, mut visit: impl FnMut(&str)) {
     }
 }
 
+/// Format a poll or prediction choice's count and whether it is currently leading.
+fn poll_choice_stat(choice: &Value, is_prediction: bool) -> (bool, String) {
+    let votes = choice["count"]
+        .as_u64()
+        .or_else(|| choice["votes"].as_u64())
+        .unwrap_or(0);
+    let share = choice["share"].as_f64().unwrap_or(0.0);
+    let is_best = choice["best"] == true && votes > 0;
+    let stat = if is_prediction {
+        votes.to_string()
+    } else {
+        format!("{}% ({votes})", (share * 100.0).clamp(0.0, 100.0).round() as u64)
+    };
+    (is_best, stat)
+}
+
 /// The names of our accounts, from the page's model.
 fn value_me(model: &Value) -> Vec<String> {
     model["chat"]["me"]
@@ -146,9 +162,11 @@ pub struct ChatView {
     /// The Show box's choices (ids) and the box.
     view_ids: Vec<String>,
     view_select: Option<Entity<SelectState<Vec<String>>>>,
+    view_select_sub: Option<Subscription>,
     options: Option<Entity<Sections>>,
     card: Option<Entity<CardView>>,
     picker: Option<Entity<EmotePicker>>,
+    picker_sub: Option<Subscription>,
     all_targets: HashSet<String>,
     all_bot: bool,
     all_fallback: bool,
@@ -214,9 +232,11 @@ impl ChatView {
             fading: false,
             view_ids: Vec::new(),
             view_select: None,
+            view_select_sub: None,
             options: None,
             card: None,
             picker: None,
+            picker_sub: None,
             all_targets: PLATFORMS.iter().map(|p| (*p).to_string()).collect(),
             all_bot: false,
             all_fallback: true,
@@ -253,34 +273,39 @@ impl ChatView {
 
     /// Open the emote picker for the chosen platform; a pick goes into the send box.
     fn open_picker(&mut self, pane: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.panes.get(pane) else {
+            return;
+        };
         if self.picker.is_some() {
             return;
         }
         self.asking = Some(pane);
         let hint = self.texts()["emoteSearch"].as_str().unwrap_or_default().to_owned();
-        let platform = self.panes[pane].platform.unwrap_or("all").to_owned();
+        let platform = target.platform.unwrap_or("all").to_owned();
         let picker = cx.new(|cx| EmotePicker::new(&platform, hint, window, cx));
-        self._subscriptions
-            .push(cx.subscribe_in(&picker, window, |view, _, event: &Picked, window, cx| {
-                let Picked(name, url, keep) = event;
-                let pane = view.asking.unwrap_or(0);
-                let input = view.panes[pane].input.clone();
-                input.update(cx, |input, cx| put_emote(input, name, url, window, cx));
-                if let Some(picker_ref) = view.picker.as_ref() {
-                    if let Some(file) = picker_ref.read(cx).image_file(url) {
-                        view.images.insert_file(url.clone(), file.clone());
-                    }
+        self.picker_sub = Some(cx.subscribe_in(&picker, window, |view, _, event: &Picked, window, cx| {
+            let Picked(name, url, keep) = event;
+            let pane = view.asking.unwrap_or(0);
+            let Some(shown) = view.panes.get(pane) else {
+                return;
+            };
+            let input = shown.input.clone();
+            input.update(cx, |input, cx| put_emote(input, name, url, window, cx));
+            if let Some(picker_ref) = view.picker.as_ref() {
+                if let Some(file) = picker_ref.read(cx).image_file(url) {
+                    view.images.insert_file(url.clone(), file.clone());
                 }
-                if !url.is_empty() && view.images.get(url).is_none() {
-                    view.images.want(url);
-                    view.ask_images();
-                }
-                view.ask_suggest(pane, cx);
-                if !keep {
-                    view.close_picker(window, cx);
-                    input.update(cx, |input, cx| input.focus(window, cx));
-                }
-            }));
+            }
+            if !url.is_empty() && view.images.get(url).is_none() {
+                view.images.want(url);
+                view.ask_images();
+            }
+            view.ask_suggest(pane, cx);
+            if !keep {
+                view.close_picker(window, cx);
+                input.update(cx, |input, cx| input.focus(window, cx));
+            }
+        }));
         self.picker = Some(picker.clone());
         picker.update(cx, |picker, cx| picker.focus(window, cx));
         cx.notify();
@@ -288,6 +313,7 @@ impl ChatView {
 
     fn close_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.picker = None;
+        self.picker_sub = None;
         self.asking = None;
         cx.notify();
     }
@@ -306,9 +332,11 @@ impl ChatView {
     pub fn update_model(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let chat = &value["chat"];
         let fresh: Vec<Value> = chat["lines"].as_array().cloned().unwrap_or_default();
+        let fresh_empty = fresh.is_empty();
         let replaced = chat["reset"] == true;
         if replaced {
             self.lines.clear();
+            self.born.clear();
         }
         let fade = value["chat"]["fadeIn"].as_u64().unwrap_or(0);
         let now = std::time::Instant::now();
@@ -329,7 +357,9 @@ impl ChatView {
         if over > 0 {
             self.lines.drain(..over);
         }
-        self.sync_panes(replaced, cx);
+        if replaced || !fresh_empty || over > 0 {
+            self.sync_panes(replaced, cx);
+        }
         self.generation = chat["gen"].as_u64().unwrap_or(0);
         self.seq = chat["seq"].as_u64().unwrap_or(0);
         self.model = value;
@@ -407,13 +437,14 @@ impl ChatView {
                 .filter(|(_, line)| pane.platform.is_none_or(|platform| line["platform"] == platform))
                 .map(|(at, line)| (at, line["seq"].as_u64().unwrap_or(0)))
                 .unzip();
-            let old = std::mem::replace(&mut pane.seqs, seqs.clone());
+            let old = std::mem::replace(&mut pane.seqs, seqs);
             pane.at = at;
+            let seqs = &pane.seqs;
             if replaced {
                 pane.scroller.update(cx, |scroller, cx| scroller.reset(seqs.len(), cx));
                 continue;
             }
-            if old == seqs {
+            if old == *seqs {
                 continue;
             }
             let dropped = old
@@ -458,11 +489,14 @@ impl ChatView {
 
     /// Ask the core what fits what is typed: Twitch's and Kick's commands after a `/`, names after an `@`.
     fn ask_suggest(&mut self, pane: usize, cx: &mut Context<Self>) {
-        let platform = self.panes.get(pane).and_then(|p| p.platform).unwrap_or("all");
-        let input = self.panes[pane].input.read(cx);
+        let Some(shown) = self.panes.get_mut(pane) else {
+            return;
+        };
+        let platform = shown.platform.unwrap_or("all");
+        let input = shown.input.read(cx);
         let text = input.value().to_string();
         let cursor = input.cursor_position().character as usize;
-        self.panes[pane].typed.clone_from(&text);
+        shown.typed.clone_from(&text);
         if text.is_empty() {
             if self.suggest.take().is_some() {
                 cx.notify();
@@ -478,10 +512,13 @@ impl ChatView {
     /// Draw the emotes the core found in what is typed as pictures inside the box: each one is an inline
     /// token over its word, so the text (and what is sent) stays the same.
     fn inline_emotes(&mut self, pane: usize, parts: &[Value], window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.panes[pane].input.clone();
+        let Some(shown) = self.panes.get(pane) else {
+            return;
+        };
+        let input = shown.input.clone();
         let state = input.read(cx);
         let text = state.value().to_string();
-        if text != self.panes[pane].typed {
+        if text != shown.typed {
             return;
         }
         let selection = state.selected_range();
@@ -499,7 +536,10 @@ impl ChatView {
         }
         let mut content = InputContent::new(text.clone());
         for (range, id) in spans {
-            let token = InlineToken::new(id, text[range.clone()].to_owned());
+            let Some(slice) = text.get(range.clone()) else {
+                return;
+            };
+            let token = InlineToken::new(id, slice.to_owned());
             match content.with_token(range, token) {
                 Ok(next) => content = next,
                 Err(_) => return,
@@ -518,9 +558,12 @@ impl ChatView {
     fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(open) = self.suggest.take() else { return };
         let Some(row) = open.rows.get(open.at) else { return };
+        let Some(shown) = self.panes.get(open.pane) else {
+            return;
+        };
         let fill = row["fill"].as_str().unwrap_or_default().to_owned();
         let more = row["more"] == true;
-        let input = self.panes[open.pane].input.clone();
+        let input = shown.input.clone();
         let text = input.read(cx).value().to_string();
         let cursor = input.read(cx).cursor_position().character as usize;
         let chars: Vec<char> = text.chars().collect();
@@ -563,7 +606,10 @@ impl ChatView {
             "tab" => self.complete(window, cx),
             "escape" => self.suggest = None,
             "enter" => {
-                let typed = self.panes[pane].input.read(cx).value().to_string();
+                let Some(shown) = self.panes.get(pane) else {
+                    return;
+                };
+                let typed = shown.input.read(cx).value().to_string();
                 let sendable = open
                     .rows
                     .get(open.at)
@@ -899,7 +945,8 @@ impl ChatView {
                 self.refresh();
                 cx.notify();
             }
-            "send" | "act" | "show" | "clear" | "sender" | "card-open" | "prefetch" | "reconnect" => {
+            "send" | "act" | "show" | "view" | "held" | "favorite" | "clear" | "sender" | "card-open" | "prefetch"
+            | "reconnect" => {
                 self.error = if failed { err } else { None };
                 cx.notify();
             }
@@ -1096,15 +1143,20 @@ fn emote_spans(
     caret: Option<usize>,
 ) -> Option<Vec<(Range<usize>, String)>> {
     let mut spans: Vec<(Range<usize>, String)> = Vec::new();
-    let mut at = 0;
+    let mut at = 0usize;
     for part in parts {
         if let Some(plain) = part["t"].as_str() {
-            at += plain.len();
+            let end = at.checked_add(plain.len())?;
+            if text.get(at..end) != Some(plain) {
+                return None;
+            }
+            at = end;
             continue;
         }
         let name = part["e"].as_str()?;
-        let range = at..at + name.len();
-        at = range.end;
+        let end = at.checked_add(name.len())?;
+        let range = at..end;
+        at = end;
         if text.get(range.clone()) != Some(name) {
             return None;
         }
@@ -1121,8 +1173,17 @@ fn emote_spans(
         return None;
     }
     for (range, id) in old {
-        let alone = text[..range.start].chars().next_back().is_none_or(|c| c == ' ')
-            && text[range.end..].chars().next().is_none_or(|c| c == ' ');
+        if range.start >= range.end || text.get(range.clone()).is_none() {
+            continue;
+        }
+        let Some(before) = text.get(..range.start) else {
+            continue;
+        };
+        let Some(after) = text.get(range.end..) else {
+            continue;
+        };
+        let alone =
+            before.chars().next_back().is_none_or(|c| c == ' ') && after.chars().next().is_none_or(|c| c == ' ');
         let taken = spans
             .iter()
             .any(|(span, _)| span.start < range.end && range.start < span.end);
@@ -1137,7 +1198,12 @@ fn emote_spans(
 /// Put a picked emote at the caret as one picture in the text, with a space on each side.
 fn put_emote(input: &mut InputState, name: &str, url: &str, window: &mut Window, cx: &mut Context<InputState>) {
     let start = input.selected_range().start;
-    if input.value()[..start].chars().next_back().is_some_and(|c| c != ' ') {
+    if input
+        .value()
+        .get(..start)
+        .and_then(|before| before.chars().next_back())
+        .is_some_and(|c| c != ' ')
+    {
         input.replace(" ", window, cx);
     }
     let token = InlineToken::new(url.to_owned(), name.to_owned());
@@ -1145,7 +1211,7 @@ fn put_emote(input: &mut InputState, name: &str, url: &str, window: &mut Window,
         input.replace(name.to_owned(), window, cx);
     }
     let caret = input.cursor();
-    if input.value()[caret..].starts_with(' ') {
+    if input.value().get(caret..).is_some_and(|after| after.starts_with(' ')) {
         input.set_selected_range(caret + 1..caret + 1, cx);
     } else {
         input.insert(" ", window, cx);
@@ -1712,7 +1778,7 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
     }
     for (index, badge) in line["badges"].as_array().into_iter().flatten().enumerate() {
         let file = badge["url"].as_str().and_then(|url| images.get(url));
-        let uid = at * 8 + index;
+        let uid = at.wrapping_mul(32).wrapping_add(index);
         let tip = PictureTip {
             file: file.cloned(),
             art: badge["art"].as_str().filter(|_| file.is_none()).map(str::to_owned),
@@ -1818,17 +1884,19 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
                     String::new()
                 };
                 let line_plat = line["platform"].as_str().unwrap_or("twitch").to_owned();
-                let word_el = div().id(("word", at * 256 + words)).when(is_mention, |el| {
-                    el.cursor_pointer().on_click(move |_, _, _| {
-                        send(json!({
-                            "request": "StreamerzChat",
-                            "op": "card",
-                            "platform": line_plat,
-                            "user": target_user,
-                            "id": "chat:card"
-                        }));
-                    })
-                });
+                let word_el = div()
+                    .id(("word", at.wrapping_mul(1024).wrapping_add(words)))
+                    .when(is_mention, |el| {
+                        el.cursor_pointer().on_click(move |_, _, _| {
+                            send(json!({
+                                "request": "StreamerzChat",
+                                "op": "card",
+                                "platform": line_plat,
+                                "user": target_user,
+                                "id": "chat:card"
+                            }));
+                        })
+                    });
                 body = body.child(
                     word_el
                         .text_color(if action { name_color } else { text_color })
@@ -1859,10 +1927,11 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
                         name: emote.to_owned(),
                         height: 112.,
                     };
+                    let emote_uid = at.wrapping_mul(128).wrapping_add(emotes);
                     div()
-                        .id(("emote-tip", at * 64 + emotes))
+                        .id(("emote-tip", emote_uid))
                         .flex_shrink_0()
-                        .child(picture(Some(file), size, ("emote", at * 64 + emotes)))
+                        .child(picture(Some(file), size, ("emote", emote_uid)))
                         .tooltip(move |_, cx| cx.new(|_| tip.clone()).into())
                         .into_any_element()
                 }
@@ -1879,7 +1948,10 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
 impl ChatView {
     /// One line of the list.
     fn row(&self, pane: usize, row: usize, this: &Entity<Self>, cx: &App) -> AnyElement {
-        let Some(line) = self.panes[pane].at.get(row).and_then(|at| self.lines.get(*at)) else {
+        let Some(shown) = self.panes.get(pane) else {
+            return div().into_any_element();
+        };
+        let Some(line) = shown.at.get(row).and_then(|at| self.lines.get(*at)) else {
             return div().into_any_element();
         };
         // Element ids are unique across panes.
@@ -2252,7 +2324,7 @@ impl ChatView {
             return;
         }
         let select = cx.new(|cx| SelectState::new(names, Some(IndexPath::new(at)), window, cx));
-        self._subscriptions.push(
+        self.view_select_sub = Some(
             cx.subscribe(&select, |view, select, event: &SelectEvent<Vec<String>>, cx| {
                 let SelectEvent::Confirm(Some(_)) = event else { return };
                 let chosen = select
@@ -2813,14 +2885,7 @@ impl Render for ChatView {
             let mut choices_col = div().flex().flex_col().gap(px(SPACE_XS));
             for choice in poll["choices"].as_array().into_iter().flatten() {
                 let label = choice["label"].as_str().unwrap_or_default().to_owned();
-                let votes = choice["votes"].as_u64().unwrap_or(0);
-                let share = choice["share"].as_f64().unwrap_or(0.0) as f32;
-                let is_best = choice["best"] == true && votes > 0;
-                let stat = if is_prediction {
-                    votes.to_string()
-                } else {
-                    format!("{}% ({votes})", (share * 100.0).round() as u64)
-                };
+                let (is_best, stat) = poll_choice_stat(choice, is_prediction);
                 choices_col = choices_col.child(
                     div()
                         .relative()
@@ -3113,7 +3178,7 @@ impl Render for ChatView {
 
 #[cfg(test)]
 mod tests {
-    use super::emote_spans;
+    use super::{emote_spans, for_each_line_url, poll_choice_stat};
     use serde_json::json;
 
     /// The live pages follow docs/UI.md: type and gaps come from the theme tokens, never from a size or
@@ -3228,5 +3293,169 @@ mod tests {
             spans,
             vec![(0..8, url("RainTime")), (9..15, url("PETPET")), (17..21, url("smile"))]
         );
+    }
+
+    #[test]
+    fn emote_spans_rejects_mismatched_plain_text_and_ignores_invalid_old_utf8_ranges() {
+        let parts = [json!({"t": "aaaa "}), json!({"e": "Kappa", "u": url("Kappa")})];
+        assert_eq!(emote_spans("bbbb Kappa", &parts, &[], None), None);
+
+        // Multi-byte UTF-8 text: invalid, reversed, empty, or mid-character old ranges never panic.
+        let text = "héllo 😀";
+        let old = vec![
+            (0..1, url("mid-char")),
+            (1..3, url("mid-char-2")),
+            (std::ops::Range { start: 5, end: 3 }, url("reversed")),
+            (2..2, url("empty")),
+            (0..99, url("oob")),
+            (7..10, url("mid-emoji")),
+        ];
+        assert_eq!(emote_spans(text, &[], &old, None), Some(vec![]));
+    }
+
+    #[test]
+    fn poll_choice_stat_reads_core_count_field_and_marks_best() {
+        let choice = json!({"label": "Yes", "count": 12, "share": 0.75, "best": true});
+        assert_eq!(poll_choice_stat(&choice, false), (true, "75% (12)".to_owned()));
+        assert_eq!(poll_choice_stat(&choice, true), (true, "12".to_owned()));
+
+        let zero = json!({"label": "No", "count": 0, "share": 0.0, "best": true});
+        assert_eq!(poll_choice_stat(&zero, false), (false, "0% (0)".to_owned()));
+
+        let legacy = json!({"label": "Legacy", "votes": 4, "share": 0.25, "best": false});
+        assert_eq!(poll_choice_stat(&legacy, false), (false, "25% (4)".to_owned()));
+    }
+
+    #[test]
+    fn line_url_collection_extracts_parts_badges_and_media() {
+        let line = json!({
+            "parts": [{"t": "hi "}, {"e": "Kappa", "u": "https://e/kappa.png"}],
+            "badges": [{"url": "https://b/mod.png"}, {"url": ""}],
+            "picture": "https://p/pic.png",
+            "gif": "",
+            "costIcon": "coins"
+        });
+        let mut urls = Vec::new();
+        for_each_line_url(&line, |url| urls.push(url.to_owned()));
+        assert_eq!(
+            urls,
+            vec!["https://e/kappa.png", "https://b/mod.png", "https://p/pic.png", "coins"]
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    mod ui {
+        use super::super::{ChatView, MOST};
+        use gpui_kit::{
+            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+            Window, WindowBounds, WindowOptions,
+        };
+        use serde_json::json;
+
+        struct ChatHost(Entity<ChatView>);
+        impl Render for ChatHost {
+            fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+
+        fn base_chat(lines: Vec<serde_json::Value>, reset: bool, seq: u64) -> serde_json::Value {
+            json!({
+                "chat": {
+                    "gen": 1,
+                    "reset": reset,
+                    "seq": seq,
+                    "lines": lines,
+                    "platforms": [
+                        {"id": "twitch", "name": "Twitch", "present": true, "connected": true, "send": true, "room": {"name": "streamer", "picture": ""}, "sender": {"name": "me", "picture": ""}}
+                    ],
+                    "connected": true,
+                    "history": true,
+                    "view": "all",
+                    "texts": {"sendPlaceholder": "Send"}
+                }
+            })
+        }
+
+        #[gpui_kit::test]
+        fn chat_caps_history_syncs_panes_and_reports_view_and_held_errors(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<ChatView>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let s = slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(800.), px(600.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let initial = base_chat(Vec::new(), true, 0);
+                        let chat = cx.new(|cx| ChatView::new(initial, window, cx));
+                        *s.borrow_mut() = Some(chat.clone());
+                        cx.new(|_| ChatHost(chat))
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let chat = slot.borrow().clone().expect("chat created");
+
+            cx.update_window(window.into(), |_, window, cx| {
+                // Feed MOST + 50 lines and verify history stays capped at MOST.
+                let batch: Vec<_> = (1..=(MOST as u64 + 50))
+                    .map(|seq| {
+                        json!({
+                            "seq": seq,
+                            "platform": "twitch",
+                            "user": "alice",
+                            "parts": [{"t": format!("msg {seq}")}],
+                            "costIcon": "coins"
+                        })
+                    })
+                    .collect();
+                chat.update(cx, |view, cx| {
+                    view.update_model(base_chat(batch, false, MOST as u64 + 50), window, cx);
+                });
+                let view = chat.read(cx);
+                assert_eq!(view.lines.len(), MOST);
+                assert_eq!(view.lines[0]["seq"], 51);
+                assert_eq!(view.panes[0].seqs.len(), MOST);
+                assert_eq!(view.panes[1].seqs.len(), MOST);
+
+                // Non-HTTP costIcon ("coins") must not be queued for image downloads.
+                chat.update(cx, |view, _| {
+                    assert_eq!(view.images.next_batch(), None);
+                });
+
+                // Errors from "view" and "held" are surfaced instead of swallowed.
+                chat.update(cx, |view, cx| {
+                    view.apply("view", json!({"status": "error", "error": "unknown view"}), window, cx);
+                });
+                assert!(chat.read(cx).error.is_some());
+                chat.update(cx, |view, cx| {
+                    view.apply("view", json!({"status": "ok"}), window, cx);
+                });
+                assert!(chat.read(cx).error.is_none());
+                chat.update(cx, |view, cx| {
+                    view.apply(
+                        "held",
+                        json!({"status": "error", "error": "not held anymore"}),
+                        window,
+                        cx,
+                    );
+                });
+                assert!(chat.read(cx).error.is_some());
+            })
+            .unwrap();
+        }
     }
 }
