@@ -95,11 +95,7 @@ fn coins_text(coins: u64) -> String {
 pub fn gallery() -> Vec<Value> {
     let Ok(c) = CATALOG.lock() else { return Vec::new() };
     let mut gifts: Vec<&Gift> = c.gifts.iter().collect();
-    gifts.sort_by(|a, b| {
-        a.coins
-            .cmp(&b.coins)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    gifts.sort_by_cached_key(|g| (g.coins, g.name.to_lowercase()));
     gifts
         .into_iter()
         .map(|g| {
@@ -113,8 +109,9 @@ pub fn gallery() -> Vec<Value> {
             } else {
                 "automation.gift_single"
             });
-            let tip = format!("{name}\n{}\n{kind}", coins_text(g.coins));
-            json!({"id": g.id, "label": name, "picture": g.picture_url, "detail": coins_text(g.coins), "tip": tip})
+            let detail = coins_text(g.coins);
+            let tip = format!("{name}\n{detail}\n{kind}");
+            json!({"id": g.id, "label": name, "picture": g.picture_url, "detail": detail, "tip": tip})
         })
         .collect()
 }
@@ -220,6 +217,23 @@ fn publish(c: &Catalog) {
     crate::host::changed();
 }
 
+/// Sparse wire events must not erase richer catalog metadata.
+fn merge_observed(old: &Gift, mut updated: Gift, data: &Value) -> Gift {
+    if updated.name.is_empty() {
+        updated.name.clone_from(&old.name);
+    }
+    if updated.picture_url.is_empty() {
+        updated.picture_url.clone_from(&old.picture_url);
+    }
+    if data["diamondCount"].as_u64().is_none() {
+        updated.coins = old.coins;
+    }
+    if data["giftType"].as_u64().is_none() {
+        updated.streak = old.streak;
+    }
+    updated
+}
+
 /// A received gift also teaches us about gifts missing from a list or added during this live.
 pub fn observe(data: &Value) {
     let id = identity(&data["giftId"]);
@@ -232,30 +246,21 @@ pub fn observe(data: &Value) {
         name: data["giftName"].as_str().unwrap_or_default().into(),
         coins: data["diamondCount"].as_u64().unwrap_or(0),
         streak: data["giftType"].as_u64() == Some(1),
-        picture_url: data["giftPictureUrl"].as_str().unwrap_or_default().into(),
+        picture_url: data["giftPictureUrl"]
+            .as_str()
+            .filter(|s| s.starts_with("https://"))
+            .unwrap_or_default()
+            .into(),
     };
     if c.state == "loading" {
         if let Some(old) = c.pending.iter_mut().find(|g| g.id == gift.id) {
-            *old = gift.clone();
+            *old = merge_observed(old, gift.clone(), data);
         } else {
             c.pending.push(gift.clone());
         }
     }
     if let Some(old) = c.gifts.iter_mut().find(|g| g.id == gift.id) {
-        // Sparse wire events must not erase richer catalog metadata.
-        let mut updated = gift;
-        if updated.name.is_empty() {
-            updated.name.clone_from(&old.name);
-        }
-        if updated.picture_url.is_empty() {
-            updated.picture_url.clone_from(&old.picture_url);
-        }
-        if data["diamondCount"].as_u64().is_none() {
-            updated.coins = old.coins;
-        }
-        if data["giftType"].as_u64().is_none() {
-            updated.streak = old.streak;
-        }
+        let updated = merge_observed(old, gift, data);
         if *old == updated {
             return;
         }
@@ -324,6 +329,38 @@ fn language() -> String {
     }
 }
 
+/// Clears `"loading"` if an in-flight catalog load is cancelled or aborted before completion.
+struct LoadingGuard {
+    generation: u64,
+    active: bool,
+}
+
+impl LoadingGuard {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            active: true,
+        }
+    }
+    fn defuse(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Ok(mut c) = CATALOG.lock() {
+            if c.generation == self.generation && c.state == "loading" {
+                c.state = "unavailable";
+                c.pending.clear();
+            }
+        }
+    }
+}
+
 async fn public() -> Result<Value, String> {
     let generation = {
         let mut c = CATALOG.lock().map_err(|_| "Gift catalog unavailable")?;
@@ -343,6 +380,7 @@ async fn public() -> Result<Value, String> {
         publish(&c);
         generation
     };
+    let mut guard = LoadingGuard::new(generation);
     let url = format!("{PUBLIC_LIST}&webcast_language={}", language());
     let result = crate::http::request("GET", &url, &[("User-Agent".into(), AGENT.into())], b"")
         .await
@@ -357,6 +395,7 @@ async fn public() -> Result<Value, String> {
     if !c.complete(generation, result) {
         return Err("The TikTok live changed; refresh its gifts again".into());
     }
+    guard.defuse();
     publish(&c);
     Ok(json!(*c))
 }
@@ -391,6 +430,7 @@ pub async fn refresh(engine: &Rc<Engine>) -> Result<Value, String> {
         publish(&c);
         generation
     };
+    let mut guard = LoadingGuard::new(generation);
     let result = crate::tiktok_bridge::gift_list(engine, &room)
         .await
         .and_then(|body| parse(&body));
@@ -402,6 +442,7 @@ pub async fn refresh(engine: &Rc<Engine>) -> Result<Value, String> {
         return Err("The TikTok live or account changed; refresh its gifts again".into());
     }
     c.complete(generation, result);
+    guard.defuse();
     publish(&c);
     Ok(json!(*c))
 }
@@ -617,5 +658,104 @@ mod tests {
         assert!(parse(&json!({"data":{"gifts":[]}})).unwrap().is_empty());
         assert!(parse(&json!({"status_code":1,"data":{"gifts":[]}})).is_err());
         assert!(parse(&json!({})).is_err());
+    }
+
+    #[test]
+    fn observe_filters_insecure_urls_and_merges_pending_during_load() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        invalidate();
+        let gen = {
+            let mut c = CATALOG.lock().unwrap();
+            c.state = "loading";
+            c.generation
+        };
+        observe(&json!({
+            "giftId": 42,
+            "giftName": "Heart",
+            "diamondCount": 10,
+            "giftType": 1,
+            "giftPictureUrl": "https://cdn.example/heart.png"
+        }));
+        // Sparse follow-up with insecure URL must not erase existing metadata.
+        observe(&json!({
+            "giftId": 42,
+            "giftName": "",
+            "giftPictureUrl": "http://insecure.example/heart.png"
+        }));
+        {
+            let mut c = CATALOG.lock().unwrap();
+            assert!(c.complete(gen, Ok(Vec::new())));
+            assert_eq!(c.gifts.len(), 1);
+            assert_eq!(c.gifts[0].name, "Heart");
+            assert_eq!(c.gifts[0].coins, 10);
+            assert!(c.gifts[0].streak);
+            assert_eq!(c.gifts[0].picture_url, "https://cdn.example/heart.png");
+        }
+        invalidate();
+    }
+
+    #[test]
+    fn loading_guard_resets_abandoned_load_without_touching_newer_generation() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        invalidate();
+        let gen = {
+            let mut c = CATALOG.lock().unwrap();
+            c.state = "loading";
+            c.generation
+        };
+        {
+            let _guard = LoadingGuard::new(gen);
+        }
+        assert_eq!(summary().0, "unavailable");
+        assert!(wants_loading());
+
+        let gen2 = {
+            let mut c = CATALOG.lock().unwrap();
+            c.generation = c.generation.wrapping_add(1);
+            c.state = "loading";
+            c.generation
+        };
+        {
+            // Guard for an older generation must not disturb a newer in-flight load.
+            let _stale = LoadingGuard::new(gen);
+        }
+        assert_eq!(summary().0, "loading");
+        {
+            let mut defused = LoadingGuard::new(gen2);
+            defused.defuse();
+        }
+        assert_eq!(summary().0, "loading");
+        invalidate();
+    }
+
+    #[test]
+    fn gift_streak_matching_edge_cases() {
+        let completed_trigger = json!({"giftDelivery": 1, "minCoins": 10, "maxCoins": 100})
+            .as_object()
+            .unwrap()
+            .clone();
+        // Combo gift missing repeatEnd is not treated as completed.
+        assert!(!matches(
+            &completed_trigger,
+            &json!({"giftId": 1, "giftType": 1, "diamondCount": 10, "repeatCount": 2})
+        ));
+        // Combo gift with repeatCount=0 clamps to 1 and matches when repeatEnd=true.
+        assert!(matches(
+            &completed_trigger,
+            &json!({"giftId": 1, "giftType": 1, "diamondCount": 10, "repeatCount": 0, "repeatEnd": true})
+        ));
+        // Non-combo gift type 2 fires even when repeatEnd is false.
+        assert!(matches(
+            &completed_trigger,
+            &json!({"giftId": 2, "giftType": 2, "diamondCount": 25, "repeatCount": 1, "repeatEnd": false})
+        ));
+        // Fallback to precomputed coins when diamondCount is absent.
+        assert!(matches(&completed_trigger, &json!({"giftId": 3, "coins": 50})));
+        // Overflow in diamondCount * repeatCount saturates cleanly instead of wrapping.
+        let unbounded = json!({"minCoins": 100}).as_object().unwrap().clone();
+        assert!(matches(
+            &unbounded,
+            &json!({"giftId": 4, "diamondCount": u64::MAX, "repeatCount": 2})
+        ));
     }
 }
