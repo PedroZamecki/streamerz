@@ -16,7 +16,14 @@ pub struct Card {
     asking: bool,
     /// The box shows what actions get for them, not what they said.
     details: bool,
+    /// How many times the platform was asked again while it had not finished.
+    retries: u32,
 }
+
+/// The platform is asked again this often while it has not finished, and this many times at most
+/// (about seven seconds): a lookup that never ends must not keep the window busy.
+const RETRY_MS: u64 = 350;
+const RETRIES: u32 = 20;
 impl Card {
     pub fn new(model: Value, route: String) -> Self {
         let card = Self {
@@ -26,6 +33,7 @@ impl Card {
             images: HashMap::new(),
             asking: false,
             details: false,
+            retries: 0,
         };
         if let Some((platform, user)) = card.model["id"].as_str().and_then(|id| id.split_once('|')) {
             send(
@@ -44,15 +52,19 @@ impl Card {
         self.lookup = value["card"].clone();
         self.ask_images();
         // The platform has not finished: ask what it has said since, in a moment.
-        if self.lookup["pending"] == true {
+        if self.retry() {
             let (route, id) = (
                 self.route.clone(),
                 self.model["id"].as_str().unwrap_or_default().to_owned(),
             );
-            cx.spawn(async move |_, cx| {
+            cx.spawn(async move |card, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(350))
+                    .timer(std::time::Duration::from_millis(RETRY_MS))
                     .await;
+                // A card closed since asks nothing more.
+                if card.upgrade().is_none() {
+                    return;
+                }
                 if let Some((platform, user)) = id.split_once('|') {
                     send(
                         json!({"request": "StreamerzChat", "op": "card", "platform": platform, "userId": user,
@@ -63,6 +75,14 @@ impl Card {
             .detach();
         }
         cx.notify();
+    }
+    /// Whether to ask the platform again: it has not finished, and the tries are not used up.
+    fn retry(&mut self) -> bool {
+        if self.lookup["pending"] != true || self.retries >= RETRIES {
+            return false;
+        }
+        self.retries += 1;
+        true
     }
     fn ask_images(&mut self) {
         let wanted = super::chat::ChatView::card_urls(&self.lookup);
@@ -115,5 +135,30 @@ impl Render for Card {
             });
         };
         super::chat::card_body(&self.route, &card, &self.images, self.details, toggle, None, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Card, RETRIES};
+    use serde_json::{json, Value};
+
+    #[test]
+    fn a_lookup_that_never_finishes_is_asked_again_a_few_times_only() {
+        let mut card = Card {
+            model: json!({"id": "twitch|1"}),
+            route: "chat:1".into(),
+            lookup: Value::Null,
+            images: Default::default(),
+            asking: false,
+            details: false,
+            retries: 0,
+        };
+        assert!(!card.retry(), "no answer yet: nothing to ask again");
+        card.lookup = json!({"pending": true});
+        let asked = (0..RETRIES * 2).filter(|_| card.retry()).count();
+        assert_eq!(asked as u32, RETRIES);
+        card.lookup = json!({"user": "someone"});
+        assert!(!card.retry());
     }
 }
