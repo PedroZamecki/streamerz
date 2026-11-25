@@ -397,12 +397,12 @@ async fn avatar(engine: &Rc<Engine>, p: P, bot: bool) -> Option<String> {
 fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
     let key = format!("{}:{bot}:{name}", p.name());
     let now = crate::fmt::unix_now().as_secs();
-    let saved = avatars();
-    let url = saved[&key][0].as_str().unwrap_or_default().to_owned();
+    let saved = kept(&key);
+    let url = saved[0].as_str().unwrap_or_default().to_owned();
     // A new login looks again at once: the wait after a failed lookup was for the old one.
     let (login, token) = login_of(&engine.config(), p, bot);
     let tail: String = token.chars().rev().take(8).collect();
-    if stale(&url, saved[&key][1].as_u64().unwrap_or(0), now) && may_look(&format!("{key}:{tail}"), now) {
+    if stale(&url, saved[1].as_u64().unwrap_or(0), now) && may_look(&format!("{key}:{tail}"), now) {
         let engine = engine.clone();
         tokio::task::spawn_local(async move {
             // The account's own lookup, else its public profile (no login needed).
@@ -443,7 +443,8 @@ fn login_of(c: &crate::Config, p: P, bot: bool) -> (String, String) {
 }
 
 thread_local! {
-    /// The kept picture addresses, read from the cache folder once (the chat asks for them on every line).
+    /// The kept picture addresses, read from the cache folder once (the chat asks for one on every line,
+    /// read with `kept`, which copies only that entry).
     static AVATARS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -452,6 +453,16 @@ fn avatars() -> Value {
     AVATARS.with_borrow_mut(|kept| {
         kept.get_or_insert_with(|| crate::cache::saved("avatars").map(|saved| saved.1).unwrap_or_default())
             .clone()
+    })
+}
+
+/// One kept picture's entry (`Null` when there is none), without copying the others.
+fn kept(key: &str) -> Value {
+    AVATARS.with_borrow_mut(|kept| {
+        kept.get_or_insert_with(|| crate::cache::saved("avatars").map(|saved| saved.1).unwrap_or_default())
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     })
 }
 
@@ -591,8 +602,7 @@ fn channel_card(engine: &Rc<Engine>, p: P, name: &str) -> (Option<String>, Optio
     }
     let key = channel_key(p, &norm);
     let now = crate::fmt::unix_now().as_secs();
-    let saved = avatars();
-    let entry = &saved[&key];
+    let entry = kept(&key);
     let (url, at, known) = (
         entry[0].as_str().unwrap_or_default().to_owned(),
         entry[1].as_u64().unwrap_or(0),
@@ -679,16 +689,19 @@ pub fn room(engine: &Rc<Engine>, platform: &str) -> Value {
 fn browser_avatar(bridge: &crate::tiktok_bridge::Bridge) -> String {
     const KEY: &str = "tiktok:browser";
     let (user, live) = (bridge.user(), bridge.avatar());
-    let saved = avatars();
+    let saved = kept(KEY);
     if !user.is_empty() && !live.is_empty() {
-        if saved[KEY][0].as_str() != Some(live.as_str()) {
-            let mut all = if saved.is_object() { saved } else { json!({}) };
+        if saved[0].as_str() != Some(live.as_str()) {
+            let mut all = avatars();
+            if !all.is_object() {
+                all = json!({});
+            }
             all[KEY] = json!([live, crate::fmt::unix_now().as_secs(), user]);
             save_avatars(&all);
         }
         return live;
     }
-    saved[KEY][0].as_str().unwrap_or_default().to_owned()
+    saved[0].as_str().unwrap_or_default().to_owned()
 }
 
 /// An account's picture file for the chat's send box (`bot` picks the slot; TikTok has the browser account).
@@ -2783,5 +2796,17 @@ mod tests {
             assert!(ASKS.with_borrow(|asks| asks.iter().all(|(p, bot, _)| *p != P::YouTube || *bot)));
             tokio::task::yield_now().await;
         });
+    }
+
+    #[test]
+    fn one_kept_picture_is_read_without_the_others() {
+        let before = AVATARS.with_borrow(|kept| kept.clone());
+        AVATARS.with_borrow_mut(|kept| *kept = Some(json!({"twitch:chan:ana": ["https://x/a.png", 5, "Ana"]})));
+        assert_eq!(kept("twitch:chan:ana")[2], "Ana");
+        assert!(kept("twitch:chan:bia").is_null());
+        // A cache that isn't an object holds nothing.
+        AVATARS.with_borrow_mut(|kept| *kept = Some(json!([1, 2])));
+        assert!(kept("twitch:chan:ana").is_null());
+        AVATARS.with_borrow_mut(|kept| *kept = before);
     }
 }
