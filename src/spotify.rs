@@ -202,6 +202,10 @@ pub struct SpotifyConfig {
 
 /// Obtain a usable saved token, refreshing it only on demand.
 pub async fn saved_token(engine: &std::rc::Rc<crate::engine::Engine>) -> Result<String, String> {
+    saved_token_at(engine, TOKEN).await
+}
+
+async fn saved_token_at(engine: &std::rc::Rc<crate::engine::Engine>, token_url: &str) -> Result<String, String> {
     static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = REFRESH.lock().await;
     let config = engine.config().spotify.clone();
@@ -214,10 +218,18 @@ pub async fn saved_token(engine: &std::rc::Rc<crate::engine::Engine>) -> Result<
     if !crate::oauth::stale(config.token.expires_at) {
         return Ok(config.token.access_token);
     }
-    let token = match refresh(&config.client_id, &config.token).await {
+    let token = match refresh_at(token_url, &config.client_id, &config.token).await {
         Ok(t) => t,
         Err(e) => {
             if e.contains("invalid_grant") || e.contains("revoked") {
+                // Clear the revoked token so subsequent calls do not loop refreshing it.
+                engine.change(|c| {
+                    if c.spotify.client_id == config.client_id
+                        && c.spotify.token.refresh_token == config.token.refresh_token
+                    {
+                        c.spotify.token = Token::default();
+                    }
+                });
                 event(engine, 99840, &e);
             }
             return Err(e);
@@ -284,11 +296,15 @@ pub async fn login(client_id: &str) -> Result<Token, String> {
 
 /// Spotify may omit a replacement refresh token, in which case the existing one is retained.
 pub async fn refresh(client_id: &str, previous: &Token) -> Result<Token, String> {
+    refresh_at(TOKEN, client_id, previous).await
+}
+
+async fn refresh_at(token_url: &str, client_id: &str, previous: &Token) -> Result<Token, String> {
     if client_id.trim().is_empty() || previous.refresh_token.is_empty() {
         return Err("Spotify login is required".into());
     }
     let t = crate::oauth::token(
-        TOKEN,
+        token_url,
         &[
             ("grant_type", "refresh_token"),
             ("refresh_token", &previous.refresh_token),
@@ -318,12 +334,17 @@ pub struct Track {
 
 impl From<local::LocalTrack> for Track {
     fn from(track: local::LocalTrack) -> Self {
+        let artists = if track.artist.is_empty() {
+            Vec::new()
+        } else {
+            vec![track.artist]
+        };
         Self {
             uri: String::new(),
             name: track.title,
-            artists: vec![track.artist],
+            artists,
             playing: track.playing,
-            duration_ms: 0,
+            duration_ms: track.duration_ms,
             explicit: false,
             popularity: 0,
             restricted: false,
@@ -356,7 +377,7 @@ fn track(value: &Value, playing: bool) -> Option<Track> {
         playing,
         duration_ms: value["duration_ms"].as_u64().unwrap_or(0),
         explicit: value["explicit"].as_bool().unwrap_or(false),
-        popularity: value["popularity"].as_u64().unwrap_or(0) as u32,
+        popularity: value["popularity"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
         // With market=from_token Spotify says whether the track plays here.
         restricted: value["is_playable"].as_bool() == Some(false)
             || value["restrictions"]["reason"].as_str() == Some("market"),
@@ -459,18 +480,23 @@ pub fn score(query: &str, t: &Track) -> f64 {
     if q.is_empty() {
         return 0.0;
     }
+    let parsed = readings(query);
+    score_with(&q, &parsed, t)
+}
+
+fn score_with(q: &[String], parsed: &[(Vec<String>, Vec<String>)], t: &Track) -> f64 {
     let title = words(&t.name);
     let artists: Vec<String> = t.artists.iter().flat_map(|a| words(a)).collect();
     let all: Vec<String> = title.iter().chain(&artists).cloned().collect();
-    let found = coverage(&q, &all);
-    let said = coverage(&title, &q);
+    let found = coverage(q, &all);
+    let said = coverage(&title, q);
     // "firework katy perry": an artist whose whole name was asked for is who they meant.
     let artist = t.artists.iter().any(|a| {
         let w = words(a);
-        !w.is_empty() && coverage(&w, &q) == 1.0
+        !w.is_empty() && coverage(&w, q) == 1.0
     });
     // Both halves of "title - artist" (either way round) found: it is that song.
-    let read = readings(query)
+    let read = parsed
         .iter()
         .map(|(title_part, artist_part)| {
             if title_part.is_empty() || artist_part.is_empty() {
@@ -493,8 +519,12 @@ pub fn score(query: &str, t: &Track) -> f64 {
 /// The best of the tracks Spotify found for `query`, in Spotify's own order of relevance: when two
 /// answer equally well, the one Spotify put first.
 pub fn best(query: &str, tracks: Vec<Track>) -> Option<Track> {
-    let n = tracks.len().max(1) as f64;
     let wanted = words(query);
+    if wanted.is_empty() {
+        return None;
+    }
+    let parsed = readings(query);
+    let n = tracks.len().max(1) as f64;
     let mut top: Option<(f64, Track)> = None;
     for (i, t) in tracks.into_iter().enumerate() {
         // Spotify always finds something; if it says less than half of what was asked, it is not it.
@@ -505,9 +535,9 @@ pub fn best(query: &str, tracks: Vec<Track>) -> Option<Track> {
         if coverage(&wanted, &said) < 0.5 {
             continue;
         }
-        let score = score(query, &t) + 0.1 * (1.0 - i as f64 / n);
-        if top.as_ref().is_none_or(|(s, _)| score > *s) {
-            top = Some((score, t));
+        let s = score_with(&wanted, &parsed, &t) + 0.1 * (1.0 - i as f64 / n);
+        if top.as_ref().is_none_or(|(best_s, _)| s > *best_s) {
+            top = Some((s, t));
         }
     }
     top.map(|(_, t)| t)
@@ -684,19 +714,60 @@ fn failure(status: u16, body: &[u8]) -> String {
     }
 }
 
-/// A request to Spotify; a failure with its HTTP status.
-async fn call(base: &str, method: &str, path: &str, token: &str) -> Result<crate::http::Response, (u16, String)> {
+/// Parse a numeric `Retry-After` header in seconds.
+fn retry_after(headers: &[(String, String)]) -> Option<std::time::Duration> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+        .and_then(|(_, v)| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+}
+
+/// Longest 429 `Retry-After` wait we sleep through automatically; longer waits fail fast.
+const MAX_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A request to Spotify (with an optional JSON body); a failure with its HTTP status.
+/// On HTTP 429 with a short `Retry-After` header (up to 5 s), waits and retries once.
+pub(crate) async fn call_body(
+    base: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+    body: Option<&[u8]>,
+) -> Result<crate::http::Response, (u16, String)> {
     if token.is_empty() {
         return Err((401, "Spotify login is required".into()));
     }
-    let headers = [("Authorization".into(), format!("Bearer {token}"))];
-    let response = crate::http::request(method, &format!("{base}{path}"), &headers, b"")
-        .await
-        .map_err(|e| (0, e))?;
-    if !(200..300).contains(&response.status) {
+    let mut headers = vec![("Authorization".into(), format!("Bearer {token}"))];
+    let payload = match body {
+        Some(bytes) => {
+            headers.push(("Content-Type".into(), "application/json".into()));
+            bytes
+        }
+        None => b"",
+    };
+    let url = format!("{base}{path}");
+    for attempt in 0..2 {
+        let response = crate::http::request(method, &url, &headers, payload)
+            .await
+            .map_err(|e| (0, e))?;
+        if (200..300).contains(&response.status) {
+            return Ok(response);
+        }
+        if response.status == 429 && attempt == 0 {
+            if let Some(wait) = retry_after(&response.headers).filter(|w| *w <= MAX_RETRY_AFTER) {
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+        }
         return Err((response.status, failure(response.status, &response.body)));
     }
-    Ok(response)
+    unreachable!()
+}
+
+/// A request to Spotify; a failure with its HTTP status.
+async fn call(base: &str, method: &str, path: &str, token: &str) -> Result<crate::http::Response, (u16, String)> {
+    call_body(base, method, path, token, None).await
 }
 
 async fn request(base: &str, method: &str, path: &str, token: &str) -> Result<crate::http::Response, String> {
@@ -778,14 +849,9 @@ pub(crate) async fn player_action_at(base: &str, token: &str, kind: u32, value: 
             return Err("Spotify device ID is required".into());
         }
         let body = serde_json::to_vec(&serde_json::json!({"device_ids": [value.trim()]})).map_err(|e| e.to_string())?;
-        let headers = [
-            ("Authorization".into(), format!("Bearer {token}")),
-            ("Content-Type".into(), "application/json".into()),
-        ];
-        let response = crate::http::request("PUT", &format!("{base}/me/player"), &headers, &body).await?;
-        if !(200..300).contains(&response.status) {
-            return Err(failure(response.status, &response.body));
-        }
+        call_body(base, "PUT", "/me/player", token, Some(&body))
+            .await
+            .map_err(|e| e.1)?;
         return Ok(Value::Null);
     }
     let (method, path) = player_request(kind, value)?;
@@ -797,7 +863,7 @@ pub(crate) async fn player_action_at(base: &str, token: &str, kind: u32, value: 
 }
 async fn current_at(base: &str, token: &str) -> Result<Option<Track>, String> {
     let r = request(base, "GET", "/me/player/currently-playing", token).await?;
-    if r.status == 204 {
+    if r.status == 204 || r.body.is_empty() {
         return Ok(None);
     }
     let value: Value = serde_json::from_slice(&r.body).map_err(|_| "Invalid Spotify response".to_string())?;
@@ -820,7 +886,7 @@ async fn find_at(base: &str, token: &str, query: &str) -> Result<Track, String> 
     }
     match classify(input) {
         Input::Track(uri) => {
-            let id = uri.trim_start_matches("spotify:track:");
+            let id = uri.strip_prefix("spotify:track:").unwrap_or(&uri);
             // from_token: Spotify says whether it plays in the streamer's country.
             let r = with_market(base, token, &format!("/tracks/{id}")).await?;
             let value: Value =
@@ -877,7 +943,11 @@ pub async fn player(token: &str) -> Result<Player, String> {
 }
 async fn player_at(base: &str, token: &str) -> Result<Player, String> {
     let q = request(base, "GET", "/me/player/queue", token).await?;
-    let queue: Value = serde_json::from_slice(&q.body).map_err(|_| "Invalid Spotify response".to_string())?;
+    let queue: Value = if q.status == 204 || q.body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&q.body).map_err(|_| "Invalid Spotify response".to_string())?
+    };
     let mut out = Player {
         queue: queue["queue"]
             .as_array()
@@ -889,7 +959,7 @@ async fn player_at(base: &str, token: &str) -> Result<Player, String> {
     };
     // 204: nothing is playing anywhere.
     let s = with_market(base, token, "/me/player").await?;
-    if s.status != 204 {
+    if s.status != 204 && !s.body.is_empty() {
         let state: Value = serde_json::from_slice(&s.body).map_err(|_| "Invalid Spotify response".to_string())?;
         out.playing = state["is_playing"].as_bool().unwrap_or(false);
         out.progress_ms = state["progress_ms"].as_u64().unwrap_or(0);
@@ -905,7 +975,9 @@ async fn player_at(base: &str, token: &str) -> Result<Player, String> {
         if let Ok(r) = request(base, "GET", "/me/player/devices", token).await {
             let devices: Value = serde_json::from_slice(&r.body).unwrap_or_default();
             let all = devices["devices"].as_array().cloned().unwrap_or_default();
-            let usable = |d: &&Value| d["is_restricted"].as_bool() != Some(true) && d["id"].as_str().is_some();
+            let usable = |d: &&Value| {
+                d["is_restricted"].as_bool() != Some(true) && d["id"].as_str().is_some_and(|id| !id.is_empty())
+            };
             let pick = all
                 .iter()
                 .filter(usable)
@@ -963,20 +1035,28 @@ async fn add_uri_at(
 
 /// Set the volume (0 to 100) of the player.
 pub async fn set_volume(token: &str, percent: u32, device: &str) -> Result<(), String> {
+    set_volume_at(API, token, percent, device).await
+}
+
+async fn set_volume_at(base: &str, token: &str, percent: u32, device: &str) -> Result<(), String> {
     let mut path = format!("/me/player/volume?volume_percent={}", percent.min(100));
     if !device.is_empty() {
         path.push_str(&format!("&device_id={}", crate::commands::url_encode(device)));
     }
-    request(API, "PUT", &path, token).await?;
+    request(base, "PUT", &path, token).await?;
     Ok(())
 }
 
 /// Save a track to the streamer's liked songs. Needs the library scope, which a login made before this
 /// existed does not have.
 pub async fn like(token: &str, uri: &str) -> Result<(), String> {
-    let id = uri.trim_start_matches("spotify:track:");
+    like_at(API, token, uri).await
+}
+
+async fn like_at(base: &str, token: &str, uri: &str) -> Result<(), String> {
+    let id = uri.strip_prefix("spotify:track:").unwrap_or(uri);
     match call(
-        API,
+        base,
         "PUT",
         &format!("/me/library?uris={}", crate::commands::url_encode(uri)),
         token,
@@ -984,9 +1064,14 @@ pub async fn like(token: &str, uri: &str) -> Result<(), String> {
     .await
     {
         Ok(_) => Ok(()),
-        Err((404 | 405, _)) => request(API, "PUT", &format!("/me/tracks?ids={id}"), token)
-            .await
-            .map(|_| ()),
+        Err((404 | 405, _)) => request(
+            base,
+            "PUT",
+            &format!("/me/tracks?ids={}", crate::commands::url_encode(id)),
+            token,
+        )
+        .await
+        .map(|_| ()),
         Err((403, _)) => Err("Spotify needs to be connected again to like songs (the old login cannot)".into()),
         Err((_, e)) => Err(e),
     }
@@ -1519,24 +1604,190 @@ mod tests {
 
     #[test]
     fn volume_and_likes_use_the_api() {
+        const URI: &str = "spotify:track:0123456789ABCDEFGHIJKL";
+        const ENC: &str = "spotify%3Atrack%3A0123456789ABCDEFGHIJKL";
         rt().block_on(async {
-            let (base, server) = serve(vec![(
-                "PUT",
-                "/me/player/volume?volume_percent=100&device_id=d1".into(),
-                204,
-                "",
-            )])
+            let (base, server) = serve(vec![
+                (
+                    "PUT",
+                    "/me/player/volume?volume_percent=100&device_id=d1".into(),
+                    204,
+                    "",
+                ),
+                ("PUT", format!("/me/library?uris={ENC}"), 404, ""),
+                ("PUT", "/me/tracks?ids=0123456789ABCDEFGHIJKL".into(), 200, ""),
+            ])
             .await;
-            // (set_volume uses the real API base; check the path the same way through request)
-            request(&base, "PUT", "/me/player/volume?volume_percent=100&device_id=d1", "t")
-                .await
-                .unwrap();
+            set_volume_at(&base, "t", 150, "d1").await.unwrap();
+            like_at(&base, "t", URI).await.unwrap();
             server.await.unwrap();
         });
         assert_eq!(
             failure(403, b"{}"),
             "Spotify denied the request; check the account, app access and Premium status"
         );
+    }
+
+    #[test]
+    fn rate_limit_retries_short_retry_after_and_fails_fast_on_long() {
+        assert_eq!(
+            retry_after(&[("Retry-After".into(), " 3 ".into())]),
+            Some(std::time::Duration::from_secs(3))
+        );
+        assert_eq!(retry_after(&[("retry-after".into(), "not-a-number".into())]), None);
+        rt().block_on(async {
+            // Short Retry-After (0s): retries once and succeeds.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let replies: [&[u8]; 2] = [
+                    b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                ];
+                for reply in replies {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut buf = [0; 4096];
+                    assert!(socket.read(&mut buf).await.unwrap() > 0);
+                    socket.write_all(reply).await.unwrap();
+                }
+            });
+            let r = request(&base, "GET", "/me", "t").await.unwrap();
+            assert_eq!(r.status, 200);
+            server.await.unwrap();
+
+            // Long Retry-After (60s): fails immediately without sleeping.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0; 4096];
+                assert!(socket.read(&mut buf).await.unwrap() > 0);
+                socket
+                    .write_all(
+                        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            });
+            let started = std::time::Instant::now();
+            assert_eq!(
+                request(&base, "GET", "/me", "t").await.err().unwrap(),
+                "Spotify rate limit reached; try again later"
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+            server.await.unwrap();
+
+            // Empty token fails before touching the network (also for 99820 transfer).
+            assert_eq!(
+                player_action_at("http://127.0.0.1:1", "", 99820, "dev1")
+                    .await
+                    .unwrap_err(),
+                "Spotify login is required"
+            );
+        });
+    }
+
+    #[test]
+    fn player_handles_204_queue_and_empty_device_ids() {
+        rt().block_on(async {
+            let devices = r#"{"devices":[{"id":"","is_restricted":false,"is_active":true},{"id":"d2","is_restricted":false,"is_active":false,"volume_percent":60}]}"#;
+            let (base, server) = serve(vec![
+                ("GET", "/me/player/queue".into(), 204, ""),
+                ("GET", "/me/player?market=from_token".into(), 204, ""),
+                ("GET", "/me/player/devices".into(), 200, devices),
+            ])
+            .await;
+            let p = player_at(&base, "t").await.unwrap();
+            server.await.unwrap();
+            assert!(p.current.is_none() && p.queue.is_empty());
+            assert_eq!((p.device_id.as_str(), p.volume), ("d2", Some(60)));
+        });
+    }
+
+    #[test]
+    fn saved_token_refreshes_stale_and_clears_revoked_without_looping() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        rt().block_on(async {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let token_url = format!("http://{}/api/token", listener.local_addr().unwrap());
+                    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let hits_srv = hits.clone();
+                    let server = tokio::spawn(async move {
+                        let replies: [(u16, &str); 2] = [
+                            (200, r#"{"access_token":"fresh-access","expires_in":3600}"#),
+                            (
+                                400,
+                                r#"{"error":"invalid_grant","error_description":"Refresh token revoked"}"#,
+                            ),
+                        ];
+                        for (status, body) in replies {
+                            let (mut socket, _) = listener.accept().await.unwrap();
+                            hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let mut buf = [0u8; 4096];
+                            let _ = socket.read(&mut buf).await;
+                            let resp = format!(
+                                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            socket.write_all(resp.as_bytes()).await.unwrap();
+                        }
+                    });
+                    let mut config = crate::Config::default();
+                    config.spotify = SpotifyConfig {
+                        enabled: true,
+                        local_monitor: false,
+                        client_id: "cid".into(),
+                        token: Token {
+                            access_token: "old-access".into(),
+                            refresh_token: "keep-refresh".into(),
+                            expires_at: 1, // stale
+                        },
+                    };
+                    let e = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+                    // Stale token refreshes, retains the refresh token when omitted, and caches the new one.
+                    assert_eq!(saved_token_at(&e, &token_url).await.unwrap(), "fresh-access");
+                    assert_eq!(e.config().spotify.token.refresh_token, "keep-refresh");
+                    assert_eq!(saved_token_at(&e, &token_url).await.unwrap(), "fresh-access");
+                    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+                    // Revoked refresh token clears saved token so later calls do not loop.
+                    e.change(|c| c.spotify.token.expires_at = 1);
+                    let err = saved_token_at(&e, &token_url).await.unwrap_err();
+                    assert!(err.contains("invalid_grant"), "{err}");
+                    assert!(e.config().spotify.token.access_token.is_empty());
+                    assert!(e.config().spotify.token.refresh_token.is_empty());
+                    assert_eq!(
+                        saved_token_at(&e, &token_url).await.unwrap_err(),
+                        "Spotify login is required"
+                    );
+                    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+                    server.await.unwrap();
+                })
+                .await;
+        });
+    }
+
+    #[test]
+    fn local_track_conversion_keeps_duration_and_handles_empty_artist() {
+        let with_artist = Track::from(local::LocalTrack {
+            title: "Song".into(),
+            artist: "Singer".into(),
+            playing: true,
+            duration_ms: 215_000,
+            ..Default::default()
+        });
+        assert_eq!(with_artist.duration_ms, 215_000);
+        assert_eq!(with_artist.artists, ["Singer"]);
+        assert!(with_artist.uri.is_empty());
+
+        let no_artist = Track::from(local::LocalTrack {
+            title: "Track".into(),
+            artist: String::new(),
+            ..Default::default()
+        });
+        assert!(no_artist.artists.is_empty());
     }
 
     /// Against the real Spotify: `STREAMERZ_SPOTIFY_CLIENT_ID=... cargo test live_spotify -- --ignored --nocapture`.
