@@ -56,19 +56,19 @@ pub struct Outcome {
 }
 
 /// An action as an editor would save it: ids, enabled, queue, and ids on its triggers and sub-actions.
-fn filled(mut a: Value, n: usize) -> Value {
-    fn ids(list: Option<&mut Value>) {
+fn filled(mut a: Value, n: usize) -> Result<Value, String> {
+    fn ids(list: Option<&mut Value>) -> Result<(), String> {
         for x in list.and_then(Value::as_array_mut).into_iter().flatten() {
-            if x.get("id").is_none() {
-                x["id"] = crate::engine::uuid().into();
-            }
-            if x.get("enabled").is_none() {
-                x["enabled"] = true.into();
-            }
-            ids(x.get_mut("subActions"));
+            let o = x
+                .as_object_mut()
+                .ok_or_else(|| "a trigger or sub-action is an object".to_string())?;
+            o.entry("id").or_insert_with(|| crate::engine::uuid().into());
+            o.entry("enabled").or_insert(true.into());
+            ids(o.get_mut("subActions"))?;
         }
+        Ok(())
     }
-    let o = a.as_object_mut().expect("an action is an object");
+    let o = a.as_object_mut().ok_or("an action is an object")?;
     o.entry("id").or_insert_with(|| format!("scenario-action-{n}").into());
     o.entry("name").or_insert_with(|| format!("action {n}").into());
     o.entry("enabled").or_insert(true.into());
@@ -76,9 +76,9 @@ fn filled(mut a: Value, n: usize) -> Value {
         .or_insert("00000000-0000-0000-0000-000000000000".into());
     o.entry("triggers").or_insert(json!([]));
     o.entry("subActions").or_insert(json!([]));
-    ids(o.get_mut("triggers"));
-    ids(o.get_mut("subActions"));
-    a
+    ids(o.get_mut("triggers"))?;
+    ids(o.get_mut("subActions"))?;
+    Ok(a)
 }
 
 /// The settings a scenario starts from: the defaults, its `config` on top, its actions.
@@ -103,7 +103,7 @@ fn config(s: &Value) -> Result<crate::Config, String> {
         .flatten()
         .enumerate()
         .map(|(i, a)| filled(a.clone(), i + 1))
-        .collect();
+        .collect::<Result<_, _>>()?;
     base["actions"]["actions"] = actions.into();
     let mut commands = base["commands"].as_array().cloned().unwrap_or_default();
     for (i, c) in commands.iter_mut().enumerate() {
@@ -129,7 +129,11 @@ fn same_chat(want: &Value, got: &Value) -> bool {
 
 /// A global's value as a scenario writes it: numbers compare as numbers ("2" and 2 are the same).
 fn same_value(want: &Value, got: &Value) -> bool {
-    let num = |v: &Value| v.as_f64().or_else(|| v.as_str()?.trim().parse().ok());
+    let num = |v: &Value| {
+        v.as_f64()
+            .or_else(|| v.as_str()?.trim().parse::<f64>().ok())
+            .filter(|x| x.is_finite())
+    };
     match (num(want), num(got)) {
         (Some(a), Some(b)) => (a - b).abs() < 1e-9,
         _ => crate::vars::text(want) == crate::vars::text(got),
@@ -146,14 +150,15 @@ pub fn run(s: &Value) -> Outcome {
             failures: Vec::new(),
         };
     }
+    let mut text = s.to_string();
     // `{tmp}`: a folder of its own, removed after.
-    let tmp = s.to_string().contains("{tmp}").then(|| {
+    let tmp = text.contains("{tmp}").then(|| {
         let d = std::env::temp_dir().join(format!("streamerz-scenario-{}", crate::engine::uuid()));
         let _ = std::fs::create_dir_all(&d);
         // `files`: written into it first (a sound to play, say), plain names only.
         for (name, content) in s["files"].as_object().into_iter().flatten() {
             use base64::Engine as _;
-            let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != "..";
+            let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
             if let (true, Some(Ok(bytes))) = (
                 plain,
                 content
@@ -166,12 +171,10 @@ pub fn run(s: &Value) -> Outcome {
         d
     });
     // `{http}`: a local web server's address; what it's asked is kept as `http` calls.
-    let http = s
-        .to_string()
+    let http = text
         .contains("{http}")
         .then(|| std::net::TcpListener::bind("127.0.0.1:0").ok())
         .flatten();
-    let mut text = s.to_string();
     if let Some(d) = &tmp {
         let path = d.to_string_lossy().replace('\\', "/");
         text = text.replace("{tmp}", &path.replace('"', "\\\""));
@@ -798,7 +801,7 @@ mod tests {
 
     #[test]
     fn actions_are_filled_in_as_an_editor_would() {
-        let a = filled(json!({"subActions": [{"type": 10, "subActions": [{"type": 1}]}]}), 3);
+        let a = filled(json!({"subActions": [{"type": 10, "subActions": [{"type": 1}]}]}), 3).unwrap();
         assert_eq!(a["name"], "action 3");
         assert!(a["subActions"][0]["id"].is_string() && a["subActions"][0]["subActions"][0]["enabled"] == true);
         let c = config(&json!({"config": {"commands": [{"command": "!hi"}]}})).unwrap();
@@ -806,13 +809,36 @@ mod tests {
     }
 
     #[test]
+    fn malformed_actions_report_failure_without_panicking() {
+        let o = run(&json!({"name": "bad action", "actions": [123]}));
+        assert_eq!(o.failures, vec!["an action is an object"]);
+        let o = run(&json!({"name": "bad sub", "actions": [{"subActions": ["oops"]}]}));
+        assert_eq!(o.failures, vec!["a trigger or sub-action is an object"]);
+    }
+
+    #[test]
     fn values_compare_loosely() {
         assert!(same_value(&json!(2), &json!("2")));
         assert!(same_value(&json!("ana"), &json!("ana")));
+        assert!(same_value(&json!("NaN"), &json!("NaN")));
+        assert!(same_value(&json!("inf"), &json!("inf")));
         assert!(!same_value(&json!(1), &json!(2)));
         assert!(same_chat(
             &json!({"platform": "kick"}),
             &json!({"platform": "kick", "text": "x"})
+        ));
+        assert!(has(
+            &json!({"a": 2, "nested": {"x": "hi"}}),
+            &json!({"a": "2", "nested": {"x": "hi", "y": 1}})
+        ));
+        assert!(!has(&json!({"a": 2}), &json!(2)));
+        assert!(call_matches(
+            &json!("twitch POST bans"),
+            &json!({"platform": "twitch", "call": "POST bans"})
+        ));
+        assert!(!call_matches(
+            &json!("twitch POST bans"),
+            &json!({"platform": "kick", "call": "POST bans"})
         ));
     }
 }
