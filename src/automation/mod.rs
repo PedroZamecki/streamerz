@@ -84,6 +84,13 @@ mod tests {
             for &(code, name) in table {
                 let value = describe(kind, code).unwrap();
                 assert_eq!(value["name"], name);
+                let description = value["about"].as_str().unwrap();
+                assert!(!name.trim().is_empty(), "{kind} {code}");
+                assert!(!description.trim().is_empty(), "{kind} {code} {name}");
+                assert!(
+                    !name.contains(['\u{2013}', '\u{2014}']) && !description.contains(['\u{2013}', '\u{2014}']),
+                    "{kind} {code} {name}: {description}"
+                );
                 assert_eq!(value["new"]["type"], code);
                 assert!(value["fields"].is_array());
                 assert!(value["needs"].is_array());

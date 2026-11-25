@@ -2225,6 +2225,50 @@ mod tests {
         }
     }
 
+    /// Every form of a stored type, with its code and whether it's a sub-action's.
+    fn every_form() -> Vec<(u64, bool, &'static [F])> {
+        let mut out = Vec::new();
+        for code in 0..100_000u64 {
+            if let Some(fields) = sub_fields(code) {
+                out.push((code, true, fields));
+            }
+            if let Some(fields) = trigger_fields(code) {
+                out.push((code, false, fields));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_form_never_repeats_a_key() {
+        for (code, sub, fields) in every_form() {
+            let mut seen = std::collections::HashSet::new();
+            for (key, _, _) in fields {
+                assert!(
+                    key.is_empty() || seen.insert(*key),
+                    "{code} (sub-action {sub}) repeats {key}"
+                );
+            }
+        }
+    }
+
+    /// A form for a code the tables don't have is never shown: its code is a typo.
+    #[test]
+    fn every_form_belongs_to_a_known_type() {
+        let mut unknown = Vec::new();
+        for (code, sub, _) in every_form() {
+            let table = if sub {
+                crate::types::SUB_ACTIONS
+            } else {
+                crate::types::TRIGGERS
+            };
+            if crate::types::name(table, code as u32).is_none() {
+                unknown.push((code, sub));
+            }
+        }
+        assert!(unknown.is_empty(), "forms for unknown codes: {unknown:?}");
+    }
+
     #[test]
     fn new_sub_and_trigger_fields_exist() {
         assert!(sub_fields(4013).is_some());
