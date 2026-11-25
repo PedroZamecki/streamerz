@@ -15,6 +15,7 @@ mod pulse;
 mod wasapi;
 
 pub use decode::{decode_mono_wav, info, sine_wav, EXTENSIONS};
+pub(crate) use decode::{pcm16, pcm_wav_header};
 pub use mixer::{End, Ended};
 
 use mixer::{Mixer, Ramp, Voice};
@@ -764,8 +765,7 @@ mod tests {
         let mut source = decode::Source::open(&path).unwrap();
         let mut out = vec![0f32; 48_000 * 2];
         let frames = source.read(&mut out);
-        // 100 ms at 24 kHz is about 100 ms at 48 kHz (the last source frame has nothing after it).
-        assert!((4790..=4800).contains(&frames), "{frames}");
+        assert_eq!(frames, 4800);
         assert_eq!(out[200], out[201], "mono is the same on both sides");
         assert!(out[..frames * 2].iter().any(|s| s.abs() > 0.3));
         assert_eq!(source.read(&mut out), 0);
