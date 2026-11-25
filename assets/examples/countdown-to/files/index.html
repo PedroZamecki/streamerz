@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Countdown to</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #card { padding: 20px 36px; border-radius: 18px; text-align: center; font-family: system-ui, sans-serif; position: relative; }
+  #card::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--bg); opacity: var(--alpha); z-index: -1; }
+  #time { font-variant-numeric: tabular-nums; line-height: 1.05; }
+</style>
+</head>
+<body>
+<div id="card"><div id="title"></div><div id="time"></div></div>
+<script>
+// The settings come from Streamerz (Overlays, this overlay, Settings). They show what the newer kinds
+// give a page: `target` is milliseconds since 1970, the styles become CSS with streamerz.css, the place
+// goes to streamerz.place, the animation to streamerz.animate, and the sound is an address and a volume.
+// extra: the minutes Add a minute (a live control) put on top of the target.
+let s = {}, ended = false, holdUntil = 0, extra = 0;
+
+function left() {
+  return Math.max(0, (Number(s.target) || 0) + extra - Date.now());
+}
+
+function shown(ms) {
+  const t = Math.ceil(ms / 1000), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+  const two = n => String(n).padStart(2, "0");
+  return (h ? h + ":" + two(m) : m) + ":" + two(sec);
+}
+
+function end(test) {
+  time.textContent = s.done || "";
+  title.style.display = "none";
+  if (s.sound && s.sound.file) {
+    const audio = new Audio(s.sound.file);
+    audio.volume = s.sound.volume;
+    audio.play().catch(() => {});
+  }
+  streamerz.animate(card, s.enter);
+  // A try shows the end for four seconds, then the countdown again.
+  if (test) holdUntil = Date.now() + 4000;
+}
+
+function tick() {
+  if (Date.now() < holdUntil) return;
+  if (!s.target) {
+    title.style.display = "";
+    time.textContent = "--:--";
+    return;
+  }
+  const ms = left();
+  if (ms === 0) {
+    if (!ended) (ended = true), end(false);
+    return;
+  }
+  ended = false;
+  title.style.display = "";
+  time.textContent = shown(ms);
+}
+
+streamerz.onSettings(next => {
+  const first = !s.enter;
+  s = next;
+  title.textContent = s.title || "";
+  title.style.cssText = streamerz.css(s.titleStyle);
+  time.style.cssText = streamerz.css(s.timeStyle);
+  card.style.setProperty("--bg", s.background || "transparent");
+  card.style.setProperty("--alpha", (Number(s.opacity) || 0) / 100);
+  streamerz.place(card, s.where);
+  if (first) streamerz.animate(card, s.enter);
+  ended = left() === 0 && ended;
+  // The styles above set the title's whole style: it stays hidden while the end shows.
+  if (ended || Date.now() < holdUntil) title.style.display = "none";
+  tick();
+});
+
+// The button setting: pressing Try the end publishes this topic (old is true for a press from before
+// the page opened, which is skipped).
+streamerz.on(streamerz.group + ".celebrate", (value, old) => old || end(true));
+
+// Live controls (the Live tab, the controls' dock, Set Overlay Control): changed while live, kept
+// apart from the settings. Each gives its value now, then every change.
+streamerz.control("show", on => (card.style.visibility = on === false ? "hidden" : ""));
+streamerz.control("size", percent => (document.body.style.zoom = (Number(percent) || 100) / 100));
+streamerz.control("addMinute", (at, old) => {
+  if (old === undefined) return;
+  extra += 60000;
+  tick();
+});
+
+setInterval(tick, 250);
+</script>
+</body>
+</html>

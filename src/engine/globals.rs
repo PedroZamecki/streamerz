@@ -83,6 +83,25 @@ impl Engine {
         })
     }
 
+    /// A viewer's own voice (the persisted user variable `ttsVoice`): 1 the one who ran the action, 2
+    /// the target user.
+    pub(super) fn user_voice(&self, ctx: &Ctx, source: i64) -> Option<String> {
+        let user = Self::user(ctx, source)?;
+        self.read_global("ttsVoice", true, Some(&user))
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// Gives a viewer a voice of their own (empty: back to the default). False with no user.
+    pub(super) fn set_user_voice(self: &Rc<Self>, ctx: &Ctx, source: i64, voice: &str) -> bool {
+        let Some(user) = Self::user(ctx, source) else {
+            return false;
+        };
+        let v = (!voice.trim().is_empty()).then(|| Value::from(voice.trim()));
+        self.write_global(ctx, "ttsVoice", true, Some(&user), v);
+        true
+    }
+
     pub(super) fn global_get(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
         let name = self.simple(ctx, s(o, "variableName"));
         let dest = self.simple(ctx, s(o, "destinationVariable"));
@@ -135,6 +154,18 @@ impl Engine {
             _ => None,
         };
         self.write_global(ctx, &name, persisted, user.as_ref(), new);
+    }
+
+    /// A global as a number (0 when it isn't one), for the Counter sub-action.
+    pub(super) fn global_number(&self, name: &str, persisted: bool) -> f64 {
+        self.read_global(name, persisted, None)
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(crate::fmt::parse_number)))
+            .unwrap_or(0.0)
+    }
+
+    /// A global's value as it is, for the List sub-action.
+    pub(super) fn global_value(&self, name: &str, persisted: bool) -> Option<Value> {
+        self.read_global(name, persisted, None)
     }
 
     fn read_global(&self, name: &str, persisted: bool, user: Option<&User>) -> Option<Value> {

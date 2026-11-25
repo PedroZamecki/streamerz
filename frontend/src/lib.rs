@@ -53,6 +53,13 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
     if ready["event"] != "core.ready" || ready["protocol"] != 1 {
         return Err(Box::new(StreamerzError::unexpected("incompatible core protocol")));
     }
+    // Software rendering is chosen before GPUI starts: the graphics libraries read these as they load.
+    for (key, value) in ready["software"]["env"].as_object().into_iter().flatten() {
+        if let Some(value) = value.as_str() {
+            std::env::set_var(key, value);
+        }
+    }
+    diag::forward_gpui_log();
     i18n::init(ready["translations"].take()).map_err(|error| Box::new(StreamerzError::from(error)))?;
     diag::mark_ready(
         ready["logDir"].as_str(),
@@ -183,10 +190,13 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 if let Ok(mut slot) = startup_error_out.lock() {
                     *slot = Some(structured);
                 }
-                cx.quit();
+                // Once the event loop runs: Linux's loop forgets a quit asked for before it starts, and the
+                // process would stay with no window, so the core never tries software rendering.
+                cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
             }
         };
+        report_renderer(window_handle, cx);
         diag::fact("UI page", &initial_tab);
         diag::step(format!("opened window on page {initial_tab}"));
         cx.on_window_closed(|cx, _| {
@@ -221,6 +231,10 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                 .await;
             match result {
                 Ok(Some(value)) => {
+                    // The GPU stopped drawing and the window went on in software: say what draws it now.
+                    if diag::RENDERER_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        cx.update(|cx| report_renderer(window_handle, cx));
+                    }
                     if value["event"] == "frontend.dev" {
                         #[cfg(feature = "test-support")]
                         dev::dispatch(&value, window_handle, &view, cx);
@@ -247,6 +261,9 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                             view.request_status();
                             let topics = value["topics"].as_array();
                             view.images_for_forms(topics, cx);
+                            if topics.is_some_and(|topics| topics.iter().any(|topic| topic == "preview")) {
+                                view.preview_changed(cx);
+                            }
                             if view.chat_changed(topics, cx) {
                                 return;
                             }
@@ -290,6 +307,13 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
         return Err(Box::new(error));
     }
     Ok(())
+}
+
+/// Tells the core what draws the window (a GPU, or software rendering).
+fn report_renderer(window: AnyWindowHandle, cx: &mut App) {
+    if let Ok(Some(gpu)) = window.update(cx, |_, window, _| window.gpu_specs()) {
+        send(json!({"request": "FrontendRenderer", "device": gpu.device_name, "software": gpu.is_software_emulated}));
+    }
 }
 
 /// Room around the window for what the system draws: Windows' title bar and borders sit outside the

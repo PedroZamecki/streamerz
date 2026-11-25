@@ -104,8 +104,7 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
             } else {
                 super::schema::WHILE_OPS.get(op)
             }
-            .copied()
-            .unwrap_or("?");
+            .map_or("?", |op| super::schema::field_label(op));
             format!("{} {op} {}", v("input"), v("value"))
         }
         123 | 122 => format!("{} = {}", v("variableName"), v("value")),
@@ -130,6 +129,14 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         },
         1009 => v("value"),
         1020 => v("message"),
+        99881 => {
+            let (overlay, control) = (v("overlay"), v("control"));
+            if overlay.is_empty() || control.is_empty() {
+                String::new()
+            } else {
+                format!("{overlay}: {control} = {}", v("value"))
+            }
+        }
         4013 => {
             let b = v("broadcast");
             let f = v("file");
@@ -191,11 +198,39 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
             .map(|t| names.get(t).map_or(t, |n| n.as_str()).to_string())
             .unwrap_or_default(),
     };
+    // What a value stands for reads as words: "Ban User: Who started this".
+    let detail = match detail.trim() {
+        "%userName%" | "%user%" => tr("tools.who_sender").to_string(),
+        "%input0%" => tr("tools.who_command").to_string(),
+        "%msgId%" | "%messageId%" => tr("tools.message_trigger").to_string(),
+        "%requestId%" => tr("tools.from_trigger").to_string(),
+        _ => detail,
+    };
     let mut out = if detail.is_empty() {
         what
     } else {
         format!("{what}: {}", short(&detail))
     };
+    // Every platform: which ones, by name.
+    if (99720..=99749).contains(&k) {
+        let picked: Vec<&str> = o
+            .get("platforms")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|p| match p {
+                "twitch" => "Twitch",
+                "youtube" => "YouTube",
+                "kick" => "Kick",
+                "tiktok" => "TikTok",
+                other => other,
+            })
+            .collect();
+        if !picked.is_empty() {
+            out += &format!(" ({})", picked.join(", "));
+        }
+    }
     if !crate::engine::supported(k as u32) {
         out += tr("actions.not_supported");
     }

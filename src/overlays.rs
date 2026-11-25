@@ -23,6 +23,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("chat.send", "Send chat messages as you"),
     ("actions.run", "Run the actions of its own group"),
     ("values.write", "Store values in its own group"),
+    ("voice.speak", "Speak text aloud with the voices of this computer"),
 ];
 
 /// The token a group's pages call back with: only a page Streamerz served (or saved) has it, and it
@@ -137,6 +138,15 @@ pub fn call(e: &Rc<Engine>, body: &[u8]) -> (u16, Value) {
         "get" => done(Ok(
             json!({"value": groups::values(&c, group).get(text("name")).cloned().unwrap_or(Value::Null)}),
         )),
+        // A live control of its own overlay: from one of its pages, or its dock.
+        "control" => {
+            let from = if text("from") == "dock" { "dock" } else { "page" };
+            let value = req.get("value").cloned().unwrap_or(Value::Null);
+            let name = text("name").to_owned();
+            let group = group.to_owned();
+            drop(c);
+            done(e.overlay_control_set(&group, &name, &value, from, false))
+        }
         "publish" => {
             let topic = text("topic");
             if topic.is_empty() || topic.len() > 100 {
@@ -353,6 +363,10 @@ fn about(event: &Value, data: &Value) -> String {
         }
         ("Settings", _) => "Its settings changed".into(),
         ("Reload", _) => "A file was saved: the page loads again".into(),
+        ("Play", _) => format!("Play the animation {}", text(&data["name"])),
+        ("Control", _) => format!("{} = {}", text(&data["name"]), short(&data["value"])),
+        ("Sound", _) => format!("Play {}", text(&data["url"])),
+        ("SoundStop", _) => "Stop its sounds".into(),
         ("Overlay", topic) => format!("{topic} = {}", short(data)),
         _ => short(data),
     }
@@ -371,7 +385,12 @@ impl Open {
         };
         let mut events: Vec<String> = subs
             .iter()
-            .filter(|(source, _)| !matches!(source.as_str(), "Overlay" | "Test" | "Reload" | "Settings"))
+            .filter(|(source, _)| {
+                !matches!(
+                    source.as_str(),
+                    "Overlay" | "Test" | "Reload" | "Settings" | "Play" | "Control"
+                )
+            })
             .flat_map(|(source, kinds)| kinds.iter().map(move |kind| format!("{source}.{kind}")))
             .collect();
         events.sort();
@@ -641,16 +660,36 @@ pub fn list(c: &Config) -> Vec<(String, String)> {
 /// A group's settings as its pages get them: a `file` setting is the address the file is served at
 /// (a web address stays as it is, none stays empty), so a page uses it in `src` or `url()` as it comes.
 pub fn settings(c: &Config, group: &str) -> Value {
+    settings_with(c, group, &serde_json::Map::new())
+}
+
+/// The settings as a preview page gets them: `draft` (unsaved values) over the saved ones.
+pub fn settings_with(c: &Config, group: &str, draft: &serde_json::Map<String, Value>) -> Value {
     let mut values = groups::values(c, group);
+    for (name, value) in draft {
+        values.insert(name.clone(), value.clone());
+    }
+    let address = |file: &str| {
+        (!file.is_empty() && !file.starts_with("https://") && !file.starts_with("http://")).then(|| url(c, group, file))
+    };
     for d in groups::meta(c, group).variables {
-        if d.kind != groups::Kind::File {
-            continue;
-        }
-        if let Some(Value::String(file)) = values.get(&d.name) {
-            if !file.is_empty() && !file.starts_with("https://") && !file.starts_with("http://") {
-                let address = url(c, group, file);
-                values.insert(d.name.clone(), address.into());
+        match d.kind {
+            groups::Kind::File => {
+                if let Some(at) = values.get(&d.name).and_then(Value::as_str).and_then(address) {
+                    values.insert(d.name.clone(), at.into());
+                }
             }
+            // A sound's file is its address too, and its volume from 0 to 1 as an <audio> takes it.
+            groups::Kind::Sound => {
+                if let Some(Value::Object(sound)) = values.get_mut(&d.name) {
+                    if let Some(at) = sound.get("file").and_then(Value::as_str).and_then(address) {
+                        sound.insert("file".into(), at.into());
+                    }
+                    let volume = sound.get("volume").and_then(Value::as_f64).unwrap_or(100.0);
+                    sound.insert("volume".into(), json!(volume.clamp(0.0, 100.0) / 100.0));
+                }
+            }
+            _ => {}
         }
     }
     Value::Object(values.into_iter().collect())
@@ -671,6 +710,37 @@ pub fn url(c: &Config, group: &str, file: &str) -> String {
     url_at(&base(c), group, file)
 }
 
+thread_local! {
+    /// Speeches made for overlay pages (Speak to an overlay, `streamerz.speak`): served at
+    /// `/overlays/-/speech/<id>` for two minutes, then dropped.
+    static SPEECHES: std::cell::RefCell<Vec<(u64, std::time::Instant, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keeps a speech for the overlay pages to load; its address.
+pub fn keep_speech(c: &Config, wav: Vec<u8>) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    SPEECHES.with_borrow_mut(|all| {
+        all.retain(|(_, made, _)| made.elapsed() < std::time::Duration::from_secs(120));
+        all.push((id, std::time::Instant::now(), wav));
+    });
+    format!("{}/overlays/-/speech/{id}", base(c))
+}
+
+fn speech(name: &str) -> Option<Served> {
+    let id: u64 = name.strip_prefix("speech/")?.trim_end_matches(".wav").parse().ok()?;
+    SPEECHES.with_borrow(|all| {
+        all.iter()
+            .find(|(i, made, _)| *i == id && made.elapsed() < std::time::Duration::from_secs(120))
+            .map(|(_, _, wav)| Served::Bytes(200, "audio/wav", wav.clone()))
+    })
+}
+
+/// Where an overlay's controls dock is served.
+pub fn controls_url(c: &Config, group: &str) -> String {
+    format!("{}/overlays/{}/-/controls", base(c), encode(group))
+}
+
 pub fn url_at(base: &str, group: &str, file: &str) -> String {
     // A file's folders stay as they are, so the page's relative links work.
     let file: Vec<String> = file.split('/').map(encode).collect();
@@ -679,8 +749,14 @@ pub fn url_at(base: &str, group: &str, file: &str) -> String {
 
 /// The page with Streamerz's script added at the top of its head. `server` is empty when the page is
 /// served by Streamerz, and its address in a copy saved to disk.
+#[cfg(test)]
 pub fn page(html: &str, settings: &Value, group: &str, server: &str, token: &str) -> String {
-    let config = json!({"server": server, "settings": settings, "group": group, "token": token})
+    page_with(html, settings, &json!({}), group, server, token)
+}
+
+/// The same, with the overlay's live controls as they are now (`streamerz.control`).
+pub fn page_with(html: &str, settings: &Value, controls: &Value, group: &str, server: &str, token: &str) -> String {
+    let config = json!({"server": server, "settings": settings, "controls": controls, "group": group, "token": token})
         .to_string()
         .replace("</", "<\\/");
     let script = format!("<script>{}</script>", CLIENT.replace("__STREAMERZ__", &config));
@@ -768,7 +844,30 @@ impl Served {
     }
 }
 
+/// The overlay a path under `/overlays/` belongs to (not the built-in pictures).
+pub fn group_of(path: &str) -> Option<String> {
+    let rest = path.trim_start_matches("/overlays").trim_matches('/');
+    let group = crate::donations::urlencoding_decode(rest.split('/').next()?);
+    (!group.is_empty() && group != BUILT_IN).then_some(group)
+}
+
+/// Whether a page was opened as a preview (`?preview` in its address): it shows the editor's draft.
+pub fn is_preview(query: &str) -> bool {
+    query.split('&').any(|p| p == "preview" || p.starts_with("preview="))
+}
+
+/// A page's address for the editor's preview: it shows the settings not saved yet.
+pub fn preview_url(c: &Config, group: &str, file: &str) -> String {
+    format!("{}?preview=1", url(c, group, file))
+}
+
+#[cfg(test)]
 pub fn file(c: &Config, path: &str) -> Served {
+    file_with(c, path, &serde_json::Map::new())
+}
+
+/// A file of an overlay; a page has `draft` over its saved settings (empty for a page that isn't a preview).
+pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>) -> Served {
     let rest = path.trim_start_matches("/overlays").trim_matches('/');
     if rest.is_empty() {
         return Served::Bytes(200, "text/html; charset=utf-8", index(c).into_bytes());
@@ -778,7 +877,14 @@ pub fn file(c: &Config, path: &str) -> Served {
     let name = crate::donations::urlencoding_decode(parts.next().unwrap_or(""));
     let missing = || Served::Bytes(404, "text/plain; charset=utf-8", b"No such overlay file".to_vec());
     if group == BUILT_IN {
-        return built_in(&name).unwrap_or_else(missing);
+        return speech(&name).or_else(|| built_in(&name)).unwrap_or_else(missing);
+    }
+    // The overlay's live controls as a page for an OBS dock.
+    if name == "-/controls" {
+        if !groups::exists(c, &group) {
+            return missing();
+        }
+        return Served::Bytes(200, "text/html; charset=utf-8", controls_dock(c, &group).into_bytes());
     }
     let kind = mime(&name);
     if !kind.starts_with("text/html") {
@@ -791,15 +897,44 @@ pub fn file(c: &Config, path: &str) -> Served {
     };
     if kind.starts_with("text/html") {
         let html = String::from_utf8_lossy(&bytes);
-        let settings = settings(c, &group);
+        let settings = settings_with(c, &group, draft);
+        let controls = groups::control_values(c, &group);
         return Served::Bytes(
             200,
             kind,
-            page(&html, &settings, &group, "", &token(c, &group)).into_bytes(),
+            page_with(&html, &settings, &controls, &group, "", &token(c, &group)).into_bytes(),
         );
     }
     Served::Bytes(200, kind, bytes)
 }
+
+/// The page of an overlay's live controls, for an OBS dock (`/overlays/<overlay>/-/controls`): a
+/// control for each, drawn from their declarations, set as they are changed.
+pub fn controls_dock(c: &Config, group: &str) -> String {
+    let defs: Vec<Value> = groups::controls(c, group)
+        .into_iter()
+        .map(|(control, _)| {
+            let mut def = serde_json::to_value(&control).unwrap_or_default();
+            def["label"] = control.shown_label().into();
+            let (min, max, step) = control.range();
+            def["min"] = json!(min);
+            def["max"] = json!(max);
+            def["step"] = json!(step);
+            if !control.icon.is_empty() {
+                def["iconUrl"] = format!("/overlays/-/icons/ffffff/{}.svg", control.icon).into();
+            }
+            def
+        })
+        .collect();
+    let html = CONTROLS_DOCK.replace("__TITLE__", &escape(group)).replace(
+        "__DEFS__",
+        &serde_json::to_string(&defs).unwrap_or_default().replace("</", "<\\/"),
+    );
+    let controls = groups::control_values(c, group);
+    page_with(&html, &json!({}), &controls, group, "", &token(c, group))
+}
+
+const CONTROLS_DOCK: &str = include_str!("../assets/overlays/controls.html");
 
 /// Where the pictures the window is drawn with come from (logos, badges, icons), by path. The program's
 /// start hands it in, so they are in the program once and nothing here knows the window's toolkit.
@@ -873,6 +1008,55 @@ fn built_in(name: &str) -> Option<Served> {
 /// `POST /overlays/call` with `op: "avatar"` `{platform, userId}`: the picture of someone in the chat,
 /// asked from the platform once and remembered (the same lookup as the Chat page's user card). Needs
 /// `chat.read` or `alerts.read`. None: the request is another op, for `call`.
+/// `streamerz.speak(text, {voice})`: the speech as a WAV for the page to play (in step with its own
+/// alert), at an address kept two minutes. Needs `voice.speak`.
+pub async fn speak(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
+    let req = serde_json::from_slice::<Value>(body).ok()?;
+    if req["op"] != "speak" {
+        return None;
+    }
+    let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let (group, said) = (text("group"), text("text"));
+    let (voice, speed, pitch, voices_cfg) = {
+        let c = e.config();
+        if group.is_empty() || !groups::exists(&c, &group) || text("token") != token(&c, &group) {
+            return Some((
+                403,
+                json!({"ok": false, "error": "this page is not one of Streamerz's overlays"}),
+            ));
+        }
+        if let Err(error) = allowed(&c, &group, "voice.speak") {
+            return Some((403, json!({"ok": false, "error": error})));
+        }
+        let voice = Some(text("voice"))
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| c.voices.voice.clone());
+        let num = |k: &str, d: f64| req[k].as_f64().filter(|n| n.is_finite()).unwrap_or(d);
+        (
+            voice,
+            num("speed", c.voices.speed),
+            num("pitch", c.voices.pitch),
+            c.voices.clone(),
+        )
+    };
+    let said: String = said.chars().take(1000).collect();
+    if said.trim().is_empty() {
+        return Some((400, json!({"ok": false, "error": "there is no text to say"})));
+    }
+    let spoken = crate::voice::speak_with(&said, &voice, speed, pitch, &voices_cfg).await;
+    if crate::engine::speech::waiting() == 0 {
+        crate::voice::neural::maybe_unload_idle(voices_cfg.keep_loaded).await;
+    }
+    Some(match spoken {
+        Ok(wav) => {
+            let ms = crate::engine::wav_length_ms(&wav);
+            let url = keep_speech(&e.config(), wav);
+            (200, json!({"ok": true, "url": url, "durationMs": ms}))
+        }
+        Err(error) => (500, json!({"ok": false, "error": error})),
+    })
+}
+
 pub async fn avatar(e: &Rc<Engine>, body: &[u8]) -> Option<(u16, Value)> {
     let req = serde_json::from_slice::<Value>(body).ok()?;
     if req["op"] != "avatar" {
@@ -1085,7 +1269,14 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
     // What the Overlays page's Test sends reaches the pages of that overlay alone, and so does the
     // word that one of its files was saved.
     if known && !subs.is_empty() {
+        if is_preview(query) {
+            subs.insert("Draft".into(), std::iter::once(group.clone()).collect());
+        }
         subs.insert("Test".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Play".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Control".into(), std::iter::once(group.clone()).collect());
+        subs.insert("Sound".into(), std::iter::once(group.clone()).collect());
+        subs.insert("SoundStop".into(), std::iter::once(group.clone()).collect());
         subs.insert("Reload".into(), std::iter::once(group).collect());
     }
     subs
@@ -1417,6 +1608,126 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_reaches_preview_pages_only_until_it_is_saved() {
+        use crate::engine::tests::{engine, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.change(|c| {
+                groups::create(c, "Box");
+                let m = groups::Meta {
+                    description: "d".into(),
+                    variables: vec![
+                        groups::Def {
+                            name: "color".into(),
+                            label: "Color".into(),
+                            kind: groups::Kind::Color,
+                            default: json!("#000000"),
+                            ..Default::default()
+                        },
+                        groups::Def {
+                            name: "size".into(),
+                            label: "Size".into(),
+                            kind: groups::Kind::Slider,
+                            default: json!(10),
+                            min: Some(0.0),
+                            max: Some(100.0),
+                            ..Default::default()
+                        },
+                    ],
+                    files: vec![groups::File {
+                        name: "index.html".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                groups::set_meta(c, "Box", m).unwrap();
+            });
+            let who = format!("group=Box&token={}", token(&e.config(), "Box"));
+            let wanted = "events=Settings.Box";
+            let (obs_tx, mut obs) = tokio::sync::mpsc::unbounded_channel();
+            let (preview_tx, mut preview) = tokio::sync::mpsc::unbounded_channel();
+            e.listen(
+                1,
+                &permitted(&e.config(), subscriptions(wanted), &format!("{wanted}&{who}")),
+                &obs_tx,
+            );
+            let q = format!("{wanted}&{who}&preview=1");
+            e.listen(2, &permitted(&e.config(), subscriptions(&q), &q), &preview_tx);
+            let next = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<str>>| {
+                rx.try_recv().ok().map(|m| serde_json::from_str::<Value>(&m).unwrap())
+            };
+
+            let mut values = serde_json::Map::new();
+            values.insert("color".into(), json!("#ff0000"));
+            e.overlay_draft_set("Box", &values).unwrap();
+            let m = next(&mut preview).expect("the preview hears the draft");
+            assert_eq!(
+                (m["event"]["source"].as_str(), m["data"]["color"].as_str()),
+                (Some("Draft"), Some("#ff0000"))
+            );
+            assert!(next(&mut obs).is_none(), "OBS doesn't");
+            assert_eq!(settings(&e.config(), "Box")["color"], "#000000", "nothing is saved");
+
+            // A page opened as a preview starts with the draft; one opened plainly with the saved values.
+            let draft = e.overlay_draft("Box");
+            let served =
+                |d: &serde_json::Map<String, Value>| match file_with(&e.config(), "/overlays/Box/index.html", d) {
+                    Served::Bytes(_, _, body) => String::from_utf8(body).unwrap(),
+                    Served::Disk(..) => String::new(),
+                };
+            assert!(served(&draft).contains("#ff0000") && !served(&serde_json::Map::new()).contains("#ff0000"));
+            assert!(is_preview("preview=1") && is_preview("a=b&preview") && !is_preview("previews=1"));
+            assert_eq!(group_of("/overlays/Box/index.html").as_deref(), Some("Box"));
+            assert_eq!(group_of("/overlays/-/guide"), None);
+
+            // A value that isn't one of the setting's is refused; one put back as saved is no change.
+            values.insert("size".into(), json!(500));
+            assert!(e.overlay_draft_set("Box", &values).is_err());
+            let mut back = serde_json::Map::new();
+            back.insert("size".into(), json!(10));
+            e.change(|c| {
+                let mut v = groups::values(c, "Box");
+                v.insert("size".into(), json!(10));
+                groups::set_values(c, "Box", v).unwrap();
+            });
+            while next(&mut preview).is_some() {}
+            while next(&mut obs).is_some() {}
+            e.overlay_draft_set("Box", &back).unwrap();
+            assert_eq!(e.overlay_draft("Box").len(), 1, "only the color is a change");
+            let m = next(&mut preview).unwrap();
+            assert_eq!(
+                m["data"]["color"], "#ff0000",
+                "the preview keeps the draft over saved values"
+            );
+
+            // Revert one setting, then save: every page has the saved value, and the draft is gone.
+            e.overlay_draft_revert("Box", Some("color"));
+            assert!(e.overlay_draft("Box").is_empty());
+            assert_eq!(next(&mut preview).unwrap()["data"]["color"], "#000000");
+            e.overlay_draft_set(
+                "Box",
+                &values.iter().take(1).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            )
+            .unwrap();
+            assert_eq!(e.overlay_draft_save("Box").unwrap(), 1);
+            assert!(e.overlay_draft("Box").is_empty());
+            assert_eq!(settings(&e.config(), "Box")["color"], "#ff0000");
+            let heard: Vec<Value> = std::iter::from_fn(|| next(&mut obs)).collect();
+            assert!(
+                heard
+                    .iter()
+                    .any(|m| m["event"]["source"] == "Settings" && m["data"]["color"] == "#ff0000"),
+                "{heard:?}"
+            );
+            assert!(
+                !heard.iter().any(|m| m["event"]["source"] == "Draft"),
+                "OBS never hears a draft"
+            );
+        });
+    }
+
+    #[test]
     fn pages_are_served_the_programs_own_pictures() {
         pictures(|path| match path {
             "icons/heart.svg" => Some(std::borrow::Cow::Borrowed(b"<svg stroke=\"black\"/>")),
@@ -1648,6 +1959,67 @@ mod tests {
         let page = String::from_utf8(page).unwrap();
         assert_eq!((status, kind), (200, "text/html; charset=utf-8"));
         assert!(page.contains("Work on a page") && !page.contains("__GUIDE__"));
+    }
+
+    #[test]
+    fn a_page_speaks_only_with_its_permission() {
+        use crate::engine::tests::{engine, run};
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.change(|c| {
+                groups::create(c, "Talk");
+                let mut meta = groups::meta(c, "Talk");
+                meta.files.push(groups::File {
+                    name: "index.html".into(),
+                    ..Default::default()
+                });
+                let _ = groups::set_meta(c, "Talk", meta);
+            });
+            let token = token(&e.config(), "Talk");
+            let ask = |body: Value| body.to_string().into_bytes();
+            assert!(
+                speak(&e, &ask(json!({"op": "avatar"}))).await.is_none(),
+                "another call goes on"
+            );
+            let (status, _) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": "x", "text": "hi"})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 403, "a page that isn't the overlay's");
+            let (status, answer) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": token, "text": "hi"})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 403, "{answer}");
+            assert!(answer["error"].as_str().unwrap().contains("voice.speak"), "{answer}");
+            e.change(|c| {
+                let mut meta = groups::meta(c, "Talk");
+                meta.permissions = vec!["voice.speak".into()];
+                let _ = groups::set_meta(c, "Talk", meta);
+            });
+            let (status, _) = speak(
+                &e,
+                &ask(json!({"op": "speak", "group": "Talk", "token": token, "text": "  "})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, 400, "nothing to say");
+            // A speech kept for the pages is served at its address for a while.
+            let url = keep_speech(&e.config(), b"RIFFdata".to_vec());
+            let path = url
+                .split("/overlays/")
+                .nth(1)
+                .map(|p| format!("/overlays/{p}"))
+                .unwrap();
+            assert!(matches!(
+                file_with(&e.config(), &path, &Default::default()),
+                Served::Bytes(200, "audio/wav", _)
+            ));
+        });
     }
 
     #[test]

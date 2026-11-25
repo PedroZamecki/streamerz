@@ -32,7 +32,7 @@ pub struct Ask {
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// The browser's own folder for this one picture, removed with it.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -41,7 +41,7 @@ impl Drop for Scratch {
 }
 
 /// The colour behind the page, as the browser takes it.
-fn backdrop(text: &str) -> Value {
+pub(crate) fn backdrop(text: &str) -> Value {
     let hex = text.trim().trim_start_matches('#');
     if text.trim().eq_ignore_ascii_case("transparent") {
         return json!({"r": 0, "g": 0, "b": 0, "a": 0});
@@ -71,11 +71,25 @@ fn console_text(args: &Value) -> String {
 /// Open the page with no window, call `ready` once it is loaded and listening (to send it made-up
 /// events), wait, and take the picture. Gives `{path, width, height, console, errors}`.
 pub async fn take(ask: Ask, ready: impl FnOnce()) -> Result<Value, String> {
+    let (mut child, scratch, name) = launch(ask.width, ask.height, true)?;
+    let result = tokio::time::timeout(
+        Duration::from_millis(40_000 + ask.wait_ms),
+        drive(&scratch.0, &ask, ready),
+    )
+    .await
+    .unwrap_or_else(|_| Err(format!("{name} took too long to draw the page")));
+    let _ = child.kill().await;
+    result
+}
+
+/// A Chromium browser found on this computer, started with no window, a profile of its own (removed
+/// with the `Scratch`) and its debugging socket open. Gives the process, the profile and its name.
+pub(crate) fn launch(width: u32, height: u32, mute: bool) -> Result<(tokio::process::Child, Scratch, String), String> {
     use crate::browsers::BrowserEngine;
     let browser = crate::browsers::installed()
         .into_iter()
         .find(|b| matches!(b.engine, BrowserEngine::Chromium | BrowserEngine::Edge))
-        .ok_or("A picture needs Chrome, Chromium, Brave or Edge on this computer, and none was found.")?;
+        .ok_or("This needs Chrome, Chromium, Brave or Edge on this computer, and none was found.")?;
     let scratch = Scratch(std::env::temp_dir().join(format!(
         "streamerz-shot-{}-{}",
         std::process::id(),
@@ -87,49 +101,47 @@ pub async fn take(ask: Ask, ready: impl FnOnce()) -> Result<Value, String> {
         .arg("--headless=new")
         .arg("--remote-debugging-port=0")
         .arg(format!("--user-data-dir={}", scratch.0.display()))
-        .arg(format!("--window-size={},{}", ask.width, ask.height))
+        .arg(format!("--window-size={width},{height}"))
         .args([
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
             "--hide-scrollbars",
-            "--mute-audio",
             "--autoplay-policy=no-user-gesture-required",
             "about:blank",
         ]);
+    if mute {
+        command.arg("--mute-audio");
+    }
     // In Flatpak, the browser is the host's.
-    let mut child = tokio::process::Command::from(crate::sandbox::on_host(command))
+    let child = tokio::process::Command::from(crate::sandbox::on_host(command))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("cannot start {}: {e}", browser.name))?;
-    let result = tokio::time::timeout(
-        Duration::from_millis(40_000 + ask.wait_ms),
-        drive(&scratch.0, &ask, ready),
-    )
-    .await
-    .unwrap_or_else(|_| Err(format!("{} took too long to draw the page", browser.name)));
-    let _ = child.kill().await;
-    result
+    Ok((child, scratch, browser.name.to_string()))
 }
 
-async fn drive(profile: &std::path::Path, ask: &Ask, ready: impl FnOnce()) -> Result<Value, String> {
+/// Where a browser started by `launch` listens, once it is up: its DevTools WebSocket address.
+pub(crate) async fn devtools_address(profile: &std::path::Path) -> Result<String, String> {
     // The browser writes where it listens once it is up: the port, then the socket's path.
     let port_file = profile.join("DevToolsActivePort");
-    let mut address = None;
     for _ in 0..150 {
         if let Ok(text) = tokio::fs::read_to_string(&port_file).await {
             let mut lines = text.lines();
             if let (Some(port), Some(path)) = (lines.next(), lines.next()) {
-                address = Some(format!("ws://127.0.0.1:{port}{path}"));
-                break;
+                return Ok(format!("ws://127.0.0.1:{port}{path}"));
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let address = address.ok_or("the browser did not start")?;
+    Err("the browser did not start".into())
+}
+
+async fn drive(profile: &std::path::Path, ask: &Ask, ready: impl FnOnce()) -> Result<Value, String> {
+    let address = devtools_address(profile).await?;
     let (mut ws, _) = tokio_tungstenite::connect_async(address)
         .await
         .map_err(|e| format!("cannot talk to the browser: {e}"))?;

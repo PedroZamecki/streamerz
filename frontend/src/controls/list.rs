@@ -40,6 +40,11 @@ pub enum ViewChange {
     },
     /// The page's "Show" combo picked another table.
     Tab(String),
+    /// A row opened as a page of its own (an overlay): `key` in the view is its id.
+    Open {
+        key: String,
+        id: String,
+    },
 }
 impl EventEmitter<ViewChange> for List {}
 impl EventEmitter<super::sections::Navigate> for List {}
@@ -245,26 +250,133 @@ impl List {
         this.refresh(cx);
         this
     }
-    /// Shows or hides the `index`th option of the model's filter; one is always left showing.
-    fn toggle_filter(&mut self, index: usize, cx: &mut Context<Self>) {
-        let options = self.model["filter"]["options"].as_array().cloned().unwrap_or_default();
+    /// Computes the next `hidden` (or active-toggle) list when option `index` of `filter` is clicked.
+    /// In default mode (platforms), `hidden` lists hidden items and at least one stays shown.
+    /// In `"mode": "toggles"` mode, `hidden` lists active toggles and any subset (including none) is valid.
+    fn next_filter_hidden(filter: &Value, index: usize) -> Option<Vec<String>> {
+        let options = filter["options"].as_array()?;
+        let id = options.get(index).and_then(|option| option["id"].as_str())?;
+        if filter["mode"] == "toggles" {
+            let mut active: Vec<String> = options
+                .iter()
+                .filter(|option| option["shown"] == true)
+                .filter_map(|option| option["id"].as_str().map(str::to_owned))
+                .collect();
+            if let Some(position) = active.iter().position(|item| item == id) {
+                active.remove(position);
+            } else {
+                active.push(id.to_owned());
+            }
+            return Some(active);
+        }
         let mut hidden: Vec<String> = options
             .iter()
             .filter(|option| option["shown"] == false)
             .filter_map(|option| option["id"].as_str().map(str::to_owned))
             .collect();
-        let Some(id) = options.get(index).and_then(|option| option["id"].as_str()) else {
-            return;
-        };
         if let Some(position) = hidden.iter().position(|hidden| hidden == id) {
             hidden.remove(position);
         } else if hidden.len() + 1 < options.len() {
             hidden.push(id.to_owned());
         } else {
-            return;
+            return None;
         }
+        Some(hidden)
+    }
+
+    /// Shows or hides the `index`th option of the model's filter (or toggles it in toggle mode).
+    fn toggle_filter(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(hidden) = Self::next_filter_hidden(&self.model["filter"], index) else {
+            return;
+        };
         let kind = self.kind().to_owned();
         cx.emit(ViewChange::Hidden { kind, hidden });
+    }
+
+    /// Clamps a progress model's percentage into `0.0..=100.0`, returning `None` if absent/invalid.
+    fn progress_percent(progress: &Value) -> Option<f32> {
+        let pct = progress["percent"].as_f64()?;
+        pct.is_finite().then_some(pct.clamp(0.0, 100.0) as f32)
+    }
+
+    /// Shared live progress bar for lists with background work (e.g. voice downloads).
+    fn progress_bar(progress: &Value, cx: &App) -> Option<AnyElement> {
+        let percent = Self::progress_percent(progress)?;
+        let label = progress["label"].as_str().unwrap_or_default().to_owned();
+        let pct_text = format!("{}%", percent.round() as u32);
+        Some(
+            div()
+                .id("list-progress")
+                .test_support()
+                .role(Role::Group)
+                .aria_label(label.clone())
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(SPACE_XS))
+                .px(px(SPACE_MD))
+                .py(px(SPACE_SM))
+                .rounded(px(6.))
+                .bg(crate::theme::row_surface(cx))
+                .border_1()
+                .border_color(crate::theme::row_border(cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(SPACE_SM))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(SPACE_SM))
+                                .min_w_0()
+                                .flex_1()
+                                .child(
+                                    Icon::empty()
+                                        .path("icons/download.svg")
+                                        .size(px(13.))
+                                        .text_color(cx.theme().primary),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_size(px(FONT_CAPTION))
+                                        .line_height(px(LINE_CAPTION))
+                                        .text_color(cx.theme().foreground)
+                                        .child(label),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(FONT_CAPTION))
+                                .line_height(px(LINE_CAPTION))
+                                .text_color(crate::theme::quiet(cx))
+                                .child(pct_text),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(6.))
+                        .rounded(px(3.))
+                        .bg(cx.theme().muted)
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(percent / 100.))
+                                .rounded(px(3.))
+                                .bg(cx.theme().primary),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
     pub fn is_settings(&self) -> bool {
         self.model["presentation"] == "settings"
@@ -519,12 +631,24 @@ impl List {
         }
         cx.notify();
     }
+    /// Resolves the explicit row (from a context menu or double-click) or the currently selected row
+    /// (from a toolbar/bottom button) so per-row `confirm`, `kind` and `singleton` metadata apply to both.
+    fn row_record(shown: &Value, row: Option<usize>, selected_id: &str) -> Option<Value> {
+        row.and_then(|row| shown["rows"].get(row))
+            .or_else(|| {
+                shown["rows"].as_array().and_then(|rows| {
+                    rows.iter()
+                        .find(|row| !selected_id.is_empty() && row["id"] == selected_id)
+                })
+            })
+            .cloned()
+    }
     fn action(&mut self, action: Action, row: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let shown = match &self.table {
             Some(table) => table.read(cx).delegate().model.clone(),
             None => self.model.clone(),
         };
-        let record = row.and_then(|row| shown["rows"].get(row).cloned());
+        let record = Self::row_record(&shown, row, &self.selected_id);
         let kind = record
             .as_ref()
             .and_then(|row| row["kind"].as_str())
@@ -562,6 +686,13 @@ impl List {
             ),
             Action::Custom(index) => {
                 let spec = self.model["actions"][index].clone();
+                if let Some(key) = spec["view"].as_str() {
+                    cx.emit(ViewChange::Open {
+                        key: key.to_owned(),
+                        id: id.clone(),
+                    });
+                    return;
+                }
                 if let Some(page) = spec["navigate"].as_str() {
                     cx.emit(super::sections::Navigate(page.to_owned()));
                     return;
@@ -677,6 +808,12 @@ impl List {
     }
     /// Returns whether the page should query the core again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some(index) = operation.strip_prefix("press:").and_then(|s| s.parse::<usize>().ok()) {
+            if let Some(form) = &self.form {
+                form.update(cx, |form, cx| form.press_reply(index, &value, window, cx));
+            }
+            return false;
+        }
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             if matches!(operation, "save" | "json") {
                 if let Some(form) = &self.form {
@@ -1367,6 +1504,9 @@ impl Render for List {
         }
         if let Some(err) = &self.error {
             stack.add(super::notice::error(err, cx), SPACE_SM);
+        }
+        if let Some(bar) = Self::progress_bar(&self.model["progress"], cx) {
+            stack.add(bar, SPACE_SM);
         }
         if let (true, Some(inline)) = (self.is_settings(), self.inline.clone()) {
             stack.add(inline, SPACE_SM);
@@ -2122,26 +2262,67 @@ impl Render for List {
                     ),
                 );
             }
-            // The platform column's filter: each platform in the list can be hidden, one stays.
+            // Filter chips beside Search: brand logos (platforms) or icon+label toggles (catalog filters).
+            let toggles = self.model["filter"]["mode"] == "toggles";
+            let fold_filters = options
+                .iter()
+                .any(|option| option["brand"].as_str().unwrap_or_default().is_empty())
+                && {
+                    let filter_w: f32 = options
+                        .iter()
+                        .map(|option| {
+                            if !option["brand"].as_str().unwrap_or_default().is_empty() {
+                                40.
+                            } else {
+                                label_width(option["label"].as_str().unwrap_or_default())
+                            }
+                        })
+                        .sum();
+                    let top_w = top.len() as f32 * (34. + SPACE_SM);
+                    let search_min = if self.search.is_some() { 160. } else { 0. };
+                    let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
+                    let room = if room > 0. {
+                        room
+                    } else {
+                        f32::from(window.viewport_size().width) - 200.
+                    } - reserved;
+                    filter_w + 8. * options.len() as f32 + search_min + top_w > room
+                };
             for (index, option) in options.iter().enumerate() {
                 let label = option["label"].as_str().unwrap_or_default().to_owned();
+                let tip = option["tip"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| label.clone());
                 let shown = option["shown"] == true;
-                line = line.child(
+                let brand = option["brand"].as_str().unwrap_or_default();
+                let btn = if !brand.is_empty() {
                     Button::new(("filter", index))
                         .small()
                         .h(px(CONTROL_HEIGHT))
                         .when(shown, |button| button.outline())
                         .when(!shown, |button| button.ghost().opacity(0.4))
-                        .tooltip(label.clone())
-                        .accessibility_label(label.clone())
-                        .child(super::body::brand_logo(
-                            ("filter-logo", index),
-                            option["brand"].as_str().unwrap_or_default(),
-                            px(16.),
-                            cx,
-                        ))
-                        .on_click(cx.listener(move |list, _, _, cx| list.toggle_filter(index, cx))),
-                );
+                        .tooltip(tip)
+                        .accessibility_label(label)
+                        .child(super::body::brand_logo(("filter-logo", index), brand, px(16.), cx))
+                        .on_click(cx.listener(move |list, _, _, cx| list.toggle_filter(index, cx)))
+                } else {
+                    let icon = option["icon"].as_str().unwrap_or("filter");
+                    Button::new(("filter", index))
+                        .small()
+                        .h(px(CONTROL_HEIGHT))
+                        .flex_shrink_0()
+                        .when(toggles && shown, |button| button.primary())
+                        .when(!toggles && shown, |button| button.outline())
+                        .when(!shown, |button| button.outline().opacity(0.65))
+                        .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                        .when(!fold_filters, |button| button.label(label.clone()))
+                        .when(fold_filters, |button| button.w(px(34.)))
+                        .tooltip(tip)
+                        .accessibility_label(label)
+                        .on_click(cx.listener(move |list, _, _, cx| list.toggle_filter(index, cx)))
+                };
+                line = line.child(btn);
             }
             if self.search.is_none() && !top.is_empty() {
                 line = line.child(div().flex_1());
@@ -2567,7 +2748,7 @@ impl Render for List {
 }
 
 /// A read-only name and value table in a dialog.
-pub(super) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
+pub(crate) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
     let title = values["title"].as_str().unwrap_or_default().to_owned();
     let hint = values["hint"].as_str().unwrap_or_default().to_owned();
     let rows: Vec<(String, String)> = values["rows"]
@@ -2625,6 +2806,69 @@ mod tests {
     use crate::theme::{SPACE_MD, SPACE_SM};
     use gpui_kit::div;
     use serde_json::json;
+
+    #[test]
+    fn filter_toggle_supports_platform_exclusion_and_independent_toggles() {
+        let platforms = json!({
+            "options": [
+                {"id": "twitch", "shown": true},
+                {"id": "kick", "shown": true}
+            ]
+        });
+        assert_eq!(List::next_filter_hidden(&platforms, 0), Some(vec!["twitch".into()]));
+        let one_left = json!({
+            "options": [
+                {"id": "twitch", "shown": false},
+                {"id": "kick", "shown": true}
+            ]
+        });
+        assert_eq!(
+            List::next_filter_hidden(&one_left, 1),
+            None,
+            "cannot hide last platform"
+        );
+        assert_eq!(List::next_filter_hidden(&one_left, 0), Some(vec![]));
+
+        let toggles = json!({
+            "mode": "toggles",
+            "options": [
+                {"id": "commercial", "shown": false},
+                {"id": "my_language", "shown": true}
+            ]
+        });
+        assert_eq!(
+            List::next_filter_hidden(&toggles, 0),
+            Some(vec!["my_language".into(), "commercial".into()])
+        );
+        assert_eq!(
+            List::next_filter_hidden(&toggles, 1),
+            Some(vec![]),
+            "toggles mode allows turning off all filters"
+        );
+    }
+
+    #[test]
+    fn progress_percent_clamps_bounds_and_ignores_missing() {
+        assert_eq!(List::progress_percent(&json!(null)), None);
+        assert_eq!(List::progress_percent(&json!({"percent": -5})), Some(0.0));
+        assert_eq!(List::progress_percent(&json!({"percent": 42})), Some(42.0));
+        assert_eq!(List::progress_percent(&json!({"percent": 150})), Some(100.0));
+    }
+
+    #[test]
+    fn selected_row_record_applies_per_row_confirm_for_toolbar_buttons() {
+        let model = json!({
+            "rows": [
+                {"id": "a", "confirm": {"download": "Download A (CC0)"}},
+                {"id": "b", "confirm": {"download": "Download B (Non-commercial)"}}
+            ]
+        });
+        let from_menu = List::row_record(&model, Some(0), "b").unwrap();
+        assert_eq!(from_menu["confirm"]["download"], "Download A (CC0)");
+        let from_button = List::row_record(&model, None, "b").unwrap();
+        assert_eq!(from_button["confirm"]["download"], "Download B (Non-commercial)");
+        assert!(List::row_record(&model, None, "").is_none());
+    }
 
     #[test]
     fn f2_prefers_explicit_rename_over_edit_and_respects_row_permissions() {

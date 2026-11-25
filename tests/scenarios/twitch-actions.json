@@ -41,7 +41,7 @@
       {"type": 15, "title": "Playing with %user%"},
       {"type": 16, "source": 0, "game": "just chatting"},
       {"type": 17, "description": "here"},
-      {"type": 18, "hasDelay": true},
+      {"type": 18, "hasDelay": true, "title": "Clip of %user%", "duration": 12.54},
       {"type": 19, "duration": 60}]}],
     "steps": [{"run": "channel", "args": {"user": "ana"}}],
     "expect": {
@@ -50,7 +50,7 @@
         {"call": "GET games", "query": {"name": "just chatting"}},
         {"call": "PATCH channels", "body": {"game_id": "509658"}},
         {"call": "POST streams/markers", "body": {"user_id": "{broadcaster_id}", "description": "here"}},
-        {"call": "POST clips", "query": {"has_delay": "true"}},
+        {"call": "POST clips", "query": {"has_delay": "true", "title": "Clip of ana", "duration": "12.5"}},
         {"call": "POST channels/commercial", "body": {"length": 60}}],
       "runs": [{"action": "channel", "after": {"titleSuccess": true, "gameSuccess": true, "gameName": "Just Chatting",
         "gameBoxArt": "https://x/285x380.jpg", "streamMarkerSuccess": true, "streamMarkerId": "mk1", "streamMarkerPosition": 42,

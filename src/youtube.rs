@@ -261,6 +261,15 @@ pub struct YouTubeToken {
 }
 
 pub enum YouTubeCmd {
+    /// Any Data API call as the broadcaster (method, path with its query, JSON body), with `{video}`
+    /// and `{chat}` filled in from `broadcast` (empty: the live one).
+    Data {
+        method: &'static str,
+        broadcast: String,
+        path: String,
+        body: Option<Value>,
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
     Connect,
     /// The live video being read ("" when none).
     LiveVideo(oneshot::Sender<String>),
@@ -456,6 +465,28 @@ impl YouTubeHandle {
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    /// Any Data API call as the broadcaster; `{video}` and `{chat}` in the path or body are the
+    /// broadcast's video and live chat.
+    pub async fn data(
+        &self,
+        method: &'static str,
+        broadcast: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::Data {
+                method,
+                broadcast: broadcast.to_string(),
+                path: path.to_string(),
+                body,
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -795,6 +826,16 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     let r = runner
                         .set_title_and_description_api(&broadcast, &title, &description)
                         .await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::Data {
+                    method,
+                    broadcast,
+                    path,
+                    body,
+                    resp,
+                } => {
+                    let r = runner.data_api(method, &broadcast, &path, body).await;
                     let _ = resp.send(r);
                 }
                 YouTubeCmd::BanUser {
@@ -1205,6 +1246,43 @@ impl YouTubeRunner {
         .await
     }
 
+    /// Any Data API call as the broadcaster (see `YouTubeHandle::data`).
+    async fn data_api(
+        &self,
+        method: &'static str,
+        broadcast: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let mut path = path.to_string();
+        let mut body = body.map(|b| b.to_string()).unwrap_or_default();
+        if path.contains("{video}") || body.contains("\"{video}\"") {
+            let video = self.target(broadcast).await?;
+            path = path.replace("{video}", &crate::commands::url_encode(&video));
+            body = body.replace("\"{video}\"", &Value::from(video).to_string());
+        }
+        if path.contains("{chat}") || body.contains("\"{chat}\"") {
+            let chat = self.live_chat_id(broadcast, &token).await?;
+            path = path.replace("{chat}", &crate::commands::url_encode(&chat));
+            body = body.replace("\"{chat}\"", &Value::from(chat).to_string());
+        }
+        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        if !body.is_empty() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let url = format!("{YOUTUBE_API_BASE}/{}", path.trim_start_matches('/'));
+        let r = crate::http::request(method, &url, &headers, body.as_bytes()).await?;
+        if !(200..300).contains(&r.status) {
+            let said = serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| r.text());
+            return Err(format!("HTTP {}: {said}", r.status));
+        }
+        Ok(serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+    }
+
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
@@ -1259,7 +1337,8 @@ impl YouTubeRunner {
         );
         let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
         let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
-        if (200..300).contains(&resp.status) {
+        // A 404: already lifted or run out, so it is forgotten all the same.
+        if (200..300).contains(&resp.status) || resp.status == 404 {
             self.engine
                 .change(|config| config.youtube_moderation_bans.retain(|ban| ban.id != id));
             Ok(())
@@ -1691,7 +1770,30 @@ async fn find_next_broadcast(
         return Err(format!("YouTube broadcasts: HTTP {} {}", res.status, res.text()));
     }
     let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
-    Ok(pick_broadcast(v["items"].as_array().map_or(&[], Vec::as_slice)))
+    let items = v["items"].as_array().map_or(&[][..], Vec::as_slice);
+    remember_broadcasts(items);
+    Ok(pick_broadcast(items))
+}
+
+/// The live and upcoming broadcasts a list held, for a sub-action's Broadcast to pick from by title.
+fn remember_broadcasts(items: &[Value]) {
+    let found = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.pointer("/status/lifeCycleStatus").and_then(Value::as_str),
+                Some("live" | "liveStarting" | "ready" | "created" | "testing" | "testStarting")
+            )
+        })
+        .filter_map(|item| {
+            let id = item["id"].as_str().filter(|id| !id.is_empty())?;
+            Some((
+                id.to_owned(),
+                item["snippet"]["title"].as_str().unwrap_or_default().to_owned(),
+            ))
+        })
+        .collect();
+    crate::catalog::set("youtube.broadcasts", found);
 }
 
 /// One Data API GET as the broadcaster: the JSON answer, or YouTube's own error message.
@@ -1759,6 +1861,7 @@ async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Confi
     let Ok(v) = serde_json::from_slice::<Value>(&res.body) else {
         return (None, None);
     };
+    remember_broadcasts(v["items"].as_array().map_or(&[][..], Vec::as_slice));
     let mut nearest_sched: Option<i64> = None;
     for item in v["items"].as_array().into_iter().flatten() {
         let state = item
@@ -2929,6 +3032,23 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    /// A Broadcast field offers what YouTube listed live or still to come, by title.
+    #[test]
+    fn found_broadcasts_are_offered_by_title() {
+        remember_broadcasts(&[
+            json!({"id": "live1", "snippet": {"title": "Now"}, "status": {"lifeCycleStatus": "live"}}),
+            json!({"id": "next1", "snippet": {"title": "Friday"}, "status": {"lifeCycleStatus": "ready"}}),
+            json!({"id": "old1", "snippet": {"title": "Done"}, "status": {"lifeCycleStatus": "complete"}}),
+        ]);
+        assert_eq!(
+            crate::catalog::choices("youtube.broadcasts"),
+            vec![
+                ("next1".to_string(), "Friday".to_string()),
+                ("live1".to_string(), "Now".to_string())
+            ]
+        );
     }
 
     #[test]

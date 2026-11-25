@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Read chat aloud</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #caption { padding: 10px 20px; border-radius: 10px; background: rgba(0, 0, 0, 0.55); font-family: system-ui, sans-serif; }
+  #caption[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="caption" hidden></div>
+<script>
+// Each chat message is spoken (streamerz.speak, needs voice.speak) in turn, as an <audio> of this page,
+// so OBS hears it on this source. The live controls Reading and Skip turn it off and skip one.
+let s = {}, on = true, now = null;
+const waiting = [];
+
+function fit(line) {
+  let text = String(line.text || "").trim();
+  if (s.skipCommands && text.startsWith("!")) return "";
+  if (s.skipLinks) text = text.split(/\s+/).filter(w => !/^(https?:\/\/|www\.)/i.test(w)).join(" ");
+  const most = Number(s.maxLength) || 0;
+  if (most > 0 && text.length > most) text = text.slice(0, most).replace(/\s+\S*$/, "");
+  if (!/[\p{L}\p{N}]/u.test(text)) return "";
+  const before = String(s.prefix || "").replace(/%user%/g, line.user || "");
+  return (before ? before + " " : "") + text;
+}
+
+async function next() {
+  if (now || !on || !waiting.length) return;
+  const line = waiting.shift();
+  const text = fit(line);
+  if (!text) return next();
+  try {
+    now = await streamerz.speak(text, s.voice ? { voice: s.voice } : {});
+    now.volume = Math.min(1, (Number(s.volume ?? 100) || 0) / 100);
+    if (s.caption !== false) (caption.textContent = line.user), (caption.hidden = false);
+    window.lastSpoken = text;
+    await new Promise(done => {
+      now.onended = now.onerror = done;
+      now.play().catch(done);
+    });
+  } catch (e) {
+    streamerz.log("Read chat aloud: " + e.message);
+  }
+  caption.hidden = true;
+  now = null;
+  next();
+}
+
+streamerz.onSettings(next_ => {
+  s = next_;
+  caption.style.cssText = streamerz.css(s.style);
+  streamerz.place(caption, s.where);
+});
+
+streamerz.chat(line => {
+  if (!(s.platforms || []).includes(line.platform)) return;
+  waiting.push(line);
+  next();
+});
+
+streamerz.control("on", value => {
+  on = value !== false;
+  if (!on && now) now.pause(), now.onended && now.onended();
+  if (on) next();
+});
+streamerz.control("skip", (at, old) => {
+  if (old !== undefined && now) now.pause(), now.onended && now.onended();
+});
+</script>
+</body>
+</html>

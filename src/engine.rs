@@ -20,14 +20,19 @@ pub mod chatlog;
 mod chatters;
 pub use chatlog::can_send;
 pub mod community;
+mod data_tools;
 pub mod events;
 pub mod globals;
 mod midi_in;
+mod obs_tools;
 pub mod overlays;
 pub mod plugins;
 mod processes;
 mod rest;
 mod songs;
+pub(crate) mod sounds;
+pub(crate) mod speech;
+mod tools;
 mod watchers;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -78,6 +83,9 @@ pub struct RunOutcome {
     pub skipped: u32,
     pub failed_step: Option<u64>,
     pub error: Option<String>,
+    /// The first warning it logged (it went on, but something didn't happen as asked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     #[serde(skip)]
     step: u64,
 }
@@ -103,6 +111,15 @@ pub fn record_error(message: &str) {
         if state.error.is_none() {
             state.error = Some(message.into());
             state.failed_step = Some(state.step);
+        }
+    });
+}
+
+pub fn record_warning(message: &str) {
+    let _ = RUN_OUTCOME.try_with(|state| {
+        let mut state = state.borrow_mut();
+        if state.warning.is_none() {
+            state.warning = Some(message.into());
         }
     });
 }
@@ -184,6 +201,8 @@ pub struct Engine {
     spotify_seen: RefCell<std::collections::HashMap<u32, String>>,
     /// The last value of each overlay topic.
     overlay_state: RefCell<std::collections::HashMap<String, Value>>,
+    /// Settings changed in the overlay editor and not saved yet, by overlay: only preview pages see them.
+    overlay_drafts: RefCell<std::collections::HashMap<String, serde_json::Map<String, Value>>>,
     /// Captured at startup, independent of pending settings changes.
     pub(crate) memory_saver: bool,
     cfg: Arc<watch::Sender<Config>>,
@@ -342,11 +361,13 @@ impl Engine {
     }
 
     /// A direct execution reports observed errors and skips using the normal runner's outcome.
-    pub async fn execute_one(self: &Rc<Self>, kind: u64, mut o: Obj) -> (Obj, RunOutcome) {
-        let mut ctx = Ctx {
-            args: Obj::new(),
-            group: String::new(),
-        };
+    pub async fn execute_one(self: &Rc<Self>, kind: u64, o: Obj) -> (Obj, RunOutcome) {
+        self.execute_with(kind, o, Obj::new(), String::new()).await
+    }
+
+    /// The same, starting from `args` (a test uses an action's values), in the action group `group`.
+    pub async fn execute_with(self: &Rc<Self>, kind: u64, mut o: Obj, args: Obj, group: String) -> (Obj, RunOutcome) {
+        let mut ctx = Ctx { args, group };
         o.insert("type".into(), kind.into());
         let outcome = RUN_OUTCOME
             .scope(RefCell::new(RunOutcome::default()), async {
@@ -426,11 +447,16 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4018 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35044 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99700..=99706 | 99900..=99904
-            | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
+            | 99450..=99454 | 99501..=99503 | 99513..=99523 | 99533..=99539 | 99541..=99545 | 99601..=99607 | 99654..=99666 | 99720 | 99721 | 99723 | 99724 | 99726 | 99729..=99734 | 99740..=99743 | 99750..=99769 | 99780..=99790
+            | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
+            | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99881 | 99810..=99824 | 99827..=99837 | 99840..=99875
+            | 1 | 7 | 30001 | 30002 | 99300..=99306 | 99320..=99327
     )
 }
 
 pub(crate) use rest::{poll_args, prediction_args};
+pub use speech::wav_length_ms;
+pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
 /// A UTC civil date and time from Unix seconds.
 pub fn civil_time(secs: i64) -> crate::fmt::Time {
@@ -447,6 +473,43 @@ pub fn uuid() -> String {
     let r = |bits: u32| crate::math::secure_u64() >> (64 - bits);
     let (a, b2, c, d, e) = (r(32), r(16), r(12), r(14), r(48));
     format!("{a:08x}-{b2:04x}-4{c:03x}-{:04x}-{e:012x}", 0x8000 | d)
+}
+
+/// A clip's length for Twitch, 5 to 60 seconds to a tenth; none when unset, so Twitch makes it 30.
+pub fn clip_length(seconds: f64) -> Option<String> {
+    (seconds > 0.0).then(|| {
+        let tenths = (seconds.clamp(5.0, 60.0) * 10.0).round() / 10.0;
+        if tenths.fract() == 0.0 {
+            format!("{tenths:.0}")
+        } else {
+            format!("{tenths:.1}")
+        }
+    })
+}
+
+/// Seconds in a length as Twitch writes a video's (`1h2m3s`); 0 when it can't be read.
+pub fn twitch_seconds(text: &str) -> u64 {
+    let (mut total, mut number) = (0, 0);
+    for c in text.chars() {
+        match c {
+            '0'..='9' => number = number * 10 + u64::from(c as u8 - b'0'),
+            'h' => (total, number) = (total + number * 3600, 0),
+            'm' => (total, number) = (total + number * 60, 0),
+            's' => (total, number) = (total + number, 0),
+            _ => return 0,
+        }
+    }
+    total + number
+}
+
+/// Whether `text` is a UUID (8-4-4-4-12 hex digits), as Twitch's ids are.
+pub fn is_uuid(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(part, len)| part.len() == len && part.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Enabled / Disabled / Toggle (0, 1, 2) applied to a current state.
@@ -561,6 +624,7 @@ impl Engine {
             song_playing: RefCell::default(),
             spotify_seen: RefCell::default(),
             overlay_state: RefCell::default(),
+            overlay_drafts: RefCell::default(),
             memory_saver,
             cfg,
             save,
@@ -846,6 +910,9 @@ impl Engine {
             for (group, values) in &c.action_group_variables {
                 if before.get(group) != Some(values) {
                     self.emit("Settings", group, || crate::overlays::settings(&c, group));
+                    // Preview pages follow the saved values with the editor's draft over them.
+                    let draft = self.overlay_draft(group);
+                    self.emit("Draft", group, || crate::overlays::settings_with(&c, group, &draft));
                 }
             }
         }
@@ -1179,8 +1246,20 @@ impl Engine {
         args: &Obj,
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
+        // A reward redemption counts, and says its counts (`counter`, `userCounter`).
+        let counted = self.count_redemption(kind, args);
+        let args = counted.as_ref().unwrap_or(args);
         self.record(kind, args);
         self.chat_event(kind, args);
+        if matches!(kind, 103..=105) {
+            self.note_subscriber(kind, args);
+        }
+        if matches!(
+            kind,
+            crate::twitch::T_AUTOMOD_MESSAGE_HELD | crate::twitch::T_AUTOMOD_MESSAGE_UPDATED
+        ) {
+            self.note_held(kind, args);
+        }
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }
@@ -1892,6 +1971,8 @@ impl Engine {
                     o.insert("operation".into(), operation.into());
                     self.song_op(ctx, &o).await
                 }
+                99834..=99837 => self.song_control(ctx, o, kind).await,
+                99845 => self.spotify_fade(ctx, o).await,
                 99832 => self.song_clear(ctx),
                 99833 => self.song_list(ctx),
                 99810..=99824 | 99840..=99875 => {
@@ -1934,45 +2015,12 @@ impl Engine {
                     }
                 }
                 // Streamerz-only countdown operations, used by configurable templates.
-                99803 => {
-                    let id = self.expand(ctx, s(o, "clockId"));
-                    let expected = self.expand(ctx, s(o, "expectedCurrency"));
-                    let actual = self.expand(ctx, "%donationCurrency%");
-                    if !expected.is_empty() && !expected.eq_ignore_ascii_case(actual.trim()) {
-                        return Flow::Continue;
-                    }
-                    let now = crate::templates::clock::now_ms();
-                    let ms =
-                        |key: &str| crate::templates::clock::field_ms(o.get(key), |t| self.expand(ctx, t)).unwrap_or(0);
-                    let (start, max) = (ms("startMs"), ms("maxMs"));
-                    let reset = match s(o, "operation") {
-                        "reset" => true,
-                        "add" => false,
-                        _ => {
-                            crate::warn("Countdown: invalid operation".to_string());
-                            return Flow::Continue;
-                        }
-                    };
-                    let units = crate::fmt::parse_number(&self.expand(ctx, s(o, "units"))).unwrap_or(-1.0);
-                    let per_unit = ms("perUnitMs");
-                    if !reset && (!units.is_finite() || units < 0.0) {
-                        crate::warn("Countdown: invalid amount".to_string());
-                        return Flow::Continue;
-                    }
-                    let amount = ((per_unit as f64) * units).round() as u64;
-                    let mut changed = false;
-                    self.change(|config| {
-                        use crate::templates::clock;
-                        changed = if reset {
-                            clock::reset(config, &id, start, max, now)
-                        } else {
-                            clock::set_max(config, &id, max, now) && clock::add(config, &id, amount, now)
-                        };
-                    });
-                    if changed {
-                        self.countdown_changed(&id);
-                    } else {
-                        crate::warn("Countdown: timer not found".to_string());
+                99803 => self.countdown(ctx, o),
+                99789 | 99790 => self.clipboard_sub(ctx, o, kind).await,
+                // Text and data tools; a cooldown still closed stops the action.
+                99780..=99799 => {
+                    if !self.data_tool(ctx, o, kind) {
+                        return Flow::BreakToRoot;
                     }
                 }
                 // Streamerz-only: set an overlay topic, which the pages listening show at once.
@@ -1982,7 +2030,29 @@ impl Engine {
                     let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
                     self.overlay_publish(topic.trim(), value);
                 }
+                // Set Overlay Control: the value is typed (true, 5, red) or JSON; a button is pressed.
+                99881 => {
+                    let overlay = self.expand(ctx, s(o, "overlay"));
+                    let control = self.expand(ctx, s(o, "control"));
+                    let text = self.expand(ctx, s(o, "value"));
+                    let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+                    // An action Overlay Control Changed runs doesn't set it off again.
+                    let quiet = ctx.args.get("__source").and_then(Value::as_str) == Some("OverlayControlChanged");
+                    match self.overlay_control_set(overlay.trim(), control.trim(), &value, "action", quiet) {
+                        Ok(set) => {
+                            ctx.args.insert("controlValue".into(), set["value"].clone());
+                        }
+                        Err(e) => crate::warn(format!("Set Overlay Control: {e}")),
+                    }
+                }
+                k if sounds::handles(k) => self.sound_sub(ctx, o, k).await,
+                k if speech::handles(k) => self.speech_sub(ctx, o, k).await,
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
+                99450..=99499 | 99500..=99699 | 99720..=99779 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
+                    if !self.tools(ctx, o, kind).await {
+                        self.unsupported(kind);
+                    }
+                }
                 _ => self.unsupported(kind),
             }
             Flow::Continue
@@ -2211,6 +2281,60 @@ pub fn trigger_matches(code: u32, trigger: &Obj, args: &Obj) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_length_is_kept_in_twitch_s_range() {
+        assert_eq!(clip_length(0.0), None);
+        assert_eq!(clip_length(2.0).as_deref(), Some("5"));
+        assert_eq!(clip_length(12.54).as_deref(), Some("12.5"));
+        assert_eq!(clip_length(90.0).as_deref(), Some("60"));
+    }
+
+    #[test]
+    fn a_twitch_video_length_reads_as_seconds() {
+        assert_eq!(twitch_seconds("1h2m3s"), 3723);
+        assert_eq!(twitch_seconds("45s"), 45);
+        assert_eq!(twitch_seconds("10m"), 600);
+        assert_eq!(twitch_seconds("soon"), 0);
+    }
+
+    /// A sub-action ticked in COVERAGE.md is one the engine runs (Guest Star and some reward ones were
+    /// ticked while `supported` skipped them).
+    #[test]
+    fn every_ticked_sub_action_in_coverage_runs() {
+        let mut phase = "";
+        let mut listed = false;
+        let mut skipped = Vec::new();
+        for line in include_str!("../COVERAGE.md").lines() {
+            if let Some(title) = line.strip_prefix("## ") {
+                (phase, listed) = (title, false);
+                continue;
+            }
+            if line.starts_with("**") {
+                listed = line.starts_with("**Sub-actions");
+                continue;
+            }
+            let Some(item) = line.strip_prefix("- [x] ").filter(|i| listed && !i.starts_with("~~")) else {
+                continue;
+            };
+            let title = item.rsplit_once(": ").map_or(item, |(_, t)| t);
+            let title = title.split(" (").next().unwrap_or(title).trim();
+            let named: Vec<_> = crate::types::SUB_ACTION_INFO
+                .iter()
+                .filter(|(_, name, ..)| *name == title)
+                .collect();
+            let here: Vec<_> = named
+                .iter()
+                .filter(|(_, _, category, _)| phase.contains(category.split('/').next().unwrap_or_default()))
+                .copied()
+                .collect();
+            let pool = if here.is_empty() { named } else { here };
+            if !pool.is_empty() && !pool.iter().any(|(code, ..)| supported(*code)) {
+                skipped.push(format!("{phase}: {title}"));
+            }
+        }
+        assert!(skipped.is_empty(), "ticked but not run: {skipped:#?}");
+    }
 
     #[test]
     fn action_results_capture_failures_and_skips_without_leaking_between_runs() {

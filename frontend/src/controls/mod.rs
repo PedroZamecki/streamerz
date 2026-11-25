@@ -13,6 +13,7 @@ pub mod list;
 pub mod log;
 pub mod markdown;
 pub mod notice;
+pub mod overlay;
 pub mod page;
 pub mod picker;
 pub mod prompt;

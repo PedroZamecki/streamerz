@@ -361,6 +361,8 @@ pub struct Log {
     /// A sweep for lines past their lifetime is waiting to run.
     sweeping: bool,
     seq: u64,
+    /// Monotonic counter for session chatters even when chat history lines are disabled.
+    seen_seq: u64,
     /// Incremented when room history / welcome lines are spliced in so UI panes resync cleanly.
     reset_gen: u64,
     /// Per platform, each emote's raw token (Twitch "Kappa", YouTube ":yt:", Kick "[emote:1:KEKW]") and
@@ -466,8 +468,10 @@ pub struct Said {
 pub struct Seen {
     /// Their latest message's arguments about them (userName, isSubscribed, pronouns...).
     pub args: Obj,
+    /// Display name or TikTok handle as seen in chat.
+    pub name: String,
     pub messages: u32,
-    /// When they first chatted (a time of day), and the log's seq of their latest message.
+    /// When they first chatted (a time of day), and the recency counter of their latest message.
     pub first: String,
     last: u64,
 }
@@ -887,17 +891,30 @@ impl Engine {
             let (text, emotes) = normalize_line_emotes(&c.platform, plain, &c.emotes);
             let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
-            if !log.users.contains_key(&key) && log.users.len() >= log.limits.total {
+            let user_cap = log.limits.total.max(256);
+            if !log.users.contains_key(&key) && log.users.len() >= user_cap {
                 if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
                     log.users.remove(&old);
                 }
             }
+            let handle = (c.platform == "tiktok")
+                .then(|| {
+                    c.args
+                        .get("uniqueId")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(Box::<str>::from)
+                })
+                .flatten();
+            log.seen_seq += 1;
+            let last_seen = log.seen_seq;
             let seen = log.users.entry(key).or_insert_with(|| Seen {
                 first: time.clone(),
                 ..Default::default()
             });
             seen.messages += 1;
-            seen.last = log.seq + 1;
+            seen.last = last_seen;
+            seen.name = handle.as_deref().unwrap_or(&c.user).to_string();
             seen.args = c
                 .args
                 .iter()
@@ -913,15 +930,7 @@ impl Engine {
                 ts: crate::fmt::unix_now().as_millis() as i64,
                 user: c.user.clone(),
                 user_id: c.user_id.clone(),
-                handle: (c.platform == "tiktok")
-                    .then(|| {
-                        c.args
-                            .get("uniqueId")
-                            .and_then(Value::as_str)
-                            .filter(|s| !s.is_empty())
-                            .map(Box::<str>::from)
-                    })
-                    .flatten(),
+                handle,
                 reply,
                 text,
                 action,
@@ -1056,6 +1065,8 @@ impl Engine {
             return;
         }
         let Some(line) = event_line(kind, a) else { return };
+        // Kept for the overlay page's Replay.
+        crate::core::overlay_test::remember(kind, a);
         self.emit("Chat", "Alert", || alert_value(self, kind, a, &line, &avatar_of(a)));
         if !shown {
             return;
@@ -1500,6 +1511,20 @@ impl Engine {
         {
             if !seen.iter().any(|(_, id): &(String, String)| *id == l.user_id) {
                 seen.push((l.handle.as_deref().unwrap_or(&l.user).to_string(), l.user_id.clone()));
+            }
+        }
+        // When chat history is off (the default), lines are not retained, so read from session chatters.
+        let mut recent: Vec<(u64, &str, &str)> = st
+            .chat_log
+            .users
+            .iter()
+            .filter(|((p, _), u)| p == platform && !u.name.is_empty())
+            .map(|((_, id), u)| (u.last, u.name.as_str(), id.as_str()))
+            .collect();
+        recent.sort_by_key(|a| std::cmp::Reverse(a.0));
+        for (_, name, id) in recent {
+            if !seen.iter().any(|(_, have)| have == id) {
+                seen.push((name.to_string(), id.to_string()));
             }
         }
         seen
@@ -2180,6 +2205,16 @@ impl Engine {
                 ("kick", Moderate::Delete) => crate::kick::delete_message(&e, &e.cfg, &l.msg_id).await,
                 ("kick", Moderate::Timeout(s)) => e.kick_start().timeout_user(&l.user, s, "").await,
                 ("kick", Moderate::Ban) => e.kick_start().ban_user(&l.user, "").await,
+                ("youtube", Moderate::Delete) => e
+                    .youtube_start()
+                    .data(
+                        "DELETE",
+                        "",
+                        &format!("liveChat/messages?id={}", crate::commands::url_encode(&l.msg_id)),
+                        None,
+                    )
+                    .await
+                    .map(drop),
                 ("youtube", Moderate::Timeout(s)) => e.youtube_start().timeout_user("", &l.user_id, s).await,
                 ("youtube", Moderate::Ban) => e.youtube_start().ban_user("", &l.user_id).await,
                 _ => Err("not possible on this platform".into()),
@@ -2906,6 +2941,7 @@ mod tests {
             });
             let (_, _, lines) = e.chat_sync(u64::MAX, 0);
             assert_eq!(lines.len(), 0);
+            assert_eq!(e.chatters("twitch"), vec![("Viewer".to_string(), "1".to_string())]);
         });
     }
 

@@ -647,13 +647,30 @@ pub fn room(engine: &Rc<Engine>, platform: &str) -> Value {
     json!({"name": shown, "picture": picture.unwrap_or_default()})
 }
 
+/// The browser account's picture address: the live one (kept on disk when it changes), else the last
+/// one kept, so the picture stays while the browser is away, as the other accounts' do.
+fn browser_avatar(bridge: &crate::tiktok_bridge::Bridge) -> String {
+    const KEY: &str = "tiktok:browser";
+    let (user, live) = (bridge.user(), bridge.avatar());
+    let saved = avatars();
+    if !user.is_empty() && !live.is_empty() {
+        if saved[KEY][0].as_str() != Some(live.as_str()) {
+            let mut all = if saved.is_object() { saved } else { json!({}) };
+            all[KEY] = json!([live, crate::fmt::unix_now().as_secs(), user]);
+            save_avatars(&all);
+        }
+        return live;
+    }
+    saved[KEY][0].as_str().unwrap_or_default().to_owned()
+}
+
 /// An account's picture file for the chat's send box (`bot` picks the slot; TikTok has the browser account).
 pub fn account_picture(engine: &Rc<Engine>, platform: &str, bot: bool) -> String {
     let Some(p) = P::from_slug(platform) else {
         return String::new();
     };
     if p == P::TikTok {
-        return super::images::lookup(&engine.tiktok_bridge.avatar())
+        return super::images::lookup(&browser_avatar(&engine.tiktok_bridge))
             .map(|file| file.to_string_lossy().into_owned())
             .unwrap_or_default();
     }
@@ -839,6 +856,11 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                     }
                 }
                 rows.push(row);
+                if !bot && p == P::Twitch && name.is_some() && !p.expired(&config, false) {
+                    if let Some(more) = more_permissions_row(&config) {
+                        rows.push(more);
+                    }
+                }
                 if !bot {
                     rows.push(channel_row(engine, p, &config));
                 }
@@ -851,7 +873,7 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 "status": state(health, &text), "control": buttons(vec![set_up])});
             // The browser account's picture, as the other accounts have theirs.
             let face = account_picture(engine, "tiktok", false);
-            if !face.is_empty() && !bridge.user().is_empty() {
+            if !face.is_empty() {
                 sending["picture"] = face.into();
             }
             rows.push(sending);
@@ -1471,6 +1493,11 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
             p.connect(engine, what == "connect");
         }
         "login" | "bot_login" => login(engine, p, what == "bot_login"),
+        // The few tools that need more of Twitch: the broadcaster logs in again, asked for them too.
+        "more_permissions" if p == P::Twitch => {
+            engine.change(|c| c.twitch.more_permissions = true);
+            login(engine, p, false);
+        }
         "logout" | "bot_logout" if p.expired(&engine.config(), what == "bot_logout") => {
             login(engine, p, what == "bot_logout")
         }
@@ -1480,6 +1507,26 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
         _ => return Err(format!("accounts has no action {action}")),
     }
     accepted
+}
+
+/// Twitch's "more permissions" row, while the login lacks what a few tools need.
+fn more_permissions_row(config: &crate::Config) -> Option<Value> {
+    let granted = &config.twitch.broadcaster.as_ref()?.token.scope;
+    if crate::engine::TWITCH_EXTRA_SCOPES
+        .iter()
+        .all(|s| granted.iter().any(|g| g == s))
+    {
+        return None;
+    }
+    let button = button(
+        "twitch.more_permissions",
+        tr("accounts.more_permissions_btn"),
+        "shield-plus",
+    );
+    Some(
+        json!({"key": "twitch.more_permissions", "label": tr("accounts.row_permissions"),
+        "value": tr("accounts.more_permissions"), "muted": true, "control": buttons(vec![button])}),
+    )
 }
 
 /// Try a connection again: a platform, an OBS or Streamlabs Desktop connection, or a donation service.
@@ -1690,16 +1737,20 @@ fn login(engine: &Rc<Engine>, p: P, bot: bool) {
 /// Twitch's device login: a code to type on Twitch's page, polled until it is approved or cancelled.
 fn twitch_login(engine: &Rc<Engine>, bot: bool) {
     let who = if bot { "Bot" } else { "Broadcaster" };
-    let scopes = if bot {
+    let mut scopes = if bot {
         crate::twitch::BOT_SCOPES
     } else {
         crate::twitch::BROADCASTER_SCOPES
-    };
+    }
+    .to_vec();
+    if !bot && engine.config().twitch.more_permissions {
+        scopes.extend_from_slice(crate::engine::TWITCH_EXTRA_SCOPES);
+    }
     let (handle_tx, handle_rx) = tokio::sync::oneshot::channel::<tokio::task::AbortHandle>();
     let engine = engine.clone();
     let task = tokio::task::spawn_local(async move {
         let title = trf("accounts.twitch_device.title", &[("who", who)]);
-        let code = match crate::twitch::device_flow_start(crate::twitch::CLIENT_ID, scopes).await {
+        let code = match crate::twitch::device_flow_start(crate::twitch::CLIENT_ID, &scopes).await {
             Ok(code) => code,
             Err(error) => {
                 super::prompts::notice(
@@ -2071,6 +2122,22 @@ mod tests {
             .iter()
             .flat_map(|section| section["rows"].as_array().unwrap().clone())
             .collect()
+    }
+
+    /// Accounts offers the extra Twitch permissions only while the login lacks one of them.
+    #[test]
+    fn more_permissions_show_only_while_some_are_missing() {
+        let mut config = crate::Config::default();
+        assert!(more_permissions_row(&config).is_none(), "no login, nothing to offer");
+        config.twitch.broadcaster = Some(crate::twitch::TwitchAccount::default());
+        let row = more_permissions_row(&config).unwrap();
+        assert_eq!(row["control"]["buttons"][0]["id"], "twitch.more_permissions", "{row}");
+        let account = config.twitch.broadcaster.as_mut().unwrap();
+        account.token.scope = crate::engine::TWITCH_EXTRA_SCOPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(more_permissions_row(&config).is_none());
     }
 
     #[test]

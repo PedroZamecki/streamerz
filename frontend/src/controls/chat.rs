@@ -1545,6 +1545,9 @@ pub(super) fn card_body(
             "delete" => ("trash-2", 0),
             "timeout" => ("clock", 600),
             "ban" => ("ban", 0),
+            "unban" => ("rotate-ccw", 0),
+            "mod" => ("shield", 0),
+            "unmod" => ("shield-off", 0),
             _ => continue,
         };
         let name = act.to_owned();
@@ -2983,6 +2986,81 @@ impl Render for ChatView {
                                     .caption()
                                     .child(div().font_weight(FontWeight::BOLD).child(format!("{user}:")))
                                     .child(div().flex_1().min_w_0().truncate().child(text_val)),
+                            ),
+                    ),
+            );
+        }
+        // What AutoMod holds: who, what and why, let through or kept out from here.
+        for (held_idx, held) in chat["held"].as_array().into_iter().flatten().enumerate() {
+            let get = |k: &str| held[k].as_str().unwrap_or_default().to_owned();
+            let (id, user, said, title) = (get("msgId"), get("user"), get("text"), get("title"));
+            let decide = |allow: bool, label: String, icon: &str, id: String| {
+                Button::new(SharedString::from(format!("held-{}-{held_idx}", if allow { "allow" } else { "deny" })))
+                    .xsmall()
+                    .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                    .label(label)
+                    .on_click(move |_, _, _| {
+                        send(json!({"request": "StreamerzChat", "op": "held", "msgId": id, "allow": allow, "id": "chat:held"}));
+                    })
+            };
+            page = page.child(
+                div()
+                    .id(SharedString::from(format!("held-card-{held_idx}")))
+                    .flex()
+                    .gap(px(SPACE_SM))
+                    .px(px(SPACE_MD))
+                    .py(px(SPACE_SM))
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.table)
+                    .child(
+                        div()
+                            .w(px(3.))
+                            .rounded(px(2.))
+                            .bg(brand_color("twitch"))
+                            .flex_shrink_0(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(SPACE_XS))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(SPACE_SM))
+                                    .caption()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(SPACE_XS))
+                                            .min_w_0()
+                                            .child(Icon::empty().path("icons/shield.svg").size_3().flex_shrink_0())
+                                            .child(div().min_w_0().truncate().child(title)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(SPACE_XS))
+                                            .child(decide(true, get("allow"), "check", id.clone()))
+                                            .child(decide(false, get("deny"), "x", id.clone())),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(SPACE_XS))
+                                    .caption()
+                                    .child(div().font_weight(FontWeight::BOLD).child(format!("{user}:")))
+                                    .child(div().flex_1().min_w_0().truncate().child(said)),
                             ),
                     ),
             );

@@ -5,6 +5,7 @@ use crate::{
         chat::{ChatView, Go},
         list::{List, ViewChange},
         log::{Filter, LogView},
+        overlay::{OverlayEvent, OverlayPage},
         prompt::Prompt,
         sections::{Navigate, Sections},
     },
@@ -45,6 +46,9 @@ pub struct Frontend {
     log_subscription: Option<Subscription>,
     sections: Option<Entity<Sections>>,
     sections_subscription: Option<Subscription>,
+    /// An overlay opened from the Overlays list, drawn in place of the list.
+    overlay: Option<Entity<OverlayPage>>,
+    overlay_subscription: Option<Subscription>,
     error: Option<crate::error::StreamerzError>,
     active_errors: Vec<crate::error::ActiveError>,
     recovered_crash: Option<Value>,
@@ -102,6 +106,8 @@ impl Frontend {
             actions_subscription: None,
             sections: None,
             sections_subscription: None,
+            overlay: None,
+            overlay_subscription: None,
             error: None,
             active_errors,
             recovered_crash,
@@ -145,6 +151,13 @@ impl Frontend {
             }
             ViewChange::Hidden { kind, hidden } => self.view[kind]["hidden"] = json!(hidden),
             ViewChange::Tab(kind) => self.view["tab"] = kind.as_str().into(),
+            ViewChange::Open { key, id } => {
+                // Each overlay comes back on the tab the core remembers for it.
+                if let Some(view) = self.view.as_object_mut() {
+                    view.remove("overlayTab");
+                }
+                self.view[key] = id.as_str().into();
+            }
         }
     }
     /// The page's tabs go to the list that shows them as a "Show" combo before its search.
@@ -183,6 +196,9 @@ impl Frontend {
         if topics.is_some_and(|topics| topics.iter().any(|topic| topic == "images")) {
             if let Some(actions) = self.actions.clone() {
                 actions.update(cx, |actions, cx| actions.images_arrived(cx));
+            }
+            if let Some(overlay) = self.overlay.clone() {
+                overlay.update(cx, |overlay, cx| overlay.images_arrived(cx));
             }
         }
     }
@@ -342,6 +358,8 @@ impl Frontend {
             self.view = json!({});
             self.sections = None;
             self.sections_subscription = None;
+            self.overlay = None;
+            self.overlay_subscription = None;
             self.log = None;
             self.log_subscription = None;
             self.chat = None;
@@ -391,7 +409,25 @@ impl Frontend {
             }));
         }));
     }
+    /// A new picture of the overlay preview is ready.
+    pub fn preview_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(overlay) = &self.overlay {
+            overlay.update(cx, |overlay, _| overlay.want_frame());
+        }
+    }
+    /// Back from an overlay's page to the Overlays list.
+    fn close_overlay(&mut self) {
+        if let Some(view) = self.view.as_object_mut() {
+            view.remove("overlay");
+            view.remove("overlayTab");
+        }
+    }
     pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An overlay's page goes back to its list first (asking when there is a draft).
+        if let Some(overlay) = self.overlay.clone() {
+            overlay.update(cx, |overlay, cx| overlay.leave(window, cx));
+            return;
+        }
         if self.history_index > 0 {
             self.history_index -= 1;
             let target = self.history[self.history_index].clone();
@@ -421,6 +457,15 @@ impl Frontend {
                 window.push_notification(tr("ui.saved"), cx);
             }
             cx.notify();
+            return;
+        }
+        // A button of a settings form (a `button` setting, Play): what it did, or why it didn't.
+        if id == "overlay:press" {
+            if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+                window.push_notification(err.summary_line(), cx);
+            } else if let Some(message) = value["message"].as_str() {
+                window.push_notification(message.to_owned(), cx);
+            }
             return;
         }
         if id == "prompts" {
@@ -494,6 +539,14 @@ impl Frontend {
             }
             return;
         }
+        if let Some(operation) = id.strip_prefix(&format!("overlay:{}:", self.generation)) {
+            if let Some(overlay) = self.overlay.clone() {
+                if overlay.update(cx, |overlay, cx| overlay.apply(operation, value, window, cx)) {
+                    self.request_read();
+                }
+            }
+            return;
+        }
         if let Some(route) = id.strip_prefix(&format!("list:{}:", self.generation)) {
             if let Some((kind, operation)) = route.split_once(':') {
                 if let Some(list) = self.lists.iter().find(|list| list.read(cx).kind() == kind) {
@@ -543,6 +596,10 @@ impl Frontend {
                                 this.view["actionId"] = opened.0.clone().into();
                                 this.request_read();
                             }));
+                        cx.subscribe_in(&actions, window, |this, _, go: &Navigate, window, cx| {
+                            this.select(&go.0, window, cx);
+                        })
+                        .detach();
                         self.actions = Some(actions);
                     }
                 }
@@ -559,6 +616,30 @@ impl Frontend {
                         self.chat = Some(chat);
                     }
                 }
+            }
+            if value["overlay"].is_object() {
+                let model = value["overlay"].clone();
+                match &self.overlay {
+                    Some(overlay) => overlay.update(cx, |overlay, cx| overlay.update_model(model, window, cx)),
+                    None => {
+                        let route = format!("overlay:{}", self.generation);
+                        let overlay = cx.new(|cx| OverlayPage::new(model, route, window, cx));
+                        overlay.update(cx, |overlay, cx| overlay.focus(window, cx));
+                        self.overlay_subscription =
+                            Some(cx.subscribe(&overlay, |this, _, event: &OverlayEvent, cx| {
+                                match event {
+                                    OverlayEvent::Back => this.close_overlay(),
+                                    OverlayEvent::Tab(tab) => this.view["overlayTab"] = tab.as_str().into(),
+                                }
+                                this.request_read();
+                                cx.notify();
+                            }));
+                        self.overlay = Some(overlay);
+                    }
+                }
+            } else {
+                self.overlay = None;
+                self.overlay_subscription = None;
             }
             if value["sections"].is_array() {
                 if let Some(appearance) = value["appearance"].as_object() {
@@ -877,7 +958,7 @@ impl Render for Frontend {
         if let Some(actions) = &self.actions {
             header_actions = Some(actions.read(cx).header_actions_view(cx).into_any_element());
         }
-        if self.chat.is_none() {
+        if self.chat.is_none() && self.overlay.is_none() {
             head = head.child(crate::controls::page::header(
                 page_icon.as_deref(),
                 title,
@@ -1038,7 +1119,9 @@ impl Render for Frontend {
         // The body takes the frame's right padding inside its own box, so a scrollbar draws within it.
         let body = || div().flex_1().min_h_0().pr(px(theme::PAGE_PAD_X));
         let mut body_view = None;
-        if let Some(log) = &self.log {
+        if let Some(overlay) = &self.overlay {
+            body_view = Some(body().child(overlay.clone()).into_any_element());
+        } else if let Some(log) = &self.log {
             body_view = Some(body().child(log.clone()).into_any_element());
         } else if let Some(chat) = &self.chat {
             body_view = Some(body().child(chat.clone()).into_any_element());

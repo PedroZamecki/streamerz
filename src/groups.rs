@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+pub mod kinds;
+
 /// What a variable holds. A duration is whole milliseconds, shown and typed as `h:mm:ss`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +41,52 @@ pub enum Kind {
     Action,
     /// Rows of the columns the setting declares: a list of objects.
     List,
+    /// A day as `YYYY-MM-DD` (empty: none).
+    Date,
+    /// A time of day as `HH:MM` (empty: none).
+    Time,
+    /// A moment, in milliseconds since 1970 (0: none).
+    #[serde(rename = "datetime")]
+    DateTime,
+    /// Two numbers between `min` and `max`: `[from, to]`.
+    Range,
+    /// A number from 0 to 100.
+    Percent,
+    /// Where on the page: `{anchor, x, y}` (an anchor of [`kinds::ANCHORS`], and pixels from it).
+    Position,
+    /// `{width, height}` in pixels.
+    Size,
+    /// `{name, durationMs, delayMs, easing}`: one of [`kinds::ANIMATIONS`].
+    Animation,
+    /// A CSS easing (`ease-out`, `cubic-bezier(...)`).
+    Easing,
+    /// A CSS `linear-gradient(...)`.
+    Gradient,
+    /// `{font, size, weight, color, outline, outlineColor, shadow}`.
+    TextStyle,
+    /// `{file, volume}`: one of the group's sounds and how loud, 0 to 100.
+    Sound,
+    /// Some kinds of events (`follow`, `sub`, `raid`...): a list.
+    Event,
+    /// A channel reward: `{platform, id, title}` (empty: none).
+    Reward,
+    /// A TikTok gift: `{id, name, coins, picture}` (empty: none).
+    Gift,
+    /// The name of a user group.
+    #[serde(rename = "usergroup")]
+    UserGroup,
+    /// The name of an OBS scene.
+    Scene,
+    /// The name of an OBS source.
+    Source,
+    /// CSS, HTML or JavaScript.
+    Code,
+    /// Any value, typed as JSON.
+    Json,
+    /// No value: pressing it publishes the topic `<group>.<name>`.
+    Button,
+    /// Any value, kept and shared but not shown in the form.
+    Hidden,
 }
 
 /// The platforms a `platforms` setting picks from, in the order the form shows them.
@@ -47,7 +95,7 @@ pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
 impl Kind {
     /// Every kind, in the order the guide lists them (the guide's test goes through them).
     #[cfg(test)]
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 36] = [
         Kind::Text,
         Kind::Lines,
         Kind::Integer,
@@ -62,6 +110,28 @@ impl Kind {
         Kind::Platforms,
         Kind::Action,
         Kind::List,
+        Kind::Date,
+        Kind::Time,
+        Kind::DateTime,
+        Kind::Range,
+        Kind::Percent,
+        Kind::Position,
+        Kind::Size,
+        Kind::Animation,
+        Kind::Easing,
+        Kind::Gradient,
+        Kind::TextStyle,
+        Kind::Sound,
+        Kind::Event,
+        Kind::Reward,
+        Kind::Gift,
+        Kind::UserGroup,
+        Kind::Scene,
+        Kind::Source,
+        Kind::Code,
+        Kind::Json,
+        Kind::Button,
+        Kind::Hidden,
     ];
 
     pub fn name(self) -> &'static str {
@@ -80,6 +150,28 @@ impl Kind {
             Kind::Platforms => "platforms",
             Kind::Action => "action",
             Kind::List => "list",
+            Kind::Date => "date",
+            Kind::Time => "time",
+            Kind::DateTime => "datetime",
+            Kind::Range => "range",
+            Kind::Percent => "percent",
+            Kind::Position => "position",
+            Kind::Size => "size",
+            Kind::Animation => "animation",
+            Kind::Easing => "easing",
+            Kind::Gradient => "gradient",
+            Kind::TextStyle => "textStyle",
+            Kind::Sound => "sound",
+            Kind::Event => "event",
+            Kind::Reward => "reward",
+            Kind::Gift => "gift",
+            Kind::UserGroup => "usergroup",
+            Kind::Scene => "scene",
+            Kind::Source => "source",
+            Kind::Code => "code",
+            Kind::Json => "json",
+            Kind::Button => "button",
+            Kind::Hidden => "hidden",
         }
     }
 
@@ -95,15 +187,33 @@ impl Kind {
             Kind::Integer => v.as_i64().is_some(),
             Kind::Number | Kind::Slider => v.is_number(),
             Kind::Boolean => v.is_boolean(),
-            Kind::Duration => v.as_u64().is_some(),
+            Kind::Duration | Kind::DateTime => v.as_u64().is_some(),
+            Kind::Date => v.as_str().is_some_and(|s| s.is_empty() || kinds::date(s).is_some()),
+            Kind::Time => v.as_str().is_some_and(|s| s.is_empty() || kinds::time(s).is_some()),
+            Kind::Easing | Kind::Gradient | Kind::UserGroup | Kind::Scene | Kind::Source | Kind::Code => v.is_string(),
+            Kind::Percent => v.as_f64().is_some_and(|n| (0.0..=100.0).contains(&n)),
+            Kind::Range => v
+                .as_array()
+                .is_some_and(|pair| pair.len() == 2 && pair.iter().all(Value::is_number)),
+            Kind::Event => v
+                .as_array()
+                .is_some_and(|list| list.iter().all(|k| k.as_str().is_some_and(kinds::is_event))),
+            Kind::Position | Kind::Size | Kind::Animation | Kind::TextStyle | Kind::Sound => {
+                kinds::object_fits(self, v)
+            }
+            Kind::Reward | Kind::Gift => v.is_object(),
+            Kind::Json | Kind::Button | Kind::Hidden => true,
         }
     }
 
     /// A value typed as text (in a form), as this kind.
     pub fn parse(self, text: &str) -> Result<Value, String> {
         let t = text.trim();
+        if let Some(value) = kinds::parse(self, t) {
+            return value;
+        }
         match self {
-            Kind::Text | Kind::Choice | Kind::Lines | Kind::Font => Ok(Value::String(text.to_string())),
+            Kind::Text | Kind::Choice | Kind::Lines | Kind::Font | Kind::Code => Ok(Value::String(text.to_string())),
             Kind::File | Kind::Action => Ok(Value::String(t.to_string())),
             Kind::Platforms => {
                 let named: Vec<String> = t
@@ -144,14 +254,20 @@ impl Kind {
                 _ => Err("not true or false".into()),
             },
             Kind::Duration => parse_duration(t).map(Value::from).ok_or_else(|| "not a time".into()),
+            // Read by `kinds::parse` above.
+            _ => Ok(Value::String(t.to_string())),
         }
     }
 
     /// A value as the text a form shows.
     pub fn show(self, v: &Value) -> String {
         match (self, v) {
+            (Kind::Json | Kind::Hidden, v) => serde_json::to_string(v).unwrap_or_default(),
             (_, Value::String(s)) => s.clone(),
             (Kind::Duration, v) => format_duration(v.as_u64().unwrap_or(0)),
+            (Kind::DateTime, v) => kinds::show_moment(v.as_u64().unwrap_or(0)),
+            (Kind::Range, Value::Array(pair)) => pair.iter().map(Value::to_string).collect::<Vec<_>>().join(" - "),
+            (Kind::Event, Value::Array(list)) => list.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
             (Kind::Platforms, Value::Array(list)) => {
                 list.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
             }
@@ -271,6 +387,10 @@ pub struct Def {
     /// The columns of a `list`: each a setting of a simple kind (its `default` fills a new row).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<Def>,
+    /// Values one click away under a `time`, `duration` or `datetime` box, as they are typed (`5m`,
+    /// `20:00`, `+15m`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<String>,
 }
 
 /// The kinds a column of a `list` can be: what fits in one cell of a line.
@@ -321,11 +441,21 @@ impl Def {
             && (self.kind != Kind::Slider
                 || v.as_f64()
                     .is_some_and(|n| (self.range().0..=self.range().1).contains(&n)))
+            && (self.kind != Kind::Range
+                || v.as_array().is_some_and(|pair| {
+                    let (min, max, _) = self.range();
+                    let (a, b) = (
+                        pair[0].as_f64().unwrap_or(f64::NAN),
+                        pair[1].as_f64().unwrap_or(f64::NAN),
+                    );
+                    min <= a && a <= b && b <= max
+                }))
+            // A row made before a column was added has no cell for it: it takes the column's default.
             && (self.kind != Kind::List
                 || v.as_array().into_iter().flatten().all(|row| {
                     self.columns
                         .iter()
-                        .all(|column| row.get(&column.name).is_some_and(|cell| column.accepts(cell)))
+                        .all(|column| row.get(&column.name).is_none_or(|cell| column.accepts(cell)))
                 }))
     }
 
@@ -374,7 +504,7 @@ impl Def {
             return Ok(Value::Array(rows));
         }
         let value = self.kind.parse(text)?;
-        if self.kind == Kind::Slider && !self.accepts(&value) {
+        if matches!(self.kind, Kind::Slider | Kind::Range) && !self.accepts(&value) {
             return Err(format!("a number from {} to {}", self.range().0, self.range().1));
         }
         Ok(value)
@@ -489,6 +619,143 @@ pub struct Template {
     /// song: `{"topics": {name: value}, "events": [[name, data]]}`.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub test: Value,
+    /// What is changed while live (the Live tab, a dock, actions): shared with the overlay with their
+    /// defaults, never with the values they have now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<Control>,
+}
+
+/// A live control of an overlay: `{"name": "show", "label": "Show", "kind": "toggle", "default": true}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Control {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// One of [`CONTROL_KINDS`].
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub default: Value,
+    /// A slider's or a number's ends and step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    /// What a choice can be.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// A Lucide icon for a button.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+}
+
+/// The kinds a live control can be.
+pub const CONTROL_KINDS: [&str; 7] = ["button", "toggle", "slider", "choice", "number", "text", "color"];
+
+impl Control {
+    pub fn shown_label(&self) -> &str {
+        if self.label.trim().is_empty() {
+            &self.name
+        } else {
+            &self.label
+        }
+    }
+
+    /// A slider's ends and step (0 to 100 by 1 when not given).
+    pub fn range(&self) -> (f64, f64, f64) {
+        let min = self.min.filter(|v| v.is_finite()).unwrap_or(0.0);
+        let max = self.max.filter(|v| v.is_finite()).unwrap_or(100.0).max(min);
+        let step = self.step.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0);
+        (min, max, step)
+    }
+
+    /// What it holds when nothing set it yet.
+    pub fn initial(&self) -> Value {
+        if !self.default.is_null() || self.kind == "button" {
+            return self.default.clone();
+        }
+        match self.kind.as_str() {
+            "toggle" => json!(false),
+            "slider" | "number" => json!(self.range().0),
+            "choice" => self.options.first().cloned().map(Value::from).unwrap_or(Value::Null),
+            "color" => json!("#ffffff"),
+            _ => json!(""),
+        }
+    }
+
+    /// The value as the control keeps it, or why it can't be one. A button takes anything (a press).
+    pub fn check(&self, v: &Value) -> Result<Value, String> {
+        let bad = || format!("{} takes a {} value", self.shown_label(), self.kind);
+        match self.kind.as_str() {
+            "button" => Ok(v.clone()),
+            "toggle" => match v {
+                Value::Bool(b) => Ok(json!(b)),
+                Value::String(s) => Kind::Boolean.parse(s).map_err(|_| bad()),
+                _ => Err(bad()),
+            },
+            "slider" | "number" => {
+                let n = match v {
+                    Value::String(s) => crate::fmt::parse_number(s.trim()),
+                    v => v.as_f64(),
+                }
+                .filter(|n| n.is_finite())
+                .ok_or_else(bad)?;
+                let n = if self.kind == "slider" {
+                    let (min, max, _) = self.range();
+                    n.clamp(min, max)
+                } else {
+                    n
+                };
+                Ok(kinds::tidy(n))
+            }
+            "choice" => v
+                .as_str()
+                .and_then(|s| self.options.iter().find(|o| o.eq_ignore_ascii_case(s.trim())))
+                .map(|o| json!(o))
+                .ok_or_else(|| format!("{} is one of: {}", self.shown_label(), self.options.join(", "))),
+            "color" => v
+                .as_str()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| is_color(s))
+                .map(Value::from)
+                .ok_or_else(bad),
+            _ => Ok(match v {
+                Value::String(s) => json!(s),
+                v => json!(v.to_string()),
+            }),
+        }
+    }
+}
+
+/// The controls of a group and their values now (a control never set has its default).
+pub fn controls(c: &Config, group: &str) -> Vec<(Control, Value)> {
+    let stored = c.overlay_controls.get(group).and_then(Value::as_object);
+    meta(c, group)
+        .template
+        .controls
+        .into_iter()
+        .map(|control| {
+            let now = stored
+                .and_then(|s| s.get(&control.name))
+                .filter(|_| control.kind != "button")
+                .and_then(|v| control.check(v).ok())
+                .unwrap_or_else(|| control.initial());
+            (control, now)
+        })
+        .collect()
+}
+
+/// The controls' values by name, as a page gets them (a button has none).
+pub fn control_values(c: &Config, group: &str) -> Value {
+    Value::Object(
+        controls(c, group)
+            .into_iter()
+            .filter(|(control, _)| control.kind != "button")
+            .map(|(control, v)| (control.name, v))
+            .collect(),
+    )
 }
 
 pub const REQUIRES: &[&str] = &["twitch", "youtube", "kick", "tiktok", "obs", "spotify"];
@@ -551,6 +818,29 @@ pub fn valid_variable_name(name: &str) -> bool {
 
 impl Meta {
     pub fn validate(&self) -> Result<(), String> {
+        let mut controls = HashSet::new();
+        for control in &self.template.controls {
+            if !valid_variable_name(&control.name) || !controls.insert(control.name.as_str()) {
+                return Err(format!("invalid or duplicate control: {}", control.name));
+            }
+            if !CONTROL_KINDS.contains(&control.kind.as_str()) {
+                return Err(format!(
+                    "the control {} is a {}: one of {}",
+                    control.name,
+                    control.kind,
+                    CONTROL_KINDS.join(", ")
+                ));
+            }
+            if control.kind == "choice" && control.options.is_empty() {
+                return Err(format!("the control {} has no options", control.name));
+            }
+            if !control.default.is_null() && control.kind != "button" && control.check(&control.default).is_err() {
+                return Err(format!(
+                    "the default of the control {} is not a {}",
+                    control.name, control.kind
+                ));
+            }
+        }
         let mut names = HashSet::new();
         for d in &self.variables {
             if !valid_variable_name(&d.name) {
@@ -565,10 +855,15 @@ impl Meta {
             if d.kind == Kind::Choice && d.options.is_empty() {
                 return Err(format!("{} has no options to choose from", d.name));
             }
-            if d.kind == Kind::Slider {
+            if matches!(d.kind, Kind::Slider | Kind::Range) {
                 if let Some(reason) = slider_problem(d) {
                     return Err(format!("{}: {reason}", d.name));
                 }
+            }
+            if let Some(bad) = d.presets.iter().find(|p| {
+                !matches!(d.kind, Kind::Duration | Kind::Time | Kind::DateTime | Kind::Date) || d.kind.parse(p).is_err()
+            }) {
+                return Err(format!("{}: the preset {bad} is not a {}", d.name, d.kind.name()));
             }
             if d.kind == Kind::List {
                 if d.columns.is_empty() {
@@ -613,8 +908,12 @@ impl Meta {
             } else if !d.columns.is_empty() {
                 return Err(format!("{} has columns but is not a list", d.name));
             }
-            if !d.accept.is_empty() && (d.kind != Kind::File || accepted(&d.accept).is_empty()) {
-                return Err(format!("{}: accept is image, sound, video or font, on a file", d.name));
+            let code = d.kind == Kind::Code && matches!(d.accept.as_str(), "css" | "html" | "js");
+            if !d.accept.is_empty() && !code && (d.kind != Kind::File || accepted(&d.accept).is_empty()) {
+                return Err(format!(
+                    "{}: accept is image, sound, video or font on a file, css, html or js on code",
+                    d.name
+                ));
             }
             if !d.accepts(&d.default) {
                 return Err(format!("default of {} is not a {}", d.name, d.kind.name()));
@@ -773,6 +1072,28 @@ pub fn inspect_meta(c: &Config, group: &str) -> (Meta, Vec<String>) {
 
 pub fn meta(c: &Config, group: &str) -> Meta {
     inspect_meta(c, group).0
+}
+
+/// The setting every overlay has besides its own: CSS that `streamerz.js` puts on its pages.
+pub const EXTRA_CSS: &str = "extraCss";
+
+/// A group's settings as the form shows them: its own, then Extra CSS when it has a page (and does
+/// not declare a setting of that name itself).
+pub fn settings_defs(meta: &Meta) -> Vec<Def> {
+    let mut defs = meta.variables.clone();
+    if meta.files.iter().any(|f| is_page(&f.name)) && !defs.iter().any(|d| d.name == EXTRA_CSS) {
+        defs.push(Def {
+            name: EXTRA_CSS.into(),
+            label: crate::i18n::tr("overlays.extra_css").into(),
+            kind: Kind::Code,
+            default: json!(""),
+            description: crate::i18n::tr("overlays.extra_css_tip").into(),
+            section: crate::i18n::tr("overlays.code_section").into(),
+            accept: "css".into(),
+            ..Def::default()
+        });
+    }
+    defs
 }
 
 /// Where the files of every group are: `groups/<store>/` beside the settings.
@@ -1001,9 +1322,18 @@ pub fn set_meta(c: &mut Config, group: &str, mut meta: Meta) -> Result<(), Strin
 pub fn values(c: &Config, group: &str) -> Obj {
     let stored = c.action_group_variables.get(group).and_then(Value::as_object);
     let mut out = Obj::new();
-    for d in meta(c, group).variables {
+    for d in settings_defs(&meta(c, group)) {
         let v = stored.and_then(|s| s.get(&d.name)).filter(|v| d.accepts(v));
-        out.insert(d.name.clone(), v.cloned().unwrap_or(d.default));
+        let mut v = v.cloned().unwrap_or(d.default.clone());
+        // Rows get the cells of columns added since they were made.
+        if d.kind == Kind::List {
+            for row in v.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+                for column in &d.columns {
+                    row.entry(column.name.clone()).or_insert_with(|| column.default.clone());
+                }
+            }
+        }
+        out.insert(d.name.clone(), v);
     }
     for (k, v) in stored.into_iter().flatten() {
         out.entry(k.clone()).or_insert_with(|| v.clone());
@@ -1013,7 +1343,7 @@ pub fn values(c: &Config, group: &str) -> Obj {
 
 /// Replace a group's stored values. A declared variable must keep its type.
 pub fn set_values(c: &mut Config, group: &str, values: Obj) -> Result<(), String> {
-    for d in meta(c, group).variables {
+    for d in settings_defs(&meta(c, group)) {
         if let Some(v) = values.get(&d.name).filter(|v| !d.accepts(v)) {
             return Err(format!("{} must be a {}, not {v}", d.name, d.kind.name()));
         }
@@ -1146,6 +1476,7 @@ pub fn rename(c: &mut Config, old: &str, new: &str) -> bool {
         &mut c.action_group_variables,
         &mut c.action_group_icons,
         &mut c.action_groups,
+        &mut c.overlay_controls,
     ] {
         if let Some(v) = map.remove(old) {
             map.insert(new.into(), v);
@@ -1190,6 +1521,7 @@ fn unlist(c: &mut Config, group: &str) {
 pub fn remove(c: &mut Config, group: &str) {
     unlist(c, group);
     c.action_group_variables.remove(group);
+    c.overlay_controls.remove(group);
     if let Some(dir) = folder(c, group) {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1376,6 +1708,41 @@ pub fn import_meta(c: &mut Config, groups: &Obj) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_made_before_a_column_was_added_keep_their_values() {
+        let mut c = Config::default();
+        create(&mut c, "Box");
+        let column = |name: &str, default: Value| Def {
+            name: name.into(),
+            label: name.into(),
+            kind: Kind::Text,
+            default,
+            ..Def::default()
+        };
+        let rules = Def {
+            name: "rules".into(),
+            label: "Rules".into(),
+            kind: Kind::List,
+            default: json!([]),
+            columns: vec![column("text", json!("")), column("say", json!(""))],
+            ..Def::default()
+        };
+        set_meta(
+            &mut c,
+            "Box",
+            Meta {
+                variables: vec![rules],
+                ..Meta::default()
+            },
+        )
+        .unwrap();
+        // Saved when the rows had no Say aloud.
+        c.action_group_variables
+            .insert("Box".into(), json!({"rules": [{"text": "mine"}]}));
+        let rows = &values(&c, "Box")["rules"];
+        assert_eq!(rows, &json!([{"text": "mine", "say": ""}]));
+    }
 
     fn def(name: &str, kind: Kind, default: Value) -> Def {
         Def {
@@ -1777,7 +2144,11 @@ mod tests {
             .parse("a | 1 | #fff000 | more")
             .unwrap_err()
             .contains("more than 3"));
-        assert!(!list.accepts(&json!([{"label": "x"}])), "a row has every column");
+        // A row may lack a column (one added since): it takes the column's default.
+        assert!(
+            list.accepts(&json!([{"label": "x"}])),
+            "a cell left out takes its default"
+        );
         assert!(!list.accepts(&json!([{"label": "x", "weight": "many", "color": "#ffffff"}])));
         // What can't be a setting is refused when the group is saved.
         let with = |d: Def| Meta {

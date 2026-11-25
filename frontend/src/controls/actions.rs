@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 /// The action node (`a:<id>`) now open in the editor, or an empty text.
 pub struct Opened(pub String);
 impl EventEmitter<Opened> for ActionsPage {}
+impl EventEmitter<super::sections::Navigate> for ActionsPage {}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
@@ -358,10 +359,19 @@ impl ActionsPage {
         });
     }
 
+    /// A form's fix button goes to another page: the app is told.
+    fn follow(&self, form: &Entity<Form>, cx: &mut Context<Self>) {
+        cx.subscribe(form, |_, _, go: &super::sections::Navigate, cx| {
+            cx.emit(super::sections::Navigate(go.0.clone()));
+        })
+        .detach();
+    }
+
     fn open_form(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let title = value["title"].as_str().unwrap_or_default().to_owned();
         let route = format!("{}:save", self.route);
         let form = cx.new(|cx| Form::new(value, route, window, cx));
+        self.follow(&form, cx);
         self.form = Some(form.clone());
         let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -401,6 +411,7 @@ impl ActionsPage {
                 self.error = Some(err);
             } else if let Some(picker) = &self.picker {
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
+                self.follow(&form, cx);
                 self.form = Some(form.clone());
                 picker.update(cx, |picker, cx| picker.set_form(form, cx));
             }

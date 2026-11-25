@@ -83,6 +83,7 @@ page. Each one is short and commented, made to be read:
 | Credits roll | Selected names from the stream scroll once or repeat | one HTTP read of `/GetCredits`, a `list` of sections, a browser animation |
 | Song request queue | Upcoming requests from the Song requests (Spotify) action template, or another template | `streamerz.on`, the topic `songrequests.queue` or your own published array |
 | Alerts | A card for each follow, sub, gift, cheer, Super Chat, raid and reward, in its platform's color, with who did it | `streamerz.alerts`, `streamerz.avatar`, `streamerz.logo` |
+| Alert box | Every alert of every platform as you set it up: rules with conditions (bits, viewers, months, coins), a picture, GIF or video, a sound and a text each, in a queue, at the place and with the animations you pick; pause, skip and replay from an action | `streamerz.alerts` with `kind` and `args`, a `list` of rules, sounds and pictures of the overlay, a control topic, your own CSS and HTML |
 | TikTok gifts | Each gift on your TikTok Live, with a count that grows through a combo | `streamerz.event("TikTok.Gift")` |
 | Poll | One poll for every platform: `!poll Question \| One \| Two`, viewers vote by typing a number. Comes with its commands, actions and a dock to run it from | topics set by an action, `streamerz.chat`, `streamerz.say`, a second page |
 | Prize wheel | A wheel with your own slices, each with its chances. `!spin` turns it and the result goes to the chat | a topic set by an action, a `list` setting |
@@ -90,9 +91,27 @@ page. Each one is short and commented, made to be read:
 | Goal bar | A bar that fills with follows, subs, cheers or TikTok coins, and keeps its count across restarts | `streamerz.alerts` with `kind` and `args`, `streamerz.set`, `streamerz.testing` |
 | Starting soon | A full screen with your picture, a countdown and music | `file` settings (a picture and a sound) |
 | Buttons dock | A dock with a button for each action connected to it, and a banner the buttons show | `streamerz.actions`, `streamerz.run`, an `action` setting, two pages |
+| Scene banner | A title for each OBS scene, shown as the scene changes | the event `ObsStudio.SceneChanged`, a `list` of scenes, `textStyle`, `gradient`, `position` and two `animation` settings |
+| Sound board | A dock of buttons playing the overlay's sounds through a browser source, so OBS mixes them on their own | a dock page, a topic, a second page that only plays sounds |
+| Read chat aloud | The chat spoken in the browser source, one message after another, with a caption of who is read | `streamerz.chat`, `streamerz.speak` (`voice.speak`), live controls Reading and Skip |
+| Countdown to | Counts down to a day and time, then says so with a sound; Try the end shows it now | `datetime`, `textStyle`, `position`, `animation`, `gradient`, `percent`, `sound` and `button` settings, `streamerz.css`, `streamerz.place`, `streamerz.animate` |
 
 Their source is in `assets/examples/<name>`: a `template.json` and a `files` folder, exactly what a
 `.streamerz` file holds when unpacked. `dev/test-examples.mjs` opens each one in a browser.
+
+**Alert box** is set up entirely in Settings. Each line of **Rules** is one alert: When (the kind of
+event), From (a platform or Any), At least and At most (the bits of a cheer, the viewers of a raid,
+the subs of a gift bomb, the months of a resub, the money of a Super Chat, the coins of a TikTok gift;
+0 at most has no end), the Text (with `%user%`, `%amount%`, `%event%`, `%message%`, `%gift%`,
+`%months%`, `%tier%`, `%coins%` and `%platform%`), a Picture and a Sound (files of the overlay, such
+as `img/star.svg` and `sounds/chime.wav`, or web addresses; a video plays muted), the Volume, the
+Seconds it stays and a Weight. The first rule that matches plays, or one of the matching rules by
+weight. Put your files in its folder (**Open folder**) and name them in a rule. The queue shows one
+alert at a time, several together, or only the newest; a gift bomb is one alert and a TikTok combo
+grows on its card. An action controls it with the **Overlay** sub-action: topic `alertbox`, value
+`{"do": "pause"}` (or `resume`, `skip`, `replay`, `clear`, `mute`, `unmute`), and the box says what it
+is doing in the topic `alertbox.state`. **Extra CSS** and **Card HTML** change its look without
+touching its page.
 
 Subathon starts on installation. Run **Subathon: reset** in Actions to apply a new starting time.
 The maximum is applied by the next reset or addition. Its Clock ID setting connects the page and its
@@ -146,6 +165,33 @@ settings form draws each kind with its own control:
 | `platforms` | a list of `twitch`, `youtube`, `kick`, `tiktok` | a check box with the logo of each |
 | `action` | the id of one of the actions connected to the overlay (empty: none) | a list of those actions |
 | `list` | rows: a list of objects with one value for each of its `columns` | a box with a row a line, the cells between bars: `Pizza \| 2` |
+| `date` | a day, `YYYY-MM-DD` (empty: none) | a box with Today, Tomorrow and Next week under it |
+| `time` | a time of day, `HH:MM` | a box, with the `presets` you give under it |
+| `datetime` | a moment, in milliseconds since 1970 (0: none) | a box typed as `YYYY-MM-DD HH:MM`, `+15m` or `20:00`, with In 15 minutes, In 1 hour and Tonight at 20:00 (or your `presets`) |
+| `range` | `[from, to]`, between `min` and `max` | a slider with two handles |
+| `percent` | a number from 0 to 100 | a slider with % |
+| `position` | `{anchor, x, y}`: one of nine places (`top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right`) and pixels from it | a 3 by 3 grid and two boxes; `streamerz.place(el, value)` puts an element there |
+| `size` | `{width, height}` in pixels | two boxes and Keep ratio |
+| `animation` | `{name, durationMs, delayMs, easing}`, the name one of `none`, `fade`, `slide-up`, `slide-down`, `slide-left`, `slide-right`, `zoom`, `pop`, `bounce`, `flip`, `shake` | two lists, two boxes and Play (it plays again in the pages); `streamerz.animate(el, value)` plays it |
+| `easing` | a CSS easing (`ease-out`, `cubic-bezier(...)`) | a list |
+| `gradient` | CSS: `linear-gradient(90deg, #7c3aed, #db2777)` | two colors, an angle and a bar showing them |
+| `textStyle` | `{font, size, weight, color, outline, outlineColor, shadow}` | one group of controls; `streamerz.css(value)` gives the CSS |
+| `sound` | `{file, volume}`: one of its sounds and how loud (0 to 100) | its sounds to pick or Browse, a volume and Play |
+| `event` | a list of kinds of events (`follow`, `sub`, `resub`, `giftsub`, `giftbomb`, `cheer`, `raid`, `superchat`, `supersticker`, `member`, `gift`, `share`, `reward`, `powerup`, `announcement`, as `streamerz.alerts` calls them) | a check box with an icon for each |
+| `reward` | `{platform, id, title}` (empty: none) | the rewards of the Twitch and Kick channels |
+| `gift` | `{id, name, coins, picture}` (empty: none) | TikTok's gifts with their pictures, narrowed by typing |
+| `usergroup` | the name of a user group | a list of the user groups |
+| `scene`, `source` | the name of a scene or source in OBS | a list of them while OBS is connected, a box when not |
+| `code` | text; `accept` is `css`, `html` or `js` | a tall box in a fixed-width font |
+| `json` | any value | a box checked as JSON |
+| `button` | nothing | a button: pressing it publishes the topic `<overlay>.<name>` (`streamerz.on("Clock.reset", (v, old) => ...)`) |
+| `hidden` | any value | not drawn: kept and shared with the overlay |
+
+`duration`, `time` and `datetime` take `presets`, the values one click away under the box, as they
+are typed: `"presets": ["30s", "1m", "5m"]`.
+
+Every overlay also has **Extra CSS**, under Code at the end of its settings: CSS that Streamerz puts
+on its pages after their own, so a look changes without opening the files.
 
 A `file` setting reaches a page as the address it is served at, so it goes straight into an `<img>`, an
 `<audio>` or a CSS `url()`. A `list` declares its `columns`, each a setting of a simple kind (`text`,
@@ -162,6 +208,41 @@ left out:
 `description` is shown when the pointer rests on the label, and `section` puts a heading above the
 setting, for the ones from there on. `showIf` shows a setting only while another one (a choice or a
 check box) has a value: `"showIf": {"setting": "look", "is": "Custom color"}`.
+
+### The Alerts tab
+
+An alert box (an overlay whose rules are a `list` setting called `rules`, as the Alert box example)
+gets an **Alerts** tab on its page: a row for each rule with its picture, **Play this rule** (an event
+made up to match it, on the preview), Edit, Move up and Delete, and **Add a rule**. The rule's form has
+its columns: when and from where, the amounts, the text, a picture and a sound picked from the overlay's
+files (or brought in with Browse), and **Say aloud** with a **Voice**: words spoken after the sound by a
+voice of this computer (the page needs `voice.speak`). Changes are a draft, as on Settings: the preview
+shows them at once and Save sends them to OBS.
+
+A row added to a `list` setting after rules were saved is fine: a saved row with no cell for a new
+column takes the column's default.
+
+### Live controls
+
+Settings are what is set before going live; **controls** are what is changed while live. An overlay
+declares them in `meta.template.controls`:
+
+```json
+"controls": [
+  {"name": "show", "label": "Show", "kind": "toggle", "default": true},
+  {"name": "speed", "label": "Speed", "kind": "slider", "min": 1, "max": 10, "default": 5},
+  {"name": "spin", "label": "Spin", "kind": "button", "icon": "rotate-cw"}
+]
+```
+
+Kinds: `button`, `toggle`, `slider` (with `min`, `max`, `step`), `choice` (with `options`), `number`,
+`text` and `color`. They are set from the overlay's **Live** tab, from their dock (Live shows its
+address: in OBS, Docks, Custom Browser Docks), from an action (**Set Overlay Control**, 99881), from a
+page (`streamerz.control.set`) or by an assistant (`overlay_control`). Each change reaches every page of
+the overlay at once and fires **Overlay Control Changed** (99881) with `overlay`, `control`, `value`,
+`old` and `from` (`window`, `dock`, `action`, `page`, `mcp`). Their values are kept across restarts,
+apart from the settings: sharing the overlay shares the controls and their defaults, never what they
+hold now. The Countdown to example has three.
 
 `meta.template.test` is what Test adds for this overlay: `{"topics": {"name": value}, "events":
 [["Chat.Line", {...}]]}`. The Poll example starts a made-up poll and votes in it that way.
@@ -187,6 +268,12 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.on(topic, fn)` | `fn(value, old)` runs with the topic's current value, then at every change. `old` is true for the value from before the page opened: a page that acts on a change (spin the wheel) skips it. |
 | `streamerz.event("Source.Type", fn)` | `fn(data)` runs for any Streamerz event, such as `Spotify.TrackChanged` or `Twitch.Follow`. `Twitch.*` is every event of a source. |
 | `streamerz.onSettings(fn)` | `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. |
+| `streamerz.speak(text, {voice, speed, pitch})` | Resolves with an `<audio>` of the text spoken by a voice of this computer (the default voice when none is given), for the page to play in step with what it shows. Needs `voice.speak`. |
+| `streamerz.control(name, fn)` | `fn(value, old)` with a live control's value now (old is undefined) and at every change; a button calls it when pressed. `streamerz.control.set(name, value)` sets one, to keep a toggle in step with the page. |
+| `streamerz.controls` | The live controls' values now, by name. |
+| `streamerz.place(el, position)` | Puts an element where a `position` setting says, absolutely, as wide as its content. |
+| `streamerz.animate(el, animation, {out})` | Plays an `animation` setting on an element (backwards with `out: true`, to leave); resolves when it ends. Given the setting itself (`s.enter`), Play on the form plays it again. |
+| `streamerz.css(textStyle)` | A `textStyle` setting as CSS: `el.style.cssText += streamerz.css(s.title)`. |
 | `streamerz.countdown(id, fn)` | A countdown's `{running, remainingMs, deadlineMs, maxMs}` now and at every change. Count from `deadlineMs` in the page: no ticks are sent. |
 | `streamerz.chat(fn, {history, removed})` | Every chat message of every connected platform, the moment it arrives (also what you send from Streamerz), as the Chat page shows it: `{platform, user, userId, color, badges: [{label, url, art, icon}], text, parts: [{t}` or `{e, u, big}], time, msgId, avatar, reply, broadcaster, moderator, vip, subscriber, action, gif, picture, tag}`. The name's color is already readable and the emotes of every provider (the platform's, 7TV, BetterTTV, FrankerFaceZ) are already found. `history` gives the newest ones first; `removed` gets `{platform, msgId, userId}` when a moderator deletes a message or a user's messages. Needs `chat.read`. |
 | `streamerz.alerts(fn, {history})` | What happens in the channels, on every platform: a follow, a sub, a gift, a cheer, a Super Chat, a raid, a reward. A chat line with `{event` (what happened, in words)`, icon` (a Lucide name: `star`, `gift`, `swords`, `user-plus`, `gem`...)`, accent, cost, picture, text}`. One that happens now also has what a page counts with: `kind` (`follow`, `sub`, `resub`, `giftsub`, `giftbomb`, `cheer`, `raid`, `superchat`, `supersticker`, `member`, `gift`, `share`, `reward`, `powerup`, `streak`, `announcement`, `timeout`, `ban`), `trigger` (the trigger's name) and `args` (its arguments: `bits`, `viewers`, `gifts`, `coins`, `amount`...). Needs `alerts.read`. |
@@ -204,6 +291,7 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.publish(topic, value)` | Sets a topic for every page listening with `on()`. |
 | `streamerz.log(text)` | A line in Streamerz's log (OBS has no console to look at). |
 | `streamerz.testing` | True while the page handles what **Test** sent: a page that keeps a count (the Goal bar) shows it but does not keep it. |
+| `streamerz.preview` | True on a page opened as a preview (its address ends in `?preview=1`): it shows the settings being changed before they are saved, and loads again by itself when it doesn't follow `onSettings`. OBS's pages keep the saved ones. |
 
 The calls that ask Streamerz for something return a Promise, rejected with the reason when refused.
 
@@ -239,6 +327,7 @@ page of another overlay, or one Streamerz did not serve, is refused:
 | `chat.send` | Send chat messages as you |
 | `actions.run` | Run the actions connected to it |
 | `values.write` | Store values of its own |
+| `voice.speak` | Speak text aloud with the voices of this computer (`streamerz.speak`) |
 
 ## Files
 
@@ -285,6 +374,8 @@ An assistant builds, tries and shares an overlay with no window at all:
    made-up data, and gives a PNG with what its console said and its script's errors (with the line of
    the file). `overlay_test` sends made-up data (or exactly the events and topics given) to the pages
    already open; `overlay_inspect` says what the open pages listen to, got and logged.
+   `overlay_draft` changes settings without saving them: only pages opened as a preview (`?preview=1`)
+   show the draft, until it is saved (every page, OBS too) or reverted.
 4. `overlay_add_to_obs` makes the browser source in OBS; `overlay_connect` connects a group of actions
    (or disconnects it); `overlay_rename` renames an overlay (and its connected group); `overlay_delete` deletes a file or the whole overlay.
 5. Actions are built with `describe`, `new_action` and `save` (their `group` is the overlay's name), and

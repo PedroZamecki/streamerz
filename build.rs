@@ -3,6 +3,8 @@ use std::fmt::Write;
 // Puts assets/brand/streamerz.ico into the Windows exe (Explorer, taskbar); no-op on other targets.
 // And lists the languages: every assets/locales/<code>.json is built in, so a new language is just a file.
 fn main() {
+    println!("cargo:rerun-if-env-changed=STREAMERZ_VOICE_SHA256");
+    println!("cargo:rerun-if-env-changed=STREAMERZ_VOICE_SIZE");
     dev_version();
     windows_resources();
 

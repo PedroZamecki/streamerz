@@ -24,4 +24,3 @@ Starts, stops, saves or toggles the replay buffer in OBS.
 None set.
 
 ### Notes
-

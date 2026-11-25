@@ -65,6 +65,17 @@ The backend launches the window as a separate process of the same executable (`-
 it and releases its renderer; the backend, tray, integrations and MCP keep running. They talk over
 inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
 
+The GPU draws the window; the processor draws it when the GPU can't, without asking. Before the window
+starts, the core picks software for Settings > Appearance > Software rendering (also in the tray menu),
+`STREAMERZ_SOFTWARE_RENDER`, a GPU that failed earlier in this run, or no render node on Linux, and hands
+the window the environment its graphics libraries read: Mesa's llvmpipe or lavapipe on Linux, Direct3D's
+WARP on Windows. On Windows the patched GPUI (`patches/gpui-pre-windows`) also switches to WARP by itself,
+with the window open: no GPU can make a device or show the window, three frames in a row fail, the first
+frame with text comes out one flat colour (the GPU drew nothing), or the device is lost a third time. A
+window that ends before it opens, or crashes in the GPU code (Linux's renderer gives up after ten GPU
+errors), is started again in software. The renderer's warnings go to the log, with what draws the window.
+Switching by hand reopens only the window.
+
 - [x] The window: every page, its dialogs, menus, forms and prompts, from core models.
 - [x] Automation schemas, picker metadata, emote catalogs, validated edits, server schemas and settings in the core.
 - [ ] Make every core operation accessible through MCP and test access without a window.
@@ -875,48 +886,316 @@ The study and its findings are in [docs/STREAM-PAGE.md](docs/STREAM-PAGE.md).
   `docs/TESTING.md`), deferred at the owner's request. The owner will record the results after testing.
 - [ ] Measure hidden RSS and idle CPU with Twitch and OBS connected before closing the version.
 
+## Version 1.10.0: platform tools and sub-action UX
+
+Agreed on 2026-11-14: more tools and more control for the user, with the editor's UX as the focus. One
+version holds it all. New platform permissions are asked only when a tool needs them (nobody is logged
+out). Streamerz-only sub-actions that work on every platform sit beside the per-platform ones. TikTok
+moderation waits for a live test in a later version.
+
+Streamerz-only codes (kept on export, skipped by Streamer.bot, said so in their description):
+99450-99499 TikTok, 99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99700-99706 the
+moderation workspace's cross-platform moderation (`docs/MODERATION-FEASIBILITY.md`), 99720-99739 every
+platform, 99740-99749 Discord, 99750-99779 OBS Studio. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# method is called).
+
+### Sub-action editor UX (every sub-action, old and new)
+
+- [x] Who: one shared field for the user a sub-action acts on: "Who started this" (the default), "The
+  user named in the command" or "Someone else" (typed, with Insert value). It saves the same field and
+  text as now (`userLogin`, `%user%`), so exports to Streamer.bot keep working; a value it doesn't know
+  shows as "Someone else".
+- [x] Which message: one shared field, "The message that started this" (the default, `%msgId%`) or
+  "Another message" (typed). Reply, pin, unpin, delete and TikTok's pin use it.
+- [x] No raw ids or codes: YouTube's Broadcast is the live one unless another found one is picked,
+  its User ID is Who; Kick's cost Operator is Set, Add or Subtract; its category Source a choice; reward
+  colours use the colour field; every duration takes human units.
+- [x] Values: each sub-action that gets something declares the values it adds (name, meaning,
+  example). The picker shows them like a trigger's, and Insert value offers them in the sub-actions
+  after it.
+- [x] Test: the selected sub-action has Test (button and right-click menu). It runs only that step with
+  the action's sample values and shows what happened and the values it added. Dev mode keeps chat and
+  moderation from leaving, as it does now. MCP `run_subaction` does the same.
+- [x] Ready or not: the picker greys out what can't run now with the reason (not logged in, needs more
+  permissions, partners only), and the editor shows the same notice with the button that fixes it
+  (Accounts, Reconnect).
+- [x] Picker: platform groups wear their logos, the every-platform group comes first, and search knows
+  other words for the same thing (delete, remove, purge; mute, timeout; kick, ban).
+- [x] Every new field and the existing platform ones are translated, with a tip. Done for every form
+  (labels and choices are `field.*` keys, a test keeps it so); the tip is the field's line in its
+  reference, which is English. The sub-actions' own names are still English.
+
+### Every platform (Streamerz-only)
+
+Where: "The platform it came from" (the default) or the platforms ticked (check boxes with logos). A
+platform that can't do it is skipped with a log line, and its box is greyed with the reason.
+
+- [x] Send Message, Reply to Message, Delete Message, Pin Message, Unpin Message
+- [x] Timeout User, Remove Timeout, Ban User, Unban User
+- [x] Set Stream Title, Set Category, Get Stream Info (live, uptime, viewers, title, category)
+- [x] Shoutout (Twitch's shoutout, a message elsewhere), Get User Info for Target
+
+### Twitch, with the permissions it has
+
+- [x] Delete Chat Message, Purge User (a 1 second timeout), Send and Pin Message, Send Whisper
+- [x] Unique Chat, Non-Moderator Chat Delay, Get Chat Settings
+- [x] Approve AutoMod Message, Deny AutoMod Message, Get Unban Requests, Resolve Unban Request
+- [x] Get Moderators, Get VIPs, Is Subscribed (with the tier)
+- [x] Get Clips for Target (random, latest or most viewed; featured only), Get Stream Info
+- [x] Get Hype Train, Get Creator Goals, Get Bits Leaderboard
+- [x] Set Content Classification Labels, Set Stream Language, Set Stream Delay
+- [x] Create Reward, Delete Reward
+
+### Twitch, with more permissions (asked when needed)
+
+- [x] Accounts says "More permissions available" with one Reconnect button; the new scopes are asked
+  only then. A sub-action that needs them says so and opens it.
+- [x] Add Blocked Term, Remove Blocked Term, Set AutoMod Level, Set Bot Chat Colour
+- [x] Block User, Unblock User
+- [x] Get Schedule, Add Schedule Segment, Cancel Schedule Segment, Set Vacation
+
+### Streamer.bot sub-actions not run yet
+
+COVERAGE.md had them ticked; `engine::supported` skipped them (a test now reads COVERAGE.md and fails
+when a ticked sub-action isn't run).
+
+- [x] Twitch rewards: Configure Rewards (203), Reset Reward Counter (209), Reset Reward User
+  Counters (210), Set Group Enabled State (211), Set Group Paused State (212)
+- [x] Twitch Guest Star (520-531). Twitch still calls this API beta: test it live first.
+- [x] Kick rewards: Configure (35104), Reset Counter (35109), Reset User Counters (35110), Set Group
+  Enabled State (35111), Set Group Paused State (35112)
+- [x] Set Cost (202) and Kick's: Add and Subtract act like Set today.
+- [x] Get Latest Follower (507) and Get Latest Subscriber (509) set only the total today: add the
+  latest one's name, id and time.
+
+### Rewards page
+
+Streamer.bot keeps reward counters and groups itself; Streamerz has neither, so the reward sub-actions
+above need them.
+
+- [x] Counters: each redemption counts per reward and per user (saved), and the Reward Redemption
+  triggers (Twitch, Kick) give `counter` and `userCounter`, as Streamer.bot does.
+- [x] Groups: a reward belongs to at most one group, by name.
+- [x] A Rewards page (Twitch and Kick, platform logos): a row per reward with its switch, title, cost,
+  group and counter; New reward, Edit, Pause, Reset counter, Group and Delete, the same in the
+  right-click menu. A reward Streamerz didn't create is shown read only, with the reason (Twitch and
+  Kick let an app change only its own rewards).
+
+### Kick (public API)
+
+- [x] Delete Chat Message (`kick::delete_message`, which the chat already uses)
+- [x] Accept Redemption, Reject Redemption, Create Reward, Delete Reward
+- [x] Get KICKs Leaderboard, Get Stream Info, Remove Channel Tag
+- Kick's public API has no chat modes, moderators, VIPs, pins, raids or polls: not done.
+
+### YouTube (Data API, the permission it has)
+
+- [x] Delete Message (first check that InnerTube's message ids are the Data API's), Unban User (for
+  bans Streamerz made: the ban id is kept), Add Moderator, Remove Moderator
+- [x] Set Tags, Add Tag, Remove Tag, Clear Tags, Set Category, Set Privacy, End Stream
+- [x] Get Broadcast Info, Get User Info for Target, Add Random Users
+- The Data API has no chat modes and no pinning: not done.
+
+### TikTok
+
+- [x] Add User to Group, Remove User from Group, User in Group, Add Random Users, Get User Info for
+  Target (from what the chat has seen)
+- Later, its own version: Mute, Unmute, Remove from LIVE, Delete Comment, Add Moderator, Remove
+  Moderator. Each is captured from TikTok's own request on the user's live, acting only on a second test
+  account, never on viewers.
+
+### Chat page
+
+- [x] Delete on YouTube lines; Unban, Mod and Unmod for YouTube on the user card.
+- [x] AutoMod's held messages show in the chat with Allow and Deny (Twitch).
+
+### Close
+
+- [x] MCP: every new sub-action through `describe` and `run_subaction`, with tests.
+- [x] Unit tests per sub-action (request shape, values added, skipped platforms).
+- [ ] Live tests on the real Twitch, Kick and YouTube channels; smoke in English and pt_BR; Windows
+  type-check; hidden RSS and idle CPU before and after.
+
+### Approved from the second list (2026-11-15: "implement all of those")
+
+Done here (each with scenarios, reference pages and both languages):
+
+- [x] Fetch URL: POST, PUT, PATCH and DELETE with a body and content type; `httpStatus` and `httpOk`.
+- [x] Countdown: subtract, set, pause, resume, toggle and get (a pause survives a restart).
+- [x] Discord: rich embed, edit and delete a message, upload a file, threads and forum posts.
+- [x] OBS Studio: move, size, rotate and crop a source; volume with a fade; audio monitor; Studio Mode,
+  preview scene and its transition; the transition and its length; virtual camera; split recording;
+  hotkey by name; profile and scene collection; the last replay's file; filter and input settings;
+  show a source for a while.
+
+Kept for later in this version, in this order:
+
+- [x] Twitch: Check AutoMod Status, Get Shared Chat, Get Channel Info for any channel, Get Latest Video,
+  Chat Mode for a While (puts the chat back after the time).
+- [x] Twitch: Create Clip's title and duration, and Create Clip From VOD (99545, Twitch's
+  `videos/clips`, with the `channel:manage:clips` permission asked under More permissions). Sending to
+  this chat only in a Shared Chat is out: Twitch takes `for_source_only` only with an app token, which
+  needs a client secret a desktop program can't keep.
+- [x] Core / Text and Data: regex match and replace, change text, split, JSON value, counter, cooldown gate,
+  format duration.
+- [x] Core: List (99788: a list kept as a global) and Get and Set Clipboard (99789, 99790). The clipboard
+  is the system's, asked by the core (Win32 on Windows; wl-clipboard, xclip or xsel on Linux), not the
+  window's: the window is closed while Streamerz is hidden, and a chat command still has to reach it.
+- [x] YouTube: Go Live (testing, live); End Stream was already in.
+- [x] YouTube: Add to Playlist (99666, by the playlist's id or link) and Get Poll Results (99665, the
+  poll on the live now, read from the chat).
+- [x] Spotify and song requests: Open or Close Song Requests (99834, the template's new Requests open
+  setting and `msgClosed` reply), Take Back a Viewer's Requests (99835), Block a Viewer or Artist
+  (99836), Change a Song Request Rule (99837) and Fade Volume (99845). Moving a request up the queue is
+  out: Spotify's Web API can't reorder its queue.
+- [x] OBS: Output by name (99766; the names OBS lists are offered), Lock Source (99767), Set Audio Sync
+  Offset (99768) and Set Audio Balance (99769). Live test with OBS still to do.
+- Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
+  a live account to test against.
+- [x] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
+- [x] Quality of life: chat mode for a while, then back (99544); one step to update the stream
+  everywhere (Update Stream, 99734: title, category and tags on each platform picked).
+- Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
+  (per desktop), screen capture, TikTok moderation (needs a live test).
+
+Where it met the moderation workspace (decided 2026-11-21, on merging both into 1.10.0): where
+Streamer.bot has the sub-action, its code is kept and the Streamerz copy is gone. Twitch's Delete
+Message (581), Resolve AutoMod Message (582), blocked terms (583, 584), unban requests (586, 587), Unique
+Chat (588), Chat Delay (589), Get Chat Settings (590), Update AutoMod Settings (592, now with an overall
+level), Check AutoMod Status (593), Get Moderators and VIPs (595, 596); Kick's Delete Message (35044);
+YouTube's Unban User, Delete Message, Add and Remove Moderator (4015 to 4018). They took the copies'
+forms (Who, Which message, a term by its text), the permission check and paging. Every Platform's Delete
+Message, Timeout, Ban and Unban are Core / Moderation's (99700 to 99706); Remove Timeout stays.
+
 ## Version 1.10.0: Overlay editor, sounds and voices
 
 The design, with the costs, codes and open questions, is in [docs/STUDIO_PLAN.md](docs/STUDIO_PLAN.md).
 Nothing loads until it is used: no thread, device, browser or download for someone who never uses it.
 
-- [ ] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
+- [x] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
   preview beside the tabs (Settings, Test, Media, Live, Alerts, Code) wide and above them narrow; a core
   view (`overlay:<group>`) for MCP.
-- [ ] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
+- [x] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
   the preview is on screen, clicks and keys passed on, backgrounds (see-through, dark, light, a picture,
-  the OBS scene once), Open preview in browser; closed when hidden.
-- [ ] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
-  `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit.
-- [ ] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
+  the OBS scene once), Open preview in browser; closed when hidden. Done: `src/overlay_preview.rs` (the
+  browser's first tab, at most 30 pictures a second, each acknowledged; JPEG, PNG when see-through),
+  `StreamerzPreview`, clicks and the wheel, Fit and 100%, see-through, dark, light and Your scene (one
+  OBS picture when asked), closed on Back, another overlay and the window's close. A picture of the
+  user's choice behind it is left out (Your scene covers the need); the preview's sound is untested.
+- [x] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
+  `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit. Done in
+  the core: `?preview=1` pages, the `Draft` feed, `streamerz.preview`, the request op `draft` and MCP
+  `overlay_draft`, checked in a browser. In the editor: each change of the form (`Edited`) is a draft
+  the preview shows at once, the form shows the draft again after a new window, Revert and Save while
+  there is one, Show on OBS while I edit (each change kept at once), and Back, Escape and the mouse's
+  back button ask Save, Discard or Cancel.
+- [x] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
   overlay or as a real event (`isTest`); saved sequences in `template.test`; replay of real events;
-  topics, countdowns and songs; what the page logged.
-- [ ] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
+  topics, countdowns and songs; what the page logged. Done (`core/overlay_test.rs`): the event chips as
+  a list, Any trigger by its code, `name=value` lines over made-up values, a burst as one task, the
+  three destinations (a real event asks first when its actions send chat or change OBS, and gives no
+  credits), the ready-made sets (One of each, Gift bomb of 20, Raid of 500, TikTok rose combo, Chat
+  flood), a song playing or paused, any topic, the last 50 real events to replay, and what the pages
+  logged. Left for later: the overlay's own saved sequences and countdown buttons.
+- [x] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
   waveform, fonts, Used by, Add by Browse or drop, Rename that follows, Replace, Delete that warns.
-- [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
+  Done (`core/overlay_media.rs`, rows of the overlay page): each file's kind, size and what uses it
+  (settings, list rows and pages), a picture of pictures and GIFs, Play and Stop for sounds through
+  the player, Copy URL, Add by Browse, Rename that the settings follow, Replace, Delete that names what
+  uses it, notices for files over 25 MB and videos OBS can't play. Left for later: the waveform, a
+  picture of videos, font samples, the grid view, dropping files on the window and Play on a device.
+- [x] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
   `size`, `animation`, `easing`, `gradient`, `textStyle`, `sound`, `event`, `reward`, `gift`,
   `usergroup`, `scene`, `source`, `code`, `json`, `button`, `hidden`, previews on `file`; Extra CSS;
-  `streamerz.place`, `animate`, `css`.
-- [ ] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
-  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`.
-- [ ] 8. Sound player in the core (Symphonia and cpal or rodio, measured): opened on the first sound,
-  closed after the last, mixing, fades, named sounds, a monitor device.
-- [ ] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
-  pause, resume, master volume, info, play in an overlay, device); triggers 99300 to 99302.
-- [ ] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output.
-- [ ] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player.
-- [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
+  `streamerz.place`, `animate`, `css`. Done: the kinds in `groups/kinds.rs` (checked, typed, shown),
+  their fields in `core/setting_fields.rs` and the form's new controls (presets under a box, fields of
+  parts, the 3 by 3 place grid, two-handle range, % sliders, a gradient bar, Keep ratio, code boxes,
+  icons on check boxes in columns, buttons that press). A moment typed from now (`+15m`) goes back in
+  its box as the day and time it became. Extra CSS for every overlay, live in previews and in OBS;
+  `streamerz.place` (pinned to the sides, as wide as its content), `animate` (with Play from the form)
+  and `css`; a `sound` reaches a page as an address and a volume from 0 to 1. The Countdown to example
+  uses most of them; 351 browser checks. Changed from the plan: a position is the grid and two boxes,
+  not a dot dragged on a small canvas; a gradient made in the form has two colors (more stay as CSS
+  typed by hand). A `file` setting shows the picture picked under its list, and Play for a sound.
+- [x] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
+  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`. Done: the
+  seven kinds, checked and kept apart from the settings (`overlay_controls` in the settings file, so
+  an export never carries them); the Live tab sets each one as it changes; the dock at
+  `/overlays/<overlay>/-/controls`, with its address and the OBS steps on the Live tab; the page call
+  and WebSocket op `control`; the trigger's `from` (window, dock, action, page, mcp); an action that
+  trigger ran doesn't fire it again; the Live tab follows a value set elsewhere while it is open. The
+  Countdown to example has Show, Size and Add a minute; a scenario, a core test and browser checks of
+  the page and the dock.
+- [x] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
+  sounds (done: `src/sound.rs`, Symphonia with PulseAudio by dlopen and WASAPI, no audio crate); the
+  monitor device and the device list on Linux come with the Sounds page. Done: the Output settings
+  (`sounds` in the settings file: Default, monitor, master volume, sounds at once), `Monitor` as a
+  device for previews, the outputs listed through `pactl` (PipeWire answers it) only when a list is
+  wanted, by their descriptions.
+- [x] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
+  pause, resume, master volume, info, play in an overlay, device); triggers 99300 to 99302. Done: 1, 7,
+  30001, 30002, 99300 to 99304, triggers 99300 and 99301, `StreamerzSound` and the MCP tools `sounds`,
+  `sound_play`, `sound_stop`; Play Sound In Overlay (99305: the page plays it, the stops reach it), Set
+  Sound Device (99306, kept in Output; Set Master Volume is kept too), and Sound Device Changed (99302)
+  from `pactl subscribe` on Linux and the endpoint notifications on Windows, listened to only while an
+  action that is on has the trigger (checked live with a null sink added and removed).
+- [x] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output. Done (`core/sounds.rs`): one
+  page with Show; Playing refreshes as sounds start and end, only while the page shows; the Library
+  from the actions, the overlays and the `sounds` folder, with Used by, New action with this sound and
+  Add to Board; the Board's pads (sound, volume, output), its dock at `/sounds/board` signed with a key;
+  Output with a test sound for each device; MCP through `core_view`/`core_action` `sounds`. A pad's key
+  is an action's hotkey trigger (New action with this sound), not a key of its own.
+- [x] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player. Done
+  (`src/voice.rs`): espeak-ng started for each speech (the text on stdin, never read as an option; the
+  install command for the system when it is missing), the Windows voices through WinRT; the WAV's
+  sizes put right (espeak-ng streams it as endless); the Voices of the Sounds page with Say, Make
+  default and the default speed, pitch and volume (`voices` in the settings file). Checked with the
+  real espeak-ng 1.52 (141 voices, Portuguese of Brazil spoken through the player), run from its
+  unpacked package, not installed; `docs/VOICES.md`.
+- [x] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
   downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
-- [ ] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
-  99320 and 99321, `streamerz.speak`, the Read chat aloud template.
-- [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
-  first), effects.
-- [ ] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
-  sound, voice, layout, animations and code, the Alerts tab editor, Play this rule.
-- [ ] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
-  ones updated.
-- [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
-  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`).
+  Done: `voice/` (`Streamerz-Voice`, sherpa-onnx 1.13.8 statically linked, GPL-3.0-or-later because it
+  bundles espeak-ng while Streamerz stays MIT over stdin/stdout), `assets/voices.json` (24 Piper int8
+  voices across 13 languages, Kokoro 54-voice pack, Pocket TTS pack, verified SHA-256s, sizes, RAM
+  estimates, licenses and non-commercial warnings, sample URLs), resumable Range downloads with progress
+  and cancellation (`src/http.rs`), `src/voice/neural.rs` (lazy start, unload, keepLoaded, Play sample),
+  Sounds > Find voices, and `build.yml`/`lint.yml` publishing `Streamerz-Voice` standalone with its
+  SHA-256 embedded in Streamerz.
+- [x] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
+  99320 and 99321, `streamerz.speak`, the Read chat aloud template. Done (`engine/speech.rs`): a queue
+  for each output and each overlay, run only while it has speeches; the filters as Speak's fields (a
+  switch or a number may be a variable, as the template's `%group.x%`); `ttsVoice` per viewer; pause,
+  off, stop and clear; a speech an action these triggers ran fires neither; `streamerz.speak` behind
+  `voice.speak`, served two minutes at `/overlays/-/speech/<id>`; the request `StreamerzSpeech` and the
+  MCP tool `speak`; the queue's controls on the Voices; a scenario with an offline voice, and the real
+  espeak-ng speaking two sentences in turn.
+- [x] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
+  first), effects. Done: Kokoro weighted style-vector mixing (2 to 4 voices placed into slot 0 of a
+  same-sized `voices-mixed.bin`), Pocket TTS local cloning from WAV/MP3/OGG/M4A/FLAC decoded via
+  Symphonia (or Linux mic recording via `parec`) with mandatory consent check, pure-Rust WAV pitch shift
+  and audio effects (`echo`, `radio`, `robot`) in `src/voice/effects.rs`, and forms on Sounds > Voices.
+- [x] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
+  sound, voice, layout, animations and code, the Alerts tab editor, Play this rule. Done: the example
+  Alert box (rules as a `list` setting, weights, the queue, gift bomb and TikTok combo merges, a control
+  topic, place, layout, animations, sound, Extra CSS and Card HTML), 44 browser checks with drafts; the
+  Alerts tab (`core/overlay_alerts.rs`: rows with pictures, a form made from the rules' columns with
+  the overlay's pictures, sounds and the voices to pick, Move up, Delete, Add, all as a draft), Play this
+  rule (an event made up to match its kind, platform and amount), Say aloud and Voice on each rule
+  (spoken after the sound through `streamerz.speak`; the alert stays while it speaks; checked in a
+  browser with the real espeak-ng). Rows saved before a column was added keep their values (the new cell
+  takes its default: they were dropped before). The overlay page's rows got a right-click menu with
+  their buttons, and lesser buttons as icons named on hover.
+- [x] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
+  ones updated. Done: Countdown to (the newer kinds and live controls), Scene banner (a title for each
+  OBS scene), Sound board (a dock and a player page, so OBS mixes the sounds on their own source), Read
+  chat aloud (the chat spoken in the browser source, with Reading and Skip as live controls), and the
+  Alert box updated (Say aloud, Voice, the Alerts tab); every example gets Extra CSS by itself. 383
+  browser checks, the speeches with the real espeak-ng.
+- [x] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
+  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`). Done: `StreamerzVoice` WebSocket request
+  and MCP tools `voices`, `voice_install`, `voice_remove` and `voice_mix`, tested by dispatch and unit
+  tests; `VOICES.md`, `MCP.md`, `TESTING.md` and `README.md` updated.
 - [ ] 18. Close: unit tests, scenarios, the smoke in English and pt_BR, real sounds and voices on Windows
   and Linux, the alert box in OBS, hidden RSS and idle CPU before and after (and after a voice is
-  unloaded), Windows check.
+  unloaded), Windows check. Linux checks, en_US and pt_BR smoke, live Piper/Kokoro/Pocket/unload checks
+  and Windows type-check are done; native Windows runtime, connected Twitch + OBS RSS/CPU comparison and
+  OBS live alert box check remain before closing the version.

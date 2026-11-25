@@ -21,3 +21,6 @@ dist/
 
 # Local release packages
 /Streamerz-linux-x86_64.AppImage*
+
+# The voice program, its own workspace
+voice/target

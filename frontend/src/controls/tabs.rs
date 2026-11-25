@@ -26,13 +26,13 @@ pub fn kinds(tabs: &Value) -> (Vec<String>, usize) {
 /// About how wide the label and the segmented bar are on one line: a page puts the bar in its toolbar
 /// when this and the rest of the toolbar fit.
 pub fn inline_width(tabs: &Value) -> f32 {
-    let label = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 6.8;
+    let label = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4;
     let bar: f32 = tabs["options"].as_array().into_iter().flatten().map(option_width).sum();
     label + theme::SPACE_SM + bar
 }
 
 fn option_width(option: &Value) -> f32 {
-    26. + option["label"].as_str().unwrap_or_default().chars().count() as f32 * 6.8
+    28. + option["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4
 }
 
 /// The label and a segmented bar (or unified wrapping tray when many options wrap); `select` gets the kind that was picked.
@@ -45,9 +45,10 @@ pub fn bar(
     let (kinds, selected) = kinds(tabs);
     let options = tabs["options"].as_array().map_or(&[][..], Vec::as_slice);
     let select = std::rc::Rc::new(select);
-    // Reserve the sidebar and page insets.
+    // Reserve the sidebar, page insets and the inline "Show:" label beside the segmented bar.
     let viewport = f32::from(window.viewport_size().width);
-    let room = (viewport - if viewport < 700. { 96. } else { 230. }).max(150.);
+    let label_w = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4 + theme::SPACE_SM;
+    let room = (viewport - if viewport < 700. { 96. } else { 230. } - label_w).max(150.);
     let widths: Vec<_> = options.iter().map(option_width).collect();
     let ranges = wrap_ranges(&widths, room);
     let control = if ranges.len() <= 1 {
@@ -185,5 +186,30 @@ mod tests {
         assert_eq!(super::wrap_ranges(&[95., 160., 120.], 280.), vec![0..2, 2..3]);
         assert_eq!(super::wrap_ranges(&[500., 100.], 200.), vec![0..1, 1..2]);
         assert!(super::wrap_ranges(&[], 200.).is_empty());
+    }
+
+    #[test]
+    fn six_sounds_tabs_wrap_at_narrow_540px_width() {
+        let tabs = serde_json::json!({
+            "label": "Show:",
+            "selected": "sounds_playing",
+            "options": [
+                {"id": "sounds_playing", "label": "Playing"},
+                {"id": "sounds_library", "label": "Library"},
+                {"id": "sounds_board", "label": "Board"},
+                {"id": "sounds_voices", "label": "Voices"},
+                {"id": "sounds_voice_catalog", "label": "Find voices"},
+                {"id": "sounds_output", "label": "Output"},
+            ]
+        });
+        let label_w = "Show:".chars().count() as f32 * 7.4 + crate::theme::SPACE_SM;
+        let room = (540. - 96. - label_w).max(150.);
+        let widths: Vec<_> = tabs["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(super::option_width)
+            .collect();
+        assert!(super::wrap_ranges(&widths, room).len() > 1);
     }
 }

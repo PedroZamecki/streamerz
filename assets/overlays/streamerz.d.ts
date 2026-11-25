@@ -129,7 +129,81 @@ declare namespace Streamerz {
   }
 
   /** A setting's value: text, a number, true or false, a list of platforms, or the rows of a list. */
-  type Setting = string | number | boolean | string[] | Record<string, string | number | boolean>[];
+  type Setting =
+    | string
+    | number
+    | boolean
+    | null
+    | string[]
+    | [number, number]
+    | Record<string, string | number | boolean>[]
+    | Position
+    | Size
+    | Animation
+    | TextStyle
+    | Sound
+    | Reward
+    | Gift
+    | Record<string, unknown>;
+
+  type Anchor =
+    | "top-left" | "top" | "top-right"
+    | "left" | "center" | "right"
+    | "bottom-left" | "bottom" | "bottom-right";
+
+  /** A `position` setting: one of nine places of the page, and pixels from it (`streamerz.place`). */
+  interface Position {
+    anchor: Anchor;
+    x: number;
+    y: number;
+  }
+
+  /** A `size` setting, in pixels. */
+  interface Size {
+    width: number;
+    height: number;
+  }
+
+  /** An `animation` setting (`streamerz.animate`). */
+  interface Animation {
+    name: "none" | "fade" | "slide-up" | "slide-down" | "slide-left" | "slide-right" | "zoom" | "pop" | "bounce" | "flip" | "shake";
+    durationMs: number;
+    delayMs: number;
+    /** A CSS easing. */
+    easing: string;
+  }
+
+  /** A `textStyle` setting (`streamerz.css`). */
+  interface TextStyle {
+    font: string;
+    size: number;
+    weight: number;
+    color: string;
+    outline: number;
+    outlineColor: string;
+    shadow: boolean;
+  }
+
+  /** A `sound` setting: the address of the file, and its volume from 0 to 1 (as `audio.volume`). */
+  interface Sound {
+    file: string;
+    volume: number;
+  }
+
+  /** A `reward` setting (empty when none is picked). */
+  interface Reward {
+    platform?: "twitch" | "kick";
+    id?: string;
+    title?: string;
+  }
+
+  /** A `gift` setting: a TikTok gift (empty when none is picked). */
+  interface Gift {
+    id?: string;
+    name?: string;
+    coins?: number;
+    picture?: string;
+  }
 
   interface Api {
     /** The overlay's settings, always the current ones. A `file` setting is an address to load. */
@@ -138,12 +212,26 @@ declare namespace Streamerz {
     readonly group: string;
     /** True while the page handles made-up data from Test: a page that keeps a count leaves it out. */
     readonly testing: boolean;
+    /** True on a page the overlay editor opened as a preview (`?preview` in its address): it shows settings not saved yet. */
+    readonly preview: boolean;
     /** The last value of each topic this page listens to. */
     readonly state: Record<string, unknown>;
     readonly platforms: Record<Platform, { name: string; color: string }>;
 
     /** `fn(settings)` now and whenever a setting changes in Streamerz, with no reload. */
     onSettings(fn: (settings: Record<string, Setting>) => void): Api;
+    /** A live control (`meta.template.controls`): `fn(value, old)` now and at every change; `.set` sets one. */
+    readonly control: ((name: string, fn: (value: any, old: any) => void) => Api) & {
+      set(name: string, value: unknown): Promise<unknown>;
+    };
+    /** The live controls' values now, by name. */
+    readonly controls: Record<string, unknown>;
+    /** Puts an element where a `position` setting says (absolutely). */
+    place(el: HTMLElement, where: Position): HTMLElement;
+    /** Plays an `animation` setting on an element (backwards with `out`); resolves when it ends. */
+    animate(el: HTMLElement, animation: Animation, options?: { out?: boolean }): Promise<void>;
+    /** A `textStyle` setting as CSS: `el.style.cssText += streamerz.css(s.title)`. */
+    css(style: TextStyle): string;
     /** A topic: its current value first (`old` is true for one from before the page opened), then every change. */
     on(topic: "viewers", fn: (value: Viewers, old: boolean) => void): Api;
     on(topic: "song", fn: (value: Song, old: boolean) => void): Api;
@@ -189,6 +277,8 @@ declare namespace Streamerz {
     publish(topic: string, value: unknown): Promise<unknown>;
     /** A line in Streamerz's Log (OBS has no console to look at). */
     log(text: string): Promise<unknown>;
+    /** Text spoken by a voice of this computer, as an audio to play (needs `voice.speak`). */
+    speak(text: string, options?: { voice?: string; speed?: number; pitch?: number }): Promise<HTMLAudioElement & { durationMs?: number }>;
   }
 }
 

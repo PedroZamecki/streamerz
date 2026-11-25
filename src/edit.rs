@@ -160,7 +160,60 @@ pub fn new_sub(kind: u64) -> Obj {
             o.insert("kick".into(), true.into());
             o.insert("youtube".into(), true.into());
         }
+        99845 => {
+            o.insert("duration".into(), 3.into());
+        }
+        // Twitch's own clip length.
+        18 | 99545 => {
+            o.insert("duration".into(), 30.into());
+        }
+        // Sounds start at full volume and wait for their end, as Streamer.bot's do.
+        1 | 7 => {
+            o.insert("volume".into(), 100.into());
+            o.insert("finishBeforeContinuing".into(), true.into());
+            if kind == 7 {
+                o.insert("avoidRepeats".into(), true.into());
+            }
+        }
+        99300 | 99303 => {
+            o.insert("volume".into(), 100.into());
+        }
+        // Each AutoMod level keeps its value until one is picked.
+        592 => {
+            for key in [
+                "overallLevel",
+                "aggression",
+                "bullying",
+                "disability",
+                "misogyny",
+                "raceEthnicityOrReligion",
+                "sexBasedTerms",
+                "sexualitySexOrGender",
+                "swearing",
+            ] {
+                // The last choice, outside 0 to 4: kept as it is.
+                o.insert(key.into(), 5.into());
+            }
+        }
         _ => {}
+    }
+    // A new one acts on whoever and whatever started the action, until told otherwise.
+    for (key, _, widget) in crate::automation::schema::sub_fields(kind).unwrap_or_default() {
+        let start = match widget {
+            crate::automation::schema::W::Who if kind != 99514 => json!("%userName%"),
+            crate::automation::schema::W::Message(from) => json!(from),
+            crate::automation::schema::W::Checks(_) => json!([]),
+            crate::automation::schema::W::Bool
+                if matches!(*key, "fallback" | "enabled" | "approve" | "wait" | "persisted" | "all") =>
+            {
+                json!(true)
+            }
+            _ => continue,
+        };
+        o.insert((*key).into(), start);
+    }
+    if kind == 99514 {
+        o.insert("userLogin".into(), "%targetUserName%".into());
     }
     for (k, v) in [
         ("id", Value::from(uuid())),

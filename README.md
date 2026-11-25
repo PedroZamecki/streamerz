@@ -52,8 +52,9 @@
 - **Compatible.** The same WebSocket, HTTP, UDP and Stream Deck servers, requests, events and import strings as
   Streamer.bot: overlays, tools and your existing actions work without changes.
 - **Everything in one place.** Multi-platform chat, stream info/ads/clips (**Stream**), polls & predictions
-  (**Polls**), live-reloading OBS overlays (**Overlays**), commands, timers, queues, globals, file watchers,
-  donations (StreamElements, Streamlabs, DonorDrive), hotkeys & mouse clicks, and more.
+  (**Polls**), live-preview OBS overlays and alert boxes (**Overlays**), local sound playback, sound board
+  and text to speech with system or optional local neural voices (**Sounds**), commands, timers, queues,
+  globals, file watchers, donations (StreamElements, Streamlabs, DonorDrive), hotkeys & mouse clicks, and more.
 - **Extensible.** Plugins run in a WebAssembly sandbox (see [PLUGINS.md](PLUGINS.md)), `.streamerz`
   packages bundle overlays with their actions and settings, and an MCP server lets an AI assistant build and
   test actions for you.
@@ -84,6 +85,12 @@ It starts hidden in the tray: click the icon to open the window. Settings are ke
 versions: ask first (the default), download them in the background and use them at the next start, or
 leave them alone. Streamerz looks every hour while it's open and tells you with a desktop notification.
 The Flatpak and the packages are updated by the system instead, so they don't look.
+
+The window is drawn by the GPU. When the GPU can't draw it (no driver, an old card, a virtual machine, a
+remote desktop), Streamerz draws it on the processor instead, by itself: Direct3D's WARP on Windows,
+Mesa's llvmpipe or lavapipe on Linux. If your window still stays blank or draws wrong, turn on **Software
+rendering** in the tray menu or in **Settings > Appearance** (or start Streamerz with
+`STREAMERZ_SOFTWARE_RENDER=1`).
 
 ## Where things live
 

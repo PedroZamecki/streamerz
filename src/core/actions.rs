@@ -4,6 +4,7 @@
 //! Row ids: `a:<action id>` and `g:<group name>` in the action tree; a trigger's or sub-action's own
 //! id (`#<index>` or `#<i>.<j>` for the rare one that has none) in the editor.
 
+use crate::automation::requirements::Kind;
 use crate::automation::{catalog as picker, edits, entities, labels, schema};
 use crate::edit::{self, Path};
 use crate::engine::Engine;
@@ -113,7 +114,7 @@ fn group_names(config: &crate::Config) -> Vec<String> {
 
 /// An action's row: what starts it (its first trigger's logo or icon; a dashed circle when nothing
 /// does), its name, how many sub-actions it runs, and on hover what fires it.
-fn action_row(action: &Action, names: &labels::Names) -> Value {
+fn action_row(action: &Action, names: &labels::Names, ready: &super::requirements::Readiness) -> Value {
     let code = |trigger: &Obj| trigger.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
     let first = action
         .triggers
@@ -160,15 +161,19 @@ fn action_row(action: &Action, names: &labels::Names) -> Value {
     if !action.enabled {
         tip.push(tr("actions.tip_disabled").to_owned());
     }
+    if ready.action_has_warnings(action) {
+        row["warn"] = true.into();
+        tip.push(tr("requirements.row_tip").to_owned());
+    }
     row["tip"] = tip.join("\n").into();
     row
 }
 
-fn action_tree(config: &crate::Config) -> Value {
+fn action_tree(config: &crate::Config, ready: &super::requirements::Readiness) -> Value {
     let mut sorted: Vec<&Action> = config.actions.actions.iter().collect();
     sorted.sort_by_key(|action| action.name.to_lowercase());
     let names = labels::names(config);
-    let row = |action: &&Action| action_row(action, &names);
+    let row = |action: &&Action| action_row(action, &names, ready);
     let mut nodes = Vec::new();
     for group in group_names(config) {
         let children = sorted.iter().filter(|action| action.group == group).map(row).collect();
@@ -256,7 +261,7 @@ fn field<'a>(object: &'a Obj, key: &str) -> &'a str {
     object.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn trigger_id(trigger: &Obj, index: usize) -> String {
+pub(super) fn trigger_id(trigger: &Obj, index: usize) -> String {
     let id = field(trigger, "id");
     if id.is_empty() {
         format!("#{index}")
@@ -264,7 +269,7 @@ fn trigger_id(trigger: &Obj, index: usize) -> String {
         id.into()
     }
 }
-fn sub_id(sub: &Obj, path: &[usize]) -> String {
+pub(super) fn sub_id(sub: &Obj, path: &[usize]) -> String {
     let id = field(sub, "id");
     if id.is_empty() {
         format!("#{}", path.iter().map(usize::to_string).collect::<Vec<_>>().join("."))
@@ -309,7 +314,12 @@ fn sub_path(action: &Action, id: &str) -> Option<Path> {
     find_sub(&action.sub_actions, id, &mut path).then_some(path)
 }
 
-fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value> {
+fn sub_nodes(
+    list: &[Obj],
+    path: &mut Path,
+    names: &labels::Names,
+    ready: &super::requirements::Readiness,
+) -> Vec<Value> {
     let mut out = Vec::new();
     for (index, sub) in list.iter().enumerate() {
         path.push(index);
@@ -336,10 +346,11 @@ fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value>
                 labels::sub_icon(code as u32)
             },
             off || unsupported,
-            sub_nodes(&kids, path, names),
+            sub_nodes(&kids, path, names, ready),
         );
         row["italic"] = (99901..=99904).contains(&code).into();
         row["code"] = code.into();
+        mark_warnings(&mut row, &ready.warnings(Kind::SubAction, sub));
         if let Some(logo) = labels::sub_logo(code as u32).filter(|_| !off) {
             row["logo"] = logo.into();
         }
@@ -351,7 +362,19 @@ fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value>
     out
 }
 
-fn editor(config: &crate::Config, action: &Action) -> Value {
+/// A row whose trigger or sub-action isn't ready keeps working as a row; it gets a warning icon and
+/// the reasons on hover.
+fn mark_warnings(row: &mut Value, warnings: &[super::requirements::Warning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    row["warn"] = true.into();
+    let label = row["label"].as_str().unwrap_or_default().to_owned();
+    let reasons = super::requirements::messages(warnings);
+    row["tip"] = format!("{label}\n{}", reasons.join("\n")).into();
+}
+
+fn editor(config: &crate::Config, action: &Action, ready: &super::requirements::Readiness) -> Value {
     let names = labels::names(config);
     let mut flags = Vec::new();
     for (on, what) in [
@@ -386,6 +409,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
                 Vec::new(),
             );
             row["code"] = code.into();
+            mark_warnings(&mut row, &ready.warnings(Kind::Trigger, trigger));
             if let Some(logo) = labels::trigger_logo(code) {
                 row["logo"] = logo.into();
             }
@@ -394,7 +418,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
             row
         })
         .collect();
-    let subs = sub_nodes(&action.sub_actions, &mut Vec::new(), &names);
+    let subs = sub_nodes(&action.sub_actions, &mut Vec::new(), &names, ready);
     let trigger_buttons = vec![
         picker_for(
             form(button("add", "btn.add", "plus", &[]), "act:trigger_add"),
@@ -417,6 +441,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
         op(button("undo", "btn.undo", "rotate-ccw", &[]), "undo"),
         op(button("redo", "btn.redo", "rotate-cw", &[]), "redo"),
         op(button("help", "btn.help", "circle-help", &["sub"]), "sub_help"),
+        op(button("test", "btn.test", "play", &["sub"]), "sub_test"),
         menu_only(op(button("up", "actions.move_up", "arrow-up", &["sub"]), "sub_up")),
         menu_only(op(
             button("down", "actions.move_down", "arrow-down", &["sub"]),
@@ -459,12 +484,13 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         text(request, "actionId")
     });
     let open = config_action(&config, open);
+    let ready = super::requirements::Readiness::capture(engine);
     Ok(json!({"domain": "actions", "actions": {
-        "tree": action_tree(&config),
+        "tree": action_tree(&config, &ready),
         "empty": tr("actions.pick_to_edit"),
         "detail": {"title": tr("actions.details"), "text": tr("actions.details_empty")},
         "editor": open.map(|action| {
-            let mut model = editor(&config, action);
+            let mut model = editor(&config, action, &ready);
             if let Some(run) = engine.history().iter().rev().find(|record|
                 record.action_id == action.id && record.args.get("isTest") == Some(&Value::Bool(true))) {
                 let key = match run.outcome.status() {
@@ -481,7 +507,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }),
         // Nothing open: the same panes, empty.
         "idle": open.is_none().then(|| {
-            let mut idle = editor(&config, &Action::default());
+            let mut idle = editor(&config, &Action::default(), &ready);
             idle["title"] = tr("actions.pick_to_edit").into();
             idle["idle"] = true.into();
             idle
@@ -499,6 +525,8 @@ struct Entry {
     icon: &'static str,
     /// What it gives the action (a trigger's arguments), for the description.
     values: Option<String>,
+    /// Why it can't run now, and what to do.
+    unready: Option<String>,
 }
 
 fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
@@ -523,6 +551,10 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
                 folder
             })
             .collect();
+        // What works everywhere comes before each place's own.
+        if path.is_empty() {
+            out.sort_by_key(|folder| folder["label"] != "Every Platform");
+        }
         let mut items = level.items;
         items.sort_by_key(|item| item["label"].as_str().unwrap_or_default().to_lowercase());
         out.extend(items);
@@ -543,7 +575,8 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
         let mut row = node(entry.id, "item", entry.title.clone(), entry.icon, false, Vec::new());
         row["detail"] = json!({"title": entry.title, "text": entry.description, "path": path.join(" > "),
             "icon": entry.icon, "logo": crate::automation::pick_icons::logo_of_category(&entry.category),
-            "values": entry.values});
+            "values": entry.values, "unready": entry.unready,
+            "keywords": crate::automation::catalog::keywords(&entry.title)});
         level.items.push(row);
     }
     fold(root, "")
@@ -573,6 +606,7 @@ fn plugin_entries(engine: &Rc<Engine>, trigger: bool) -> Vec<Entry> {
                 description: about,
                 icon: "puzzle",
                 values: None,
+                unready: None,
             });
         }
     }
@@ -587,6 +621,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .map(|item| Entry {
                     icon: labels::trigger_icon(item.id as u32),
                     values: trigger_values(item.id as u32),
+                    unready: None,
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -601,7 +636,8 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .into_iter()
                 .map(|item| Entry {
                     icon: labels::sub_icon(item.id as u32),
-                    values: None,
+                    values: sub_values(item.id as u32),
+                    unready: unready(&engine.config(), item.id as u32),
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -630,6 +666,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                     },
                     icon: "layout-template",
                     values: None,
+                    unready: None,
                 })
                 .collect(),
         ),
@@ -869,6 +906,14 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
                 .map(|name| (name.clone(), name))
                 .collect(),
         ),
+        W::Overlay => {
+            let mut names: Vec<String> = crate::overlays::list(config)
+                .into_iter()
+                .map(|(group, _)| group)
+                .collect();
+            names.dedup();
+            typed(names.into_iter().map(|name| (name.clone(), name)).collect())
+        }
         W::CommandGroup => {
             let mut names: Vec<String> = config
                 .commands
@@ -881,8 +926,31 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
             names.dedup();
             typed(names.into_iter().map(|name| (name.clone(), name)).collect())
         }
-        W::Suggest(key) | W::Entity(key) => typed(crate::catalog::choices(key)),
+        W::Suggest(key) | W::Entity(key) => {
+            // The sound outputs are asked for when a form wants them (nothing listens for them before).
+            if *key == "sound.devices" {
+                crate::catalog::set("sound.devices", crate::sound::outputs());
+            }
+            if *key == "voices" {
+                let voices = crate::voice::voices_with(&config.voices).unwrap_or_default();
+                crate::catalog::set("voices", voices.into_iter().map(|v| (v.id, v.name)).collect());
+            }
+            typed(crate::catalog::choices(key))
+        }
         W::Expression(values) => typed(values.iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect()),
+        W::Who => typed(vec![
+            ("%userName%".into(), tr("tools.who_sender").into()),
+            ("%input0%".into(), tr("tools.who_command").into()),
+        ]),
+        W::Message(from) => typed(vec![(
+            (*from).to_owned(),
+            tr(if matches!(*from, "%msgId%" | "%messageId%") {
+                "tools.message_trigger"
+            } else {
+                "tools.from_trigger"
+            })
+            .into(),
+        )]),
         _ => None,
     }
 }
@@ -922,10 +990,39 @@ fn form_fields(config: &crate::Config, fields: &[F], item: &Obj) -> Vec<Value> {
             let mut value = json!({"key": key, "label": label, "widget": widget, "holds": widget.about(),
                 "value": edits::shown(widget, item.get(*key))});
             if let Some(placeholder) = placeholder {
+                // A box of check boxes has no empty box to show what blank means: it goes in the tip.
+                if matches!(widget, W::Checks(_)) {
+                    let mut chars = placeholder.chars();
+                    let meaning: String = chars
+                        .next()
+                        .map(|c| c.to_lowercase().collect::<String>())
+                        .unwrap_or_default()
+                        + chars.as_str();
+                    value["tip"] = trf("forms.checks_blank", &[("meaning", &meaning)]).into();
+                }
                 value["placeholder"] = placeholder.into();
             }
             if let W::Pick(options) = widget {
                 value["widget"]["options"] = json!(options.iter().map(|option| shown(option)).collect::<Vec<_>>());
+            }
+            // Check boxes, platforms with their logos; Who and Which message also take typed text.
+            match widget {
+                W::Checks(options) => {
+                    let options: Vec<Value> = options
+                        .iter()
+                        .map(|id| match crate::engine::PLATFORMS.contains(id) {
+                            true => json!({"id": id, "label": platform_name(id), "brand": id}),
+                            false => json!({"id": id, "label": schema::check_label(id)}),
+                        })
+                        .collect();
+                    value["widget"] = json!({"kind": "checks", "options": options});
+                }
+                W::Color => value["widget"] = json!({"kind": "color"}),
+                W::Who | W::Message(_) => {
+                    value["widget"] = json!({"kind": "text"});
+                    value["other"] = true.into();
+                }
+                _ => {}
             }
             if key.is_empty() {
                 value["hidden"] = true.into();
@@ -1025,6 +1122,60 @@ fn trigger_values(code: u32) -> Option<String> {
     })
 }
 
+/// Why a sub-action can't run now, and what to do: its platform's login is missing, or it needs more
+/// of Twitch than the login gave. None when nothing stops it (or it can't be told).
+fn unready(config: &crate::Config, code: u32) -> Option<String> {
+    let category = crate::types::SUB_ACTION_INFO
+        .binary_search_by_key(&code, |x| x.0)
+        .map_or("", |i| crate::types::SUB_ACTION_INFO[i].2);
+    let (platform, logged_in) = match category.split('/').next().unwrap_or_default() {
+        "Twitch" => ("Twitch", config.twitch.broadcaster.is_some()),
+        "Kick" => ("Kick", config.kick.broadcaster.is_some()),
+        "YouTube" => ("YouTube", config.youtube.broadcaster.is_some()),
+        _ => return None,
+    };
+    if !logged_in {
+        return Some(trf("tools.needs_login", &[("platform", platform)]));
+    }
+    let scope = crate::engine::twitch_extra_scope(u64::from(code))?;
+    let granted = config
+        .twitch
+        .broadcaster
+        .as_ref()
+        .is_some_and(|a| a.token.scope.iter().any(|s| s == scope));
+    (!granted).then(|| tr("tools.needs_more").to_owned())
+}
+
+/// `Values it adds: %x%, %y%`: what a sub-action puts in the arguments, from the reference.
+fn sub_values(code: u32) -> Option<String> {
+    let values = crate::docs::arguments("subaction", code);
+    (!values.is_empty()).then(|| {
+        let list: Vec<String> = values.iter().map(|value| format!("%{value}%")).collect();
+        trf("actions.sub_values", &[("list", &list.join(", "))])
+    })
+}
+
+/// The kinds of the sub-actions that run before the one with `id` (branches included, in order).
+fn kinds_before(subs: &[Obj], id: &str, out: &mut Vec<u32>) -> bool {
+    for sub in subs {
+        if sub.get("id").and_then(Value::as_str) == Some(id) {
+            return true;
+        }
+        out.push(edit::kind(sub) as u32);
+        let inner: Vec<Obj> = sub
+            .get("subActions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_object().cloned())
+            .collect();
+        if kinds_before(&inner, id, out) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The fields a trigger or sub-action of this kind is edited with (None: JSON only).
 fn automation_fields(engine: &Rc<Engine>, trigger: bool, item: &Obj) -> Option<&'static [F]> {
     let code = edit::kind(item);
@@ -1077,6 +1228,11 @@ fn automation_form(
         out["okLabel"] = tr("btn.add").into();
     }
     let mut notes = Vec::new();
+    let warnings = super::requirements::Readiness::capture(engine)
+        .warnings(if trigger { Kind::Trigger } else { Kind::SubAction }, &item);
+    if !warnings.is_empty() {
+        out["warnings"] = json!(super::requirements::messages(&warnings));
+    }
     // A gift is picked by its picture, name and price; the list loads as the form opens when it isn't here.
     if trigger && edit::kind(&item) as u32 == crate::tiktok::T_TIKTOK_GIFT {
         if let Some(field) = out["fields"]
@@ -1101,9 +1257,20 @@ fn automation_form(
                 "auto": crate::tiktok::gifts::wants_loading()});
         }
     }
-    // What the trigger gives the action, so an event with no settings still says something useful.
-    if let Some(values) = trigger.then(|| trigger_values(edit::kind(&item) as u32)).flatten() {
+    // What the trigger gives the action, or the sub-action adds, so one with no settings still says
+    // something useful.
+    let kind = edit::kind(&item) as u32;
+    if let Some(values) = if trigger {
+        trigger_values(kind)
+    } else {
+        sub_values(kind)
+    } {
         notes.push(values);
+    }
+    if let Some(why) = (!trigger).then(|| unready(config, kind)).flatten() {
+        notes.insert(0, why);
+        // A login or a permission is fixed in Accounts: the form takes the user there.
+        out["fix"] = json!({"label": tr("actions.fix_in_accounts"), "go": "Accounts", "icon": "user"});
     }
     if !trigger {
         if let Some(action) = parts.get(2).and_then(|id| config_action(config, id)) {
@@ -1120,11 +1287,33 @@ fn automation_form(
                     }
                 }
             }
+            // And what the sub-actions before this one added.
+            let mut before = Vec::new();
+            let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+            if kinds_before(&action.sub_actions, id, &mut before) {
+                for code in before {
+                    for name in crate::docs::arguments("subaction", code) {
+                        if !available.contains(&name) {
+                            available.push(name);
+                        }
+                    }
+                }
+            }
             out["variables"] = json!(available);
         }
     }
     if !notes.is_empty() {
         out["notes"] = json!(notes);
+    }
+    // Each field says what it holds, as its reference does.
+    let doc = if trigger { "trigger" } else { "subaction" };
+    for field in out["fields"].as_array_mut().into_iter().flatten() {
+        if field.get("tip").is_none() {
+            let key = field["key"].as_str().unwrap_or_default();
+            if let Some(tip) = crate::docs::field_tip(doc, kind, key) {
+                field["tip"] = tip.into();
+            }
+        }
     }
     if fields.is_none() {
         out["jsonOnly"] = true.into();
@@ -1394,13 +1583,8 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             let item = edit::get(&action.sub_actions, &path).cloned().ok_or_else(item_gone)?;
             let code = edit::kind(&item);
             let title = labels::sub_title(code);
-            let hint = match SUB_ACTION_INFO.binary_search_by_key(&(code as u32), |x| x.0) {
-                Ok(i) => trf(
-                    "actions.subaction_fields_hint",
-                    &[("title", &title), ("fields", &SUB_ACTION_INFO[i].3.join(", "))],
-                ),
-                Err(_) => title.clone(),
-            };
+            // What it does, as its reference says it (the fields are right below, by name).
+            let hint = crate::docs::summary("subaction", code as u32).map_or_else(|| title.clone(), str::to_string);
             Ok(automation_form(engine, &config, &parts, false, item, title, hint))
         }
         other => Err(format!("no form {other}")),
@@ -1686,13 +1870,20 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
 // Group settings: the description and the values by form, the definitions, files and members as JSON.
 
 pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value {
+    group_settings_form_with(config, group, &Obj::new())
+}
+
+/// The settings form with some values shown in place of the saved ones (an overlay's draft).
+pub(super) fn group_settings_form_with(config: &crate::Config, group: &str, over: &Obj) -> Value {
     let (meta, mut warnings) = crate::groups::inspect_meta(config, group);
-    let values = crate::groups::values(config, group);
+    let mut values = crate::groups::values(config, group);
+    values.extend(over.clone());
     let stored = config.action_group_variables.get(group).and_then(Value::as_object);
     let mut meta_issue_noted = false;
     let mut fields = vec![json!({"key": "description", "label": tr("dialogs.export.description"),
         "widget": {"kind": "multi"}, "holds": "text", "value": meta.description})];
-    for def in &meta.variables {
+    let defs = crate::groups::settings_defs(&meta);
+    for def in &defs {
         let label = if def.label.trim().is_empty() {
             def.name.clone()
         } else {
@@ -1707,7 +1898,9 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
             }
         }
         let value = values.get(&def.name).cloned().unwrap_or(Value::Null);
+        let newer = super::setting_fields::field(config, group, &meta, def, &label, &value);
         let mut field = match def.kind {
+            _ if newer.is_some() => newer.unwrap_or_default(),
             crate::groups::Kind::Boolean => json!({"key": def.name, "label": label, "widget": {"kind": "bool"},
                 "holds": "true/false", "value": value.as_bool().unwrap_or(false)}),
             crate::groups::Kind::Choice => {
@@ -1762,11 +1955,38 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
                     .filter(|f| !crate::groups::is_page(&f.name) && crate::groups::accepts_file(&def.accept, &f.name))
                     .map(|f| json!({"id": f.name, "label": f.name}))
                     .collect();
-                json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "other": true,
+                // A picture of each of its pictures, shown under the list for the one picked, and Play
+                // for its sounds.
+                let pictures: serde_json::Map<String, Value> = meta
+                    .files
+                    .iter()
+                    .filter(|f| crate::groups::accepts_file("image", &f.name))
+                    .filter_map(|f| {
+                        let path = crate::groups::file_path(config, group, &f.name)?;
+                        Some((f.name.clone(), path.display().to_string().into()))
+                    })
+                    .collect();
+                let sounds: Vec<&str> = meta
+                    .files
+                    .iter()
+                    .filter(|f| crate::groups::accepts_file("sound", &f.name))
+                    .map(|f| f.name.as_str())
+                    .collect();
+                let mut field = json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "other": true,
                     "browse": if def.accept == "image" { "image" } else { "file" },
                     "placeholder": tr("forms.file.placeholder"),
                     "holds": "the name of one of its files, the path of a file to bring in, or a web address",
-                    "value": current})
+                    "value": current});
+                if !pictures.is_empty() {
+                    field["pictures"] = pictures.into();
+                }
+                if !sounds.is_empty() {
+                    field["sounds"] = json!(sounds);
+                    field["play"] = json!({"request": {"request": "StreamerzCoreAction", "domain": "overlays",
+                        "table": "overlay", "action": format!("sound:{}", def.name), "itemId": group,
+                        "id": "overlay:press"}});
+                }
+                field
             }
             crate::groups::Kind::Platforms => {
                 let options: Vec<Value> = crate::groups::PLATFORMS
@@ -1831,12 +2051,11 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
         // Shown only while another field has a value: that field's place in the form, and the value
         // as its control holds it (a choice by its place in the list).
         if let Some(when) = &def.show_if {
-            if let Some(at) = meta
-                .variables
+            if let Some(at) = defs
                 .iter()
                 .position(|other| other.name == when.setting && other.name != def.name)
             {
-                let other = &meta.variables[at];
+                let other = &defs[at];
                 if other.kind == crate::groups::Kind::Choice
                     && !other.options.iter().any(|o| when.is.as_str() == Some(o.as_str()))
                 {
@@ -1903,7 +2122,7 @@ fn platform_name(platform: &str) -> &'static str {
 
 /// A file of this computer picked for a `file` setting, as a file of the group: its name made
 /// portable, with a number when one of that name is there already.
-fn bring_in(
+pub(super) fn bring_in(
     meta: &crate::groups::Meta,
     def: &crate::groups::Def,
     path: &str,
@@ -1960,6 +2179,118 @@ fn bring_in(
     Ok((file, name))
 }
 
+/// The setting values a settings form's `changes` give (field 0, the description, goes into `meta`).
+/// For a draft, a file of this computer isn't brought in (that waits for Save), and a value half
+/// typed is left out. `old` is what the settings hold now (a reward keeps its title from it).
+pub(super) fn settings_changes_from(
+    meta: &mut crate::groups::Meta,
+    request: &Value,
+    draft: bool,
+    old: &Obj,
+) -> Result<Obj, String> {
+    let defs = crate::groups::settings_defs(meta);
+    let mut values = Obj::new();
+    for change in request["changes"].as_array().ok_or("changes: an array")? {
+        let index = change["field"]
+            .as_u64()
+            .ok_or_else(|| tr("forms.invalid_field").to_owned())? as usize;
+        let value = &change["value"];
+        if index == 0 {
+            meta.description = value
+                .as_str()
+                .ok_or_else(|| tr("forms.invalid_field").to_owned())?
+                .to_owned();
+            continue;
+        }
+        let def = defs
+            .get(index - 1)
+            .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
+        // A file of this computer is brought in (not for a draft: that waits for Save).
+        let mut brought = Vec::new();
+        let mut bring = |typed: &str| -> Result<String, String> {
+            let own = meta.files.iter().any(|f| f.name == typed);
+            if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
+                Ok(typed.to_owned())
+            } else if draft {
+                Err(String::new())
+            } else {
+                let (file, name) = bring_in(meta, def, typed)?;
+                brought.push(file);
+                Ok(name)
+            }
+        };
+        let old_value = old.get(&def.name).cloned().unwrap_or(Value::Null);
+        match super::setting_fields::read(def, value, &old_value, &mut bring) {
+            Some(Ok(v)) => {
+                meta.files.append(&mut brought);
+                values.insert(def.name.clone(), v);
+                continue;
+            }
+            // Half typed while the preview follows: kept for when it reads.
+            Some(Err(_)) if draft => continue,
+            Some(Err(error)) => return Err(error),
+            None => {}
+        }
+        let parsed = match def.kind {
+            crate::groups::Kind::Boolean => value.as_bool().map(Value::from),
+            crate::groups::Kind::Choice => value
+                .as_u64()
+                .and_then(|at| def.options.get(at as usize))
+                .map(|option| Value::from(option.clone())),
+            // Dragged, so a step off the ends or between two steps is put back in place.
+            crate::groups::Kind::Slider => value.as_f64().map(|n| {
+                let (min, max, step) = def.range();
+                let n = (((n - min) / step).round() * step + min).clamp(min, max);
+                crate::groups::Kind::Number
+                    .parse(&format!("{n:.6}"))
+                    .unwrap_or(json!(n))
+            }),
+            crate::groups::Kind::Platforms => Some(value.clone()).filter(|v| def.accepts(v)),
+            // A file of this computer is brought into the overlay; one of its own, or a web
+            // address, is taken as it is.
+            crate::groups::Kind::File => {
+                let typed = value
+                    .as_str()
+                    .ok_or_else(|| tr("forms.invalid_field").to_owned())?
+                    .trim()
+                    .trim_matches('"');
+                let own = meta.files.iter().any(|f| f.name == typed);
+                if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
+                    Some(json!(typed))
+                } else if draft {
+                    continue;
+                } else {
+                    let (file, name) = bring_in(meta, def, typed)?;
+                    meta.files.push(file);
+                    Some(json!(name))
+                }
+            }
+            // What is wrong in a row is said with its line.
+            crate::groups::Kind::List => Some(
+                def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
+                    .map_err(|error| format!("{}: {error}", def.label))?,
+            ),
+            _ => match value.as_str().map(|text| def.parse(text)) {
+                Some(Ok(v)) => Some(v),
+                Some(Err(_)) if draft => continue,
+                Some(Err(error)) => {
+                    return Err(trf(
+                        "forms.setting_invalid",
+                        &[("label", &def.label), ("error", &error)],
+                    ))
+                }
+                None => None,
+            },
+        };
+        let (name, label) = (def.name.clone(), def.label.clone());
+        values.insert(
+            name,
+            parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &label)]))?,
+        );
+    }
+    Ok(values)
+}
+
 pub(super) fn group_settings_edit(
     engine: &Rc<Engine>,
     group: &str,
@@ -1976,67 +2307,8 @@ pub(super) fn group_settings_edit(
         meta = serde_json::from_str(text)
             .map_err(|error| trf("dialogs.not_valid_json", &[("error", &error.to_string())]))?;
     } else {
-        for change in request["changes"].as_array().ok_or("changes: an array")? {
-            let index = change["field"]
-                .as_u64()
-                .ok_or_else(|| tr("forms.invalid_field").to_owned())? as usize;
-            let value = &change["value"];
-            if index == 0 {
-                meta.description = value
-                    .as_str()
-                    .ok_or_else(|| tr("forms.invalid_field").to_owned())?
-                    .to_owned();
-                continue;
-            }
-            let def = meta
-                .variables
-                .get(index - 1)
-                .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
-            let parsed = match def.kind {
-                crate::groups::Kind::Boolean => value.as_bool().map(Value::from),
-                crate::groups::Kind::Choice => value
-                    .as_u64()
-                    .and_then(|at| def.options.get(at as usize))
-                    .map(|option| Value::from(option.clone())),
-                // Dragged, so a step off the ends or between two steps is put back in place.
-                crate::groups::Kind::Slider => value.as_f64().map(|n| {
-                    let (min, max, step) = def.range();
-                    let n = (((n - min) / step).round() * step + min).clamp(min, max);
-                    crate::groups::Kind::Number
-                        .parse(&format!("{n:.6}"))
-                        .unwrap_or(json!(n))
-                }),
-                crate::groups::Kind::Platforms => Some(value.clone()).filter(|v| def.accepts(v)),
-                // A file of this computer is brought into the overlay; one of its own, or a web
-                // address, is taken as it is.
-                crate::groups::Kind::File => {
-                    let typed = value
-                        .as_str()
-                        .ok_or_else(|| tr("forms.invalid_field").to_owned())?
-                        .trim()
-                        .trim_matches('"');
-                    let own = meta.files.iter().any(|f| f.name == typed);
-                    if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
-                        Some(json!(typed))
-                    } else {
-                        let (file, name) = bring_in(&meta, def, typed)?;
-                        meta.files.push(file);
-                        Some(json!(name))
-                    }
-                }
-                // What is wrong in a row is said with its line.
-                crate::groups::Kind::List => Some(
-                    def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
-                        .map_err(|error| format!("{}: {error}", def.label))?,
-                ),
-                _ => value.as_str().and_then(|text| def.parse(text).ok()),
-            };
-            let (name, label) = (def.name.clone(), def.label.clone());
-            values.insert(
-                name,
-                parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &label)]))?,
-            );
-        }
+        let old = crate::groups::values(&config, group);
+        values = settings_changes_from(&mut meta, request, false, &old)?;
     }
     drop(config);
     if preview {
@@ -2241,6 +2513,81 @@ fn step(action: &mut Action, id: &str, how: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a sub-action only reads (a Get, a check): its test runs without asking.
+fn only_reads(kind: u64) -> bool {
+    let title = labels::sub_title(kind);
+    [
+        "Get ",
+        "Is ",
+        "Read ",
+        "User in Group",
+        "Add Random Users",
+        "Add Present User",
+        "Add Broadcaster",
+        "Add Target",
+        "Add Follow Age",
+        "Add Team",
+        "Add Viewer Count",
+        "File Exists",
+        "Folder Exists",
+        "Comment",
+        "Log",
+    ]
+    .iter()
+    .any(|start| title.starts_with(start))
+        || matches!(kind, 120 | 121 | 123 | 127 | 1003 | 1009 | 1020)
+}
+
+/// Runs one sub-action by itself, with the values of the action's last run (or a test's), after asking
+/// when it changes something, and says what happened and what it added.
+fn test_sub(engine: &Rc<Engine>, action_id: &str, sub: Obj, label: String, group: String) {
+    let kind = edit::kind(&sub);
+    let mut args = engine
+        .history()
+        .iter()
+        .rev()
+        .find(|record| record.action_id == action_id)
+        .map(|record| record.args.clone())
+        .unwrap_or_default();
+    args.insert("isTest".into(), true.into());
+    let engine = engine.clone();
+    tokio::task::spawn_local(async move {
+        if !only_reads(kind) {
+            let ask = crate::host::confirm(
+                trf("actions.test_sub_confirm", &[("what", &label)]),
+                tr("dialogs.cancel"),
+                tr("btn.test"),
+            );
+            if !ask.await.unwrap_or(false) {
+                return;
+            }
+        }
+        let before = args.clone();
+        let (after, outcome) = engine.execute_with(kind, sub, args, group).await;
+        let mut lines = vec![match outcome.error.as_deref() {
+            Some(error) => trf("actions.test_sub_failed", &[("error", error)]),
+            None if outcome.skipped > 0 => tr("actions.test_sub_skipped").to_owned(),
+            None => match outcome.warning.as_deref() {
+                Some(warning) => trf("actions.test_sub_warned", &[("warning", warning)]),
+                None => tr("actions.test_sub_done").to_owned(),
+            },
+        }];
+        let added: Vec<String> = after
+            .iter()
+            .filter(|(name, value)| before.get(*name) != Some(*value) && !name.starts_with("__"))
+            .map(|(name, value)| format!("%{name}%: {}", crate::vars::text(value)))
+            .collect();
+        if added.is_empty() {
+            lines.push(tr("actions.test_sub_nothing").to_owned());
+        } else {
+            lines.push(tr("actions.test_sub_values").to_owned());
+            lines.extend(added);
+        }
+        super::prompts::notice(label, lines.join("\n"));
+        crate::host::prompts_changed();
+    });
+}
+
 fn help(kind: &str, code: u32, fallback: String) -> Result<Value, String> {
     if let Some(doc) = crate::docs::help(kind, code) {
         let meta = doc
@@ -2365,6 +2712,18 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 .map(edit::kind)
                 .ok_or_else(item_gone)?;
             help("subaction", code as u32, String::new())
+        }
+        "sub_test" => {
+            let config = engine.config();
+            let action = config_action(&config, &action_id).ok_or_else(item_gone)?;
+            let path = sub_path(action, item).ok_or_else(item_gone)?;
+            let sub = edit::get(&action.sub_actions, &path).cloned().ok_or_else(item_gone)?;
+            let label = labels::sub_label(&sub, &labels::names(&config));
+            let group = action.group.clone();
+            let id = action.id.clone();
+            drop(config);
+            test_sub(engine, &id, sub, label, group);
+            accepted()
         }
         "sub_toggle" => {
             edit_action(engine, &action_id, |action| {
@@ -3296,6 +3655,69 @@ mod tests {
             assert_eq!(cleared["status"], "ok", "{cleared}");
             assert!(engine.config().actions.actions[0].triggers[0].get("giftName").is_none());
         });
+    }
+
+    /// The picker lists the every-platform group before each platform's own.
+    #[test]
+    fn the_picker_puts_every_platform_first() {
+        let entry = |category: &str| Entry {
+            id: category.into(),
+            title: "X".into(),
+            category: category.into(),
+            description: String::new(),
+            icon: "zap",
+            values: None,
+            unready: None,
+        };
+        let tree = tree_of(vec![
+            entry("Core/Moderation"),
+            entry("Every Platform/Chat"),
+            entry("Twitch/Chat"),
+        ]);
+        let labels: Vec<_> = tree.iter().map(|node| node["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["Every Platform", "Core", "Twitch"]);
+    }
+
+    /// A sub-action's form says what it does (its reference, not its field names), each field says
+    /// what it holds, and one that can't run without a login takes the user to Accounts.
+    #[test]
+    fn a_sub_action_form_explains_itself_and_offers_the_fix() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let engine = crate::engine::tests::engine(json!({"actions": [{"id": "a1", "name": "A", "triggers": [],
+            "subActions": [{"id": "s1", "type": 581, "messageId": "%msgId%", "index": 0, "enabled": true}]}]}));
+        let form = ask(
+            &engine,
+            json!({"request": "StreamerzEntityForm", "kind": "act:sub_edit", "actionId": "a1", "itemId": "s1"}),
+        );
+        assert_eq!(form["status"], "ok", "{form}");
+        let hint = form["hint"].as_str().unwrap();
+        assert_eq!(Some(hint), crate::docs::summary("subaction", 581));
+        assert!(!hint.contains("messageId"), "{hint}");
+        let message = &form["fields"][field(&form, "messageId")];
+        assert_eq!(
+            message["tip"].as_str(),
+            crate::docs::field_tip("subaction", 581, "messageId")
+        );
+        assert_eq!(form["fix"]["go"], "Accounts", "{form}");
+    }
+
+    #[test]
+    fn an_empty_platform_list_says_what_it_means_in_its_tip() {
+        let engine = crate::engine::tests::engine(json!({"actions": []}));
+        let item = crate::edit::new_sub(99726);
+        let fields = form_fields(
+            &engine.config(),
+            crate::automation::schema::sub_fields(99726).unwrap(),
+            &item,
+        );
+        let platforms = fields.iter().find(|f| f["key"] == "platforms").unwrap();
+        assert_eq!(platforms["label"], "Platforms");
+        assert_eq!(platforms["tip"], "Nothing ticked: the one it came from.");
+        assert_eq!(platforms["widget"]["kind"], "checks");
+        assert_eq!(
+            platforms["widget"]["options"][0],
+            json!({"id": "twitch", "label": "Twitch", "brand": "twitch"})
+        );
     }
 
     #[test]

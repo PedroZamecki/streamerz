@@ -1,0 +1,288 @@
+[
+  {
+    "name": "Play Sound waits for its end, gives its length and fires Sound Started and Sound Ended",
+    "files": {
+      "beep.wav": "UklGRtQEAABXQVZFZm10IBAAAAABAAEAoA8AAKAPAAABAAgAZGF0YbAEAACAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVmAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6pn9ZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZgKa6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmgFlFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVk="
+    },
+    "actions": [
+      {
+        "name": "play",
+        "subActions": [
+          {
+            "type": 1,
+            "soundFile": "{tmp}/beep.wav",
+            "soundName": "beep",
+            "volume": 50,
+            "finishBeforeContinuing": true
+          },
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "after %soundLengthMs% %soundLength%"
+          }
+        ]
+      },
+      {
+        "name": "started",
+        "triggers": [
+          {
+            "type": 99300
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "started %soundName% %soundLengthMs%"
+          }
+        ]
+      },
+      {
+        "name": "ended",
+        "triggers": [
+          {
+            "type": 99301
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "ended %soundName% %reason%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "play"
+      },
+      {
+        "wait": 800
+      }
+    ],
+    "expect": {
+      "log": [
+        "started beep 300",
+        "after 300 0.3",
+        "ended beep finished"
+      ]
+    }
+  },
+  {
+    "name": "Play Sound From Folder picks a sound of the folder; Get Sound Info reads one without playing it",
+    "files": {
+      "one.wav": "UklGRtQEAABXQVZFZm10IBAAAAABAAEAoA8AAKAPAAABAAgAZGF0YbAEAACAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVmAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6pn9ZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZgKa6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmgFlFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVk=",
+      "notes.txt": "bm90IGEgc291bmQ="
+    },
+    "actions": [
+      {
+        "name": "pick",
+        "subActions": [
+          {
+            "type": 7,
+            "folder": "{tmp}",
+            "finishBeforeContinuing": false,
+            "useFileNameAsName": true,
+            "volume": 10
+          },
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "picked %randomSoundFileName% as one"
+          },
+          {
+            "type": 99304,
+            "soundFile": "{tmp}/one.wav"
+          },
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "info %soundLengthMs% %soundChannels% %soundRate% %soundFormat%"
+          },
+          {
+            "type": 30001
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "pick"
+      },
+      {
+        "wait": 300
+      }
+    ],
+    "expect": {
+      "log": [
+        "picked one.wav as one",
+        "info 300 1 4000 wav"
+      ]
+    }
+  },
+  {
+    "name": "sounds are turned down, paused, resumed and stopped by name",
+    "files": {
+      "beep.wav": "UklGRtQEAABXQVZFZm10IBAAAAABAAEAoA8AAKAPAAABAAgAZGF0YbAEAACAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVl/prq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6poBZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZf6a6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqaAWUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWX+murSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmf1lFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVmAprq0lm1NRFZ8o7q2mXFPRFR4oLm3nHRRRFF0nLe5oHhURE9xmba6o3xWRE1tlrS6pn9ZRUtpkrK7qYNcRUlmjrC7q4dfRkhji668rotjSEZfh6u7sI5mSUVcg6m7spJpS0VZgKa6tJZtTURWfKO6tplxT0RUeKC5t5x0UURRdJy3uaB4VERPcZm2uqN8VkRNbZa0uqZ/WUVLaZKyu6mDXEVJZo6wu6uHX0ZIY4uuvK6LY0hGX4eru7COZklFXIOpu7KSaUtFWYCmurSWbU1EVnyjuraZcU9EVHigubecdFFEUXSct7mgeFRET3GZtrqjfFZETW2WtLqmgFlFS2mSsrupg1xFSWaOsLurh19GSGOLrryui2NIRl+Hq7uwjmZJRVyDqbuykmlLRVk="
+    },
+    "actions": [
+      {
+        "name": "play",
+        "subActions": [
+          {
+            "type": 1,
+            "soundFile": "{tmp}/beep.wav",
+            "soundName": "music",
+            "finishBeforeContinuing": false
+          },
+          {
+            "type": 99300,
+            "soundName": "music",
+            "volume": 20,
+            "fadeMs": 50
+          },
+          {
+            "type": 99303,
+            "volume": 80
+          },
+          {
+            "type": 99301,
+            "soundName": "music"
+          },
+          {
+            "type": 1002,
+            "value": 400
+          },
+          {
+            "type": 99302,
+            "soundName": ""
+          },
+          {
+            "type": 30002,
+            "soundName": "MUSIC"
+          },
+          {
+            "type": 99303,
+            "volume": 100
+          }
+        ]
+      },
+      {
+        "name": "ended",
+        "triggers": [
+          {
+            "type": 99301
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 1,
+            "message": "ended %soundName% %reason%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "play"
+      },
+      {
+        "wait": 800
+      }
+    ],
+    "expect": {
+      "log": [
+        "ended music stopped"
+      ],
+      "notLog": [
+        "ended music finished"
+      ]
+    }
+  },
+  {
+    "name": "sounds: Set Sound Device chooses Default, an overlay plays a sound on its pages, a device that came runs its trigger",
+    "config": {
+      "action_groups": {
+        "Board": {
+          "files": [
+            {
+              "name": "ding.wav"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "setup",
+        "subActions": [
+          {
+            "type": 99306,
+            "device": "Headphones"
+          },
+          {
+            "type": 99305,
+            "overlay": "Board",
+            "soundFile": "ding.wav",
+            "volume": 50,
+            "soundName": "ding"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "pages %overlayPages%"
+          },
+          {
+            "type": 99305,
+            "overlay": "Board",
+            "soundFile": "nothing.wav"
+          }
+        ]
+      },
+      {
+        "name": "came",
+        "triggers": [
+          {
+            "type": 99302,
+            "device": "usb"
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "device %deviceName% %available%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "setup"
+      },
+      {
+        "fire": 99302,
+        "args": {
+          "device": "usb",
+          "deviceName": "USB Audio",
+          "available": true
+        },
+        "ran": 1
+      }
+    ],
+    "expect": {
+      "config": {
+        "sounds": {
+          "device": "Headphones"
+        }
+      },
+      "log": [
+        "pages 0",
+        "Play Sound In Overlay: nothing.wav is not one of Board's files",
+        "device USB Audio True"
+      ]
+    }
+  }
+]

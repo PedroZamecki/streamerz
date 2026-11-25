@@ -240,7 +240,7 @@ def main():
                     close = strings["dialogs.close"]
                     return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                 def layout_pass():
-                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Sounds", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                         if args.page and page.casefold() != args.page.casefold():
                             continue
                         for width, height in ((1100, 800), (540, 700)):
@@ -270,6 +270,32 @@ def main():
                                 marks = {entry["label"]: entry for label in ("Default", "Pending") for entry in json.loads(ui("bounds " + label)) if entry.get("label") == label}
                                 assert {"Default", "Pending"} <= marks.keys(), marks
                                 assert marks["Pending"]["y"] - marks["Default"]["y"] < 200, f"blank room between the Queues sections: {marks}"
+                            if page == "Sounds":
+                                # Check Voices and Find voices tabs (layout at wide/narrow + interactive filter & download confirmation).
+                                click(strings["sounds.show.voices"], role="Tab")
+                                time.sleep(.25)
+                                no_overflow(f"Sounds-Voices-{width}")
+                                click(strings["sounds.show.find_voices"], role="Tab")
+                                time.sleep(.25)
+                                no_overflow(f"Sounds-FindVoices-{width}")
+                                if width == 1100 and args.locale == "en_US":
+                                    assert any(e.get("label") == "Lessac" for e in json.loads(ui("bounds Lessac"))), "Find voices catalog missing Lessac"
+                                    click(strings["voices.filter_commercial"], role="Button")
+                                    time.sleep(.25)
+                                    assert not any(e.get("label") == "Lessac" for e in json.loads(ui("bounds Lessac"))), "Commercial filter did not hide non-commercial Lessac"
+                                    click(strings["voices.filter_commercial"], role="Button")
+                                    time.sleep(.25)
+                                    click("Lessac", role="Cell")
+                                    time.sleep(.15)
+                                    click(strings["voices.download"], role="Button")
+                                    time.sleep(.25)
+                                    no_overflow("Sounds-DownloadConfirm")
+                                    tree = ui("tree")
+                                    assert "Blizzard 2013" in tree and "Non-commercial" in tree, f"Download confirm missing per-row license details: {tree}"
+                                    click(strings["dialogs.cancel"], role="Button")
+                                    time.sleep(.15)
+                                click(strings["sounds.show.playing"], role="Tab")
+                                time.sleep(.15)
                             if args.layout_only or args.locale != "en_US" or page == "Accounts":
                                 assert shot(f"{page.lower().replace(' ', '_')}-{width}") == (width, height)
                             if page == "Commands" and args.locale == "en_US" and width == 540:
@@ -425,7 +451,7 @@ def main():
                             red, green, blue = captured.convert("RGB").getpixel((width - 3, height // 2))
                             assert (min(red, green, blue) > 200) if args.theme == "light" else (max(red, green, blue) < 80), (args.theme, red, green, blue)
                 # Pages built on the core's table and section models: each loads, draws and keeps its window size.
-                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
+                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)
                         load_page(page)

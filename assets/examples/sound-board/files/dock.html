@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sound board</title>
+<style>
+  /* A dock of OBS: Streamerz's colors, a pad for each sound. */
+  html, body { margin: 0; background: #18181b; color: #e4e4e7; font: 13px system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; padding: 10px; }
+  button { min-height: 64px; background: #27272a; color: inherit; border: 1px solid #3f3f46; border-radius: 8px;
+    font: inherit; cursor: pointer; padding: 8px; overflow-wrap: anywhere; }
+  button:hover { background: #3f3f46; }
+  button.on { background: #7c3aed; border-color: #7c3aed; }
+  p { color: #a1a1aa; padding: 10px; margin: 0; }
+</style>
+</head>
+<body>
+<main id="pads"></main>
+<script>
+// A press publishes which sound to play; the player page (a browser source in OBS) plays it, so OBS
+// hears it on that source. Add the player to a scene, and this page as a dock.
+streamerz.onSettings(s => {
+  pads.replaceChildren();
+  for (const [i, pad] of (s.pads || []).entries()) {
+    const b = Object.assign(document.createElement("button"), { textContent: pad.label || pad.sound });
+    b.onclick = () => {
+      b.classList.add("on");
+      streamerz.publish(streamerz.group + ".play", { pad: i, at: Date.now() }).finally(() => setTimeout(() => b.classList.remove("on"), 150));
+    };
+    pads.append(b);
+  }
+  if (!pads.children.length) pads.append(Object.assign(document.createElement("p"), { textContent: "No pads: add them in its settings." }));
+});
+</script>
+</body>
+</html>

@@ -1206,7 +1206,28 @@ impl Render for Sections {
                                     .gap(px(SPACE_SM))
                                     .flex_1()
                                     .min_w_0()
-                                    .when(row["picture"].is_null(), |line| line.pl(px(PICTURE + SPACE_SM)))
+                                    .when(row["picture"].is_null() && !key.ends_with(".sending"), |line| {
+                                        line.pl(px(PICTURE + SPACE_SM))
+                                    })
+                                    .when(row["picture"].is_null() && key.ends_with(".sending"), |line| {
+                                        // The browser account has no picture yet: a person in its place.
+                                        line.child(
+                                            div()
+                                                .size(px(PICTURE))
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded_full()
+                                                .bg(cx.theme().muted)
+                                                .child(
+                                                    Icon::empty()
+                                                        .path("icons/user-round.svg")
+                                                        .size(px(14.))
+                                                        .text_color(super::body::icon_tone(cx)),
+                                                ),
+                                        )
+                                    })
                                     .when_some(row["picture"].as_str(), |line, file| {
                                         line.child(
                                             img(std::path::PathBuf::from(file))

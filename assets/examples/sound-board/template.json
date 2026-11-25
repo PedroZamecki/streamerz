@@ -1,0 +1,83 @@
+{
+  "format": 1,
+  "name": "Sound board",
+  "meta": {
+    "description": "A dock of buttons that play sounds through a browser source, so OBS mixes them on their own track with their own filters. The sounds and their volumes are its settings; the Board of the Sounds page plays on this computer instead.",
+    "variables": [
+      {
+        "name": "pads",
+        "label": "Pads",
+        "kind": "list",
+        "default": [
+          {
+            "label": "Chime",
+            "sound": "sounds/chime.wav",
+            "volume": 80
+          }
+        ],
+        "description": "A button each: its name, one of the overlay's sounds (Media adds more) and its volume",
+        "columns": [
+          {
+            "name": "label",
+            "label": "Button",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "sound",
+            "label": "Sound",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "volume",
+            "label": "Volume",
+            "kind": "slider",
+            "default": 80,
+            "min": 0,
+            "max": 100,
+            "step": 5
+          }
+        ]
+      },
+      {
+        "name": "overlap",
+        "label": "Sounds play over each other",
+        "kind": "boolean",
+        "default": true,
+        "description": "Off: a press stops the sound playing first"
+      }
+    ],
+    "files": [
+      {
+        "name": "dock.html"
+      },
+      {
+        "name": "player.html"
+      },
+      {
+        "name": "sounds/chime.wav"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.sound-board",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "dock.html",
+          "title": "Sound board",
+          "width": 320,
+          "height": 360,
+          "dock": true
+        },
+        {
+          "file": "player.html",
+          "title": "Sound board player",
+          "width": 10,
+          "height": 10
+        }
+      ]
+    }
+  }
+}

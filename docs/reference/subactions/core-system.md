@@ -91,3 +91,48 @@ None set.
 - Variables in every field are filled in first.
 - In dev mode (and in scenarios) nothing is shown: the log says what would have been.
 - Windows shows it as from PowerShell's app id, as Streamerz's other notifications.
+
+## Get Clipboard
+
+- Kind: sub-action
+- Code: 99789
+- Type: ClipboardGet
+- Category: Core/System
+- Needs: on Linux, wl-clipboard (Wayland) or xclip or xsel (X11)
+
+Reads the text on the system clipboard into a variable. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Save the result in (variable name) | `variableName` | The name of the variable that gets the text. Empty: `clipboard`. |
+
+### Arguments
+
+- The variable named (default `clipboard`) holds the clipboard's text, empty when it has none.
+
+## Set Clipboard
+
+- Kind: sub-action
+- Code: 99790
+- Type: ClipboardSet
+- Category: Core/System
+- Needs: on Linux, wl-clipboard (Wayland) or xclip or xsel (X11)
+
+Puts a text on the system clipboard, ready to paste. Variables, such as `%user%`, are filled in first. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Text | `text` | What to copy. |
+
+### Arguments
+
+None.
+
+### Notes
+
+- It works while the window is hidden too: Streamerz asks the system, not its window.
+

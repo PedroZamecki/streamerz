@@ -83,7 +83,7 @@
 - Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the
   MCP `ui` tool (dev mode): `shot` saves the app's own window as a PNG (no desktop screenshot, no blind
   coordinates), `find TEXT` says where to click. Run the dev instance only with `env -u WAYLAND_DISPLAY
-  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `DISPLAY=:99 python3 -P dev/ui-smoke.py` (after
+  DISPLAY=:99`, and kill it by its pid (`kill <pid>`; never `pkill -x Streamerz`, which also closes the real instance). `DISPLAY=:99 python3 -P dev/ui-smoke.py` (after
   `cargo build --profile fast --features dev-ui`) starts it, visits every page, right-clicks, opens the user
   card and fails on a crash report, a missing screenshot or anything cut off: run it before closing a version,
   and again with `--locale pt_BR` (the longest words). Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).

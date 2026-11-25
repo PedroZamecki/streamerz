@@ -1,0 +1,3775 @@
+[
+  {
+    "name": "twitch tools: purge, send and pin, whisper are kept in dev mode; delete and chat modes",
+    "fakes": {
+      "twitch": {
+        "GET chat/settings": {
+          "data": [
+            {
+              "emote_mode": true,
+              "slow_mode": true,
+              "slow_mode_wait_time": 30,
+              "unique_chat_mode": false,
+              "non_moderator_chat_delay": false,
+              "follower_mode": false,
+              "subscriber_mode": false
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "mod",
+        "subActions": [
+          {
+            "type": 581,
+            "messageId": "%msgId%"
+          },
+          {
+            "type": 99501,
+            "userLogin": "%userName%",
+            "reason": "spam"
+          },
+          {
+            "type": 99502,
+            "text": "Read the rules",
+            "duration": 60
+          },
+          {
+            "type": 99503,
+            "userLogin": "bob",
+            "text": "psst"
+          },
+          {
+            "type": 588,
+            "status": true
+          },
+          {
+            "type": 589,
+            "status": true,
+            "duration": 4
+          },
+          {
+            "type": 590
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "mod",
+        "args": {
+          "msgId": "m1",
+          "userName": "ana",
+          "userType": "twitch"
+        }
+      }
+    ],
+    "expect": {
+      "chat": [
+        {
+          "platform": "twitch",
+          "text": "/timeout ana 1"
+        },
+        {
+          "platform": "twitch",
+          "text": "/pin Read the rules"
+        },
+        {
+          "platform": "twitch",
+          "text": "/w bob psst"
+        }
+      ],
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "DELETE moderation/chat",
+          "query": {
+            "message_id": "m1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "resolve",
+          "login": "ana"
+        },
+        {
+          "platform": "twitch",
+          "call": "resolve",
+          "login": "bob"
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH chat/settings",
+          "body": {
+            "unique_chat_mode": true
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH chat/settings",
+          "body": {
+            "non_moderator_chat_delay": true,
+            "non_moderator_chat_delay_duration": 4
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET chat/settings"
+        }
+      ],
+      "runs": [
+        {
+          "action": "mod",
+          "after": {
+            "deleteMessageResult": true,
+            "purgeResult": true,
+            "pinResult": true,
+            "whisperResult": true,
+            "uniqueModeEnabled": true,
+            "chatDelayEnabled": true,
+            "emoteMode": true,
+            "slowMode": true,
+            "slowModeWaitTime": 30,
+            "uniqueChatMode": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch tools: AutoMod, unban requests, moderators, VIPs and subscriptions",
+    "fakes": {
+      "twitch": {
+        "GET moderation/unban_requests": {
+          "data": [
+            {
+              "id": "r1",
+              "user_name": "Ana",
+              "user_login": "ana",
+              "user_id": "5",
+              "text": "sorry"
+            }
+          ]
+        },
+        "GET moderation/moderators": {
+          "data": [
+            {
+              "user_name": "Mod",
+              "user_login": "mod",
+              "user_id": "9"
+            }
+          ]
+        },
+        "GET channels/vips": {
+          "data": [
+            {
+              "user_name": "Vee",
+              "user_login": "vee",
+              "user_id": "8"
+            },
+            {
+              "user_name": "Pal",
+              "user_login": "pal",
+              "user_id": "7"
+            }
+          ]
+        },
+        "GET subscriptions": {
+          "data": [
+            {
+              "tier": "2000",
+              "is_gift": true,
+              "gifter_name": "Bob"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "queue",
+        "subActions": [
+          {
+            "type": 582,
+            "messageId": "%messageId%",
+            "action": 0
+          },
+          {
+            "type": 582,
+            "messageId": "h2",
+            "action": 1
+          },
+          {
+            "type": 587,
+            "status": 0
+          },
+          {
+            "type": 586,
+            "unbanRequestId": "%requestId%",
+            "status": 0,
+            "resolutionText": "ok"
+          },
+          {
+            "type": 595
+          },
+          {
+            "type": 596
+          },
+          {
+            "type": 99513,
+            "userLogin": "ana"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "queue",
+        "args": {
+          "messageId": "h1",
+          "requestId": "r1"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/automod/message",
+          "body": {
+            "msg_id": "h1",
+            "action": "ALLOW",
+            "user_id": "{moderator_id}"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "POST moderation/automod/message",
+          "body": {
+            "msg_id": "h2",
+            "action": "DENY"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET moderation/unban_requests",
+          "query": {
+            "status": "pending"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH moderation/unban_requests",
+          "query": {
+            "unban_request_id": "r1",
+            "status": "approved",
+            "resolution_text": "ok"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET moderation/moderators"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET channels/vips"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET subscriptions",
+          "query": {
+            "user_id": "id-ana"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "queue",
+          "after": {
+            "resolveAutoModResult": true,
+            "unbanRequestCount": 1,
+            "unbanRequest0.id": "r1",
+            "unbanRequest0.text": "sorry",
+            "resolveUnbanRequestResult": true,
+            "moderatorCount": 1,
+            "moderator0.userLogin": "mod",
+            "vipCount": 2,
+            "vip1.userName": "Pal",
+            "isSubscribed": true,
+            "subscriptionTier": 2,
+            "isGift": true,
+            "gifterUser": "Bob"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch tools: clips, stream info, hype train, goals, bits, channel settings and rewards",
+    "fakes": {
+      "twitch": {
+        "GET clips": {
+          "data": [
+            {
+              "id": "c1",
+              "view_count": 5,
+              "created_at": "2026-01-01T00:00:00Z",
+              "url": "u1"
+            },
+            {
+              "id": "c2",
+              "view_count": 9,
+              "created_at": "2025-01-01T00:00:00Z",
+              "url": "u2"
+            }
+          ]
+        },
+        "GET streams": {
+          "data": [
+            {
+              "title": "Live!",
+              "game_name": "Chess",
+              "game_id": "743",
+              "viewer_count": 12,
+              "started_at": "2026-11-15T00:00:00Z"
+            }
+          ]
+        },
+        "GET hypetrain/status": {
+          "data": [
+            {
+              "current": {
+                "level": 2,
+                "progress": 50,
+                "goal": 100,
+                "total": 300
+              },
+              "all_time_high": {
+                "level": 5,
+                "total": 9000
+              }
+            }
+          ]
+        },
+        "GET goals": {
+          "data": [
+            {
+              "type": "follower",
+              "description": "Road to 1k",
+              "current_amount": 900,
+              "target_amount": 1000
+            }
+          ]
+        },
+        "GET bits/leaderboard": {
+          "data": [
+            {
+              "user_name": "Ana",
+              "user_login": "ana",
+              "user_id": "5",
+              "score": 500,
+              "rank": 1
+            }
+          ]
+        },
+        "POST channel_points/custom_rewards": {
+          "data": [
+            {
+              "id": "rw1",
+              "title": "Hydrate"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "info",
+        "subActions": [
+          {
+            "type": 99514,
+            "userLogin": "%targetUserName%",
+            "pick": 2
+          },
+          {
+            "type": 99515,
+            "userLogin": ""
+          },
+          {
+            "type": 99516
+          },
+          {
+            "type": 99517
+          },
+          {
+            "type": 99518,
+            "period": 2,
+            "count": 3
+          },
+          {
+            "type": 99519,
+            "labels": [
+              "Gambling"
+            ]
+          },
+          {
+            "type": 99520,
+            "language": "PT"
+          },
+          {
+            "type": 99521,
+            "delay": 30
+          },
+          {
+            "type": 99522,
+            "title": "Hydrate",
+            "cost": 100,
+            "backgroundColor": "#FF00AAFF",
+            "enabled": true
+          },
+          {
+            "type": 99523,
+            "rewardId": "rw1"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "info",
+        "args": {
+          "targetUserName": "pal"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "GET clips",
+          "query": {
+            "broadcaster_id": "id-pal",
+            "first": "100"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET streams",
+          "query": {
+            "user_id": "{broadcaster_id}"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET hypetrain/status"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET goals"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET bits/leaderboard",
+          "query": {
+            "count": "3",
+            "period": "week"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "content_classification_labels": [
+              {
+                "id": "DebatedSocialIssuesAndPolitics",
+                "is_enabled": false
+              },
+              {
+                "id": "DrugsIntoxication",
+                "is_enabled": false
+              },
+              {
+                "id": "SexualThemes",
+                "is_enabled": false
+              },
+              {
+                "id": "ViolentGraphic",
+                "is_enabled": false
+              },
+              {
+                "id": "Gambling",
+                "is_enabled": true
+              },
+              {
+                "id": "ProfanityVulgarity",
+                "is_enabled": false
+              }
+            ]
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "broadcaster_language": "pt"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "delay": 30
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "POST channel_points/custom_rewards",
+          "body": {
+            "title": "Hydrate",
+            "cost": 100,
+            "background_color": "#00AAFF",
+            "is_enabled": true
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE channel_points/custom_rewards",
+          "query": {
+            "id": "rw1"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "info",
+          "after": {
+            "clipFound": true,
+            "clipCount": 2,
+            "clipId": "c2",
+            "clipUrl": "u2",
+            "isLive": true,
+            "streamTitle": "Live!",
+            "streamCategory": "Chess",
+            "viewerCount": 12,
+            "gameId": "743",
+            "streamPlatform": "twitch",
+            "hypeTrainActive": true,
+            "hypeTrainLevel": 2,
+            "hypeTrainRecordLevel": 5,
+            "goalCount": 1,
+            "goal0Target": 1000,
+            "bitsLeaderCount": 1,
+            "bitsLeader0Bits": 500,
+            "rewardId": "rw1"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch tools that need more permissions say so without them, and work with them",
+    "config": {
+      "twitch": {
+        "broadcaster": {
+          "userId": "1",
+          "login": "me",
+          "displayName": "Me",
+          "token": {
+            "accessToken": "a",
+            "scope": []
+          }
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {}
+    },
+    "actions": [
+      {
+        "name": "block",
+        "subActions": [
+          {
+            "type": 583,
+            "text": "badword"
+          },
+          {
+            "type": 99545
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "block"
+      }
+    ],
+    "expect": {
+      "log": [
+        "more Twitch permissions"
+      ],
+      "notCalls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/blocked_terms"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET videos"
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch tools with more permissions: blocked terms, AutoMod, chat colour, blocks and the schedule",
+    "config": {
+      "twitch": {
+        "broadcaster": {
+          "userId": "1",
+          "login": "me",
+          "displayName": "Me",
+          "token": {
+            "accessToken": "a",
+            "scope": [
+              "moderator:manage:blocked_terms",
+              "moderator:manage:automod_settings",
+              "user:manage:chat_color",
+              "user:manage:blocked_users",
+              "channel:manage:schedule"
+            ]
+          }
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {
+        "GET moderation/blocked_terms": {
+          "data": [
+            {
+              "id": "bt1",
+              "text": "BadWord"
+            }
+          ]
+        },
+        "GET schedule": {
+          "data": {
+            "segments": [
+              {
+                "id": "s1",
+                "start_time": "2026-12-01T20:00:00Z",
+                "title": "Big",
+                "category": {
+                  "name": "Chess"
+                },
+                "is_recurring": false
+              }
+            ],
+            "vacation": null
+          }
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "manage",
+        "subActions": [
+          {
+            "type": 583,
+            "text": "badword"
+          },
+          {
+            "type": 584,
+            "termId": "badword"
+          },
+          {
+            "type": 592,
+            "overallLevel": 3
+          },
+          {
+            "type": 99533,
+            "color": "#FF00FF"
+          },
+          {
+            "type": 99534,
+            "userLogin": "troll"
+          },
+          {
+            "type": 99535,
+            "userLogin": "troll"
+          },
+          {
+            "type": 99536
+          },
+          {
+            "type": 99537,
+            "start": "2026-12-01T20:00:00Z",
+            "duration": 7200,
+            "title": "Big"
+          },
+          {
+            "type": 99538
+          },
+          {
+            "type": 99539,
+            "state": 1
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "manage"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/blocked_terms",
+          "body": {
+            "text": "badword"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET moderation/blocked_terms"
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE moderation/blocked_terms",
+          "query": {
+            "id": "bt1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PUT moderation/automod/settings",
+          "body": {
+            "overall_level": 3
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PUT chat/color",
+          "query": {
+            "color": "#FF00FF"
+          },
+          "bot": true
+        },
+        {
+          "platform": "twitch",
+          "call": "PUT users/blocks",
+          "query": {
+            "target_user_id": "id-troll"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE users/blocks",
+          "query": {
+            "target_user_id": "id-troll"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET schedule"
+        },
+        {
+          "platform": "twitch",
+          "call": "POST schedule/segment",
+          "body": {
+            "start_time": "2026-12-01T20:00:00Z",
+            "duration": "120",
+            "title": "Big",
+            "is_recurring": false
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH schedule/segment",
+          "query": {
+            "id": "s1"
+          },
+          "body": {
+            "is_canceled": true
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH schedule/settings",
+          "query": {
+            "is_vacation_enabled": "false"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "manage",
+          "after": {
+            "segmentCount": 1,
+            "segment0Title": "Big",
+            "segment0Category": "Chess",
+            "onVacation": false,
+            "segmentId": "s1"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "kick tools: delete, redemptions, rewards, KICKs, stream info and tags",
+    "config": {
+      "kick": {
+        "broadcaster": {
+          "userId": 77,
+          "username": "me"
+        }
+      }
+    },
+    "fakes": {
+      "kick": {
+        "GET /channels/rewards/redemptions?reward_id=kr9": {
+          "data": [
+            {
+              "reward": {
+                "id": "kr9"
+              },
+              "redemptions": [
+                {
+                  "id": "old",
+                  "redeemer": {
+                    "user_id": 5
+                  },
+                  "redeemed_at": "2026-11-14T10:00:00Z"
+                },
+                {
+                  "id": "new",
+                  "redeemer": {
+                    "user_id": 5
+                  },
+                  "redeemed_at": "2026-11-15T10:00:00Z"
+                },
+                {
+                  "id": "other",
+                  "redeemer": {
+                    "user_id": 6
+                  },
+                  "redeemed_at": "2026-11-15T11:00:00Z"
+                }
+              ]
+            }
+          ]
+        },
+        "POST /channels/rewards/redemptions/accept": {
+          "data": []
+        },
+        "POST /channels/rewards/redemptions/reject": {
+          "data": [
+            {
+              "id": "gone",
+              "reason": "NOT_PENDING"
+            }
+          ]
+        },
+        "POST /channels/rewards": {
+          "data": {
+            "id": "kr1",
+            "title": "Hydrate"
+          }
+        },
+        "GET /kicks/leaderboard?top=2": {
+          "data": {
+            "lifetime": [],
+            "month": [],
+            "week": [
+              {
+                "username": "Ana",
+                "user_id": 5,
+                "gifted_amount": 100,
+                "rank": 1
+              }
+            ]
+          }
+        },
+        "GET /users/livestreams?user_id=77": {
+          "data": [
+            {
+              "title": "Kick live",
+              "viewer_count": 4,
+              "started_at": "2026-11-15T00:00:00Z",
+              "category": {
+                "name": "Chess"
+              }
+            }
+          ]
+        },
+        "GET /channels": {
+          "data": [
+            {
+              "custom_tags": [
+                "a",
+                "B"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "kick",
+        "subActions": [
+          {
+            "type": 35044,
+            "messageId": "%msgId%"
+          },
+          {
+            "type": 99601,
+            "redemptionId": ""
+          },
+          {
+            "type": 99602,
+            "redemptionId": "gone"
+          },
+          {
+            "type": 99603,
+            "title": "Hydrate",
+            "cost": 50,
+            "enabled": true
+          },
+          {
+            "type": 99604,
+            "rewardId": "kr1"
+          },
+          {
+            "type": 99605,
+            "period": 2,
+            "count": 2
+          },
+          {
+            "type": 99606
+          },
+          {
+            "type": 99607,
+            "tag": "b"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "kick",
+        "args": {
+          "msgId": "km1",
+          "rewardId": "kr9",
+          "userId": "5"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "kick",
+          "call": "deleteMessage",
+          "messageId": "km1"
+        },
+        {
+          "platform": "kick",
+          "call": "GET /channels/rewards/redemptions?reward_id=kr9"
+        },
+        {
+          "platform": "kick",
+          "call": "POST /channels/rewards/redemptions/accept",
+          "body": {
+            "ids": [
+              "new"
+            ]
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "POST /channels/rewards/redemptions/reject",
+          "body": {
+            "ids": [
+              "gone"
+            ]
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "POST /channels/rewards",
+          "body": {
+            "title": "Hydrate",
+            "cost": 50,
+            "is_enabled": true
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "DELETE /channels/rewards/kr1"
+        },
+        {
+          "platform": "kick",
+          "call": "GET /kicks/leaderboard?top=2"
+        },
+        {
+          "platform": "kick",
+          "call": "GET /users/livestreams?user_id=77"
+        },
+        {
+          "platform": "kick",
+          "call": "PATCH /channels",
+          "body": {
+            "custom_tags": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "log": [
+        "that redemption isn't pending"
+      ],
+      "runs": [
+        {
+          "action": "kick",
+          "after": {
+            "redemptionId": "new",
+            "rewardId": "kr1",
+            "kicksLeaderCount": 1,
+            "kicksLeader0Kicks": 100,
+            "isLive": true,
+            "streamTitle": "Kick live",
+            "viewerCount": 4,
+            "streamCategory": "Chess",
+            "streamPlatform": "kick"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "youtube tools: unban a ban Streamerz made, moderators, tags, category, privacy, info and people the chat saw",
+    "config": {
+      "youtube": {
+        "broadcaster": {
+          "channelId": "UCowner"
+        }
+      },
+      "youtube_moderation_bans": [
+        {
+          "id": "ban1",
+          "user_id": "UCbannedbannedbannedbann",
+          "channel_id": "UCowner",
+          "live_chat_id": "chat",
+          "expires_at": null
+        }
+      ]
+    },
+    "fakes": {
+      "youtube": {
+        "GET liveChat/moderators?part=snippet&maxResults=50&liveChatId={chat}": {
+          "items": [
+            {
+              "id": "mod1",
+              "snippet": {
+                "moderatorDetails": {
+                  "channelId": "UCanaanaanaanaanaanaanaa"
+                }
+              }
+            }
+          ]
+        },
+        "GET videos?part=snippet&id={video}": {
+          "items": [
+            {
+              "snippet": {
+                "title": "t",
+                "categoryId": "20",
+                "channelId": "x",
+                "tags": [
+                  "a"
+                ]
+              }
+            }
+          ]
+        },
+        "GET videos?part=status&id={video}": {
+          "items": [
+            {
+              "status": {
+                "privacyStatus": "public",
+                "uploadStatus": "processed",
+                "embeddable": true
+              }
+            }
+          ]
+        },
+        "GET videos?part=snippet,liveStreamingDetails,statistics&id={video}": {
+          "items": [
+            {
+              "id": "v1",
+              "snippet": {
+                "title": "YT live",
+                "liveBroadcastContent": "live",
+                "categoryId": "20"
+              },
+              "liveStreamingDetails": {
+                "concurrentViewers": "33",
+                "actualStartTime": "2026-11-15T00:00:00Z"
+              },
+              "statistics": {
+                "likeCount": "5"
+              }
+            }
+          ]
+        },
+        "GET channels?part=snippet,statistics&id=UCanaanaanaanaanaanaanaa": {
+          "items": [
+            {
+              "snippet": {
+                "title": "Ana",
+                "customUrl": "@ana"
+              },
+              "statistics": {
+                "subscriberCount": "7"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "yt",
+        "subActions": [
+          {
+            "type": 4016,
+            "messageId": "%msgId%"
+          },
+          {
+            "type": 4015,
+            "userId": "UCbannedbannedbannedbann"
+          },
+          {
+            "type": 4017,
+            "userId": "Ana"
+          },
+          {
+            "type": 4018,
+            "userId": "Ana"
+          },
+          {
+            "type": 99654,
+            "tags": [
+              "live",
+              "%game%"
+            ]
+          },
+          {
+            "type": 99655,
+            "tag": "c"
+          },
+          {
+            "type": 99656,
+            "tag": "A"
+          },
+          {
+            "type": 99657
+          },
+          {
+            "type": 99658,
+            "category": 3
+          },
+          {
+            "type": 99659,
+            "privacy": 1
+          },
+          {
+            "type": 99660
+          },
+          {
+            "type": 99661
+          },
+          {
+            "type": 99662,
+            "userLogin": "Ana"
+          },
+          {
+            "type": 99663,
+            "count": 3
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "chat": {
+          "platform": "youtube",
+          "user": "Ana",
+          "userId": "UCanaanaanaanaanaanaanaa",
+          "text": "hi"
+        }
+      },
+      {
+        "run": "yt",
+        "args": {
+          "msgId": "y1",
+          "game": "Chess"
+        }
+      }
+    ],
+    "expect": {
+      "chat": [
+        {
+          "platform": "youtube",
+          "text": "/end stream"
+        }
+      ],
+      "calls": [
+        {
+          "platform": "youtube",
+          "call": "deleteMessage",
+          "messageId": "y1"
+        },
+        {
+          "platform": "youtube",
+          "call": "removeBan",
+          "id": "ban1"
+        },
+        {
+          "platform": "youtube",
+          "call": "addModerator",
+          "userId": "UCanaanaanaanaanaanaanaa"
+        },
+        {
+          "platform": "youtube",
+          "call": "removeModerator",
+          "userId": "UCanaanaanaanaanaanaanaa"
+        },
+        {
+          "platform": "youtube",
+          "call": "updateVideo",
+          "tags": [
+            "live",
+            "Chess"
+          ]
+        },
+        {
+          "platform": "youtube",
+          "call": "updateVideo",
+          "tags": [
+            "a",
+            "c"
+          ]
+        },
+        {
+          "platform": "youtube",
+          "call": "updateVideo",
+          "tags": []
+        },
+        {
+          "platform": "youtube",
+          "call": "updateVideo",
+          "tags": []
+        },
+        {
+          "platform": "youtube",
+          "call": "PUT videos?part=snippet",
+          "body": {
+            "id": "{video}",
+            "snippet": {
+              "title": "t",
+              "categoryId": "10"
+            }
+          }
+        },
+        {
+          "platform": "youtube",
+          "call": "PUT videos?part=status",
+          "body": {
+            "status": {
+              "privacyStatus": "unlisted",
+              "embeddable": true
+            }
+          }
+        },
+        {
+          "platform": "youtube",
+          "call": "GET channels?part=snippet,statistics&id=UCanaanaanaanaanaanaanaa"
+        }
+      ],
+      "runs": [
+        {
+          "action": "yt",
+          "after": {
+            "unbanResult": true,
+            "isLive": true,
+            "viewerCount": 33,
+            "streamCategory": "Gaming",
+            "streamTitle": "YT live",
+            "likeCount": "5",
+            "targetUser": "Ana",
+            "targetUserName": "@ana",
+            "targetSubscriberCount": "7",
+            "randomUsersCount": 1,
+            "randomUser0": "Ana",
+            "randomUserType0": "youtube",
+            "deleteMessageResult": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tiktok tools: user groups, random users and target info from the people the chat saw",
+    "actions": [
+      {
+        "name": "tt",
+        "subActions": [
+          {
+            "type": 99450,
+            "userLogin": "Ana",
+            "groupName": "Regulars"
+          },
+          {
+            "type": 99452,
+            "userLogin": "@ana",
+            "groupName": "regulars"
+          },
+          {
+            "type": 99451,
+            "userLogin": "Ana",
+            "groupName": "Regulars"
+          },
+          {
+            "type": 99453,
+            "count": 2
+          },
+          {
+            "type": 99454,
+            "userLogin": "Ana"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "app": "addGroup",
+        "name": "Regulars"
+      },
+      {
+        "chat": {
+          "platform": "tiktok",
+          "user": "Ana",
+          "userId": "u1",
+          "text": "hello"
+        }
+      },
+      {
+        "run": "tt"
+      }
+    ],
+    "expect": {
+      "runs": [
+        {
+          "action": "tt",
+          "after": {
+            "addResult": true,
+            "inGroup": true,
+            "foundUserId": "u1",
+            "removeResult": true,
+            "randomUsersCount": 1,
+            "randomUser0": "Ana",
+            "randomUserType0": "tiktok",
+            "addTargetResult": true,
+            "targetUserId": "u1",
+            "targetUserType": "tiktok",
+            "targetMessageCount": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "every platform: each picked, or the one the trigger came from",
+    "config": {
+      "kick": {
+        "broadcaster": {
+          "userId": 77,
+          "username": "me"
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {
+        "GET chat/pins": {
+          "data": [
+            {
+              "message_id": "tm1"
+            }
+          ]
+        },
+        "GET streams": {
+          "data": [
+            {
+              "title": "Tw",
+              "game_name": "Chess",
+              "viewer_count": 10,
+              "started_at": "2026-11-15T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "kick": {
+        "GET /users/livestreams?user_id=77": {
+          "data": [
+            {
+              "title": "Kk",
+              "viewer_count": 4,
+              "started_at": "2026-11-15T00:00:00Z",
+              "category": {
+                "name": "Chess"
+              }
+            }
+          ]
+        },
+        "GET /channels?slug=pal": {
+          "data": [
+            {
+              "slug": "pal",
+              "broadcaster_user_id": 70
+            }
+          ]
+        },
+        "GET https://api.kick.com/public/v2/categories?name=just+chatting": {
+          "data": [
+            {
+              "id": 1,
+              "name": "Just Chatting",
+              "thumbnail": "t"
+            }
+          ]
+        }
+      },
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "all",
+        "subActions": [
+          {
+            "type": 99720,
+            "platforms": [
+              "twitch",
+              "kick"
+            ],
+            "text": "hi all"
+          },
+          {
+            "type": 99721,
+            "messageId": "%msgId%",
+            "text": "thanks"
+          },
+          {
+            "type": 99726,
+            "platforms": [
+              "kick"
+            ],
+            "userLogin": "troll"
+          },
+          {
+            "type": 99729,
+            "platforms": [
+              "kick"
+            ],
+            "title": "New title"
+          },
+          {
+            "type": 99730,
+            "platforms": [
+              "kick"
+            ],
+            "category": "just chatting"
+          },
+          {
+            "type": 99731,
+            "platforms": [
+              "twitch",
+              "kick"
+            ]
+          },
+          {
+            "type": 99732,
+            "platforms": [
+              "kick"
+            ],
+            "userLogin": "pal",
+            "text": "Follow @pal"
+          },
+          {
+            "type": 99733,
+            "platforms": [
+              "kick"
+            ],
+            "userLogin": "pal"
+          }
+        ]
+      },
+      {
+        "name": "here",
+        "subActions": [
+          {
+            "type": 99723,
+            "messageId": "%msgId%",
+            "duration": 0
+          },
+          {
+            "type": 99724
+          }
+        ]
+      },
+      {
+        "name": "nowhere",
+        "subActions": [
+          {
+            "type": 99729,
+            "title": "x"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "all",
+        "args": {
+          "msgId": "y9",
+          "user": "Ana",
+          "userType": "youtube"
+        }
+      },
+      {
+        "run": "here",
+        "args": {
+          "msgId": "tm1",
+          "userType": "twitch"
+        }
+      },
+      {
+        "run": "nowhere"
+      }
+    ],
+    "expect": {
+      "chat": [
+        {
+          "platform": "twitch",
+          "text": "hi all"
+        },
+        {
+          "platform": "kick",
+          "text": "hi all"
+        },
+        {
+          "platform": "youtube",
+          "text": "@Ana thanks"
+        },
+        {
+          "platform": "kick",
+          "text": "Follow @pal"
+        }
+      ],
+      "calls": [
+        {
+          "platform": "kick",
+          "call": "untimeout",
+          "login": "troll"
+        },
+        {
+          "platform": "kick",
+          "call": "title",
+          "title": "New title"
+        },
+        {
+          "platform": "kick",
+          "call": "category",
+          "id": 1
+        },
+        {
+          "platform": "twitch",
+          "call": "GET streams"
+        },
+        {
+          "platform": "kick",
+          "call": "GET /users/livestreams?user_id=77"
+        },
+        {
+          "platform": "kick",
+          "call": "GET /channels?slug=pal"
+        },
+        {
+          "platform": "twitch",
+          "call": "PUT chat/pins",
+          "query": {
+            "message_id": "tm1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE chat/pins",
+          "query": {
+            "message_id": "tm1"
+          }
+        }
+      ],
+      "log": [
+        "no platform ticked"
+      ],
+      "runs": [
+        {
+          "action": "all",
+          "after": {
+            "isLive": true,
+            "viewerCount": 14,
+            "twitchIsLive": true,
+            "twitchViewerCount": 10,
+            "kickViewerCount": 4,
+            "kickStreamTitle": "Kk",
+            "targetUserId": 70
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch: latest follower from Twitch, latest subscriber from the last Sub seen, Set Cost adds to what it costs",
+    "fakes": {
+      "twitch": {
+        "GET channels/followers": {
+          "total": 42,
+          "data": [
+            {
+              "user_name": "Fae",
+              "user_login": "fae",
+              "user_id": "11",
+              "followed_at": "2026-11-15T01:00:00Z"
+            }
+          ]
+        },
+        "GET subscriptions": {
+          "total": 7,
+          "data": []
+        },
+        "GET channel_points/custom_rewards": {
+          "data": [
+            {
+              "id": "rw1",
+              "cost": 100
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "latest",
+        "subActions": [
+          {
+            "type": 507
+          },
+          {
+            "type": 509
+          },
+          {
+            "type": 202,
+            "rewardId": "rw1",
+            "cost": 25,
+            "operator": 1
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "fire": 103,
+        "args": {
+          "user": "Sam",
+          "userName": "sam",
+          "userId": "12",
+          "userType": "twitch",
+          "tier": "tier 2"
+        }
+      },
+      {
+        "run": "latest"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "GET channels/followers"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET subscriptions"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET channel_points/custom_rewards",
+          "query": {
+            "id": "rw1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "body": {
+            "cost": 125
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "latest",
+          "after": {
+            "totalFollowers": 42,
+            "latestFollower.user": "Fae",
+            "latestFollower.userId": "11",
+            "totalSubscribers": 7,
+            "latestSubscriber.userName": "Sam",
+            "latestSubscriber.userId": "12",
+            "latestSubscriber.tier": "Tier2",
+            "latestSubscriber.isGift": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "rewards: redemptions count per reward and per user, reset, and groups and Configure Rewards change only Streamerz's own",
+    "config": {
+      "rewards": {
+        "groups": {
+          "Games": [
+            "twitch:rw1",
+            "twitch:rw2",
+            "kick:k1"
+          ]
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {
+        "GET channel_points/custom_rewards": {
+          "data": [
+            {
+              "id": "rw1",
+              "is_enabled": true,
+              "is_paused": false
+            },
+            {
+              "id": "rw2",
+              "is_enabled": false,
+              "is_paused": false
+            }
+          ]
+        }
+      },
+      "kick": {
+        "GET /channels/rewards": {
+          "data": [
+            {
+              "id": "k1",
+              "is_enabled": false,
+              "is_paused": false
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "redeemed",
+        "triggers": [
+          {
+            "type": 112
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1009,
+            "value": "counted"
+          }
+        ]
+      },
+      {
+        "name": "manage",
+        "subActions": [
+          {
+            "type": 209,
+            "rewardId": "rw1"
+          },
+          {
+            "type": 211,
+            "groupName": "games",
+            "state": 2
+          },
+          {
+            "type": 203,
+            "enable": [
+              "rw2"
+            ],
+            "disableNotConfigured": true
+          },
+          {
+            "type": 35111,
+            "groupName": "Games",
+            "state": true
+          },
+          {
+            "type": 35104,
+            "disable": [
+              "k1"
+            ]
+          },
+          {
+            "type": 35110,
+            "rewardId": "k1"
+          },
+          {
+            "type": 210,
+            "rewardId": "rw1"
+          },
+          {
+            "type": 212,
+            "groupName": "Games",
+            "state": 0
+          },
+          {
+            "type": 35109,
+            "rewardId": "k1"
+          },
+          {
+            "type": 35112,
+            "groupName": "Games",
+            "state": false
+          }
+        ]
+      },
+      {
+        "name": "again",
+        "triggers": [
+          {
+            "type": 35024
+          }
+        ],
+        "subActions": [
+          {
+            "type": 1009,
+            "value": "kick"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "fire": 112,
+        "args": {
+          "rewardId": "rw1",
+          "userId": "5",
+          "user": "Ana"
+        }
+      },
+      {
+        "fire": 112,
+        "args": {
+          "rewardId": "rw1",
+          "userId": "5",
+          "user": "Ana"
+        }
+      },
+      {
+        "fire": 112,
+        "args": {
+          "rewardId": "rw1",
+          "userId": "6",
+          "user": "Bob"
+        }
+      },
+      {
+        "run": "manage"
+      },
+      {
+        "fire": 112,
+        "args": {
+          "rewardId": "rw1",
+          "userId": "5",
+          "user": "Ana"
+        }
+      },
+      {
+        "fire": 35024,
+        "args": {
+          "rewardId": "k1",
+          "userId": "5",
+          "user": "Ana"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "GET channel_points/custom_rewards",
+          "query": {
+            "only_manageable_rewards": "true"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw1"
+          },
+          "body": {
+            "is_enabled": false
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw2"
+          },
+          "body": {
+            "is_enabled": true
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw1"
+          },
+          "body": {
+            "is_enabled": false
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw2"
+          },
+          "body": {
+            "is_enabled": true,
+            "is_paused": false
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "PATCH /channels/rewards/k1",
+          "body": {
+            "is_enabled": true
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "PATCH /channels/rewards/k1",
+          "body": {
+            "is_enabled": false
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw1"
+          },
+          "body": {
+            "is_paused": true
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channel_points/custom_rewards",
+          "query": {
+            "id": "rw2"
+          },
+          "body": {
+            "is_paused": true
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "PATCH /channels/rewards/k1",
+          "body": {
+            "is_paused": false
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "redeemed",
+          "args": {
+            "counter": 1,
+            "userCounter": 1
+          }
+        },
+        {
+          "action": "redeemed",
+          "args": {
+            "counter": 2,
+            "userCounter": 2
+          }
+        },
+        {
+          "action": "redeemed",
+          "args": {
+            "counter": 3,
+            "userCounter": 1
+          }
+        },
+        {
+          "action": "manage"
+        },
+        {
+          "action": "redeemed",
+          "args": {
+            "counter": 1,
+            "userCounter": 1
+          }
+        },
+        {
+          "action": "again",
+          "args": {
+            "counter": 1,
+            "userCounter": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch Guest Star: settings, the running session, invites and slots",
+    "fakes": {
+      "twitch": {
+        "GET guest_star/channel_settings": {
+          "data": [
+            {
+              "is_moderator_send_live_enabled": true,
+              "slot_count": 4,
+              "group_layout": "TILED_LAYOUT"
+            }
+          ]
+        },
+        "GET guest_star/session": {
+          "data": [
+            {
+              "id": "gs1",
+              "guests": [
+                {
+                  "user_id": "5",
+                  "user_login": "ana",
+                  "user_display_name": "Ana",
+                  "slot_id": "1",
+                  "is_live": true,
+                  "volume": 80
+                }
+              ]
+            }
+          ]
+        },
+        "GET guest_star/invites": {
+          "data": [
+            {
+              "user_id": "6",
+              "status": "INVITED",
+              "invited_at": "2026-11-15T00:00:00Z"
+            }
+          ]
+        },
+        "POST guest_star/session": {
+          "data": [
+            {
+              "id": "gs2",
+              "guests": []
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "gs",
+        "subActions": [
+          {
+            "type": 520
+          },
+          {
+            "type": 521,
+            "slotCount": 3,
+            "groupLayout": "tiled_layout",
+            "browserSourceAudioEnabled": true
+          },
+          {
+            "type": 522
+          },
+          {
+            "type": 525
+          },
+          {
+            "type": 526,
+            "userLogin": "bob"
+          },
+          {
+            "type": 527,
+            "userLogin": "bob"
+          },
+          {
+            "type": 528,
+            "userLogin": "bob",
+            "slot": 2
+          },
+          {
+            "type": 529,
+            "sourceSlot": 2,
+            "destinationSlot": 3
+          },
+          {
+            "type": 531,
+            "slot": 3,
+            "audioEnabled": true,
+            "videoEnabled": true,
+            "live": true,
+            "volume": 70
+          },
+          {
+            "type": 530,
+            "userLogin": "bob",
+            "slot": 3
+          },
+          {
+            "type": 524
+          },
+          {
+            "type": 523
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "gs"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "GET guest_star/channel_settings"
+        },
+        {
+          "platform": "twitch",
+          "call": "PUT guest_star/channel_settings",
+          "body": {
+            "slot_count": 3,
+            "group_layout": "TILED_LAYOUT"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET guest_star/session"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET guest_star/invites",
+          "query": {
+            "session_id": "gs1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "POST guest_star/invites",
+          "query": {
+            "session_id": "gs1",
+            "guest_id": "id-bob"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE guest_star/invites",
+          "query": {
+            "guest_id": "id-bob"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "POST guest_star/slot",
+          "query": {
+            "guest_id": "id-bob",
+            "slot_id": "2"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH guest_star/slot",
+          "query": {
+            "source_slot_id": "2",
+            "destination_slot_id": "3"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH guest_star/slot_settings",
+          "query": {
+            "slot_id": "3",
+            "is_live": "true",
+            "volume": "70"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE guest_star/slot",
+          "query": {
+            "slot_id": "3"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE guest_star/session",
+          "query": {
+            "session_id": "gs1"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "POST guest_star/session"
+        }
+      ],
+      "runs": [
+        {
+          "action": "gs",
+          "after": {
+            "moderatorSendLiveEnabled": true,
+            "slotCount": 4,
+            "guestStarSessionId": "gs2",
+            "guestCount": 0,
+            "inviteCount": 1,
+            "invite0Status": "INVITED"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "countdown: subtract, set, pause, resume, toggle and get",
+    "actions": [
+      {
+        "name": "clock",
+        "subActions": [
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "reset",
+            "startMs": "60000",
+            "maxMs": "120000"
+          },
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "subtract",
+            "perUnitMs": "1000",
+            "units": "10"
+          },
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "pause"
+          },
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "get"
+          },
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "set",
+            "startMs": "90000"
+          },
+          {
+            "type": 99803,
+            "clockId": "c1",
+            "operation": "toggle"
+          },
+          {
+            "type": 99803,
+            "clockId": "nope",
+            "operation": "pause"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "clock"
+      }
+    ],
+    "expect": {
+      "log": [
+        "Countdown: timer not found"
+      ],
+      "runs": [
+        {
+          "action": "clock",
+          "after": {
+            "countdownRunning": true,
+            "countdownMaxMs": 120000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "fetch url: POST with a JSON body, the status, and an error answer's body is still read",
+    "fakes": {
+      "http": {
+        "POST /api": {
+          "id": 7
+        },
+        "PUT /api": {
+          "status": 422,
+          "body": {
+            "error": "bad"
+          }
+        },
+        "GET /nope": {
+          "status": 404,
+          "body": "no"
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "call",
+        "subActions": [
+          {
+            "type": 1007,
+            "url": "{http}/api",
+            "variableName": "made",
+            "parseAsJson": true,
+            "method": 1,
+            "body": "{\"n\": %n%}"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "made %made.id% %httpStatus% %httpOk%"
+          },
+          {
+            "type": 1007,
+            "url": "{http}/api",
+            "variableName": "bad",
+            "parseAsJson": true,
+            "method": 2,
+            "body": "x=1",
+            "contentType": "application/x-www-form-urlencoded"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "bad %bad.error% %httpStatus% %httpOk%"
+          },
+          {
+            "type": 1007,
+            "url": "{http}/nope",
+            "variableName": "page"
+          },
+          {
+            "type": 1020,
+            "logLevel": 2,
+            "message": "get %httpStatus% [%page%]"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "call",
+        "args": {
+          "n": 5
+        },
+        "wait": 800
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "http",
+          "call": "POST /api",
+          "body": {
+            "n": 5
+          }
+        },
+        {
+          "platform": "http",
+          "call": "PUT /api",
+          "body": "x=1"
+        }
+      ],
+      "log": [
+        "made 7 200 True",
+        "bad bad 422 False",
+        "get 404 [%page%]"
+      ]
+    }
+  },
+  {
+    "name": "discord: a rich embed, an edit, a delete and a file, to a webhook and its thread",
+    "fakes": {
+      "http": {
+        "POST /hook?wait=true": {
+          "id": "m1",
+          "channel_id": "c9"
+        },
+        "POST /hook?wait=true&thread_id=t5": {
+          "id": "m2",
+          "channel_id": "c9"
+        },
+        "PATCH /hook/messages/m1": {
+          "id": "m1"
+        },
+        "DELETE /hook/messages/m1": {},
+        "POST /hook?wait=true&thread_id=t6": {
+          "id": "m3"
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "dc",
+        "subActions": [
+          {
+            "type": 3,
+            "file": "{tmp}/clip.txt",
+            "text": "a clip",
+            "append": false
+          },
+          {
+            "type": 99743,
+            "webhookUrl": "{http}/hook",
+            "threadId": "t6",
+            "file": "{tmp}/clip.txt",
+            "fileName": "best.txt",
+            "content": "look",
+            "username": "Bot"
+          },
+          {
+            "type": 99740,
+            "webhookUrl": "{http}/hook?token=x",
+            "username": "Bot",
+            "title": "Live: %game%",
+            "description": "come in",
+            "color": "#FF8800",
+            "fields": {
+              "Viewers": "%n%",
+              "Empty": ""
+            },
+            "inlineFields": true,
+            "footer": "Streamerz",
+            "timestamp": false
+          },
+          {
+            "type": 99741,
+            "webhookUrl": "{http}/hook",
+            "messageId": "%messageId%",
+            "content": "edited",
+            "title": "Over"
+          },
+          {
+            "type": 99742,
+            "webhookUrl": "{http}/hook",
+            "messageId": "m1"
+          },
+          {
+            "type": 99740,
+            "webhookUrl": "{http}/hook",
+            "threadId": "t5",
+            "content": "in a thread"
+          },
+          {
+            "type": 99740,
+            "webhookUrl": "{http}/hook"
+          },
+          {
+            "type": 99741,
+            "webhookUrl": "{http}/hook",
+            "messageId": "m1"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "dc",
+        "args": {
+          "game": "Chess",
+          "n": 12
+        },
+        "wait": 800
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "http",
+          "call": "POST /hook?wait=true&thread_id=t6"
+        },
+        {
+          "platform": "http",
+          "call": "POST /hook?wait=true",
+          "body": {
+            "username": "Bot",
+            "embeds": [
+              {
+                "title": "Live: Chess",
+                "description": "come in",
+                "color": 16746496,
+                "footer": {
+                  "text": "Streamerz"
+                },
+                "fields": [
+                  {
+                    "name": "Viewers",
+                    "value": "12",
+                    "inline": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "platform": "http",
+          "call": "PATCH /hook/messages/m1",
+          "body": {
+            "content": "edited",
+            "embeds": [
+              {
+                "title": "Over"
+              }
+            ]
+          }
+        },
+        {
+          "platform": "http",
+          "call": "DELETE /hook/messages/m1"
+        },
+        {
+          "platform": "http",
+          "call": "POST /hook?wait=true&thread_id=t5",
+          "body": {
+            "content": "in a thread"
+          }
+        }
+      ],
+      "log": [
+        "nothing to post",
+        "nothing to change"
+      ],
+      "runs": [
+        {
+          "action": "dc",
+          "after": {
+            "discordChannelId": "c9",
+            "messageId": "m2"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "obs tools: move, volume with a fade, monitor, studio mode, transition, camera, hotkey, profile, settings and a timed show",
+    "fakes": {
+      "obs": {
+        "GetSceneItemId": {
+          "sceneItemId": 7
+        },
+        "GetInputVolume": {
+          "inputVolumeMul": 1.0
+        },
+        "GetStudioModeEnabled": {
+          "studioModeEnabled": false
+        },
+        "ToggleVirtualCam": {
+          "outputActive": true
+        },
+        "GetLastReplayBufferReplay": {
+          "savedReplayPath": "/tmp/replay.mkv"
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "obs",
+        "subActions": [
+          {
+            "type": 99750,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "x": "%x%",
+            "scale": "50",
+            "rotation": "",
+            "cropLeft": "10"
+          },
+          {
+            "type": 99750,
+            "sceneName": "Main",
+            "sourceName": "Cam"
+          },
+          {
+            "type": 99751,
+            "inputName": "Music",
+            "level": "20",
+            "unit": 0,
+            "fade": 300
+          },
+          {
+            "type": 99751,
+            "inputName": "Music",
+            "level": "-20",
+            "unit": 1,
+            "fade": 0
+          },
+          {
+            "type": 99752,
+            "inputName": "Music",
+            "monitor": 1
+          },
+          {
+            "type": 99753,
+            "state": 2
+          },
+          {
+            "type": 99754,
+            "sceneName": "Next"
+          },
+          {
+            "type": 99755
+          },
+          {
+            "type": 99756,
+            "transitionName": "Fade",
+            "duration": "750"
+          },
+          {
+            "type": 99757,
+            "state": 2
+          },
+          {
+            "type": 99758
+          },
+          {
+            "type": 99759,
+            "hotkeyName": "OBSBasic.StartStreaming"
+          },
+          {
+            "type": 99760,
+            "profileName": "Vertical"
+          },
+          {
+            "type": 99761,
+            "collectionName": "Show"
+          },
+          {
+            "type": 99762
+          },
+          {
+            "type": 99763,
+            "sourceName": "Cam",
+            "filterName": "Blur",
+            "settings": {
+              "size": "12",
+              "on": "true",
+              "name": "x"
+            }
+          },
+          {
+            "type": 99764,
+            "inputName": "Text",
+            "settings": {
+              "text": "hi %x%"
+            }
+          },
+          {
+            "type": 99765,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "duration": 100,
+            "wait": true
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "obs",
+        "args": {
+          "x": 100
+        },
+        "wait": 1500
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "obs",
+          "call": "SetSceneItemTransform",
+          "data": {
+            "sceneName": "Main",
+            "sceneItemId": 7,
+            "sceneItemTransform": {
+              "positionX": 100.0,
+              "scaleX": 0.5,
+              "scaleY": 0.5,
+              "cropLeft": 10
+            }
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "GetInputVolume",
+          "data": {
+            "inputName": "Music"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputVolume",
+          "data": {
+            "inputName": "Music",
+            "inputVolumeMul": 0.2
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputVolume",
+          "data": {
+            "inputName": "Music",
+            "inputVolumeMul": 0.1
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputAudioMonitorType",
+          "data": {
+            "monitorType": "OBS_MONITORING_TYPE_MONITOR_ONLY"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetStudioModeEnabled",
+          "data": {
+            "studioModeEnabled": true
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetCurrentPreviewScene",
+          "data": {
+            "sceneName": "Next"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "TriggerStudioModeTransition"
+        },
+        {
+          "platform": "obs",
+          "call": "SetCurrentSceneTransition",
+          "data": {
+            "transitionName": "Fade"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetCurrentSceneTransitionDuration",
+          "data": {
+            "transitionDuration": 750
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "ToggleVirtualCam"
+        },
+        {
+          "platform": "obs",
+          "call": "SplitRecordFile"
+        },
+        {
+          "platform": "obs",
+          "call": "TriggerHotkeyByName",
+          "data": {
+            "hotkeyName": "OBSBasic.StartStreaming"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetCurrentProfile",
+          "data": {
+            "profileName": "Vertical"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetCurrentSceneCollection",
+          "data": {
+            "sceneCollectionName": "Show"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "GetLastReplayBufferReplay"
+        },
+        {
+          "platform": "obs",
+          "call": "SetSourceFilterSettings",
+          "data": {
+            "sourceName": "Cam",
+            "filterName": "Blur",
+            "filterSettings": {
+              "size": 12,
+              "on": true,
+              "name": "x"
+            },
+            "overlay": true
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputSettings",
+          "data": {
+            "inputName": "Text",
+            "inputSettings": {
+              "text": "hi 100"
+            }
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemEnabled",
+          "data": {
+            "sceneItemEnabled": true
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemEnabled",
+          "data": {
+            "sceneItemEnabled": false
+          }
+        }
+      ],
+      "log": [
+        "nothing to change"
+      ],
+      "runs": [
+        {
+          "action": "obs",
+          "after": {
+            "obsStudioMode": true,
+            "obsVirtualCamera": true,
+            "obsReplayPath": "/tmp/replay.mkv"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "text and data: regex, text changes, split, json, counter, a cooldown gate and a duration",
+    "actions": [
+      {
+        "name": "data",
+        "subActions": [
+          {
+            "type": 99780,
+            "input": "order 66 now",
+            "pattern": "(\\d+) (\\w+)",
+            "variableName": "num"
+          },
+          {
+            "type": 99780,
+            "input": "nothing here",
+            "pattern": "\\d+",
+            "variableName": "none"
+          },
+          {
+            "type": 99781,
+            "input": "a-b-c",
+            "pattern": "-",
+            "replacement": "+",
+            "all": true,
+            "variableName": "all"
+          },
+          {
+            "type": 99781,
+            "input": "a-b-c",
+            "pattern": "-",
+            "replacement": "+",
+            "all": false,
+            "variableName": "one"
+          },
+          {
+            "type": 99781,
+            "input": "Hello Ana",
+            "pattern": "(?<n>ana)",
+            "replacement": "[${n}]",
+            "ignoreCase": true
+          },
+          {
+            "type": 99782,
+            "input": "heLLo wORLD",
+            "how": 2,
+            "variableName": "title"
+          },
+          {
+            "type": 99783,
+            "input": "red, green ,,blue",
+            "separator": ",",
+            "variableName": "color"
+          },
+          {
+            "type": 99784,
+            "input": "{\"a\":{\"b\":[5,{\"c\":\"x\"}]},\"n\":null}",
+            "path": "a.b[1].c",
+            "variableName": "deep"
+          },
+          {
+            "type": 99784,
+            "input": "{\"a\":1}",
+            "path": "a.z",
+            "variableName": "miss"
+          },
+          {
+            "type": 99785,
+            "name": "hits",
+            "operation": 0,
+            "amount": "5",
+            "persisted": false
+          },
+          {
+            "type": 99785,
+            "name": "hits",
+            "operation": 1,
+            "amount": "2",
+            "persisted": false,
+            "variableName": "left"
+          },
+          {
+            "type": 99787,
+            "seconds": "3723",
+            "style": 1,
+            "variableName": "short"
+          },
+          {
+            "type": 99787,
+            "seconds": "3723",
+            "style": 0
+          }
+        ]
+      },
+      {
+        "name": "gated",
+        "subActions": [
+          {
+            "type": 123,
+            "variableName": "reached",
+            "value": "no"
+          },
+          {
+            "type": 99786,
+            "key": "welcome",
+            "duration": 60,
+            "perUser": false
+          },
+          {
+            "type": 123,
+            "variableName": "reached",
+            "value": "yes"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "data"
+      },
+      {
+        "run": "gated"
+      },
+      {
+        "run": "gated"
+      }
+    ],
+    "expect": {
+      "runs": [
+        {
+          "action": "data",
+          "after": {
+            "numFound": true,
+            "num[0]": "66 now",
+            "num[1]": "66",
+            "num[2]": "now",
+            "noneFound": false,
+            "all": "a+b+c",
+            "one": "a+b-c",
+            "replaced": "Hello [Ana]",
+            "title": "Hello World",
+            "colorCount": 3,
+            "color0": "red",
+            "color1": "green",
+            "color2": "blue",
+            "deepFound": true,
+            "deep": "x",
+            "missFound": false,
+            "counter": 5,
+            "left": 3,
+            "short": "1h 2m 3s",
+            "duration": "1:02:03"
+          }
+        },
+        {
+          "action": "gated",
+          "after": {
+            "reached": "yes",
+            "cooldownLeft": 0
+          }
+        },
+        {
+          "action": "gated",
+          "after": {
+            "reached": "no",
+            "cooldownLeft": 60
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch and youtube extras: AutoMod check, shared chat, channel info, latest video, a chat mode for a while, go live",
+    "fakes": {
+      "twitch": {
+        "POST moderation/enforcements/status": {
+          "data": [
+            {
+              "msg_id": "check",
+              "is_permitted": false
+            }
+          ]
+        },
+        "GET shared_chat/session": {
+          "error": "HTTP 404 not in a shared chat"
+        },
+        "GET channels": {
+          "data": [
+            {
+              "broadcaster_name": "Pal",
+              "broadcaster_login": "pal",
+              "broadcaster_id": "id-pal",
+              "title": "Chess night",
+              "game_name": "Chess",
+              "game_id": "743",
+              "broadcaster_language": "en",
+              "tags": [
+                "a",
+                "b"
+              ]
+            }
+          ]
+        },
+        "GET videos": {
+          "data": [
+            {
+              "id": "v9",
+              "title": "Last stream",
+              "url": "https://twitch.tv/videos/9",
+              "duration": "1h2m3s",
+              "view_count": 40
+            }
+          ]
+        },
+        "GET chat/settings": {
+          "data": [
+            {
+              "slow_mode": true,
+              "slow_mode_wait_time": 10,
+              "follower_mode": false,
+              "subscriber_mode": false
+            }
+          ]
+        }
+      },
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "extras",
+        "subActions": [
+          {
+            "type": 593,
+            "message": "hello %user%"
+          },
+          {
+            "type": 99541
+          },
+          {
+            "type": 99542,
+            "userLogin": "pal"
+          },
+          {
+            "type": 99543,
+            "userLogin": "pal",
+            "kind": 0
+          },
+          {
+            "type": 99544,
+            "mode": 0,
+            "value": "45",
+            "duration": 1
+          },
+          {
+            "type": 99664,
+            "stage": 1
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "extras",
+        "args": {
+          "user": "ana"
+        },
+        "wait": 300
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/enforcements/status",
+          "body": {
+            "data": [
+              {
+                "msg_text": "hello ana"
+              }
+            ]
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET shared_chat/session"
+        },
+        {
+          "platform": "twitch",
+          "call": "GET channels",
+          "query": {
+            "broadcaster_id": "id-pal"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET videos",
+          "query": {
+            "user_id": "id-pal",
+            "type": "archive",
+            "first": "1"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "extras",
+          "after": {
+            "sharedChatActive": false,
+            "channelTitle": "Chess night",
+            "channelTags": "a, b",
+            "videoFound": true,
+            "videoUrl": "https://twitch.tv/videos/9",
+            "videoViews": 40,
+            "autoModStatusResult": true,
+            "isPermitted": false
+          }
+        }
+      ],
+      "chat": [
+        {
+          "platform": "twitch",
+          "text": "/slow_mode for 1s"
+        },
+        {
+          "platform": "youtube",
+          "text": "/go live"
+        }
+      ]
+    }
+  },
+  {
+    "name": "twitch: a clip from a VOD, the last stream's end or a moment in a given one",
+    "config": {
+      "twitch": {
+        "broadcaster": {
+          "userId": "1",
+          "login": "me",
+          "displayName": "Me",
+          "token": {
+            "accessToken": "a",
+            "scope": [
+              "channel:manage:clips"
+            ]
+          }
+        }
+      }
+    },
+    "fakes": {
+      "twitch": {
+        "GET videos": {
+          "data": [
+            {
+              "id": "v9",
+              "title": "Last night",
+              "duration": "1h2m3s"
+            }
+          ]
+        },
+        "POST videos/clips": {
+          "data": [
+            {
+              "id": "VodClip",
+              "edit_url": "https://clips.twitch.tv/VodClip/edit"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "latest",
+        "subActions": [
+          {
+            "type": 99545,
+            "duration": 20
+          }
+        ]
+      },
+      {
+        "name": "given",
+        "subActions": [
+          {
+            "type": 99545,
+            "videoId": "https://www.twitch.tv/videos/v9/",
+            "offset": 10,
+            "duration": 45.04,
+            "title": "Best of %user%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "latest"
+      },
+      {
+        "run": "given",
+        "args": {
+          "user": "ana"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "call": "GET videos",
+          "query": {
+            "user_id": "{broadcaster_id}",
+            "type": "archive"
+          }
+        },
+        {
+          "call": "POST videos/clips",
+          "query": {
+            "editor_id": "{broadcaster_id}",
+            "vod_id": "v9",
+            "vod_offset": "3723",
+            "duration": "20",
+            "title": "Last night"
+          }
+        },
+        {
+          "call": "POST videos/clips",
+          "query": {
+            "vod_id": "v9",
+            "vod_offset": "45",
+            "duration": "45",
+            "title": "Best of ana"
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "latest",
+          "after": {
+            "createClipSuccess": true,
+            "createClipId": "VodClip",
+            "createClipUrl": "https://clips.twitch.tv/VodClip",
+            "createClipEditUrl": "https://clips.twitch.tv/VodClip/edit"
+          }
+        },
+        {
+          "action": "given",
+          "after": {
+            "createClipSuccess": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "core: a list kept as a global, added to, checked, read, taken from and joined",
+    "actions": [
+      {
+        "name": "list",
+        "subActions": [
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "%user%",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "Bia",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 0,
+            "value": "Caio",
+            "persisted": false
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 2,
+            "value": "bia",
+            "persisted": false,
+            "variableName": "has"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 3,
+            "value": "-1",
+            "persisted": false,
+            "variableName": "last"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 1,
+            "value": "BIA",
+            "persisted": false,
+            "variableName": "gone"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 7,
+            "persisted": false,
+            "variableName": "next"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 8,
+            "value": " | ",
+            "persisted": false,
+            "variableName": "all"
+          },
+          {
+            "type": 99788,
+            "name": "queue",
+            "operation": 3,
+            "value": "5",
+            "persisted": false,
+            "variableName": "none"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "list",
+        "args": {
+          "user": "Ana"
+        }
+      }
+    ],
+    "expect": {
+      "runs": [
+        {
+          "action": "list",
+          "after": {
+            "has": "Bia",
+            "hasFound": true,
+            "last": "Caio",
+            "gone": "Bia",
+            "next": "Ana",
+            "nextCount": 1,
+            "all": "Caio",
+            "allCount": 1,
+            "none": "",
+            "noneFound": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "core: the clipboard read into a variable and set to a filled-in text",
+    "fakes": {
+      "clipboard": {
+        "GET": "copied text"
+      }
+    },
+    "actions": [
+      {
+        "name": "clip",
+        "subActions": [
+          {
+            "type": 99789
+          },
+          {
+            "type": 99790,
+            "text": "Hi %user%"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "clip",
+        "args": {
+          "user": "ana"
+        }
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "clipboard",
+          "call": "GET"
+        },
+        {
+          "platform": "clipboard",
+          "call": "SET",
+          "text": "Hi ana"
+        }
+      ],
+      "runs": [
+        {
+          "action": "clip",
+          "after": {
+            "clipboard": "copied text"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "youtube: the live's video added to a playlist by its link, and no poll to read",
+    "fakes": {
+      "youtube": {
+        "POST playlistItems?part=snippet": {
+          "id": "item1"
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "yt",
+        "subActions": [
+          {
+            "type": 99666,
+            "playlist": "https://www.youtube.com/playlist?list=PLabc&si=x"
+          },
+          {
+            "type": 99665
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "yt"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "youtube",
+          "call": "POST playlistItems?part=snippet",
+          "body": {
+            "snippet": {
+              "playlistId": "PLabc",
+              "resourceId": {
+                "kind": "youtube#video",
+                "videoId": "{video}"
+              }
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "yt",
+          "after": {
+            "playlistItemId": "item1",
+            "pollFound": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "obs tools: an output by name, a source locked and toggled, audio sync and balance",
+    "fakes": {
+      "obs": {
+        "GetSceneItemId": {
+          "sceneItemId": 7
+        },
+        "ToggleOutput": {
+          "outputActive": true
+        },
+        "GetSceneItemLocked": {
+          "sceneItemLocked": true
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "obs",
+        "subActions": [
+          {
+            "type": 99766,
+            "outputName": "Vertical",
+            "state": 2
+          },
+          {
+            "type": 99767,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "state": 0
+          },
+          {
+            "type": 99767,
+            "sceneName": "Main",
+            "sourceName": "Cam",
+            "state": 2
+          },
+          {
+            "type": 99768,
+            "inputName": "Mic",
+            "offset": "-1200"
+          },
+          {
+            "type": 99769,
+            "inputName": "Mic",
+            "balance": "25"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "obs"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "obs",
+          "call": "ToggleOutput",
+          "data": {
+            "outputName": "Vertical"
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemLocked",
+          "data": {
+            "sceneName": "Main",
+            "sceneItemId": 7,
+            "sceneItemLocked": true
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "GetSceneItemLocked",
+          "data": {
+            "sceneItemId": 7
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetSceneItemLocked",
+          "data": {
+            "sceneItemLocked": false
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputAudioSyncOffset",
+          "data": {
+            "inputName": "Mic",
+            "inputAudioSyncOffset": -950
+          }
+        },
+        {
+          "platform": "obs",
+          "call": "SetInputAudioBalance",
+          "data": {
+            "inputName": "Mic",
+            "inputAudioBalance": 0.25
+          }
+        }
+      ],
+      "runs": [
+        {
+          "action": "obs",
+          "after": {
+            "obsOutputActive": true,
+            "obsSourceLocked": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "every platform: Update Stream sets the title, category and tags given, and leaves the rest",
+    "fakes": {
+      "twitch": {
+        "GET games": {
+          "data": [
+            {
+              "id": "743",
+              "name": "Chess",
+              "box_art_url": "https://x/{width}x{height}.jpg"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "update",
+        "subActions": [
+          {
+            "type": 99734,
+            "platforms": [
+              "twitch"
+            ],
+            "title": "Chess with %user%",
+            "category": "chess",
+            "tags": [
+              "Chess",
+              "%lang%"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "title only",
+        "subActions": [
+          {
+            "type": 99734,
+            "platforms": [
+              "twitch"
+            ],
+            "title": "Just a title",
+            "category": "",
+            "tags": []
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "update",
+        "args": {
+          "user": "ana",
+          "lang": "English"
+        }
+      },
+      {
+        "run": "title only"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "title": "Chess with ana"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "GET games",
+          "query": {
+            "name": "chess"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "game_id": "743"
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "tags": [
+              "Chess",
+              "English"
+            ]
+          }
+        },
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "title": "Just a title"
+          }
+        }
+      ],
+      "notCalls": [
+        {
+          "platform": "twitch",
+          "call": "PATCH channels",
+          "body": {
+            "tags": []
+          }
+        }
+      ]
+    }
+  }
+]

@@ -90,6 +90,7 @@ pub async fn run(
             Event::Input => Some(Message::Input),
             Event::Toggle => Some(Message::Toggle),
             Event::Show => Some(Message::Show),
+            Event::Reopen => Some(Message::Reopen),
             Event::Restart => Some(Message::Restart),
             Event::Quit => Some(Message::Quit),
             _ => None,
@@ -141,6 +142,22 @@ pub async fn run(
                         to_front(&changes);
                         if renderer.is_none() { recovery.reset(); renderer = open(engine.clone(), changes.clone(), requests_tx.clone(), None); }
                     }
+                    Some(Message::SoftwareRender) => {
+                        let on = !engine.config().software_render;
+                        if let Err(error) = super::sections::set(&engine, "settings", "software_render", &serde_json::json!(on)) {
+                            crate::warn(format!("Software rendering: {error}"));
+                        }
+                    }
+                    Some(Message::Reopen) => {
+                        if let Some(task) = renderer.take() {
+                            task.abort();
+                            let _ = task.await;
+                            crate::host::detach();
+                            recovery.reset();
+                            to_front(&changes);
+                            renderer = open(engine.clone(), changes.clone(), requests_tx.clone(), None);
+                        }
+                    }
                     Some(Message::Restart) => {
                         if let Some(task) = renderer.take() { task.abort(); let _ = task.await; crate::host::detach(); }
                         crate::update::restart();
@@ -160,6 +177,14 @@ pub async fn run(
                 let crash = match result {
                     Ok(Ok(super::frontend::Exit::Clean)) => None,
                     Ok(Ok(super::frontend::Exit::Crashed(info))) => Some(info),
+                    // The GPU couldn't show the window or crashed drawing it. Once, it is drawn in software.
+                    Ok(Ok(super::frontend::Exit::GpuFailed(info))) if super::frontend::use_software(engine.config().software_render) => {
+                        let reason = info.map(|info| format!(" ({})", info.summary.trim())).unwrap_or_default();
+                        crate::warn(format!("The GPU couldn't draw the window{reason}; drawing it in software"));
+                        renderer = open(engine.clone(), changes.clone(), requests_tx.clone(), None);
+                        None
+                    }
+                    Ok(Ok(super::frontend::Exit::GpuFailed(info))) => Some(super::frontend::report(info)),
                     Ok(Err(error)) => {
                         let msg = error.to_string();
                         crate::report_error(&crate::error::StreamerzError::frontend_crash(format!("Streamerz frontend: {msg}")));
@@ -168,6 +193,7 @@ pub async fn run(
                             summary: msg,
                             report_path: Some(path),
                             panic_recorded: false,
+                            gpu: false,
                         })
                     }
                     Err(error) => {

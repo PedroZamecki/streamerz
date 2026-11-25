@@ -256,6 +256,12 @@ pub struct TwitchConfig {
     pub channel: String,
     /// `channel`'s user id, looked up on connecting.
     pub channel_id: String,
+    /// The broadcaster's login also asks for the permissions a few tools need (blocked terms, AutoMod
+    /// level, chat colour, blocking, the schedule), once the user chose to give them.
+    pub more_permissions: bool,
+    /// The latest subscriber Streamerz saw (a Sub, Resub or Gift Sub): Twitch has no call for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_subscriber: Option<Value>,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
 }
@@ -4695,6 +4701,12 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
 /// What the channel's owner is on Twitch: "partner", "affiliate" or "" (neither). Read at connect.
 static CHANNEL_TYPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// What the channel's owner is on Twitch: `Some("partner")`, `Some("affiliate")`, `Some("")` (neither), or
+/// `None` while it isn't read yet (before the first connect).
+pub fn channel_type() -> Option<String> {
+    CHANNEL_TYPE.lock().ok().and_then(|t| t.clone())
+}
+
 /// Whether the channel may run commercials (only affiliates and partners can); true when not known yet.
 pub fn commercials_possible() -> bool {
     CHANNEL_TYPE
@@ -4815,6 +4827,83 @@ fn reward_unknown(channel_id: String) {
     if due && !channel_id.is_empty() {
         tokio::task::spawn_local(async move { load_public_rewards(&channel_id).await });
     }
+}
+
+thread_local! {
+    /// The rewards Streamerz may change (Twitch lets an app change only those it made), once asked.
+    static OURS: std::cell::RefCell<Option<std::collections::HashSet<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The channel's rewards as known, in Helix's shape.
+pub fn rewards_known() -> Vec<Value> {
+    SEEN.with_borrow(|s| s.rewards.values().cloned().collect())
+}
+
+/// Whether Streamerz may change the reward `id`; None until Twitch was asked.
+pub fn reward_ours(id: &str) -> Option<bool> {
+    OURS.with_borrow(|o| o.as_ref().map(|o| o.contains(id)))
+}
+
+/// Tests: the channel's rewards, and which of them are Streamerz's.
+#[cfg(test)]
+pub fn rewards_for_test(all: Vec<Value>, ours: &[&str]) {
+    SEEN.with_borrow_mut(|s| {
+        s.rewards.clear();
+        for r in all {
+            if let Some(id) = r["id"].as_str() {
+                s.rewards.insert(id.into(), r.clone());
+            }
+        }
+    });
+    OURS.with_borrow_mut(|o| *o = Some(ours.iter().map(|id| id.to_string()).collect()));
+}
+
+/// Asks Twitch for the channel's rewards again, and which ones Streamerz may change.
+pub async fn reload_rewards(engine: &Rc<Engine>) -> Result<(), String> {
+    let Some(tw) = engine.twitch() else {
+        return Err("Twitch isn't connected".into());
+    };
+    let b = vec![("broadcaster_id", "{broadcaster_id}")];
+    let all = tw
+        .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
+        .await?;
+    let mut mine = b;
+    mine.push(("only_manageable_rewards", "true"));
+    let ours = tw
+        .helix("GET", "channel_points/custom_rewards", mine, None, false, false)
+        .await?;
+    SEEN.with_borrow_mut(|s| {
+        for r in all["data"].as_array().into_iter().flatten() {
+            if let Some(id) = r["id"].as_str() {
+                s.rewards.insert(id.into(), r.clone());
+            }
+        }
+    });
+    let ids = ours["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["id"].as_str().map(str::to_string))
+        .collect();
+    OURS.with_borrow_mut(|o| *o = Some(ids));
+    publish_rewards();
+    Ok(())
+}
+
+/// A reward Streamerz created or changed (Helix's shape): the editors offer it at once.
+pub fn reward_saved(reward: &Value) {
+    let Some(id) = reward["id"].as_str() else { return };
+    OURS.with_borrow_mut(|o| {
+        o.get_or_insert_with(Default::default).insert(id.to_string());
+    });
+    SEEN.with_borrow_mut(|s| drop(s.rewards.insert(id.into(), reward.clone())));
+    publish_rewards();
+}
+
+/// A reward that was deleted.
+pub fn reward_removed(id: &str) {
+    SEEN.with_borrow_mut(|s| drop(s.rewards.remove(id)));
+    publish_rewards();
 }
 
 /// Puts the channel's rewards (as known) where the editors offer them.
@@ -5507,60 +5596,63 @@ pub(crate) mod tests {
 
     #[test]
     fn reward_redemption_notifications() {
-        let (tx, _rx) = watch::channel(Config::default());
-        let cfg = Arc::new(tx);
-        let engine = Engine::new(cfg.clone(), |_| {});
+        // A redemption is counted and saved: it needs the runtime.
+        crate::engine::tests::run(async {
+            let (tx, _rx) = watch::channel(Config::default());
+            let cfg = Arc::new(tx);
+            let engine = Engine::new(cfg.clone(), |_| {});
 
-        let broadcaster = TwitchAccount {
-            user_id: "123".into(),
-            login: "streamer".into(),
-            display_name: "Streamer".into(),
-            ..Default::default()
-        };
+            let broadcaster = TwitchAccount {
+                user_id: "123".into(),
+                login: "streamer".into(),
+                display_name: "Streamer".into(),
+                ..Default::default()
+            };
 
-        let redemption = json!({
-            "id": "red-1",
-            "user_id": "456",
-            "user_login": "viewer",
-            "user_name": "Viewer",
-            "user_input": "hydrate!",
-            "status": "unfulfilled",
-            "reward": {
-                "id": "rew-1",
-                "title": "Drink Water",
-                "cost": 500,
-                "prompt": "Stay hydrated"
-            }
+            let redemption = json!({
+                "id": "red-1",
+                "user_id": "456",
+                "user_login": "viewer",
+                "user_name": "Viewer",
+                "user_input": "hydrate!",
+                "status": "unfulfilled",
+                "reward": {
+                    "id": "rew-1",
+                    "title": "Drink Water",
+                    "cost": 500,
+                    "prompt": "Stay hydrated"
+                }
+            });
+            handle_notification(
+                &engine,
+                &broadcaster,
+                &cfg,
+                "channel.channel_points_custom_reward_redemption.add",
+                &redemption,
+            );
+
+            let updated = json!({
+                "id": "red-1",
+                "user_id": "456",
+                "user_login": "viewer",
+                "user_name": "Viewer",
+                "user_input": "hydrate!",
+                "status": "fulfilled",
+                "reward": {
+                    "id": "rew-1",
+                    "title": "Drink Water",
+                    "cost": 500,
+                    "prompt": "Stay hydrated"
+                }
+            });
+            handle_notification(
+                &engine,
+                &broadcaster,
+                &cfg,
+                "channel.channel_points_custom_reward_redemption.update",
+                &updated,
+            );
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            "channel.channel_points_custom_reward_redemption.add",
-            &redemption,
-        );
-
-        let updated = json!({
-            "id": "red-1",
-            "user_id": "456",
-            "user_login": "viewer",
-            "user_name": "Viewer",
-            "user_input": "hydrate!",
-            "status": "fulfilled",
-            "reward": {
-                "id": "rew-1",
-                "title": "Drink Water",
-                "cost": 500,
-                "prompt": "Stay hydrated"
-            }
-        });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            "channel.channel_points_custom_reward_redemption.update",
-            &updated,
-        );
     }
 
     #[test]

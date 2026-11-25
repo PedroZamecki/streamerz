@@ -44,11 +44,13 @@ pub mod model;
 mod notify;
 mod oauth;
 pub mod obs;
+mod overlay_preview;
 mod overlay_shot;
 mod overlays;
 mod package;
 pub mod ports;
 pub mod remote;
+mod rewards;
 pub mod roles;
 mod sandbox;
 mod scenario;
@@ -58,6 +60,7 @@ pub mod servers;
 mod slash;
 mod slobs;
 mod songrequests;
+mod sound;
 mod spotify;
 mod storage;
 mod streamdeck;
@@ -70,6 +73,7 @@ pub mod types;
 mod update;
 mod usergroups;
 mod vars;
+mod voice;
 mod webcast;
 #[cfg(not(windows))]
 mod x11input;
@@ -165,6 +169,8 @@ pub struct Config {
     memory_saver: bool,
     /// Dialogs, menus and floating panels move as they come and go (Settings, Appearance).
     animations: bool,
+    /// Draw the window on the processor instead of the GPU (Settings, Appearance).
+    software_render: bool,
     autostart: bool,
     /// Keep [DEBUG] lines in the log.
     debug_log: bool,
@@ -178,6 +184,16 @@ pub struct Config {
     action_group_icons: model::Obj,
     /// What each action group declares besides its values: settings, files, commands and timers.
     action_groups: model::Obj,
+    /// The Output settings of the Sounds page: the default and monitor devices, the master volume.
+    #[serde(default)]
+    sounds: sound::Settings,
+    /// How the voices speak by default (the Voices of the Sounds page).
+    #[serde(default)]
+    voices: voice::Settings,
+    /// The live controls of each overlay as they are now (`meta.template.controls`), by group then
+    /// control. Kept apart from its settings, so sharing an overlay never carries them.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    overlay_controls: model::Obj,
     /// This installation's secret behind the tokens overlay pages call back with (`overlays::token`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     overlay_key: String,
@@ -208,6 +224,9 @@ pub struct Config {
     quotes: Vec<model::Obj>,
     /// Persisted command counters: by command id, and by "command id:user id".
     counters: model::Obj,
+    /// Reward counters and groups (Twitch and Kick), as Streamer.bot keeps them.
+    #[serde(skip_serializing_if = "rewards::Book::is_empty")]
+    pub rewards: rewards::Book,
     /// Twitch configuration (broadcaster, bot, auto-connect, settings).
     #[serde(default)]
     pub twitch: twitch::TwitchConfig,
@@ -271,6 +290,7 @@ impl Default for Config {
             start_hidden: true,
             memory_saver: false,
             animations: true,
+            software_render: false,
             autostart: false,
             debug_log: false,
             actions: model::ActionsFile::default(),
@@ -278,6 +298,9 @@ impl Default for Config {
             action_group_variables: Map::new(),
             action_group_icons: Map::new(),
             action_groups: Map::new(),
+            sounds: sound::Settings::default(),
+            voices: voice::Settings::default(),
+            overlay_controls: Map::new(),
             overlay_key: String::new(),
             user_globals: Map::new(),
             global_writes: Map::new(),
@@ -293,6 +316,7 @@ impl Default for Config {
             stream_deck: Default::default(),
             file_tails: Vec::new(),
             counters: Map::new(),
+            rewards: rewards::Book::default(),
             quotes: Vec::new(),
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),
@@ -646,6 +670,8 @@ fn log(level: Level, line: String) {
     let line = redact(&line);
     if matches!(level, Level::Error | Level::Fatal) {
         engine::record_error(&line);
+    } else if level == Level::Warn {
+        engine::record_warning(&line);
     }
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
@@ -1354,6 +1380,12 @@ fn attach_parent_console() {
 }
 
 fn main() {
+    // The audio process (sound.rs): plays what Streamerz pipes to it, nothing else is started.
+    let mut args = std::env::args_os();
+    if args.nth(1).is_some_and(|a| a == "--sound-output") {
+        let device = args.next().and_then(|d| d.into_string().ok()).unwrap_or_default();
+        std::process::exit(sound::output_main(&device));
+    }
     // In Flatpak, settings and caches stay in the host's folders, shared with every other copy.
     sandbox::use_host_folders();
     if std::env::args_os().any(|arg| arg == "--frontend") {
@@ -1468,6 +1500,7 @@ fn main() {
     backup::on_start();
     let (mut cfg, corrupt_config) = load_from_with_report(&config_path());
     tiktok_bridge::restore_pairing(&mut cfg);
+    sound::configure(&cfg.sounds);
     MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
     cleanup_first_words();
     if brand::IS_DEV {
@@ -1553,6 +1586,7 @@ fn main() {
             let _ = sender.send(message);
         })
     };
+    tray::show_software(cfg.software_render);
     rt.spawn(tray::run(tray_sender));
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
@@ -1560,7 +1594,10 @@ fn main() {
     let crash_tx = cmd_tx.clone();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     let backend = move || {
-        tokio::task::LocalSet::new().block_on(&rt, async move {
+        // Keep the Tokio runtime entered while LocalSet drops so tasks holding zbus streams clean up safely.
+        let _enter = rt.enter();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 save_later(c);
             });
@@ -1591,7 +1628,9 @@ fn main() {
             #[cfg(unix)]
             tokio::task::spawn_local(ended(e.clone()));
             core::parent::run(e.clone(), &mut cmd_rx, &mut shell_rx, shell_tx).await;
-        })
+        });
+        drop(local);
+        drop(_enter);
     };
     backend();
     cleanup_dev();

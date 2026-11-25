@@ -46,7 +46,14 @@ pub(super) fn danger(mut button: Value) -> Value {
     button
 }
 
-fn table(kind: &str, title: &str, empty: &str, columns: Vec<Value>, rows: Vec<Value>, actions: Vec<Value>) -> Value {
+pub(super) fn table(
+    kind: &str,
+    title: &str,
+    empty: &str,
+    columns: Vec<Value>,
+    rows: Vec<Value>,
+    actions: Vec<Value>,
+) -> Value {
     json!({"kind": kind, "title": title, "what": "", "guide": "", "columns": columns, "rows": rows, "empty": empty,
         "search": false, "showTitle": false, "actions": actions})
 }
@@ -1370,6 +1377,15 @@ pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crat
     if let Some(fields) = super::accounts::external_fields(kind) {
         return Some(fields);
     }
+    if let Some(fields) = super::rewards::external_fields(kind) {
+        return Some(fields);
+    }
+    if let Some(fields) = super::sounds::external_fields(kind) {
+        return Some(fields);
+    }
+    if let Some(fields) = super::voices::external_fields(engine, kind) {
+        return Some(fields);
+    }
     if kind == "global" {
         return Some(GLOBAL_FIELDS);
     }
@@ -1405,6 +1421,15 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str, item_id: &str) -> Option<R
         return Some(form);
     }
     if let Some(form) = super::accounts::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::rewards::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::sounds::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::voices::external_form(engine, kind) {
         return Some(form);
     }
     if kind == "global" {
@@ -1493,6 +1518,15 @@ pub fn save_external(
         return Some(saved);
     }
     if let Some(saved) = super::accounts::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::rewards::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::sounds::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::voices::save_external(engine, kind, item.clone()) {
         return Some(saved);
     }
     if kind == "global" {

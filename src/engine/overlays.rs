@@ -4,7 +4,9 @@
 //! Anything else is published by the Overlay sub-action. A topic nobody listens to costs a map entry.
 
 use super::Engine;
-use serde_json::{json, Value};
+use crate::model::Obj;
+use serde_json::{json, Map, Value};
+use std::rc::Rc;
 
 /// The most topics kept, so a loop that publishes endless names can't grow the memory.
 const MAX_TOPICS: usize = 64;
@@ -81,6 +83,168 @@ impl Engine {
                 engine.overlay_publish("ad", json!({"running": false, "duration": seconds}));
             }
         });
+    }
+}
+
+/// Overlay Control Changed: a live control of an overlay was set (Streamerz only).
+pub const T_OVERLAY_CONTROL: u32 = 99881;
+
+/// Drafts: the settings an overlay's editor changed and has not saved. They reach only the pages opened
+/// as a preview (`?preview` in their address): OBS keeps showing the saved ones until Save.
+impl Engine {
+    /// The unsaved values of an overlay (empty: none).
+    pub fn overlay_draft(&self, group: &str) -> Map<String, Value> {
+        self.overlay_drafts.borrow().get(group).cloned().unwrap_or_default()
+    }
+
+    /// The settings a preview page of `group` shows: the saved ones with the draft over them.
+    pub fn overlay_preview_settings(&self, group: &str) -> Value {
+        let draft = self.overlay_draft(group);
+        crate::overlays::settings_with(&self.config(), group, &draft)
+    }
+
+    /// Sets a live control of an overlay (`meta.template.controls`): checked, kept (a button is only
+    /// pressed), sent to the overlay's pages and told to actions (Overlay Control Changed, unless
+    /// `quiet`: an action that trigger ran setting a control doesn't run it again). `from` says who:
+    /// `window`, `dock`, `action`, `page` or `mcp`.
+    pub fn overlay_control_set(
+        self: &Rc<Self>,
+        group: &str,
+        name: &str,
+        value: &Value,
+        from: &str,
+        quiet: bool,
+    ) -> Result<Value, String> {
+        let (control, old) = {
+            let config = self.config();
+            if !crate::groups::exists(&config, group) {
+                return Err(format!("there is no overlay {group}"));
+            }
+            crate::groups::controls(&config, group)
+                .into_iter()
+                .find(|(c, _)| c.name == name)
+                .ok_or_else(|| format!("{group} has no control {name}"))?
+        };
+        let value = control.check(value)?;
+        let value = if control.kind == "button" && value.is_null() {
+            json!(crate::fmt::unix_now().as_millis() as u64)
+        } else {
+            value
+        };
+        if control.kind != "button" {
+            self.change(|c| {
+                let all = c.overlay_controls.entry(group.to_string()).or_insert_with(|| json!({}));
+                if !all.is_object() {
+                    *all = json!({});
+                }
+                all[name] = value.clone();
+            });
+        }
+        let old = if control.kind == "button" { Value::Null } else { old };
+        let data = json!({"name": name, "value": value, "old": old, "from": from});
+        self.emit("Control", group, || data.clone());
+        if !quiet {
+            let mut args = Obj::new();
+            args.insert("overlay".into(), group.into());
+            args.insert("control".into(), name.into());
+            args.insert("value".into(), value.clone());
+            args.insert("old".into(), old.clone());
+            args.insert("from".into(), from.into());
+            self.fire(
+                T_OVERLAY_CONTROL,
+                "Overlay Control Changed",
+                "Core/Overlays",
+                "overlays",
+                &args,
+                |t| {
+                    let wants = |k: &str, have: &str| {
+                        t.get(k)
+                            .and_then(Value::as_str)
+                            .is_none_or(|w| w.is_empty() || w == have)
+                    };
+                    wants("overlay", group) && wants("control", name)
+                },
+            );
+        }
+        Ok(json!({"name": name, "value": value, "old": old}))
+    }
+
+    /// Plays an `animation` setting again on the pages of `group` that use it (`streamerz.animate`).
+    pub fn overlay_play(&self, group: &str, setting: &str) {
+        self.emit("Play", group, || json!({"name": setting}));
+    }
+
+    fn draft_changed(&self, group: &str) {
+        let settings = self.overlay_preview_settings(group);
+        self.emit("Draft", group, || settings);
+    }
+
+    /// Change some settings of an overlay's draft, each checked against its setting. The preview pages
+    /// follow at once.
+    pub fn overlay_draft_set(&self, group: &str, values: &Map<String, Value>) -> Result<(), String> {
+        let defs = crate::groups::settings_defs(&crate::groups::meta(&self.config(), group));
+        for (name, value) in values {
+            let def = defs
+                .iter()
+                .find(|d| &d.name == name)
+                .ok_or_else(|| format!("{group} has no setting {name}"))?;
+            if !def.accepts(value) {
+                return Err(format!("{} is not a {}", def.label, def.kind.name()));
+            }
+        }
+        {
+            let mut drafts = self.overlay_drafts.borrow_mut();
+            let draft = drafts.entry(group.to_string()).or_default();
+            let saved = crate::groups::values(&self.config(), group);
+            for (name, value) in values {
+                // A value put back as it is saved is no change.
+                if saved.get(name) == Some(value) {
+                    draft.remove(name);
+                } else {
+                    draft.insert(name.clone(), value.clone());
+                }
+            }
+            if draft.is_empty() {
+                drafts.remove(group);
+            }
+        }
+        self.draft_changed(group);
+        Ok(())
+    }
+
+    /// Keep the draft: its values are saved and every page, OBS too, shows them.
+    pub fn overlay_draft_save(self: &Rc<Self>, group: &str) -> Result<usize, String> {
+        let Some(draft) = self.overlay_drafts.borrow_mut().remove(group) else {
+            return Ok(0);
+        };
+        let mut values = crate::groups::values(&self.config(), group);
+        let changed = draft.len();
+        values.extend(draft);
+        let mut result = Ok(());
+        self.change(|c| result = crate::groups::set_values(c, group, values));
+        self.draft_changed(group);
+        result.map(|_| changed)
+    }
+
+    /// Drop the draft (or one setting of it): the preview pages show the saved values again.
+    pub fn overlay_draft_revert(&self, group: &str, only: Option<&str>) {
+        {
+            let mut drafts = self.overlay_drafts.borrow_mut();
+            match only {
+                Some(name) => {
+                    if let Some(draft) = drafts.get_mut(group) {
+                        draft.remove(name);
+                        if draft.is_empty() {
+                            drafts.remove(group);
+                        }
+                    }
+                }
+                None => {
+                    drafts.remove(group);
+                }
+            }
+        }
+        self.draft_changed(group);
     }
 }
 

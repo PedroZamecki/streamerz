@@ -55,6 +55,8 @@ pub fn group(name: &str) -> &'static str {
         "settings" => return "settings",
         "meld studio" | "polypop" => return "sparkles",
         "kick" | "twitch" | "youtube" | "tiktok" | "obs studio" | "streamlabs desktop" => return "radio",
+        // One sub-action for each platform picked.
+        "every platform" => return "globe",
         _ => {}
     }
     if has(&["camera hub", "webcam", "epoccam", "lenses"]) {

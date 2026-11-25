@@ -16,6 +16,9 @@ pub mod moderation_settings;
 pub mod moderation_suspicious;
 pub mod navigation;
 pub mod outputs;
+pub mod overlay_alerts;
+pub mod overlay_media;
+pub mod overlay_test;
 pub mod overlays;
 pub mod pages;
 pub mod parent;
@@ -27,13 +30,18 @@ pub mod read;
 #[cfg(windows)]
 mod renderer_job;
 pub mod requests;
+pub mod requirements;
+pub mod rewards;
 pub mod sections;
+pub mod setting_fields;
 pub mod settings;
+pub mod sounds;
 pub mod status;
 pub mod stream;
 pub mod timers;
 pub mod undo;
 pub mod view;
+pub mod voices;
 
 /// Submit an engine operation to its existing single-thread runtime.
 pub fn submit(

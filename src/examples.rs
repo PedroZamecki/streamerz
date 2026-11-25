@@ -43,6 +43,7 @@ pub const ALL: &[Example] = &[
     example!("chat", "index.html"),
     example!("danmaku", "index.html"),
     example!("alerts", "index.html"),
+    example!("alert-box", "index.html", "img/star.svg", "sounds/chime.wav"),
     example!("emote-wall", "index.html"),
     example!("top-gifters", actions, "index.html"),
     example!("credits", "index.html"),
@@ -54,6 +55,10 @@ pub const ALL: &[Example] = &[
     example!("goal", "index.html"),
     example!("starting-soon", "index.html", "img/background.svg"),
     example!("control-dock", actions, "dock.html", "banner.html"),
+    example!("countdown-to", "index.html", "sounds/chime.wav"),
+    example!("scene-banner", "index.html"),
+    example!("sound-board", "dock.html", "player.html", "sounds/chime.wav"),
+    example!("chat-aloud", "index.html"),
 ];
 
 /// An example as a template, ready to describe or install.
@@ -157,7 +162,8 @@ mod tests {
                     example.slug
                 );
             }
-            assert_eq!(groups::values(&c, &group).len(), p.meta.variables.len());
+            // Its own settings and Extra CSS.
+            assert_eq!(groups::values(&c, &group).len(), groups::settings_defs(&p.meta).len());
             // What it uses and what it asks for agree, its links lead somewhere.
             assert_eq!(package::checks(&c, &group), Vec::<String>::new(), "{}", example.slug);
             assert_eq!(package::describe(&c, &p)["installed"]["state"], "same");

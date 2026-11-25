@@ -35,6 +35,7 @@ pub fn shown(widget: &W, value: Option<&Value>) -> Value {
             })
             .unwrap_or_default()
             .into(),
+        W::Checks(_) => value.filter(|v| v.is_array()).cloned().unwrap_or_else(|| json!([])),
         _ => text(value).replace("\r\n", "\n").into(),
     }
 }
@@ -79,6 +80,9 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
                 let flags = draft.get(*key).and_then(Value::as_u64).unwrap_or(0) & !bit;
                 (if enabled { flags | bit } else { flags }).into()
             }
+            // A slider gives a number, a box its text.
+            W::Int if value.is_number() => json!(value.as_f64().unwrap_or(0.0).round() as i64),
+            W::Num if value.is_number() => value.clone(),
             W::Int => {
                 let input = input()?.trim();
                 if input.is_empty() {
@@ -130,8 +134,25 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
                     .filter(|(key, _)| !key.is_empty())
                     .collect(),
             ),
-            W::Expression(_) | W::Suggest(_) | W::Entity(_) | W::ActionGroup | W::CommandGroup => {
-                input()?.trim().into()
+            W::Expression(_)
+            | W::Suggest(_)
+            | W::Entity(_)
+            | W::ActionGroup
+            | W::Overlay
+            | W::CommandGroup
+            | W::Who
+            | W::Message(_)
+            | W::Color => input()?.trim().into(),
+            W::Checks(options) => {
+                let ticked = value.as_array().ok_or_else(invalid)?;
+                let ticked: Vec<&str> = ticked.iter().filter_map(Value::as_str).collect();
+                Value::Array(
+                    options
+                        .iter()
+                        .filter(|o| ticked.contains(o))
+                        .map(|o| Value::from(*o))
+                        .collect(),
+                )
             }
             W::Action
             | W::Queue

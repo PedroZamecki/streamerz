@@ -78,6 +78,220 @@ pub async fn execute_discord_webhook(
     }
 }
 
+/// `text` cut to `max` characters (Discord refuses what is longer).
+fn clip(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// A colour as Discord wants it: the number of `#rrggbb`. None when it isn't one.
+pub fn discord_color(text: &str) -> Option<u32> {
+    let hex = text.trim().trim_start_matches('#');
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(&hex[hex.len() - 6..], 16).ok()
+}
+
+/// What an embed is made of, as typed (variables already filled in).
+#[derive(Default)]
+pub struct Embed {
+    pub title: String,
+    pub description: String,
+    pub color: String,
+    pub url: String,
+    pub author: String,
+    pub footer: String,
+    pub image: String,
+    pub thumbnail: String,
+    /// `name=value` lines.
+    pub fields: Vec<(String, String)>,
+    pub inline: bool,
+    pub timestamp: Option<String>,
+}
+
+impl Embed {
+    /// Whether it has anything to show.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty()
+            && self.description.is_empty()
+            && self.author.is_empty()
+            && self.footer.is_empty()
+            && self.image.is_empty()
+            && self.thumbnail.is_empty()
+            && self.fields.is_empty()
+    }
+
+    /// The embed as Discord's JSON, within its limits (a title of 256, a description of 4096, 25 fields).
+    pub fn json(&self) -> Value {
+        let mut e = json!({});
+        let mut set = |k: &str, v: Value| drop(e.as_object_mut().map(|o| o.insert(k.into(), v)));
+        if !self.title.is_empty() {
+            set("title", clip(&self.title, 256).into());
+        }
+        if !self.description.is_empty() {
+            set("description", clip(&self.description, 4096).into());
+        }
+        if !self.url.is_empty() {
+            set("url", self.url.clone().into());
+        }
+        if let Some(color) = discord_color(&self.color) {
+            set("color", color.into());
+        }
+        if !self.author.is_empty() {
+            set("author", json!({"name": clip(&self.author, 256)}));
+        }
+        if !self.footer.is_empty() {
+            set("footer", json!({"text": clip(&self.footer, 2048)}));
+        }
+        if !self.image.is_empty() {
+            set("image", json!({"url": self.image}));
+        }
+        if !self.thumbnail.is_empty() {
+            set("thumbnail", json!({"url": self.thumbnail}));
+        }
+        let fields: Vec<Value> = self
+            .fields
+            .iter()
+            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+            .take(25)
+            .map(|(name, value)| json!({"name": clip(name, 256), "value": clip(value, 1024), "inline": self.inline}))
+            .collect();
+        if !fields.is_empty() {
+            set("fields", fields.into());
+        }
+        if let Some(when) = &self.timestamp {
+            set("timestamp", when.clone().into());
+        }
+        e
+    }
+}
+
+/// The message to post: text, an embed if it has one, and who it shows as.
+pub fn discord_message(content: &str, username: &str, avatar: &str, embed: &Embed, thread_name: &str) -> Value {
+    let mut m = json!({});
+    let mut set = |k: &str, v: Value| drop(m.as_object_mut().map(|o| o.insert(k.into(), v)));
+    if !content.is_empty() {
+        set("content", clip(content, 2000).into());
+    }
+    if !username.is_empty() {
+        set("username", clip(username, 80).into());
+    }
+    if !avatar.is_empty() {
+        set("avatar_url", avatar.into());
+    }
+    if !embed.is_empty() {
+        set("embeds", json!([embed.json()]));
+    }
+    // A forum channel starts a post with this name.
+    if !thread_name.is_empty() {
+        set("thread_name", clip(thread_name, 100).into());
+    }
+    m
+}
+
+/// A webhook's address with what a call needs: no query, and `/messages/{id}` when it has a message.
+fn discord_address(url: &str, message: &str, thread: &str, wait: bool) -> Result<String, String> {
+    let base = url.split('?').next().unwrap_or_default().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("missing webhook URL".into());
+    }
+    let mut out = base.to_string();
+    if !message.is_empty() {
+        out += &format!("/messages/{}", crate::commands::url_encode(message));
+    }
+    let mut query = Vec::new();
+    if wait {
+        query.push("wait=true".to_string());
+    }
+    if !thread.is_empty() {
+        query.push(format!("thread_id={}", crate::commands::url_encode(thread)));
+    }
+    if !query.is_empty() {
+        out += &format!("?{}", query.join("&"));
+    }
+    Ok(out)
+}
+
+/// One call to a webhook: post (`message` empty), edit or delete a message; the answer's message.
+pub async fn discord_call(
+    method: &str,
+    url: &str,
+    message: &str,
+    thread: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
+    let address = discord_address(url, message, thread, method == "POST")?;
+    let headers = vec![("Content-Type".into(), "application/json".into())];
+    let bytes = body
+        .map(|b| serde_json::to_vec(b).unwrap_or_default())
+        .unwrap_or_default();
+    let resp = crate::http::request(method, &address, &headers, &bytes).await?;
+    if (200..300).contains(&resp.status) {
+        Ok(serde_json::from_slice(&resp.body).unwrap_or_default())
+    } else {
+        let said = serde_json::from_slice::<Value>(&resp.body)
+            .ok()
+            .and_then(|v| v["message"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        Err(format!("HTTP {} {said}", resp.status).trim().to_string())
+    }
+}
+
+/// A multipart body: the message as JSON and one file (Discord's `payload_json` and `files[0]`).
+pub fn discord_upload_body(boundary: &str, payload: &Value, filename: &str, file: &[u8]) -> Vec<u8> {
+    let safe = filename.replace(['"', '\r', '\n'], "_");
+    let head = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{payload}\r\n\
+         --{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"{safe}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    );
+    let tail = format!("\r\n--{boundary}--\r\n");
+    let mut out = Vec::with_capacity(head.len() + file.len() + tail.len());
+    out.extend_from_slice(head.as_bytes());
+    out.extend_from_slice(file);
+    out.extend_from_slice(tail.as_bytes());
+    out
+}
+
+/// Posts a file (read now, at most 25 MB) with a message to a webhook; the message's id.
+pub async fn discord_upload(
+    url: &str,
+    thread: &str,
+    payload: &Value,
+    path: &str,
+    name: &str,
+) -> Result<String, String> {
+    const MOST: u64 = 25 * 1024 * 1024;
+    let size = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len();
+    if size > MOST {
+        return Err(format!("{path} is over 25 MB, which Discord won't take"));
+    }
+    let file = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let shown = if name.is_empty() {
+        std::path::Path::new(path)
+            .file_name()
+            .map_or("file".into(), |n| n.to_string_lossy().into_owned())
+    } else {
+        name.to_string()
+    };
+    let boundary = format!("streamerz{:016x}", crate::math::secure_u64());
+    let body = discord_upload_body(&boundary, payload, &shown, &file);
+    drop(file);
+    let address = discord_address(url, "", thread, true)?;
+    let headers = vec![(
+        "Content-Type".into(),
+        format!("multipart/form-data; boundary={boundary}"),
+    )];
+    let resp = crate::http::request("POST", &address, &headers, &body).await?;
+    if (200..300).contains(&resp.status) {
+        Ok(serde_json::from_slice::<Value>(&resp.body).unwrap_or_default()["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. IFTTT Notifications (8001, 8002)
 // ---------------------------------------------------------------------------

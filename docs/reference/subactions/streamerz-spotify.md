@@ -18,11 +18,12 @@ Streamer.bot. In a development instance, Spotify must be connected explicitly.
 | Operation | `operation` | `request` (the default), `remove`, `current`, `next`, `queue`, `pos`, `skip`, `voteskip`, `play`, `pause`, `volume`, `bansong` or `like`. |
 | Song | `query` | A track link, Spotify URI, or search phrase. For `remove`, a moderator's `@name` or number; for `volume`, 0 to 100. |
 | Who | `who` | The lowest role: `everyone`, `subscribers`, `vips`, `moderators` or `broadcaster`. |
+| Requests open | `open` | `false` closes the requests: a request is refused with `msgClosed`. Empty: open. |
 | Reply | `reply`, `replyDone` | What `spotifyReply` says when it worked (and when a vote or a volume finished). |
 | Limits | `maxPerUser`, `maxPerSubscriber`, `unlimitedWho`, `maxLengthMs` | Songs per viewer (0 is no limit), for subscribers, the roles with no limit, the longest song. |
 | Blocks | `blockExplicit`, `explicitWho`, `blockedUsers`, `blockedArtists`, `blockedSongs` | Explicit songs and who may still ask, then lists separated by commas. |
 | Skipping | `skipOwn`, `skipCooldownMs`, `votesNeeded` | A viewer skips their own song, the wait between skips, the votes. |
-| Replies to failures | `msgNotAllowed`, `msgNoQuery`, `msgNotFound`, `msgUnsupported`, `msgBlockedArtist`, `msgBlockedSong`, `msgExplicit`, `msgUnavailable`, `msgTooLong`, `msgDuplicate`, `msgMaxRequests`, `msgSkipCooldown`, `msgError`, `msgEmpty`, `msgNoPos`, `msgNoRemove`, `msgNoVolume` | What `spotifyReply` says for each; empty uses the plain text. |
+| Replies to failures | `msgNotAllowed`, `msgNoQuery`, `msgNotFound`, `msgUnsupported`, `msgBlockedArtist`, `msgBlockedSong`, `msgExplicit`, `msgUnavailable`, `msgTooLong`, `msgDuplicate`, `msgMaxRequests`, `msgSkipCooldown`, `msgError`, `msgEmpty`, `msgNoPos`, `msgNoRemove`, `msgNoVolume`, `msgClosed` | What `spotifyReply` says for each; empty uses the plain text. |
 
 Each field can be a variable such as `%group.maxPerUser%`, so a group's settings drive it. A request is
 given to Spotify's queue at once (on the active device, or the device Spotify last had).

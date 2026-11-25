@@ -44,6 +44,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 # Plugins (WebAssembly), interpreted: nothing is loaded until a plugin is turned on. Portable dispatch:
 # the tail-call one overflowed the stack at opt-level 0 (dev builds and tests).
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+# Sounds (sound.rs): decoding only, pure Rust; the output is the system's (WASAPI, PulseAudio).
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "mp3", "ogg", "vorbis", "flac", "isomp4", "aac"] }
 
 [profile.dev]
 opt-level = 0
@@ -82,7 +84,12 @@ libc = "0.2"
 
 [target."cfg(windows)".dependencies]
 tray-icon = { version = "0.26.0", default-features = false }
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "UI_Notifications", "Win32_System_WinRT"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "Media_Core", "Media_SpeechSynthesis", "Storage_Streams", "UI_Notifications", "Win32_System_WinRT",
+    # Sounds (sound/wasapi.rs).
+    "Win32_Devices_FunctionDiscovery", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security",
+    "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
+# Named for `#[implement]` (sound/wasapi.rs: told when outputs come and go); already part of `windows`.
+windows-core = "0.62"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -90,10 +97,13 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Media_Audio",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
@@ -111,6 +121,8 @@ wat = "1"
 
 [patch.crates-io]
 tray-icon = { path = "patches/tray-icon" }
+# Falls back to Direct3D's software renderer (WARP) when no GPU can draw the window.
+gpui-pre-windows = { path = "patches/gpui-pre-windows" }
 
 
 [workspace]

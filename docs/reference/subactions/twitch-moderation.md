@@ -410,6 +410,95 @@ Removes the suspicious mark from a user.
 
 None set.
 
+## Purge User
+
+- Kind: sub-action
+- Code: 99501
+- Type: TwitchPurgeUser
+- Category: Twitch/Moderation
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Takes away someone's messages from the Twitch chat, with a timeout of one second. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+| Reason | `reason` | Why, for the moderators. Optional. |
+
+### Arguments
+
+- `purgeResult`: true when it worked.
+- `purgedUserName`, `purgedUserId`: who it was.
+
+## Block User
+
+- Kind: sub-action
+- Code: 99534
+- Type: TwitchBlockUser
+- Category: Twitch/Moderation
+- Needs: the broadcaster's Twitch login with more permissions (Accounts, Twitch, Allow more)
+
+Blocks someone on Twitch, as the broadcaster. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+
+### Arguments
+
+None set.
+
+## Unblock User
+
+- Kind: sub-action
+- Code: 99535
+- Type: TwitchUnblockUser
+- Category: Twitch/Moderation
+- Needs: the broadcaster's Twitch login with more permissions (Accounts, Twitch, Allow more)
+
+Unblocks someone on Twitch. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+
+### Arguments
+
+None set.
+
+## Chat Mode for a While
+
+- Kind: sub-action
+- Code: 99544
+- Type: TwitchChatModeFor
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Turns a chat mode on and puts it back as it was after a while: slow mode, followers only, subscribers only, emote only or unique chat. This sub-action is Streamerz only: Streamer.bot does not have it, and skips it in an export.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| mode | `mode` | Which mode. |
+| Seconds (slow) or minutes (followers), blank: 30 or any follower | `value` | Slow mode: the seconds between messages (empty: 30). Followers only: how many minutes they must have followed (empty: any follower). |
+| Duration | `duration` | How long it stays on. It needs a time, or it would never end. |
+
+### Arguments
+
+None set.
+
+### Notes
+
+- The chat goes back to what it was when this started: a mode that was already on stays on, with its old value.
+- If Streamerz closes first, the chat isn't put back: turn it off by hand.
+
 ## Delete Message
 
 - Kind: sub-action

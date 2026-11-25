@@ -109,6 +109,22 @@ pub fn install(e: &Rc<Engine>, spec: &Value, http: Option<std::net::TcpListener>
     f
 }
 
+/// The scenario's clipboard, when it fakes one: `GET` answers a read, and a write is kept as `SET`.
+pub fn clipboard(set: Option<&str>) -> Option<Result<String, String>> {
+    let f = CURRENT.with(|c| c.borrow().clone())?;
+    if !f.has("clipboard") {
+        return None;
+    }
+    Some(match set {
+        Some(text) => f
+            .call("clipboard", "SET", json!({"text": text}), Value::Null)
+            .map(|_| String::new()),
+        None => f
+            .call("clipboard", "GET", json!({}), json!(""))
+            .map(|v| v.as_str().unwrap_or_default().to_string()),
+    })
+}
+
 /// Forgets the fakes (the scenario ended).
 pub fn uninstall() {
     CURRENT.with(|c| c.borrow_mut().take());
@@ -261,6 +277,18 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
     let text = |v: Result<Value, String>, default: &str| v.map(|v| v.as_str().unwrap_or(default).to_string());
     while let Some(cmd) = rx.recv().await {
         match cmd {
+            C::Data {
+                method,
+                broadcast,
+                path,
+                body,
+                resp,
+            } => drop(resp.send(f.call(
+                P,
+                &format!("{method} {path}"),
+                json!({"broadcast": broadcast, "body": body}),
+                json!({}),
+            ))),
             C::Connect => drop(f.unit(P, "connect", json!({}))),
             C::Disconnect => drop(f.unit(P, "disconnect", json!({}))),
             C::LiveVideo(resp) => {

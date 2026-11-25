@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alert box</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+
+  /* Where alerts show: one of nine places, moved by the offsets. */
+  #stage { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 1em; padding: 2em;
+    box-sizing: border-box; transform: translate(var(--dx, 0), var(--dy, 0)); }
+  .top #stage { justify-content: flex-start; }
+  .middle #stage { justify-content: center; }
+  .bottom #stage { justify-content: flex-end; }
+  .left #stage { align-items: flex-start; }
+  .center #stage { align-items: center; }
+  .right #stage { align-items: flex-end; }
+
+  .alert { position: relative; display: flex; align-items: center; gap: 1em; max-width: min(36em, 100%);
+    box-sizing: border-box; text-align: center; flex-direction: column; }
+  .alert.card { padding: 1em 1.4em; border-radius: var(--radius, 18px); background: var(--card, #18181bd9);
+    box-shadow: 0 .4em 1.4em rgba(0, 0, 0, .45); }
+  .alert.beside-left { flex-direction: row; text-align: left; }
+  .alert.beside-right { flex-direction: row-reverse; text-align: right; }
+  .alert.behind { display: grid; place-items: center; }
+  .alert.behind > * { grid-area: 1 / 1; }
+  .alert.behind .words { padding: 1em; }
+  .media { flex: none; width: var(--media, 12em); max-width: 100%; max-height: var(--media, 12em); object-fit: contain; display: block; }
+  .behind .media { max-width: none; max-height: none; width: var(--media, 12em); }
+  .words { min-width: 0; }
+  .beside-left .words, .beside-right .words { flex: 1 1 auto; min-width: min(14em, 60vw); }
+  .title { font-size: 1.6em; font-weight: 800; line-height: 1.2; overflow-wrap: break-word; }
+  .title .hl { color: var(--accent, #a78bfa); }
+  .said { margin-top: .35em; font-size: 1em; line-height: 1.35; opacity: .9; overflow-wrap: break-word; }
+  .sz-emote { height: 1.5em; vertical-align: -.4em; }
+  .outline .title, .outline .said { -webkit-text-stroke: .06em var(--stroke, #000); paint-order: stroke fill;
+    text-shadow: 0 .08em .25em rgba(0, 0, 0, .6); }
+  .count { display: inline-block; margin-left: .3em; color: var(--accent, #a78bfa); }
+  .count.bump { animation: bump .3s ease; }
+  [hidden] { display: none !important; }
+
+  /* The animations a rule comes in and goes out with: each plays forwards to come in, backwards to go. */
+  .alert { animation-duration: var(--ms, 600ms); animation-fill-mode: both; }
+  .alert.going { animation-direction: reverse; animation-timing-function: ease-in; }
+  .alert.coming { animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+  @keyframes Fade { from { opacity: 0; } }
+  @keyframes Slide-up { from { opacity: 0; transform: translateY(3em); } }
+  @keyframes Slide-down { from { opacity: 0; transform: translateY(-3em); } }
+  @keyframes Slide-left { from { opacity: 0; transform: translateX(4em); } }
+  @keyframes Slide-right { from { opacity: 0; transform: translateX(-4em); } }
+  @keyframes Zoom { from { opacity: 0; transform: scale(.3); } }
+  @keyframes Pop { 0% { opacity: 0; transform: scale(.5); } 70% { opacity: 1; transform: scale(1.08); } }
+  @keyframes Bounce { 0% { opacity: 0; transform: translateY(-4em); } 60% { opacity: 1; transform: translateY(.6em); }
+    80% { transform: translateY(-.25em); } }
+  @keyframes Flip { from { opacity: 0; transform: perspective(40em) rotateX(90deg); } }
+  @keyframes Shake { 0%, 100% { transform: none; } 20%, 60% { transform: translateX(-.4em); } 40%, 80% { transform: translateX(.4em); } }
+  @keyframes None { from { } }
+  @keyframes bump { 50% { transform: scale(1.35); } }
+</style>
+<style id="extra"></style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+// An alert box set up entirely in Settings: rules say what each event shows (a picture, GIF or
+// video, a sound, a text), a queue shows them one after another, and the look, the place and the
+// animations are settings too. Everything here is plain DOM: read it, change it, it is yours.
+//
+// streamerz.alerts(fn) gives every follow, sub, gift, cheer, Super Chat, raid and reward of every
+// platform, each with `kind` (follow, sub, resub, giftsub, giftbomb, cheer, raid, superchat,
+// supersticker, member, gift, share, reward...), `args` (the trigger's arguments) and the chat line
+// (`user`, `event` in words, `text`, `picture`, `platform`). It needs the permission alerts.read.
+
+let S = streamerz.settings;
+
+// The rule's "When", as the kind of alert it matches ("" matches every kind).
+const KIND = {
+  Any: "", Follow: "follow", Sub: "sub", Resub: "resub", "Gift sub": "giftsub", "Gift bomb": "giftbomb",
+  Cheer: "cheer", Raid: "raid", "Super Chat": "superchat", "Super Sticker": "supersticker",
+  Member: "member", "TikTok gift": "gift", Share: "share", Reward: "reward", "Power-up": "powerup",
+};
+const PLACE = {
+  "Top left": "top left", Top: "top center", "Top right": "top right",
+  Left: "middle left", Center: "middle center", Right: "middle right",
+  "Bottom left": "bottom left", Bottom: "bottom center", "Bottom right": "bottom right",
+};
+const LAYOUT = { "Picture above": "", "Picture at the left": "beside-left", "Picture at the right": "beside-right",
+  "Picture behind": "behind", "Text only": "text-only", "Picture only": "media-only" };
+
+// How much an alert is worth, for a rule's "At least" and "At most": the bits of a cheer, the viewers
+// of a raid, the subs of a gift bomb, the months of a resub, the money of a Super Chat, the coins of a
+// TikTok gift.
+function amount(a) {
+  const g = a.args || {};
+  const n = v => Number(v) || 0;
+  switch (a.kind) {
+    case "cheer": return n(g.bits);
+    case "raid": return n(g.viewers);
+    case "giftbomb": return n(g.gifts) || n(g.count);
+    case "resub": return n(g.cumulative) || n(g.cumulativeMonths) || n(g.months);
+    case "superchat": case "supersticker": return n(g.amount) || n(g.amountMicros) / 1e6;
+    case "gift": return n(g.coins) || n(g.diamondCount) * (n(g.repeatCount) || 1);
+    default: return n(g.amount) || n(g.count) || n(g.months);
+  }
+}
+
+// The words a rule's text can use, each filled in for this alert.
+function words(a) {
+  const g = a.args || {};
+  return {
+    user: a.user || g.user || "Someone",
+    amount: String(a.kind === "gift" ? (g.repeatCount || 1) : amount(a) || ""),
+    event: a.event || "",
+    message: a.text || "",
+    platform: (streamerz.platforms[a.platform] || {}).name || a.platform || "",
+    gift: g.giftName || g.rewardName || g.reward || "",
+    tier: String(g.tier || ""),
+    months: String(g.cumulative || g.cumulativeMonths || g.months || ""),
+    coins: String(g.coins || ""),
+  };
+}
+
+// The rules whose When, From and amount match, then one of them: the first, or one by weight.
+function pick(a) {
+  const worth = amount(a);
+  const matching = (S.rules || []).filter(r =>
+    (!KIND[r.when] || KIND[r.when] === a.kind) &&
+    (!r.from || r.from === "Any" || r.from.toLowerCase() === a.platform) &&
+    worth >= (Number(r.min) || 0) &&
+    (!(Number(r.max) > 0) || worth <= Number(r.max)));
+  if (!matching.length) return null;
+  if (S.pick !== "One of the matching rules, by weight") return matching[0];
+  const total = matching.reduce((t, r) => t + Math.max(0, Number(r.weight) || 0), 0);
+  let at = Math.random() * total;
+  return matching.find(r => (at -= Math.max(0, Number(r.weight) || 0)) < 0) || matching[0];
+}
+
+// --- The queue: what waits, what shows, and the controls. -----------------------------------------
+const waiting = [];
+const showing = [];
+const last = [];
+let paused = false;
+let resting = false;
+
+function take(a) {
+  if (!a || !a.kind) return;
+  if (Array.isArray(S.platforms) && !S.platforms.includes(a.platform)) return;
+  // A gift bomb's single gifts follow it one by one: shown as the one alert of the bomb.
+  if (S.mergeGifts !== false && a.kind === "giftsub" && a.args && a.args.fromGiftBomb) return;
+  // A TikTok combo grows on the card that shows it (or the one that waits) instead of a new card.
+  if (S.combos !== false && a.kind === "gift" && a.platform === "tiktok") {
+    const same = x => x.a.kind === "gift" && x.a.userId === a.userId &&
+      (x.a.args || {}).giftId === (a.args || {}).giftId;
+    const shown = showing.find(same) || waiting.find(same);
+    if (shown) return grow(shown, a);
+  }
+  const rule = pick(a);
+  if (!rule) return;
+  waiting.push({ a, rule, at: Date.now() });
+  last.unshift({ a, rule });
+  last.length = Math.min(last.length, 5);
+  pump();
+}
+
+function grow(item, a) {
+  item.a = a;
+  const count = item.el && item.el.querySelector(".count");
+  if (count) {
+    count.textContent = "x" + ((a.args || {}).repeatCount || 1);
+    count.classList.remove("bump");
+    void count.offsetWidth;
+    count.classList.add("bump");
+    clearTimeout(item.timer);
+    item.timer = setTimeout(() => leave(item), seconds(item));
+  }
+}
+
+function pump() {
+  if (paused || resting) return;
+  const longest = (Number(S.maxWait) || 0) * 1000;
+  while (longest && waiting.length && Date.now() - waiting[0].at > longest) waiting.shift();
+  const mode = S.mode || "One at a time";
+  if (mode === "Newest replaces") {
+    if (!waiting.length) return;
+    const item = waiting.pop();
+    waiting.length = 0;
+    showing.slice().forEach(leave);
+    return show(item);
+  }
+  const most = mode === "Together" ? Math.max(1, Number(S.together) || 3) : 1;
+  while (waiting.length && showing.length < most) show(waiting.shift());
+}
+
+function seconds(item) {
+  const own = (Number(item.rule.seconds) || 6) * 1000;
+  // The voice speaks after the sound: the alert stays until it has spoken.
+  const heard = (item.soundMs || 0) + (item.voiceMs || 0);
+  return (S.untilSound && item.soundMs) || item.voiceMs ? Math.max(own, heard + 300) : own;
+}
+
+// A rule's words with the alert's filled in, as plain text (for the voice).
+function said(text, w) {
+  return String(text).replace(/%(\w+)%/g, (all, k) => (k in w ? w[k] : all));
+}
+
+// --- Drawing one alert. --------------------------------------------------------------------------
+const isVideo = src => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(src);
+
+function media(src) {
+  const el = isVideo(src) ? document.createElement("video") : new Image();
+  el.className = "media";
+  el.src = src;
+  if (el.tagName === "VIDEO") Object.assign(el, { autoplay: true, muted: true, loop: true, playsInline: true });
+  return el;
+}
+
+// A rule's text with its %words% filled in: the names and numbers in the accent colour.
+function title(text, w) {
+  const el = document.createElement("div");
+  el.className = "title";
+  for (const part of String(text || "%user%: %event%").split(/(%\w+%)/)) {
+    const key = /^%(\w+)%$/.exec(part);
+    if (!key || !(key[1] in w)) { el.append(part); continue; }
+    const span = document.createElement("span");
+    if (key[1] === "user" || key[1] === "amount" || key[1] === "gift") span.className = "hl";
+    span.textContent = w[key[1]];
+    el.append(span);
+  }
+  return el;
+}
+
+// A rule's own HTML (Code: Card HTML): the %words% are filled in as text, never as HTML.
+function custom(html, w) {
+  const escape = s => String(s).replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
+  return html.replace(/%(\w+)%/g, (all, k) => k in w ? escape(w[k]) : all);
+}
+
+function show(item) {
+  const { a, rule } = item;
+  const w = words(a);
+  const layout = LAYOUT[S.layout] ?? "";
+  const el = document.createElement("div");
+  el.className = ["alert", S.card !== false ? "card" : "", layout, S.outline ? "outline" : ""].join(" ");
+  if (S.cardHtml && S.cardHtml.trim()) {
+    el.innerHTML = custom(S.cardHtml, { ...w, picture: rule.picture || "" });
+  } else {
+    if (rule.picture && layout !== "text-only") el.append(media(rule.picture));
+    if (layout !== "media-only") {
+      const box = document.createElement("div");
+      box.className = "words";
+      box.append(title(rule.text, w));
+      if (a.kind === "gift" && a.platform === "tiktok") {
+        const count = document.createElement("span");
+        count.className = "count";
+        count.textContent = "x" + ((a.args || {}).repeatCount || 1);
+        box.firstChild.append(count);
+      }
+      if (S.showMessage !== false && a.text) {
+        const said = document.createElement("div");
+        said.className = "said";
+        said.append(streamerz.words(a));
+        box.append(said);
+      }
+      el.append(box);
+    }
+  }
+  const accent = S.accent === "Platform color" ? (streamerz.platforms[a.platform] || {}).color : S.accentColor;
+  if (accent) el.style.setProperty("--accent", accent);
+  el.style.animationName = (S.animIn || "Pop").replace(" ", "-");
+  el.classList.add("coming");
+  item.el = el;
+  showing.push(item);
+  stage.append(el);
+
+  if (rule.sound) {
+    const audio = new Audio(rule.sound);
+    audio.volume = Math.min(1, (Number(rule.volume ?? 80) / 100) * (Number(S.volume ?? 100) / 100));
+    audio.muted = !!S.muted;
+    audio.onloadedmetadata = () => {
+      item.soundMs = audio.duration * 1000;
+      clearTimeout(item.timer);
+      item.timer = setTimeout(() => leave(item), seconds(item));
+    };
+    audio.play().catch(() => {});
+    item.audio = audio;
+  }
+  // Say aloud: spoken by a voice of this computer, after the sound (needs voice.speak).
+  if (rule.say && rule.say.trim()) {
+    streamerz
+      .speak(said(rule.say, w), rule.voice ? { voice: rule.voice } : {})
+      .then(voice => {
+        if (item.leaving) return;
+        voice.volume = Math.min(1, Number(S.volume ?? 100) / 100);
+        voice.muted = !!S.muted;
+        item.voice = voice;
+        item.voiceMs = voice.durationMs || 0;
+        clearTimeout(item.timer);
+        item.timer = setTimeout(() => leave(item), seconds(item));
+        const start = () => voice.play().catch(() => {});
+        if (item.audio && !item.audio.ended) item.audio.addEventListener("ended", start, { once: true });
+        else start();
+      })
+      .catch(e => streamerz.log("Say aloud: " + e.message));
+  }
+  item.timer = setTimeout(() => leave(item), seconds(item));
+  streamerz.publish(topic("state"), state());
+}
+
+function leave(item) {
+  if (item.leaving) return;
+  item.leaving = true;
+  clearTimeout(item.timer);
+  if (item.audio) item.audio.pause();
+  if (item.voice) item.voice.pause();
+  const el = item.el;
+  const out = (S.animOut || "Fade").replace(" ", "-");
+  el.classList.remove("coming");
+  el.style.animationName = "none";
+  void el.offsetWidth;
+  el.classList.add("going");
+  el.style.animationName = out;
+  const gone = () => {
+    el.remove();
+    showing.splice(showing.indexOf(item), 1);
+    const gap = (Number(S.gap) || 0) * 1000;
+    if (gap) {
+      resting = true;
+      setTimeout(() => { resting = false; pump(); }, gap);
+    }
+    pump();
+    streamerz.publish(topic("state"), state());
+  };
+  if (out === "None") gone(); else el.addEventListener("animationend", gone, { once: true });
+}
+
+// --- Settings, controls and Test. ----------------------------------------------------------------
+function look(s) {
+  S = s;
+  document.body.className = PLACE[s.position] || "middle center";
+  const root = document.documentElement.style;
+  root.fontSize = 20 * ((Number(s.scale) || 100) / 100) + "px";
+  root.setProperty("--dx", (Number(s.offsetX) || 0) + "px");
+  root.setProperty("--dy", (Number(s.offsetY) || 0) + "px");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  root.setProperty("--text", s.textColor || "#ffffff");
+  root.setProperty("--card", s.cardColor || "#18181bd9");
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--media", (Number(s.mediaSize) || 12) + "em");
+  root.setProperty("--ms", (Number(s.animMs) || 600) + "ms");
+  root.setProperty("--accent", s.accentColor || "#a78bfa");
+  extra.textContent = s.extraCss || "";
+}
+
+// The controls are a topic (Settings: Control topic) an action or a dock sets with the Overlay
+// sub-action: {"do": "pause"}, "resume", "skip", "replay", "clear", "mute" or "unmute".
+const topic = name => (S.controlTopic || "alertbox") + (name ? "." + name : "");
+const state = () => ({ paused, showing: showing.length, waiting: waiting.length, muted: !!S.muted });
+
+function control(value, old) {
+  if (old || !value) return;
+  switch (value.do || value) {
+    case "pause": paused = true; break;
+    case "resume": paused = false; pump(); break;
+    case "skip": showing.slice().forEach(leave); break;
+    case "clear": waiting.length = 0; showing.slice().forEach(leave); break;
+    case "replay": if (last[0]) { waiting.unshift({ ...last[0], at: Date.now() }); pump(); } break;
+    case "mute": S.muted = true; showing.forEach(i => i.audio && (i.audio.muted = true)); break;
+    case "unmute": S.muted = false; showing.forEach(i => i.audio && (i.audio.muted = false)); break;
+  }
+  streamerz.publish(topic("state"), state());
+}
+
+look(S);
+streamerz.onSettings(look);
+streamerz.on(topic(), control);
+streamerz.alerts(take);
+// For the browser's console and for tests: the box itself.
+window.alertBox = { take, pick, amount, words, waiting, showing, last, control, state };
+</script>
+</body>
+</html>

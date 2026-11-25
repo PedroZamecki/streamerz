@@ -78,7 +78,7 @@ async function open(group, w = 640, h = 260, file = "") {
 }
 const done = async (t, slug) => {
   await t.shot(`/tmp/szoverlay/example-${slug}.png`);
-  if (["Subathon", "Top gifters", "Credits roll", "Song request queue"].includes(t.group)) {
+  if (["Subathon", "Top gifters", "Credits roll", "Song request queue", "Alert box"].includes(t.group)) {
     await t.cmd("Emulation.setDeviceMetricsOverride", { width: 360, height: t.height, deviceScaleFactor: 1, mobile: false });
     if (t.group === "Credits roll") await t.js("roll.getAnimations()[0].currentTime = 13000; 1");
     await t.shot(`/tmp/szoverlay/example-${slug}-narrow.png`);
@@ -92,7 +92,7 @@ try {
   // A dev instance starts with the HTTP server off: the pages are served by it.
   await ask({ request: "StreamerzSave", what: "server_http", item: { autoStart: true, address: "127.0.0.1", port: 7495 } });
   const examples = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
-  check(examples.length === 19, "examples listed: " + examples.map(r => r.id).join(", "));
+  check(examples.length === 24, "examples listed: " + examples.map(r => r.id).join(", "));
   for (const e of examples) check((await act("add_example", e.id, "overlay_examples")).status === "ok", `example ${e.id} added`);
   const again = (await ask({ request: "StreamerzCoreView", domain: "overlay_examples" })).tables[0].rows;
   check(again.every(r => r.cells[2] === "Added" && r.can.add_example === false), "every example says it is here");
@@ -212,6 +212,116 @@ try {
   await values("Alerts", { look: "Platform colors", side: "Left", gifts: true });
   await done(t, "alerts");
 
+  // Alert box: rules pick what shows, a queue shows them in turn, and the controls are a topic.
+  const alert = (platform, user, kind, args = {}, text = "") => ["Chat.Alert", { platform, user, userId: "ab-" + user,
+    event: kind + " (test)", icon: "star", kind, trigger: "Test", args, text, parts: text ? [{ t: text }] : [], badges: [] }];
+  const box = events => ask({ request: "StreamerzOverlay", op: "test", overlay: "Alert box", events });
+  // From its defaults, whatever an earlier run left.
+  const boxDefaults = Object.fromEntries((await ask({ request: "StreamerzOverlay", op: "read", overlay: "Alert box" })).settings.map(d => [d.name, d.default]));
+  await values("Alert box", { ...boxDefaults, gap: 0, animMs: 100 });
+  t = await open("Alert box", 1280, 720);
+  const rule = (kind, args = {}) => t.js(`(alertBox.pick({kind: "${kind}", platform: "twitch", args: ${JSON.stringify(args)}}) || {}).text`);
+  check(await rule("cheer", { bits: 1500 }) === "%user% cheered %amount% bits!", "a cheer of 1500 bits takes the rule from 1000 bits up");
+  check(await rule("cheer", { bits: 999 }) === "%user% cheered %amount% bits", "one of 999 takes the next rule");
+  check(await rule("share") === "%user%: %event%", "a kind with no rule of its own takes the Any rule");
+  check(await t.js("alertBox.amount({kind: 'gift', args: {diamondCount: 5, repeatCount: 3}})") === 15, "a TikTok combo is worth its coins");
+  check((await box([alert("twitch", "Ana", "cheer", { bits: 1500 }, "Take my bits!"), alert("kick", "Cy", "raid", { viewers: 42 }),
+    alert("youtube", "Bea", "superchat", { amount: 20 }, "Love it")])).status === "ok", "three alerts are sent");
+  check(await t.until("stage.querySelectorAll('.alert').length === 1"), "one shows at a time");
+  check(await t.js("stage.querySelector('.title').textContent") === "Ana cheered 1500 bits!", "with its rule's text: " + await t.js("stage.querySelector('.title')?.textContent"));
+  check(await t.js("alertBox.waiting.length") === 2, "and the others wait their turn");
+  check(await t.js("!!stage.querySelector('.alert img.media[src$=\"img/star.svg\"]') && stage.querySelector('.said').textContent === 'Take my bits!'"), "its picture and what they wrote");
+  check(await t.until("alertBox.showing[0]?.audio?.readyState >= 1", 3000), "its sound loads: " + await t.js("alertBox.showing[0]?.audio?.src"));
+  await sleep(600);
+  await t.shot("/tmp/szoverlay/example-alert-box-first.png");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "skip" } });
+  check(await t.until("stage.querySelector('.alert:not(.going) .title')?.textContent === 'Cy is raiding with 42 viewers!'"), "skip shows the next one");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "pause" } });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "skip" } });
+  await sleep(800);
+  check(await t.js("stage.querySelectorAll('.alert').length === 0 && alertBox.waiting.length === 1"), "paused, the next one waits");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "resume" } });
+  check(await t.until("stage.querySelector('.title')?.textContent.startsWith('Bea sent a Super Chat')"), "resumed, it shows");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  check(await t.until("stage.querySelectorAll('.alert').length === 0"), "clear empties it");
+  // A gift bomb is one alert; a TikTok combo grows on one card.
+  await box([alert("twitch", "Eve", "giftbomb", { gifts: 5 }), alert("twitch", "Eve", "giftsub", { fromGiftBomb: true, recipientUser: "Zed" })]);
+  check(await t.until("stage.querySelector('.title')?.textContent === 'Eve gifted 5 subs!'"), "a gift bomb shows once");
+  await sleep(300);
+  check(await t.js("alertBox.waiting.length") === 0, "its single gifts don't follow");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  await t.until("stage.querySelectorAll('.alert').length === 0");
+  const rose = n => alert("tiktok", "Dee", "gift", { giftName: "Rose", giftId: 5655, repeatCount: n, coins: n });
+  await box([rose(1)]);
+  check(await t.until("stage.querySelector('.count')?.textContent === 'x1'"), "a TikTok gift shows its count");
+  await box([rose(2)]);
+  await box([rose(5)]);
+  check(await t.until("stage.querySelector('.count')?.textContent === 'x5'") && await t.js("stage.querySelectorAll('.alert').length") === 1, "a combo grows on the same card");
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  check(await t.until("stage.querySelectorAll('.alert').length === 0"), "and clear takes it away");
+  // Settings change it at once: together, the place, the layout, a text with no card, own CSS.
+  await values("Alert box", { mode: "Together", together: 3, position: "Top right", layout: "Picture at the left", card: false, outline: true, extraCss: ".title { letter-spacing: 3px; }" });
+  check(await t.until("document.body.className === 'top right' && extra.textContent.includes('letter-spacing')"), "the place and the CSS follow the settings");
+  await box([alert("twitch", "F1", "follow"), alert("twitch", "F2", "follow"), alert("twitch", "F3", "follow"), alert("twitch", "F4", "follow")]);
+  check(await t.until("stage.querySelectorAll('.alert').length === 3"), "three together, as set: " + await t.js("stage.querySelectorAll('.alert').length"));
+  check(await t.js("[...stage.querySelectorAll('.alert')].every(a => a.classList.contains('beside-left') && !a.classList.contains('card') && a.classList.contains('outline'))"), "with the layout and look set: " + await t.js("[...stage.querySelectorAll('.alert')].map(a => a.className).join(' / ')"));
+  await sleep(500);
+  await t.shot("/tmp/szoverlay/example-alert-box-together.png");
+  // Weighted rules: two that match, one by weight.
+  await values("Alert box", { pick: "One of the matching rules, by weight", rules: [
+    { when: "Follow", from: "Any", min: 0, max: 0, text: "A", picture: "", sound: "", volume: 80, seconds: 6, weight: 1 },
+    { when: "Follow", from: "Any", min: 0, max: 0, text: "B", picture: "", sound: "", volume: 80, seconds: 6, weight: 3 }] });
+  check(await t.until("streamerz.settings.rules?.[1]?.text === 'B'"), "the page has the new rules: " + await t.js("JSON.stringify(streamerz.settings.rules?.map(r => r.text))"));
+  const counts = JSON.parse(await t.js("(() => { const c = {A: 0, B: 0}; for (let i = 0; i < 4000; i++) c[alertBox.pick({kind: 'follow', platform: 'kick', args: {}}).text]++; return JSON.stringify(c); })()"));
+  check(counts.B > counts.A * 2 && counts.B < counts.A * 4, "by weight, B three times as often as A: " + JSON.stringify(counts));
+  // Your own HTML, with what a viewer typed kept as text.
+  await values("Alert box", { pick: "The first that matches", mode: "One at a time", cardHtml: "<b class=mine>%user%</b> <i>%message%</i>" });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  await box([alert("twitch", "<img src=x onerror=alert(1)>", "follow", {}, "<script>bad()</script>")]);
+  check(await t.until("!!stage.querySelector('b.mine')"), "the card is drawn from the Card HTML");
+  check(await t.js("!stage.querySelector('b.mine img') && stage.querySelector('b.mine').textContent.includes('<img') && !stage.querySelector('i script')"), "what a viewer sends stays text in it");
+  await values("Alert box", { cardHtml: "", extraCss: "", card: true, outline: false, layout: "Picture above", position: "Center", mode: "One at a time", gap: 0.5, animMs: 600 });
+  // A draft (the editor's unsaved settings) shows on a preview page at once, never on OBS's page.
+  const draft = (action, extra = {}) => ask({ request: "StreamerzOverlay", op: "draft", overlay: "Alert box", action, ...extra });
+  const started = await draft("get");
+  check(started.status === "ok" && started.preview.endsWith("/overlays/Alert%20box/index.html?preview=1"), "the editor's preview address: " + started.preview);
+  const p = await tab();
+  await p.cmd("Page.navigate", { url: started.preview });
+  check(await p.until("!!window.alertBox && streamerz.preview === true"), "a preview page knows it is one");
+  await sleep(400);
+  check((await draft("set", { values: { position: "Bottom left" } })).status === "ok", "a setting is changed as a draft");
+  check(await p.until("document.body.className === 'bottom left'"), "the preview shows it at once");
+  await sleep(400);
+  check(await t.js("document.body.className") === "middle center", "OBS's page keeps the saved one");
+  check((await draft("set", { values: { position: "Nowhere" } })).status === "error", "a value the setting doesn't have is refused");
+  check((await draft("revert")).status === "ok" && await p.until("document.body.className === 'middle center'"), "revert puts the preview back");
+  await draft("set", { values: { position: "Top" } });
+  check((await draft("save")).status === "ok" && await t.until("document.body.className === 'top center'") && await p.until("document.body.className === 'top center'"), "save shows it everywhere");
+  check((await draft("get")).draft && Object.keys((await draft("get")).draft).length === 0, "and the draft is gone");
+  await values("Alert box", { position: "Center" });
+  // Say aloud: a rule's words spoken by a voice of this computer (the instance needs espeak-ng on its
+  // PATH for this; without it the page logs why and shows the alert as before).
+  const rules = boxDefaults.rules;
+  await values("Alert box", { rules: rules.map(r => (r.when === "Raid" ? { ...r, say: "Welcome raiders from %user%" } : r)) });
+  check(await t.until("streamerz.settings.rules?.some(r => r.say)"), "the page has the rule that speaks");
+  // (The page's own control: a topic sends nothing when its value is the one it had.)
+  // A tab behind another one doesn't animate: the alerts that leave would never be gone.
+  await t.cmd("Page.bringToFront");
+  await t.js("alertBox.control({do: 'resume'}); alertBox.control({do: 'clear'}); 1");
+  await t.until("alertBox.showing.length === 0 && alertBox.waiting.length === 0");
+  await t.js("alertBox.take({kind: 'raid', platform: 'twitch', user: 'Rae', args: {viewers: 7}}); 1");
+  const voices = await ask({ request: "StreamerzSpeech", op: "voices" });
+  if (voices.status !== "ok") console.log("skip a rule says its words aloud: no voice here (" + voices.error + ")");
+  const spoke = voices.status !== "ok" || await t.until("alertBox.showing[0]?.voice?.src?.includes('/overlays/-/speech/')", 5000);
+  check(spoke, "a rule says its words aloud: " + await t.js("JSON.stringify({showing: alertBox.showing.length, waiting: alertBox.waiting.length, rule: alertBox.showing[0]?.rule?.say, voice: alertBox.showing[0]?.voice?.src})") +
+    (spoke ? "" : " " + JSON.stringify(await ask({ request: "GetLog", lines: 8 })).slice(0, 600)));
+  check(voices.status !== "ok" || await t.js("alertBox.showing[0]?.voiceMs > 500"), "and the alert stays while it speaks: " + await t.js("alertBox.showing[0]?.voiceMs"));
+  await values("Alert box", { rules });
+  await ask({ request: "StreamerzOverlayPublish", topic: "alertbox", value: { do: "clear" } });
+  check(p.errors.length === 0, "the preview has no page errors " + p.errors.join(" | "));
+  await p.close();
+  await done(t, "alert-box");
+
   // TikTok gifts: one pill for a combo, its count growing.
   t = await open("TikTok gifts", 760, 520);
   await test(t, 3);
@@ -326,6 +436,77 @@ try {
   check(await t.until("/^\\d+:\\d\\d$/.test(clock.textContent)"), "the countdown runs: " + await t.js("clock.textContent"));
   await sleep(500);
   await done(t, "starting-soon");
+
+  // Countdown to: the newer kinds of setting reach the page as values it can use as they are.
+  t = await open("Countdown to", 1280, 720);
+  await values("Countdown to", { target: Date.now() + 65000 });
+  check(await t.until("/^1:0\\d$/.test(time.textContent)"), "it counts down to a moment: " + await t.js("time.textContent"));
+  check(await t.js("getComputedStyle(time).fontSize === '72px' && getComputedStyle(time).fontWeight === '800'"), "a text style is CSS through streamerz.css");
+  check(await t.js("card.style.getPropertyValue('--bg').startsWith('linear-gradient(135deg')"), "a gradient is CSS");
+  await values("Countdown to", { where: { anchor: "bottom-right", x: -20, y: -30 } });
+  check(await t.until("Math.abs(card.getBoundingClientRect().right - (innerWidth - 20)) < 2 && Math.abs(card.getBoundingClientRect().bottom - (innerHeight - 30)) < 2"),
+    "a position puts it there with streamerz.place: " + await t.js("JSON.stringify(card.getBoundingClientRect())"));
+  check(await t.js("fetch(streamerz.settings.sound.file).then(r => r.status)") === 200 && await t.js("streamerz.settings.sound.volume") === 0.7, "a sound is an address and a volume from 0 to 1");
+  await values("Countdown to", { extraCss: "#card { outline: 3px solid rgb(1, 2, 3); }" });
+  check(await t.until("getComputedStyle(card).outlineColor === 'rgb(1, 2, 3)'"), "Extra CSS reaches the page without a reload");
+  await t.js("window.mark = 1");
+  check((await ask({ request: "StreamerzCoreAction", domain: "overlays", action: "play:enter", itemId: "Countdown to" })).status === "ok", "Play of an animation is sent");
+  check(await t.until("card.getAnimations().length > 0 && window.mark === 1"), "and plays it again on the page, with no reload");
+  check((await ask({ request: "StreamerzCoreAction", domain: "overlays", action: "press:celebrate", itemId: "Countdown to" })).status === "ok", "a button setting is pressed");
+  check(await t.until("time.textContent === 'Starting now!'"), "and the page hears its topic");
+  check(await t.js("time.offsetHeight < 100"), "a placed element keeps the width of its text (one line): " + await t.js("time.offsetHeight"));
+  await values("Countdown to", { where: { anchor: "center", x: 0, y: 0 } });
+  check(await t.until("Math.abs((card.getBoundingClientRect().left + card.getBoundingClientRect().right) / 2 - innerWidth / 2) < 2"), "and center is the middle");
+  check(await t.js("time.textContent === 'Starting now!' && title.style.display === 'none'"), "a change while the end shows keeps the title hidden");
+  // Its live controls: set by request (as an assistant), and from their dock, the page follows at once.
+  check((await ask({ request: "StreamerzOverlay", op: "control", overlay: "Countdown to", control: "show", value: false })).status === "ok", "a live control is set by request");
+  check(await t.until("card.style.visibility === 'hidden'"), "and the page follows it");
+  const dockTab = await tab();
+  await dockTab.cmd("Emulation.setDeviceMetricsOverride", { width: 320, height: 260, deviceScaleFactor: 1, mobile: false });
+  await dockTab.cmd("Page.navigate", { url: HTTP + "/overlays/Countdown%20to/-/controls" });
+  check(await dockTab.until("document.querySelectorAll('.row').length === 3 && !document.querySelector('.switch').checked && document.querySelector('.switch').offsetWidth === 34"), "the controls dock draws them as they are");
+  await dockTab.js("document.querySelector('.switch').click(); 1");
+  check(await t.until("card.style.visibility === ''"), "a toggle of the dock reaches the page");
+  await dockTab.js("[...document.querySelectorAll('button')].find(b => b.textContent.includes('Add a minute')).click(); 1");
+  await values("Countdown to", { target: Date.now() + 30000 });
+  check(await t.until("/^1:[23]\\d$/.test(time.textContent)", 4000), "a button of the dock adds a minute: " + await t.js("time.textContent"));
+  await dockTab.shot("/tmp/szoverlay/example-countdown-to-dock.png");
+  check(dockTab.errors.length === 0, "the dock has no page errors " + dockTab.errors.join(" | "));
+  await dockTab.close();
+  await done(t, "countdown-to");
+
+  // Scene banner: a scene change shows its row's words.
+  t = await open("Scene banner", 1280, 720);
+  check((await ask({ request: "StreamerzOverlay", op: "test", overlay: "Scene banner", events: [["ObsStudio.SceneChanged", { sceneName: "BRB" }]] })).status === "ok", "a scene change is sent");
+  check(await t.until("!banner.hidden && banner.textContent === 'Be right back'"), "the banner says the scene's words: " + await t.js("banner.textContent"));
+  check(await t.js("getComputedStyle(banner).fontSize === '44px' && banner.style.background.includes('gradient')"), "in its text style and gradient");
+  await sleep(700);
+  await done(t, "scene-banner");
+
+  // Sound board: a pad of the dock plays on the player page (a browser source).
+  t = await open("Sound board", 300, 200, "player.html");
+  const board = await tab();
+  await board.cmd("Emulation.setDeviceMetricsOverride", { width: 320, height: 300, deviceScaleFactor: 1, mobile: false });
+  const boardRow = (await view()).find(r => r.cells[1] === "Sound board" && r.cells[5].includes("dock.html"));
+  await board.cmd("Page.navigate", { url: boardRow.cells[5] });
+  check(await board.until("pads.querySelectorAll('button').length === 1"), "a pad for each sound");
+  await board.js("pads.querySelector('button').click(); 1");
+  check(await t.until("window.lastPlayed === 'sounds/chime.wav'"), "a press plays its sound on the player");
+  await board.shot("/tmp/szoverlay/example-sound-board-dock.png");
+  check(board.errors.length === 0, "the dock has no page errors " + board.errors.join(" | "));
+  await board.close();
+  await done(t, "sound-board");
+
+  // Read chat aloud: a chat message is spoken (when this computer has a voice).
+  t = await open("Read chat aloud", 1280, 200);
+  const speech = await ask({ request: "StreamerzSpeech", op: "voices" });
+  await ask({ request: "InjectChat", platform: "twitch", user: "ana", userId: "1", text: "hello there https://x.io" });
+  if (speech.status === "ok") {
+    check(await t.until("window.lastSpoken === 'ana says hello there'", 6000), "a message is read, its link left out: " + await t.js("window.lastSpoken"));
+  } else {
+    console.log("skip a message is read: no voice here");
+  }
+  await done(t, "chat-aloud");
 
   // Buttons dock: a button for each connected action; a press shows the banner.
   t = await open("Buttons dock", 1280, 200, "banner.html");

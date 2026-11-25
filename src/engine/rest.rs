@@ -273,7 +273,7 @@ fn tags_of(v: Option<&Value>) -> Vec<String> {
 }
 
 /// A state field that may be a checkbox: ticked is 0 (enable, pause), unticked 1, as `new_state` reads.
-fn state_of(o: &Obj) -> f64 {
+pub(super) fn state_of(o: &Obj) -> f64 {
     match o.get("state") {
         Some(Value::Bool(on)) => f64::from(u8::from(!on)),
         _ => n(o, "state"),
@@ -397,6 +397,63 @@ impl Engine {
     /// Dev mode (`STREAMERZ_DEV` set).
     pub fn dev(&self) -> bool {
         self.st.borrow().dev_out.is_some()
+    }
+
+    /// Whether the Twitch login has the extra permission this sub-action needs; says so when not.
+    fn twitch_scope_for(&self, kind: u64) -> bool {
+        let missing = super::twitch_extra_scope(kind).is_some_and(|scope| !self.twitch_has_scope(scope));
+        if missing {
+            crate::error(format!("Twitch: {}", crate::i18n::tr("twitch.error.more_permissions")));
+        }
+        !missing
+    }
+
+    /// Every page of a Helix list of the channel (moderators, VIPs), up to a thousand.
+    async fn helix_pages(tw: &crate::twitch::TwitchHandle, path: &str) -> Result<Vec<Value>, String> {
+        let mut items = Vec::new();
+        let mut after = String::new();
+        loop {
+            let mut query = vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")];
+            if !after.is_empty() {
+                query.push(("after", after.as_str()));
+            }
+            let got = tw.helix("GET", path, query, None, false, true).await?;
+            items.extend(got["data"].as_array().cloned().unwrap_or_default());
+            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
+            if after.is_empty() || items.len() >= 1000 {
+                return Ok(items);
+            }
+        }
+    }
+
+    /// The id of the channel's blocked term with this text (any case), if there is one.
+    async fn blocked_term_id(&self, tw: &crate::twitch::TwitchHandle, text: &str) -> Result<Option<String>, String> {
+        let mut after = String::new();
+        loop {
+            let mut query = vec![
+                ("broadcaster_id", "{broadcaster_id}"),
+                ("moderator_id", "{moderator_id}"),
+                ("first", "100"),
+            ];
+            if !after.is_empty() {
+                query.push(("after", after.as_str()));
+            }
+            let got = tw
+                .helix("GET", "moderation/blocked_terms", query, None, false, true)
+                .await?;
+            let hit = got["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|term| term["text"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(text)));
+            if let Some(term) = hit {
+                return Ok(term["id"].as_str().map(str::to_string));
+            }
+            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
+            if after.is_empty() {
+                return Ok(None);
+            }
+        }
     }
 
     /// Dev mode: keep a chat line instead of sending it. Whether it was kept.
@@ -971,20 +1028,21 @@ impl Engine {
             // Create Clip (18)
             18 => {
                 let delay = b(o, "hasDelay", false);
+                let title = self.expand(ctx, s(o, "title")).trim().to_string();
+                let length = super::clip_length(self.duration_number(ctx, o, "duration"));
                 if let Some(tw) = self.twitch() {
-                    let res = tw
-                        .helix(
-                            "POST",
-                            "clips",
-                            vec![
-                                ("broadcaster_id", "{broadcaster_id}"),
-                                ("has_delay", if delay { "true" } else { "false" }),
-                            ],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await;
+                    let mut query = vec![
+                        ("broadcaster_id", "{broadcaster_id}"),
+                        ("has_delay", if delay { "true" } else { "false" }),
+                    ];
+                    // Empty: Twitch names it after the stream and makes it 30 seconds long.
+                    if !title.is_empty() {
+                        query.push(("title", title.as_str()));
+                    }
+                    if let Some(length) = &length {
+                        query.push(("duration", length.as_str()));
+                    }
+                    let res = tw.helix("POST", "clips", query, None, false, true).await;
                     ctx.args.insert("createClipSuccess".into(), res.is_ok().into());
                     match res {
                         Ok(val) => {
@@ -993,6 +1051,8 @@ impl Engine {
                                 ctx.args.insert("createClipId".into(), id.into());
                                 ctx.args
                                     .insert("createClipUrl".into(), format!("https://clips.twitch.tv/{id}").into());
+                                ctx.args
+                                    .insert("createClipEditUrl".into(), val["data"][0]["edit_url"].clone());
                                 ctx.args
                                     .insert("createClipCreatedAt".into(), super::globals::iso_now().into());
                             }
@@ -1085,8 +1145,24 @@ impl Engine {
             // Set Cost (202)
             202 => {
                 let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
-                let cost = n(o, "cost") as u64;
+                let mut cost = n(o, "cost") as i64;
                 if let Some(tw) = self.twitch() {
+                    // Add or Subtract: from what it costs now (Twitch keeps it at 1 or more).
+                    let operator = n(o, "operator") as i64;
+                    if operator == 1 || operator == 2 {
+                        let q = vec![("broadcaster_id", "{broadcaster_id}"), ("id", reward_id.as_str())];
+                        match tw
+                            .helix("GET", "channel_points/custom_rewards", q, None, false, true)
+                            .await
+                        {
+                            Ok(v) => {
+                                let now = v["data"][0]["cost"].as_i64().unwrap_or(0);
+                                cost = if operator == 1 { now + cost } else { now - cost };
+                            }
+                            Err(e) => return crate::error(format!("Twitch: {e}")),
+                        }
+                    }
+                    let cost = cost.max(1);
                     if let Err(e) = tw
                         .helix(
                             "PATCH",
@@ -2239,11 +2315,29 @@ impl Engine {
                         if let Some(total) = resp.pointer("/total") {
                             ctx.args.insert("totalFollowers".into(), total.clone());
                         }
+                        // Twitch lists followers newest first.
+                        let latest = &resp["data"][0];
+                        if kind == 507 && !latest.is_null() {
+                            for (arg, key) in [
+                                ("latestFollower.user", "user_name"),
+                                ("latestFollower.userName", "user_login"),
+                                ("latestFollower.userId", "user_id"),
+                                ("latestFollower.followedAt", "followed_at"),
+                            ] {
+                                ctx.args.insert(arg.into(), latest[key].clone());
+                            }
+                        }
                     }
                 }
             }
             // Get Subscriber Count (508) / Get Latest Subscriber (509)
             508 | 509 => {
+                let latest = self.cfg.borrow().twitch.latest_subscriber.clone();
+                if let (509, Some(latest)) = (kind, latest) {
+                    for key in ["userName", "userLogin", "userId", "tier", "isGift"] {
+                        ctx.args.insert(format!("latestSubscriber.{key}"), latest[key].clone());
+                    }
+                }
                 if let Some(tw) = self.twitch() {
                     if let Ok(resp) = tw
                         .helix(
@@ -2669,6 +2763,9 @@ impl Engine {
             583 => {
                 ctx.args.insert("blockedTermResult".into(), false.into());
                 let term = self.expand(ctx, s(o, "text")).trim().to_string();
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
                 match tw
                     .helix(
@@ -2697,8 +2794,22 @@ impl Engine {
             // Remove Blocked Term (584)
             584 => {
                 ctx.args.insert("removeBlockedTermResult".into(), false.into());
-                let term_id = self.expand(ctx, s(o, "termId")).trim().to_string();
+                let mut term_id = self.expand(ctx, s(o, "termId")).trim().to_string();
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
+                // Not an id: the term's own text, found in the channel's list (else it is taken as an id).
+                if !super::is_uuid(&term_id) {
+                    match self.blocked_term_id(&tw, &term_id).await {
+                        Ok(Some(id)) => term_id = id,
+                        Ok(None) => {}
+                        Err(e) => {
+                            crate::error(format!("Twitch: {e}"));
+                            return;
+                        }
+                    }
+                }
                 match tw
                     .helix(
                         "DELETE",
@@ -3002,6 +3113,9 @@ impl Engine {
             // Update AutoMod Settings (592)
             592 => {
                 ctx.args.insert("updateAutoModSettingsResult".into(), false.into());
+                if !self.twitch_scope_for(kind) {
+                    return;
+                }
                 let Some(tw) = self.twitch() else { return };
                 let r = async {
                     let cur = tw
@@ -3019,27 +3133,37 @@ impl Engine {
                         .await?;
                     let existing = &cur["data"][0];
                     let mut body = serde_json::Map::new();
-                    for (field, api_key) in [
-                        ("aggression", "aggression"),
-                        ("bullying", "bullying"),
-                        ("disability", "disability"),
-                        ("misogyny", "misogyny"),
-                        ("raceEthnicityOrReligion", "race_ethnicity_or_religion"),
-                        ("sexBasedTerms", "sex_based_terms"),
-                        ("sexualitySexOrGender", "sexuality_sex_or_gender"),
-                        ("swearing", "swearing"),
-                    ] {
-                        let desired = match o.get(field) {
-                            Some(Value::Number(v)) => v.as_i64().filter(|x| (0..=4).contains(x)).map(|x| x as u64),
-                            Some(Value::String(st)) => self
-                                .expand(ctx, st)
-                                .trim()
-                                .parse::<i64>()
-                                .ok()
-                                .filter(|x| (0..=4).contains(x))
-                                .map(|x| x as u64),
-                            _ => None,
-                        };
+                    let level = |field: &str| match o.get(field) {
+                        Some(Value::Number(v)) => v.as_i64().filter(|x| (0..=4).contains(x)).map(|x| x as u64),
+                        Some(Value::String(st)) => self
+                            .expand(ctx, st)
+                            .trim()
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|x| (0..=4).contains(x))
+                            .map(|x| x as u64),
+                        _ => None,
+                    };
+                    // One overall level sets every category at once; Twitch takes it alone.
+                    if let Some(overall) = level("overallLevel") {
+                        body.insert("overall_level".into(), overall.into());
+                    }
+                    for (field, api_key) in body
+                        .is_empty()
+                        .then_some([
+                            ("aggression", "aggression"),
+                            ("bullying", "bullying"),
+                            ("disability", "disability"),
+                            ("misogyny", "misogyny"),
+                            ("raceEthnicityOrReligion", "race_ethnicity_or_religion"),
+                            ("sexBasedTerms", "sex_based_terms"),
+                            ("sexualitySexOrGender", "sexuality_sex_or_gender"),
+                            ("swearing", "swearing"),
+                        ])
+                        .into_iter()
+                        .flatten()
+                    {
+                        let desired = level(field);
                         let val = desired.unwrap_or_else(|| existing[api_key].as_u64().unwrap_or(0));
                         body.insert(api_key.into(), val.into());
                     }
@@ -3155,19 +3279,8 @@ impl Engine {
             // Get Moderators (595)
             595 => {
                 let Some(tw) = self.twitch() else { return };
-                match tw
-                    .helix(
-                        "GET",
-                        "moderation/moderators",
-                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
-                        None,
-                        false,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(v) => {
-                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                match Self::helix_pages(&tw, "moderation/moderators").await {
+                    Ok(items) => {
                         ctx.args.insert("moderatorCount".into(), (items.len() as u64).into());
                         for (i, item) in items.iter().enumerate() {
                             ctx.args.insert(format!("moderator{i}.userId"), item["user_id"].clone());
@@ -3184,19 +3297,8 @@ impl Engine {
             // Get VIPs (596)
             596 => {
                 let Some(tw) = self.twitch() else { return };
-                match tw
-                    .helix(
-                        "GET",
-                        "channels/vips",
-                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
-                        None,
-                        false,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(v) => {
-                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                match Self::helix_pages(&tw, "channels/vips").await {
+                    Ok(items) => {
                         ctx.args.insert("vipCount".into(), (items.len() as u64).into());
                         for (i, item) in items.iter().enumerate() {
                             ctx.args.insert(format!("vip{i}.userId"), item["user_id"].clone());
@@ -4153,7 +4255,8 @@ impl Engine {
             4008 => {
                 ctx.args.insert("banResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
@@ -4175,7 +4278,8 @@ impl Engine {
             4009 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let duration = self.duration_number(ctx, o, "duration") as u64;
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
@@ -4255,7 +4359,12 @@ impl Engine {
             4015 => {
                 ctx.args.insert("unbanResult".into(), false.into());
                 let mut ban_id = self.expand(ctx, s(o, "banId")).trim().to_string();
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = if who.trim().is_empty() {
+                    String::new()
+                } else {
+                    self.youtube_channel_id(ctx, &who)
+                };
                 if ban_id.is_empty() && !user_id.is_empty() {
                     let ids = crate::core::moderation::youtube_ban_ids(self, &user_id);
                     if ids.len() == 1 {
@@ -4296,7 +4405,8 @@ impl Engine {
             4017 => {
                 ctx.args.insert("addModeratorResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = self.youtube_channel_id(ctx, &who);
                 let yt = self.youtube_start();
                 match yt.add_moderator(&broadcast, &user_id).await {
                     Ok(id) => {
@@ -4313,7 +4423,12 @@ impl Engine {
                 ctx.args.insert("removeModeratorResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let moderator_id = self.expand(ctx, s(o, "moderatorId")).trim().to_string();
-                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let who = self.expand(ctx, s(o, "userId"));
+                let user_id = if who.trim().is_empty() {
+                    String::new()
+                } else {
+                    self.youtube_channel_id(ctx, &who)
+                };
                 let yt = self.youtube_start();
                 match yt.remove_moderator(&broadcast, &moderator_id, &user_id).await {
                     Ok(_) => drop(ctx.args.insert("removeModeratorResult".into(), true.into())),
@@ -5441,9 +5556,41 @@ impl Engine {
             .and_then(Value::as_object)
             .map(|h| h.iter().map(|(k, v)| (k.clone(), self.expand(ctx, &text(v)))).collect())
             .unwrap_or_default();
-        let r = match crate::http::request("GET", &url, &headers, b"").await {
-            Ok(r) if (200..300).contains(&r.status) => r,
-            Ok(r) => return crate::error(format!("Fetch URL {url}: HTTP {}", r.status)),
+        // Our extension: a method other than GET, with a body (a Streamer.bot export has neither).
+        let method = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+            .get(n(o, "method") as usize)
+            .copied()
+            .unwrap_or("GET");
+        let sent = self.expand(ctx, s(o, "body"));
+        let mut headers = headers;
+        if !sent.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+            let kind = self.expand(ctx, s(o, "contentType"));
+            let kind = if !kind.trim().is_empty() {
+                kind.trim().to_string()
+            } else if serde_json::from_str::<Value>(&sent).is_ok() {
+                "application/json".into()
+            } else {
+                "text/plain".into()
+            };
+            headers.push(("Content-Type".into(), kind));
+        }
+        ctx.args.insert("httpStatus".into(), 0.into());
+        ctx.args.insert("httpOk".into(), false.into());
+        let r = match crate::http::request(method, &url, &headers, sent.as_bytes()).await {
+            Ok(r) => {
+                ctx.args.insert("httpStatus".into(), r.status.into());
+                ctx.args.insert("httpOk".into(), (200..300).contains(&r.status).into());
+                if (200..300).contains(&r.status) {
+                    r
+                } else {
+                    crate::error(format!("Fetch URL {url}: HTTP {}", r.status));
+                    // A GET that failed sets nothing, as before; a request with a body still gives its answer.
+                    if method == "GET" {
+                        return;
+                    }
+                    r
+                }
+            }
             Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
         let body = r.text();
@@ -5635,13 +5782,25 @@ mod tests {
     fn obs_state_lists_match_what_the_engine_reads() {
         use crate::automation::schema::*;
         // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
-        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
-        assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
-        assert_eq!(RECORD_STATE, ["Start", "Stop", "Pause", "Resume", "Toggle"]);
-        assert_eq!(REPLAY_STATE, ["Start", "Stop", "Save", "Toggle"]);
-        assert_eq!(FILTER_STATE[0], "Enable");
-        assert_eq!(MUTE_STATE[0], "Mute");
-        assert_eq!(MEDIA_STATE[2..4], ["Restart", "Stop"]);
+        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "field.show");
+        assert_eq!(STREAM_STATE[..2], ["field.start", "field.stop"]);
+        assert_eq!(
+            RECORD_STATE,
+            [
+                "field.start",
+                "field.stop",
+                "field.pause",
+                "field.resume",
+                "field.toggle"
+            ]
+        );
+        assert_eq!(
+            REPLAY_STATE,
+            ["field.start", "field.stop", "field.save", "field.toggle"]
+        );
+        assert_eq!(FILTER_STATE[0], "field.enable");
+        assert_eq!(MUTE_STATE[0], "field.mute");
+        assert_eq!(MEDIA_STATE[2..4], ["field.restart", "field.stop"]);
     }
     use serde_json::json;
 

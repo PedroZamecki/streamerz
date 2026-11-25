@@ -284,9 +284,11 @@ impl TreePane {
                 let own = query.is_empty()
                     || label.to_lowercase().contains(query)
                     || (node["kind"] == "item"
-                        && node["detail"]["text"]
-                            .as_str()
-                            .is_some_and(|text| text.to_lowercase().contains(query)));
+                        && ["text", "keywords"].iter().any(|key| {
+                            node["detail"][key]
+                                .as_str()
+                                .is_some_and(|text| text.to_lowercase().contains(query))
+                        }));
                 let children = self.items(&node["children"], query);
                 if !own && children.is_empty() {
                     return None;
@@ -645,6 +647,15 @@ impl Render for TreePane {
                                                 .size_3(),
                                         )
                                         .child(text),
+                                )
+                            })
+                            // Something this item needs isn't ready (the reasons are in its tooltip).
+                            .when(value["warn"] == true, |row| {
+                                row.child(
+                                    Icon::empty()
+                                        .path("icons/triangle-alert.svg")
+                                        .small()
+                                        .text_color(cx.theme().warning),
                                 )
                             })
                             .when((value["kind"] == "trigger" && muted) || value["off"] == true, |row| {

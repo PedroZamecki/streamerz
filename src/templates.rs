@@ -5,6 +5,7 @@
 mod automation;
 pub mod clock;
 pub mod songs;
+pub mod speech;
 
 use crate::edit::{new_action, new_sub, new_trigger};
 use crate::model::{Action, Obj};
@@ -59,6 +60,7 @@ impl Template {
     pub fn title(&self) -> &'static str {
         let key = match self.name {
             "Song requests (Spotify)" => "automation.recipe_songs",
+            "Read chat aloud" => "automation.recipe_tts",
             "Welcome first chatters" => "automation.recipe_welcome",
             "Thank follows" => "automation.recipe_follows",
             "Thank subscriptions" => "automation.recipe_subscriptions",
@@ -216,6 +218,11 @@ pub const TEMPLATES: &[Template] = &[
         name: "Song requests (Spotify)",
         about: "automation.recipe_songs_about",
         make: songs::made,
+    },
+    Template {
+        name: "Read chat aloud",
+        about: "automation.recipe_tts_about",
+        make: speech::made,
     },
     Template {
         name: "Welcome first chatters",

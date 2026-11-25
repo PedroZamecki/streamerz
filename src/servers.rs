@@ -153,9 +153,23 @@ pub async fn run(e: Rc<Engine>) {
     let mut last = None;
     let mut last_extra = None;
     let mut deck: Option<(crate::streamdeck::Settings, Option<tokio::task::AbortHandle>)> = None;
+    // The sound outputs are followed only while an action listens for Sound Device Changed.
+    let mut devices: Option<tokio::task::AbortHandle> = None;
     let notify = retry_notify();
     loop {
         let retry = SERVER_RETRY.swap(0, std::sync::atomic::Ordering::SeqCst);
+        match (e.wants_device_events(), devices.is_some()) {
+            (true, false) => {
+                devices =
+                    Some(tokio::task::spawn_local(crate::engine::sounds::follow_devices(e.clone())).abort_handle());
+            }
+            (false, true) => {
+                if let Some(h) = devices.take() {
+                    h.abort();
+                }
+            }
+            _ => {}
+        }
         // The Stream Deck plugin's server: on only when turned on, restarted when its settings change.
         let now_deck = rx.borrow().stream_deck.clone();
         if deck.as_ref().map(|d| &d.0) != Some(&now_deck) || (retry & RETRY_STREAM_DECK) != 0 {
@@ -563,11 +577,16 @@ fn find_action(e: &Engine, a: &Value) -> Option<String> {
         .map(|x| x.id.clone())
 }
 
-/// Prefix `id`, then the fields, then status ok.
+/// Prefix `id`, then the fields, then status ok. A field named `id` never replaces the request's: the
+/// caller matches the answer by it.
 fn ok(id: &Value, fields: Value) -> Value {
     let mut out = json!({"id": id});
     if let (Some(o), Some(f)) = (out.as_object_mut(), fields.as_object()) {
-        o.extend(f.clone());
+        o.extend(
+            f.iter()
+                .filter(|(k, _)| *k != "id")
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
         o.insert("status".into(), "ok".into());
     }
     out
@@ -692,6 +711,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             }
         }
         "StreamerzCoreStatus"
+        | "StreamerzAutomationWarnings"
         | "StreamerzCoreSave"
         | "StreamerzCoreQuit"
         | "StreamerzSelectPage"
@@ -703,6 +723,21 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             error(&id, "Authentication required to use this method")
         }
         "StreamerzCoreStatus" => ok(&id, crate::core::status::summary(e)),
+        "StreamerzAutomationWarnings" => {
+            let kind = crate::automation::requirements::Kind::parse(get("kind"));
+            let result = match (get("kind"), kind, req.get("code").and_then(Value::as_u64)) {
+                ("", _, _) => crate::core::requirements::report(e, get("actionId"), None),
+                (_, None, _) => Err("kind is trigger or subaction".to_owned()),
+                (_, Some(kind), Some(code)) => {
+                    crate::core::requirements::type_report(e, kind, code as u32, get("connectionId"))
+                }
+                (_, Some(kind), None) => crate::core::requirements::report(e, get("actionId"), Some(kind)),
+            };
+            match result {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
         "StreamerzCoreSave" => match crate::core::status::save(e) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
@@ -777,8 +812,14 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::sections::act(e, get("domain"), get("action"))
             } else if crate::core::actions::supports(get("domain")) {
                 crate::core::actions::act(e, req)
+            } else if crate::core::overlays::supports(get("domain")) && crate::core::overlays::is_press(get("action")) {
+                crate::core::overlays::press(e, req)
             } else if crate::core::overlays::supports(get("domain")) {
                 crate::core::overlays::act(e, get("action"), get("itemId"))
+            } else if crate::core::rewards::supports(get("domain")) {
+                crate::core::rewards::act(e, get("action"), get("itemId"))
+            } else if crate::core::sounds::supports(get("domain")) {
+                crate::core::sounds::act_req(e, req)
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
             } else if crate::core::moderation::supports(get("domain")) {
@@ -796,6 +837,13 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             }
         }
         "StreamerzCoreSetting" => match crate::core::sections::set(e, get("domain"), get("key"), &req["value"]) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzPreview" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzPreview" => match crate::core::overlays::preview(e, req) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
@@ -994,6 +1042,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzCountdown"
         | "StreamerzOverlays"
         | "StreamerzOverlayPublish"
+        | "StreamerzSound"
+        | "StreamerzSpeech"
         | "StreamerzManageActionGroup"
         | "StreamerzActionGroups"
         | "StreamerzGroupIcon"
@@ -1149,6 +1199,14 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 json!({"overlays": files, "topics": topics, "base": crate::overlays::base(&e.config())}),
             )
         }
+        "StreamerzSound" => match crate::sound::request(req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
+        "StreamerzSpeech" => match e.speech_request(req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
         "StreamerzOverlayPublish" => {
             let topic = get("topic").trim();
             if topic.is_empty() {
@@ -1972,6 +2030,16 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
                 }
             }
         }
+        "StreamerzVoice" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match e.voice_request(req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
         "StreamerzPlatformApi" => {
             if auth_required && !authed {
                 error(&id, "Authentication required to use this method")
@@ -2352,6 +2420,19 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             .await?;
         return tcp.shutdown().await;
     }
+    // The Sounds page's Board as an OBS dock, with its key.
+    if method == "GET" && path == "/sounds/board" {
+        let token = query
+            .split('&')
+            .find_map(|p| p.strip_prefix("token="))
+            .unwrap_or_default()
+            .to_string();
+        let page = crate::core::sounds::board_page(&e.config(), &token);
+        return match page {
+            Some(html) => crate::overlays::respond(&mut tcp, 200, "text/html; charset=utf-8", html.as_bytes()).await,
+            None => crate::overlays::respond(&mut tcp, 403, "text/plain; charset=utf-8", b"Not the Board's dock").await,
+        };
+    }
     if method == "GET" && (path == "/overlays" || path.starts_with("/overlays/")) {
         if path == "/overlays/events" {
             let upgrade = h("upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
@@ -2360,7 +2441,12 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             }
             return crate::overlays::events(e, tcp, query).await;
         }
-        let served = crate::overlays::file(&e.config(), path);
+        // A page opened as a preview shows the editor's draft.
+        let draft = crate::overlays::group_of(path)
+            .filter(|_| crate::overlays::is_preview(query))
+            .map(|group| e.overlay_draft(&group))
+            .unwrap_or_default();
+        let served = crate::overlays::file_with(&e.config(), path, &draft);
         return match served {
             crate::overlays::Served::Bytes(status, kind, body) => {
                 crate::overlays::respond(&mut tcp, status, kind, &body).await
@@ -2384,10 +2470,17 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         }
         body.extend_from_slice(&chunk[..n]);
     }
+    if method == "POST" && path == "/sounds/board/play" {
+        let (status, answer) = crate::core::sounds::board_press(e, &body);
+        return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
+    }
     if method == "POST" && path == "/overlays/call" {
         let (status, answer) = match crate::overlays::avatar(e, &body).await {
             Some(answer) => answer,
-            None => crate::overlays::call(e, &body),
+            None => match crate::overlays::speak(e, &body).await {
+                Some(answer) => answer,
+                None => crate::overlays::call(e, &body),
+            },
         };
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }
@@ -2448,6 +2541,12 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_answer_keeps_the_requests_id() {
+        let answer = ok(&json!("r7"), json!({"id": 3, "durationMs": 10}));
+        assert_eq!(answer, json!({"id": "r7", "durationMs": 10, "status": "ok"}));
+    }
+
     #[test]
     fn a_raw_platform_call_goes_through_the_running_client_in_dev_mode_only() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());

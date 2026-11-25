@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sound board</title>
+<style>
+  /* A dock of OBS: Streamerz's colors, a pad for each sound. */
+  html, body { margin: 0; background: #18181b; color: #e4e4e7; font: 13px system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; padding: 10px; }
+  button { min-height: 64px; background: #27272a; color: inherit; border: 1px solid #3f3f46; border-radius: 8px;
+    font: inherit; cursor: pointer; padding: 8px; overflow-wrap: anywhere; }
+  button:hover { background: #3f3f46; }
+  button:active, button.on { background: #7c3aed; border-color: #7c3aed; }
+  p { color: #a1a1aa; padding: 10px; margin: 0; }
+</style>
+</head>
+<body>
+<main id="pads"></main>
+<script>
+// Made by Streamerz from the Sounds page's Board. A press plays the pad where its settings say.
+const pads = __PADS__;
+const token = "__TOKEN__";
+if (!pads.length) document.body.prepend(Object.assign(document.createElement("p"), { textContent: "The Board has no pads yet: add them on the Sounds page." }));
+for (const pad of pads) {
+  const b = Object.assign(document.createElement("button"), { textContent: pad.label, title: pad.label });
+  b.onclick = () => {
+    b.classList.add("on");
+    fetch("/sounds/board/play", { method: "POST", body: JSON.stringify({ id: pad.id, token }) })
+      .then(r => r.json()).then(r => r.ok || (b.title = r.error)).catch(e => (b.title = String(e)))
+      .finally(() => setTimeout(() => b.classList.remove("on"), 150));
+  };
+  document.getElementById("pads").append(b);
+}
+</script>
+</body>
+</html>
