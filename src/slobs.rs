@@ -52,7 +52,48 @@ fn flag(o: &Obj, k: &str) -> bool {
 }
 
 fn num(o: &Obj, k: &str, default: u64) -> u64 {
-    o.get(k).and_then(Value::as_u64).filter(|n| *n > 0).unwrap_or(default)
+    o.get(k)
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
+}
+
+fn opt_u64(o: &Obj, k: &str) -> u64 {
+    o.get(k)
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_f64().filter(|x| x.is_finite() && *x >= 0.0).map(|x| x as u64))
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
+fn opt_f64(o: &Obj, k: &str) -> f64 {
+    o.get(k)
+        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
+        .filter(|x| x.is_finite())
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn ws_url(o: &Obj) -> String {
+    let host = s(o, "host").trim();
+    let host = if host.is_empty() { "127.0.0.1" } else { host };
+    let port = u16::try_from(num(o, "port", 59650))
+        .ok()
+        .filter(|&p| p > 0)
+        .unwrap_or(59650);
+    if host.contains(':') && !host.starts_with('[') {
+        format!("ws://[{host}]:{port}/api/websocket")
+    } else {
+        format!("ws://{host}:{port}/api/websocket")
+    }
+}
+
+pub(crate) fn reconnect_delay(base_secs: u64, attempt: u32) -> Duration {
+    let base = base_secs.max(1);
+    let cap = base.max(60);
+    let factor = 1u64 << attempt.saturating_sub(1).min(4);
+    Duration::from_secs(base.saturating_mul(factor).min(cap))
 }
 
 /// The connection a sub-action means: its id; empty or all zeros, the default one (else the first).
@@ -135,16 +176,24 @@ impl Engine {
     pub fn slobs_sync(self: &Rc<Self>, start: bool) {
         let list = self.config().slobs.connections.clone();
         let mut restart = Vec::new();
+        let mut dropped_up = Vec::new();
         self.slobs.conns.borrow_mut().retain(|id, c| {
-            let keep = !c.task.is_finished() && list.contains(&c.cfg);
+            let was_running = !c.task.is_finished();
+            let keep = was_running && list.contains(&c.cfg);
             if !keep {
                 c.task.abort();
-                if !c.task.is_finished() && list.iter().any(|o| s(o, "id") == id) {
+                if c.up.replace(false) {
+                    dropped_up.push(c.cfg.clone());
+                }
+                if was_running && list.iter().any(|o| s(o, "id") == id) {
                     restart.push(id.clone());
                 }
             }
             keep
         });
+        for cfg in dropped_up {
+            self.slobs_fire(&cfg, 22002, "Disconnected", "Disconnected", None);
+        }
         for o in &list {
             if restart.iter().any(|r| r == s(o, "id")) || (start && flag(o, "autoConnect")) {
                 self.slobs_connect(s(o, "id"));
@@ -188,22 +237,39 @@ impl Engine {
         }
     }
 
-    /// One connection: connect, and reconnect every retryInterval seconds if set to.
+    /// One connection: connect, and reconnect with backoff if set to.
     async fn slobs_run(self: Rc<Self>, o: Obj, mut rx: mpsc::UnboundedReceiver<Call>, up: Rc<Cell<bool>>) {
-        let url = format!("ws://{}:{}/api/websocket", s(&o, "host"), num(&o, "port", 59650));
-        let retry = Duration::from_secs(num(&o, "retryInterval", 30));
+        let url = ws_url(&o);
+        let base_retry = num(&o, "retryInterval", 30);
+        let status_key = format!("slobs:{}", s(&o, "id"));
+        let mut attempt: u32 = 0;
+        let mut last_err: Option<String> = None;
         loop {
-            if let Err(e) = self.slobs_session(&o, &url, &mut rx, &up).await {
-                crate::warn(format!("Streamlabs Desktop {}: {e}", s(&o, "name")));
+            match self.slobs_session(&o, &url, &mut rx, &up).await {
+                Ok(()) => {
+                    if up.get() {
+                        crate::core::status::record_failure(&status_key, crate::core::status::Failure::Closed);
+                    }
+                }
+                Err((reason, e)) => {
+                    crate::core::status::record_failure(&status_key, reason);
+                    if last_err.as_deref() != Some(e.as_str()) {
+                        crate::warn(format!("Streamlabs Desktop {}: {e}", s(&o, "name")));
+                        last_err = Some(e);
+                    }
+                }
             }
             if up.replace(false) {
+                attempt = 0;
+                last_err = None;
                 self.slobs_fire(&o, 22002, "Disconnected", "Disconnected", None);
             }
             if !flag(&o, "reconnectOnDisconnect") {
                 return;
             }
+            attempt = attempt.saturating_add(1);
             // Calls made while waiting fail at once rather than hang.
-            let wait = tokio::time::sleep(retry);
+            let wait = tokio::time::sleep(reconnect_delay(base_retry, attempt));
             tokio::pin!(wait);
             loop {
                 tokio::select! {
@@ -223,8 +289,23 @@ impl Engine {
         url: &str,
         rx: &mut mpsc::UnboundedReceiver<Call>,
         up: &Cell<bool>,
-    ) -> Result<(), String> {
-        let (ws, _) = crate::http::ws_connect(url).await.map_err(|e| e.to_string())?;
+    ) -> Result<(), (crate::core::status::Failure, String)> {
+        use crate::core::status::Failure;
+        let connect_fut = tokio::time::timeout(Duration::from_secs(15), crate::http::ws_connect(url));
+        tokio::pin!(connect_fut);
+        let ws = loop {
+            tokio::select! {
+                res = &mut connect_fut => match res {
+                    Ok(Ok((ws, _))) => break ws,
+                    Ok(Err(e)) => return Err((Failure::Connect, e.to_string())),
+                    Err(_) => return Err((Failure::Connect, "connection timed out".into())),
+                },
+                call = rx.recv() => match call {
+                    Some(c) => drop(c.3.send(Err("not connected".into()))),
+                    None => return Ok(()),
+                },
+            }
+        };
         let (mut tx, mut stream) = ws.split();
         let req = |id: &str, resource: &str, method: &str, args: Value| {
             Message::Text(
@@ -233,44 +314,66 @@ impl Engine {
                     .into(),
             )
         };
-        let mut first = vec![req("auth", "TcpServerService", "auth", json!([s(o, "token")]))];
-        // Only the events the triggers need.
-        for (resource, method) in [
-            ("ScenesService", "sceneSwitched"),
-            ("StreamingService", "streamingStatusChange"),
-            ("StreamingService", "recordingStatusChange"),
-        ] {
-            first.push(req("sub", resource, method, json!([])));
-        }
-        for m in first {
-            tx.send(m).await.map_err(|e| e.to_string())?;
-        }
+        tx.send(req("auth", "TcpServerService", "auth", json!([s(o, "token")])))
+            .await
+            .map_err(|e| (Failure::Handshake, e.to_string()))?;
+
         let mut pending: HashMap<u64, Reply> = HashMap::new();
         let mut next = 0u64;
+        let auth_deadline = tokio::time::sleep(Duration::from_secs(15));
+        tokio::pin!(auth_deadline);
         loop {
             tokio::select! {
+                _ = &mut auth_deadline, if !up.get() => {
+                    return Err((Failure::Handshake, "auth timed out".into()));
+                }
                 m = stream.next() => {
                     let Some(Ok(m)) = m else { return Ok(()) };
-                    let Message::Text(t) = m else { continue };
-                    let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                    let result = v.get("result").unwrap_or(&Value::Null);
-                    let err = v["error"]["message"].as_str().map(String::from);
-                    match v["id"].as_str() {
-                        Some("auth") => {
-                            if err.is_some() || result != &Value::Bool(true) {
-                                return Err(format!("refused the token ({})", err.unwrap_or_default()));
-                            }
-                            up.set(true);
-                            crate::say(format!("Streamlabs Desktop {}: connected", s(o, "name")));
-                            self.slobs_fire(o, 22001, "Connected", "Connected", None);
+                    match m {
+                        Message::Ping(data) => {
+                            let _ = tx.send(Message::Pong(data)).await;
+                            continue;
                         }
-                        Some(id) => {
-                            if let Some(reply) = id.parse().ok().and_then(|id| pending.remove(&id)) {
-                                let _ = reply.send(err.map_or_else(|| Ok(result.clone()), Err));
+                        Message::Close(_) => return Ok(()),
+                        Message::Text(t) => {
+                            let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
+                            let result = v.get("result").unwrap_or(&Value::Null);
+                            let err = v["error"]["message"].as_str().map(String::from);
+                            let id_str = v["id"].as_str();
+                            let id_num = id_str
+                                .and_then(|x| x.parse::<u64>().ok())
+                                .or_else(|| v["id"].as_u64());
+                            match id_str {
+                                Some("auth") => {
+                                    if err.is_some() || result != &Value::Bool(true) {
+                                        return Err((Failure::Handshake, format!("refused the token ({})", err.unwrap_or_default())));
+                                    }
+                                    // Subscribe to the events our triggers need only after auth succeeds.
+                                    for (resource, method) in [
+                                        ("ScenesService", "sceneSwitched"),
+                                        ("StreamingService", "streamingStatusChange"),
+                                        ("StreamingService", "recordingStatusChange"),
+                                    ] {
+                                        tx.send(req("sub", resource, method, json!([])))
+                                            .await
+                                            .map_err(|e| (Failure::Closed, e.to_string()))?;
+                                    }
+                                    up.set(true);
+                                    crate::core::status::clear_failure(&format!("slobs:{}", s(o, "id")));
+                                    crate::say(format!("Streamlabs Desktop {}: connected", s(o, "name")));
+                                    self.slobs_fire(o, 22001, "Connected", "Connected", None);
+                                }
+                                Some("sub") => {}
+                                _ if id_num.is_some() => {
+                                    if let Some(reply) = id_num.and_then(|id| pending.remove(&id)) {
+                                        let _ = reply.send(err.map_or_else(|| Ok(result.clone()), Err));
+                                    }
+                                }
+                                None if result["_type"] == "EVENT" => self.slobs_heard(o, result),
+                                _ => {}
                             }
                         }
-                        None if result["_type"] == "EVENT" => self.slobs_heard(o, result),
-                        None => {}
+                        _ => continue,
                     }
                 }
                 call = rx.recv() => {
@@ -281,7 +384,9 @@ impl Engine {
                     }
                     next += 1;
                     pending.insert(next, reply);
-                    tx.send(req(&next.to_string(), &resource, &method, args)).await.map_err(|e| e.to_string())?;
+                    tx.send(req(&next.to_string(), &resource, &method, args))
+                        .await
+                        .map_err(|e| (Failure::Closed, e.to_string()))?;
                 }
             }
         }
@@ -350,7 +455,10 @@ impl Engine {
         let (reply, answer) = oneshot::channel();
         tx.send((resource, method.into(), args, reply))
             .map_err(|_| "not connected")?;
-        answer.await.map_err(|_| "not connected")?
+        tokio::time::timeout(Duration::from_secs(30), answer)
+            .await
+            .map_err(|_| "request timed out")?
+            .map_err(|_| "not connected")?
     }
 
     /// A Streamlabs Desktop sub-action, its text fields already expanded. Get Current Scene's scene.
@@ -359,7 +467,7 @@ impl Engine {
         let call = |resource: &str, method: &'static str, args: Value| {
             self.slobs_call(conn, resource.to_string(), method, args)
         };
-        let state = o.get("state").and_then(Value::as_u64).unwrap_or(0);
+        let state = opt_u64(o, "state");
         match kind {
             // Streaming: 0 stop, 1 start. Recording: 0 start, 1 stop; Pause/Resume do nothing
             // (Streamlabs can't pause). Streamlabs only has toggles.
@@ -410,8 +518,13 @@ impl Engine {
                 Ok::<_, String>(())
             }
         };
-        let mut sources: Vec<&str> = items.iter().map(|n| s(n, "sourceId")).collect();
-        sources.dedup();
+        let mut sources: Vec<&str> = Vec::new();
+        for n in &items {
+            let sid = s(n, "sourceId");
+            if !sid.is_empty() && !sources.contains(&sid) {
+                sources.push(sid);
+            }
+        }
         match kind {
             401 => {
                 for n in &items {
@@ -452,7 +565,7 @@ impl Engine {
             }
             // Flip: 0 horizontal, 1 vertical, 2 both.
             407 => {
-                let mode = o.get("flipMode").and_then(Value::as_u64).unwrap_or(0);
+                let mode = opt_u64(o, "flipMode");
                 if mode != 1 {
                     item("flipX", json!([])).await?;
                 }
@@ -462,7 +575,7 @@ impl Engine {
             }
             // Rotate: to an angle, or by it (Additive).
             408 => {
-                let deg = o.get("degrees").and_then(Value::as_f64).unwrap_or(0.0);
+                let deg = opt_f64(o, "degrees");
                 if flag(o, "additive") {
                     item("rotate", json!([deg])).await?;
                 } else {
@@ -477,15 +590,19 @@ impl Engine {
                     ("text", s(o, "text"))
                 };
                 for src in sources {
-                    call(&format!("Source[\"{src}\"]"), "updateSettings", json!([{k: v}])).await?;
+                    let quoted = serde_json::to_string(src).unwrap_or_else(|_| format!("\"{src}\""));
+                    call(&format!("Source[{quoted}]"), "updateSettings", json!([{k: v}])).await?;
                 }
             }
             413 => {
                 let audio = call("AudioService", "getSourcesForScene", json!([scene_id])).await?;
                 let name = s(o, "sourceName");
                 for a in audio.as_array().into_iter().flatten().filter(|a| a["name"] == name) {
+                    let Some(rid) = a["resourceId"].as_str().filter(|r| !r.is_empty()) else {
+                        continue;
+                    };
                     let v = wanted(state, a["muted"].as_bool().unwrap_or(false));
-                    call(a["resourceId"].as_str().unwrap_or(""), "setMuted", json!([v])).await?;
+                    call(rid, "setMuted", json!([v])).await?;
                 }
             }
             _ => {}
@@ -567,5 +684,213 @@ mod tests {
         assert_eq!(s(&pick(&list, "x").unwrap(), "id"), "x");
         assert!(pick(&list, "z").is_none());
         assert!(wanted(2, false) && !wanted(1, true) && wanted(0, true));
+    }
+
+    #[test]
+    fn url_formatting_and_backoff() {
+        let obj = |v: Value| v.as_object().cloned().unwrap();
+        assert_eq!(ws_url(&obj(json!({}))), "ws://127.0.0.1:59650/api/websocket");
+        assert_eq!(
+            ws_url(&obj(json!({"host": "::1", "port": 59650}))),
+            "ws://[::1]:59650/api/websocket"
+        );
+        assert_eq!(
+            ws_url(&obj(json!({"host": "localhost", "port": 99999}))),
+            "ws://localhost:59650/api/websocket"
+        );
+        let seq: Vec<u64> = (1..=5).map(|n| reconnect_delay(10, n).as_secs()).collect();
+        assert_eq!(seq, [10, 20, 40, 60, 60]);
+    }
+
+    #[test]
+    fn mock_slobs_auth_order_rpc_and_events() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mk = |id: &str, code: u32, msg: &str| {
+            let mut a = action(id, id, json!([log(msg)]));
+            a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+            a
+        };
+        let out = run(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                // First message must be auth, NOT subscribe.
+                let first: Value = match ws.next().await.unwrap().unwrap() {
+                    Message::Text(t) => serde_json::from_str(&t).unwrap(),
+                    other => panic!("expected text, got {other:?}"),
+                };
+                assert_eq!(first["id"], "auth");
+                assert_eq!(first["params"]["args"][0], "tok");
+                ws.send(Message::Text(
+                    json!({"jsonrpc": "2.0", "id": "auth", "result": true})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+
+                // Next 3 messages are the event subscriptions.
+                for _ in 0..3 {
+                    let sub: Value = match ws.next().await.unwrap().unwrap() {
+                        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+                        other => panic!("expected sub, got {other:?}"),
+                    };
+                    assert_eq!(sub["id"], "sub");
+                    ws.send(Message::Text(
+                        json!({"jsonrpc": "2.0", "id": "sub", "result": {}}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+
+                // Emit a sceneSwitched event.
+                ws.send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "_type": "EVENT",
+                            "resourceId": "ScenesService.sceneSwitched",
+                            "data": {"name": "Main"}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+                // Handle one RPC call, replying with a numeric id to verify both string and integer ids match.
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    let req: Value = serde_json::from_str(&t).unwrap();
+                    let id: u64 = req["id"].as_str().unwrap().parse().unwrap();
+                    ws.send(Message::Text(
+                        json!({"jsonrpc": "2.0", "id": id, "result": {"name": "Main"}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                let _ = ws.close(None).await;
+            });
+
+            let e = engine(json!({
+                "actions": [
+                    mk("up", 22001, "T up %sd.name%"),
+                    mk("down", 22002, "T down"),
+                    mk("scene", 22003, "T scene %sd.sceneName%"),
+                ]
+            }));
+            e.change(|c| {
+                c.slobs.connections = vec![json!({
+                    "id": "s1",
+                    "name": "SLOBS",
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "token": "tok",
+                    "autoConnect": true,
+                    "reconnectOnDisconnect": false
+                })
+                .as_object()
+                .cloned()
+                .unwrap()];
+            });
+            e.slobs_sync(true);
+            let start = std::time::Instant::now();
+            while !e.slobs_up("s1") && start.elapsed() < Duration::from_secs(2) {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
+            assert!(e.slobs_up("s1"));
+            let got = e
+                .slobs_sub(414, json!({"connectionId": "s1"}).as_object().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(got.as_deref(), Some("Main"));
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            assert!(!e.slobs_up("s1"));
+        });
+        assert!(out.contains(&"T up SLOBS".to_string()), "{out:?}");
+        assert!(out.contains(&"T scene Main".to_string()), "{out:?}");
+        assert!(out.contains(&"T down".to_string()), "{out:?}");
+    }
+
+    #[test]
+    fn slobs_sub_actions_dedup_sources_and_sync_fires_disconnect() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut down = action("down", "down", json!([log("T sync-down")]));
+        down["triggers"] = json!([{"id": "t", "type": 22002, "enabled": true}]);
+        let e = engine(json!({"actions": [down]}));
+        let conn_obj = json!({"id": "c1", "name": "Desk", "host": "127.0.0.1", "port": 59650, "autoConnect": false})
+            .as_object()
+            .cloned()
+            .unwrap();
+
+        let out = run(async move {
+            e.change(|c| c.slobs.connections = vec![conn_obj.clone()]);
+            let mut rx = e.slobs_detached(conn_obj);
+            let calls = tokio::task::spawn_local(async move {
+                let mut seen = Vec::new();
+                while let Some((res, method, args, reply)) = rx.recv().await {
+                    let answer = match method.as_str() {
+                        "activeScene" => json!({
+                            "id": "sc1",
+                            "name": "Main",
+                            "nodes": [
+                                {"id": "n1", "name": "Browser", "sceneNodeType": "item", "sourceId": "src\"1", "resourceId": "SceneItem[\"n1\"]", "visible": true, "display": "horizontal"},
+                                {"id": "n2", "name": "Browser", "sceneNodeType": "item", "sourceId": "src2", "resourceId": "SceneItem[\"n2\"]", "visible": false, "display": "vertical"},
+                                {"id": "n3", "name": "Browser", "sceneNodeType": "item", "sourceId": "src\"1", "resourceId": "SceneItem[\"n3\"]", "visible": true, "display": "horizontal"}
+                            ]
+                        }),
+                        _ => json!({}),
+                    };
+                    seen.push((res, method, args));
+                    let _ = reply.send(Ok(answer));
+                }
+                seen
+            });
+
+            // 409: Set Browser Source URL deduplicates non-adjacent sources and escapes quotes in Source[...].
+            e.slobs_sub(
+                409,
+                json!({"connectionId": "c1", "sourceName": "Browser", "url": "https://example.test"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+            // 408: Rotate accepts string degrees.
+            e.slobs_sub(
+                408,
+                json!({"connectionId": "c1", "sourceName": "Browser", "degrees": "90", "display": "vertical"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+            // Removing the connection in slobs_sync aborts it and fires Disconnected (22002).
+            e.change(|c| c.slobs.connections.clear());
+            e.slobs_sync(false);
+            let seen = calls.await.unwrap();
+            let updates: Vec<&str> = seen
+                .iter()
+                .filter(|(_, m, _)| m == "updateSettings")
+                .map(|(r, _, _)| r.as_str())
+                .collect();
+            assert_eq!(updates, vec!["Source[\"src\\\"1\"]", "Source[\"src2\"]"]);
+            let rots: Vec<(&str, &Value)> = seen
+                .iter()
+                .filter(|(_, m, _)| m == "setTransform")
+                .map(|(r, _, a)| (r.as_str(), a))
+                .collect();
+            assert_eq!(rots, vec![("SceneItem[\"n2\"]", &json!([{"rotation": 90.0}]))]);
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        });
+        assert_eq!(out, ["T sync-down"]);
     }
 }
