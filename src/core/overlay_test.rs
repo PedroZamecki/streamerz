@@ -284,21 +284,40 @@ pub fn song(engine: &Rc<Engine>, group: &str, playing: bool) -> Value {
     json!({"accepted": true, "message": tr("overlays.test.done")})
 }
 
-thread_local! {
-    /// The last real events that make an alert (code and arguments), newest last, for Replay.
-    static RECENT: std::cell::RefCell<std::collections::VecDeque<(u32, Obj, u64)>> = Default::default();
+/// A real event kept for Replay: its own number (it keeps it while newer ones push older ones out),
+/// its trigger, its arguments and when it came (seconds since 1970).
+struct Remembered {
+    id: u64,
+    code: u32,
+    args: Obj,
+    at: u64,
 }
 
-/// Keeps a real event for Replay (made-up ones are left out). At most 50.
+thread_local! {
+    /// The last real events that make an alert, newest last, for Replay.
+    static RECENT: std::cell::RefCell<std::collections::VecDeque<Remembered>> = Default::default();
+    static NEXT_EVENT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many real events Replay keeps.
+const KEPT: usize = 50;
+
+/// Keeps a real event for Replay (made-up ones are left out). At most `KEPT`.
 pub fn remember(code: u32, args: &Obj) {
     if args.get("isTest").is_some_and(|t| t == &Value::Bool(true)) {
         return;
     }
+    let id = NEXT_EVENT.replace(NEXT_EVENT.get() + 1);
     RECENT.with_borrow_mut(|recent| {
-        if recent.len() >= 50 {
+        if recent.len() >= KEPT {
             recent.pop_front();
         }
-        recent.push_back((code, args.clone(), crate::fmt::unix_now().as_secs()));
+        recent.push_back(Remembered {
+            id,
+            code,
+            args: args.clone(),
+            at: crate::fmt::unix_now().as_secs(),
+        });
     });
 }
 
@@ -307,26 +326,30 @@ pub fn recent() -> Vec<Value> {
     RECENT.with_borrow(|recent| {
         recent
             .iter()
-            .enumerate()
             .rev()
-            .map(|(at, (code, args, when))| {
-                json!({"id": format!("replay:{at}"), "title": crate::automation::labels::trigger_title(u64::from(*code)),
-                    "who": args.get("user").map(crate::vars::text).unwrap_or_default(),
-                    "at": crate::fmt::shown_clock(*when as i64)})
+            .map(|e| {
+                json!({"id": format!("replay:{}", e.id), "title": crate::automation::labels::trigger_title(u64::from(e.code)),
+                    "who": e.args.get("user").map(crate::vars::text).unwrap_or_default(),
+                    "at": crate::fmt::shown_clock(e.at as i64)})
             })
             .collect()
     })
 }
 
+/// The trigger and arguments of a remembered event, by the id `recent` gave it.
+fn remembered(id: &str) -> Result<(u32, Obj), String> {
+    let id = id
+        .strip_prefix("replay:")
+        .and_then(|n| n.parse::<u64>().ok())
+        .ok_or("no such event")?;
+    RECENT
+        .with_borrow(|recent| recent.iter().find(|e| e.id == id).map(|e| (e.code, e.args.clone())))
+        .ok_or_else(|| tr("overlays.test.replay_gone").to_owned())
+}
+
 /// Shows a remembered real event again on this overlay's pages.
 pub fn replay(engine: &Rc<Engine>, group: &str, id: &str) -> Result<Value, String> {
-    let at = id
-        .strip_prefix("replay:")
-        .and_then(|n| n.parse::<usize>().ok())
-        .ok_or("no such event")?;
-    let (code, mut args) = RECENT
-        .with_borrow(|recent| recent.get(at).map(|(c, a, _)| (*c, a.clone())))
-        .ok_or_else(|| tr("overlays.test.replay_gone").to_owned())?;
+    let (code, mut args) = remembered(id)?;
     args.insert("isTest".into(), true.into());
     send_one(engine, group, code, &args, 0)?;
     Ok(json!({"accepted": true, "message": tr("overlays.test.done")}))
@@ -361,5 +384,25 @@ mod tests {
         let list = recent();
         assert_eq!(list.len(), 50);
         assert_eq!(list[0]["who"], "u59");
+    }
+
+    #[test]
+    fn a_replay_finds_the_event_it_showed_even_after_newer_ones_came() {
+        for n in 0..KEPT as u32 {
+            remember(101, &with_values(Obj::new(), &format!("user=first{n}")));
+        }
+        let shown = recent();
+        let oldest_shown = shown.last().unwrap();
+        let id = oldest_shown["id"].as_str().unwrap().to_owned();
+        let (_, args) = remembered(&id).unwrap();
+        assert_eq!(args["user"], oldest_shown["who"]);
+        // Two more come: the oldest goes, and the one after it is still found by its id.
+        let next = shown[shown.len() - 2]["id"].as_str().unwrap().to_owned();
+        remember(103, &with_values(Obj::new(), "user=late1"));
+        remember(103, &with_values(Obj::new(), "user=late2"));
+        assert!(remembered(&id).is_err(), "pushed out: not another event in its place");
+        let (code, args) = remembered(&next).unwrap();
+        assert_eq!((code, &args["user"]), (101, &shown[shown.len() - 2]["who"]));
+        assert!(remembered("replay:x").is_err() && remembered("other").is_err());
     }
 }
