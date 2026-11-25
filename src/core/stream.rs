@@ -166,6 +166,8 @@ const TWITCH_TITLE_MAX: usize = 140;
 const YOUTUBE_TITLE_MAX: usize = 100;
 const TWITCH_TAGS_MAX: usize = 10;
 const TWITCH_TAG_MAX: usize = 25;
+const KICK_TAGS_MAX: usize = 10;
+const KICK_AD_MAX: u64 = 90;
 /// YouTube counts its tags together: commas between them, quotes around one with a space.
 const YOUTUBE_TAGS_MAX: usize = 500;
 const YOUTUBE_DESCRIPTION_MAX: usize = 5000;
@@ -177,14 +179,24 @@ const KNOWN_TAGS: &str = "stream.tags";
 
 /// Adds names to a list of picks, once each (any case).
 fn remember(key: &'static str, names: impl IntoIterator<Item = String>) {
+    let candidates: Vec<String> = names
+        .into_iter()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
     let mut list = crate::catalog::get(key);
-    for name in names {
-        let name = name.trim().to_owned();
-        if !name.is_empty() && list.len() < 300 && !list.iter().any(|(_, known)| known.eq_ignore_ascii_case(&name)) {
+    let before = list.len();
+    for name in candidates {
+        if list.len() < 300 && !list.iter().any(|(_, known)| known.eq_ignore_ascii_case(&name)) {
             list.push((name.clone(), name));
         }
     }
-    crate::catalog::set(key, list);
+    if list.len() != before {
+        crate::catalog::set(key, list);
+    }
 }
 
 /// A field's picks as the form takes them.
@@ -276,7 +288,6 @@ struct Seen {
     info: [Info; 4],
     obs: Vec<ObsState>,
     obs_inventories: Vec<(String, crate::core::outputs::Inventory)>,
-    obs_prefs: Vec<crate::core::outputs::ObsOutputPref>,
     note: String,
     /// Something asked last didn't go through (the note says what).
     trouble: bool,
@@ -359,8 +370,33 @@ fn seen() -> Seen {
     SEEN.with(|seen| seen.borrow().clone())
 }
 
+fn platform_index(slug: &str) -> Option<usize> {
+    PLATFORMS.iter().position(|(key, _)| *key == slug)
+}
+
 fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
     !access.is_empty() && (!crate::oauth::stale(expires_at) || !refresh.is_empty())
+}
+
+fn oauth_ready(access: &str, refresh: &str, expires_at: u64, client_id: &str, client_secret: &str) -> bool {
+    token_ready(access, refresh, expires_at)
+        && (!crate::oauth::stale(expires_at) || (!client_id.is_empty() && !client_secret.is_empty()))
+}
+
+fn ads_unavailable_why(info: &Info, fallback: &'static str) -> String {
+    if info.ads.is_empty() {
+        tr(fallback).to_string()
+    } else {
+        info.ads.clone()
+    }
+}
+
+fn text_field(item: &Obj, key: &str) -> String {
+    item.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// A channel or account name, compared without case, spaces or a leading @.
@@ -409,9 +445,13 @@ fn access(e: &Engine) -> Access {
     let kick_state = if e.kick().is_none() {
         off("Kick")
     } else if !kick.is_some_and(|a| {
-        token_ready(&a.token.access_token, &a.token.refresh_token, a.token.expires_at)
-            && (!crate::oauth::stale(a.token.expires_at)
-                || (!c.kick.client_id.is_empty() && !c.kick.client_secret.is_empty()))
+        oauth_ready(
+            &a.token.access_token,
+            &a.token.refresh_token,
+            a.token.expires_at,
+            &c.kick.client_id,
+            &c.kick.client_secret,
+        )
     }) {
         login("Kick")
     } else if !c.kick.channel.trim().is_empty() && !kick.is_some_and(|a| same(&a.username, &c.kick.channel)) {
@@ -425,9 +465,13 @@ fn access(e: &Engine) -> Access {
     let youtube_state = if e.youtube().is_none() {
         off("YouTube")
     } else if !youtube.is_some_and(|a| {
-        token_ready(&a.token.access_token, &a.token.refresh_token, a.token.expires_at)
-            && (!crate::oauth::stale(a.token.expires_at)
-                || (!c.youtube.client_id.is_empty() && !c.youtube.client_secret.is_empty()))
+        oauth_ready(
+            &a.token.access_token,
+            &a.token.refresh_token,
+            a.token.expires_at,
+            &c.youtube.client_id,
+            &c.youtube.client_secret,
+        )
     }) {
         login("YouTube")
     } else if !c.youtube.channel_id.trim().is_empty()
@@ -1010,10 +1054,13 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                     match ads {
                         Some(Ok(ads)) => info.ads = twitch_ads(&ads["data"][0], info.live),
                         Some(Err(err))
-                            if err.contains("affiliate")
-                                || err.contains("partner")
-                                || err.contains("monetized")
-                                || err.contains("HTTP 403") =>
+                            if {
+                                let lower = err.to_ascii_lowercase();
+                                lower.contains("affiliate")
+                                    || lower.contains("partner")
+                                    || lower.contains("monetized")
+                                    || err.contains("HTTP 403")
+                            } =>
                         {
                             info.ads_unavailable = true;
                             info.ads = tr("stream.ads_twitch_ineligible").into();
@@ -1267,6 +1314,10 @@ const READ_EVERY: Duration = Duration::from_secs(60);
 /// change is already running. The platforms are changed and read side by side; `force` reads YouTube
 /// too when it was read lately.
 fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
+    ask_inner(engine, steps, force, false)
+}
+
+fn ask_inner(engine: &Rc<Engine>, steps: Vec<Step>, force: bool, clear_note: bool) -> bool {
     let mutation = !steps.is_empty();
     let Some(sequence) = SEEN.with(|seen| seen.borrow_mut().begin(mutation)) else {
         return false;
@@ -1310,7 +1361,6 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
         };
         let (i0, i1, i2, i3, (obs, obs_inventories)) =
             tokio::join!(read(TWITCH), read(KICK), read(YOUTUBE), read(TIKTOK), look_obs(&e));
-        let obs_prefs = e.config().obs_output_prefs.clone();
         let applied = SEEN.with(|seen| {
             let mut seen = seen.borrow_mut();
             if !seen.finish(sequence) {
@@ -1335,14 +1385,14 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
             }
             seen.obs = obs;
             seen.obs_inventories = obs_inventories;
-            seen.obs_prefs = obs_prefs;
             seen.access = access;
             nothing_to_change(&mut seen);
             if !notes.is_empty() {
                 seen.note = notes.join("  ");
                 seen.trouble = trouble;
-            } else if mutation {
+            } else if mutation || clear_note {
                 seen.note.clear();
+                seen.trouble = false;
             }
             true
         });
@@ -1357,80 +1407,72 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
     true
 }
 
-/// A platform said its live changed by itself (Twitch's EventSub, Kick's Pusher): the page shows it
-/// at once, with no read. Empty values leave what is there.
-pub fn pushed(platform: &str, title: Option<&str>, category: Option<&str>) {
-    if platform == "twitch" {
-        pushed_twitch(title, category, None, None);
-        return;
-    }
-    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
-        return;
-    };
+fn apply_push(
+    i: usize,
+    title: Option<&str>,
+    category: Option<&str>,
+    twitch_extra: Option<(Option<&str>, Option<Vec<String>>)>,
+) {
     let changed = SEEN.with_borrow_mut(|seen| {
         if seen.received == 0 || !seen.access.shown[i] {
             return false;
         }
         let info = &mut seen.info[i];
-        let before = (info.title.clone(), info.category.clone());
+        let mut changed = false;
         if let Some(title) = title {
-            info.title = title.trim().to_owned();
-            info.known = true;
+            let title = title.trim();
+            if info.title != title || !info.known {
+                info.title = title.to_owned();
+                info.known = true;
+                changed = true;
+            }
         }
         if let Some(category) = category {
-            info.category = category.trim().to_owned();
+            let category = category.trim();
+            if info.category != category {
+                info.category = category.to_owned();
+                changed = true;
+            }
         }
-        before != (info.title.clone(), info.category.clone())
+        if let Some((language, labels)) = twitch_extra {
+            if let Some(language) = language {
+                let language = language.trim();
+                if info.language != language {
+                    info.language = language.to_owned();
+                    changed = true;
+                }
+            }
+            if let Some(labels) = labels {
+                if info.labels != labels {
+                    info.labels = labels;
+                    changed = true;
+                }
+            }
+        }
+        changed
     });
     if changed {
         remember(KNOWN_CATEGORIES, category.map(str::to_owned));
         crate::host::changed();
+    }
+}
+
+/// A platform said its live changed by itself (Twitch's EventSub, Kick's Pusher): the page shows it
+/// at once, with no read. Empty values leave what is there.
+pub fn pushed(platform: &str, title: Option<&str>, category: Option<&str>) {
+    if let Some(i) = platform_index(platform) {
+        apply_push(i, title, category, None);
     }
 }
 
 /// Twitch EventSub `channel.update` pushed new metadata (title, category, language, content labels).
 pub fn pushed_twitch(title: Option<&str>, category: Option<&str>, language: Option<&str>, labels: Option<Vec<String>>) {
-    let changed = SEEN.with_borrow_mut(|seen| {
-        if seen.received == 0 || !seen.access.shown[TWITCH] {
-            return false;
-        }
-        let info = &mut seen.info[TWITCH];
-        let before = (
-            info.title.clone(),
-            info.category.clone(),
-            info.language.clone(),
-            info.labels.clone(),
-        );
-        if let Some(title) = title {
-            info.title = title.trim().to_owned();
-            info.known = true;
-        }
-        if let Some(category) = category {
-            info.category = category.trim().to_owned();
-        }
-        if let Some(language) = language {
-            info.language = language.trim().to_owned();
-        }
-        if let Some(labels) = labels {
-            info.labels = labels;
-        }
-        before
-            != (
-                info.title.clone(),
-                info.category.clone(),
-                info.language.clone(),
-                info.labels.clone(),
-            )
-    });
-    if changed {
-        remember(KNOWN_CATEGORIES, category.map(str::to_owned));
-        crate::host::changed();
-    }
+    apply_push(TWITCH, title, category, Some((language, labels)));
 }
 
 /// An ad break just started on `platform`: show it right away and refresh on next read when open.
 pub fn ad_started(platform: &str, length: u64) {
-    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
+    let Some(i) = platform_index(platform) else {
         return;
     };
     let changed = SEEN.with_borrow_mut(|seen| {
@@ -1479,24 +1521,33 @@ pub fn obs_changed() {
 
 /// A live started or ended on `platform`: the page says so at once (a read follows, with the rest).
 pub fn live_changed(platform: &str, live: bool) {
-    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
+    let Some(i) = platform_index(platform) else {
         return;
     };
-    SEEN.with_borrow_mut(|seen| {
+    let changed = SEEN.with_borrow_mut(|seen| {
         let info = &mut seen.info[i];
         if info.live == Some(live) {
-            return;
+            return false;
         }
         info.live = Some(live);
         info.since = live.then(|| crate::oauth::now() as i64);
-        if !live {
+        if live {
+            info.nothing = false;
+        } else {
             info.viewers = None;
             info.paused = false;
+            info.likes = None;
+            info.coins = None;
         }
+        true
     });
     // The next read asks YouTube too: its live is a new broadcast.
     if i == YOUTUBE {
         YOUTUBE_ASKED.set(None);
+    }
+    if changed {
+        ASKED.set(None);
+        crate::host::changed();
     }
 }
 
@@ -1537,17 +1588,19 @@ fn situation(e: &Engine) -> u64 {
 fn refresh_if_due(engine: &Rc<Engine>) {
     let now = situation(engine);
     let changed = SITUATION.get() != Some(now);
-    let just_opened = OPENED.take();
+    let just_opened = OPENED.get();
     let due = ASKED.get().is_none_or(|at| at.elapsed() > READ_EVERY);
     if changed || just_opened || due {
-        SITUATION.set(Some(now));
-        ASKED.set(Some(Instant::now()));
         let force_youtube = changed
             || (just_opened
                 && !YOUTUBE_ASKED
                     .get()
                     .is_some_and(|at| at.elapsed() < YOUTUBE_OPEN_COOLDOWN));
-        ask(engine, Vec::new(), force_youtube);
+        if ask(engine, Vec::new(), force_youtube) {
+            SITUATION.set(Some(now));
+            ASKED.set(Some(Instant::now()));
+            OPENED.set(false);
+        }
     }
 }
 
@@ -1627,8 +1680,7 @@ fn none_why_ads(seen: &Seen) -> String {
     if seen.can_live(ADS).iter().any(|on| *on) {
         return (0..4)
             .find(|i| ADS[*i] && seen.can_live(ADS)[*i] && seen.info[*i].ads_unavailable)
-            .map(|i| seen.info[i].ads.clone())
-            .filter(|s| !s.is_empty())
+            .map(|i| ads_unavailable_why(&seen.info[i], "stream.ads_unavailable"))
             .unwrap_or_else(|| tr("stream.ads_unavailable").into());
     }
     none_why(seen, ADS, true)
@@ -1787,11 +1839,7 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
     let ad_why = if !live_why.is_empty() {
         live_why.clone()
     } else if info.ads_unavailable {
-        if info.ads.is_empty() {
-            tr("stream.ads_unavailable").to_string()
-        } else {
-            info.ads.clone()
-        }
+        ads_unavailable_why(info, "stream.ads_unavailable")
     } else {
         String::new()
     };
@@ -2088,7 +2136,7 @@ fn obs_outputs_section(seen: &Seen) -> Option<Value> {
                 o.name.clone()
             };
             let label = if multi_conn {
-                format!("{conn_name} — {base_name}")
+                format!("{conn_name}: {base_name}")
             } else {
                 base_name
             };
@@ -2125,7 +2173,7 @@ fn obs_outputs_section(seen: &Seen) -> Option<Value> {
             } else if !o.required {
                 ("off", tr("preflight.state_ignored").to_owned(), 5)
             } else if let Some(plat) = o.platform.as_deref().filter(|p| !p.is_empty()) {
-                let idx = PLATFORMS.iter().position(|(slug, _)| *slug == plat);
+                let idx = platform_index(plat);
                 let (h, detail) = match idx {
                     Some(i) if seen.access.ready[i] => {
                         ("up", trf("preflight.output_ready_on", &[("platform", PLATFORMS[i].1)]))
@@ -2133,7 +2181,12 @@ fn obs_outputs_section(seen: &Seen) -> Option<Value> {
                     Some(i) => ("down", seen.access.why[i].clone()),
                     None => ("attention", tr("preflight.state_unmapped").to_owned()),
                 };
-                (h, detail, 0)
+                let choice = if o.platform_source.as_deref() == Some("user") {
+                    idx.map_or(0, |i| i + 1)
+                } else {
+                    0
+                };
+                (h, detail, choice)
             } else {
                 ("attention", tr("preflight.state_unmapped").to_owned(), 0)
             };
@@ -2247,22 +2300,57 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
         if targets.is_empty() {
             return Err(tr("preflight.state_ignored").into());
         }
+        let Some(sequence) = SEEN.with(|seen| seen.borrow_mut().begin(true)) else {
+            return Err(tr("stream.working").to_string());
+        };
+        crate::host::changed();
         let e = engine.clone();
         tokio::task::spawn_local(async move {
+            let mut errors = Vec::new();
             for (conn_id, ids) in targets {
-                let _ = crate::core::outputs::request(&e, &json!({"op": op, "connectionId": conn_id, "outputs": ids}))
-                    .await;
+                match crate::core::outputs::request(&e, &json!({"op": op, "connectionId": conn_id, "outputs": ids}))
+                    .await
+                {
+                    Ok(value) => {
+                        for item in value["results"].as_array().into_iter().flatten() {
+                            if item["state"] == "error" {
+                                let id = item["id"].as_str().unwrap_or("output");
+                                let err = item["error"].as_str().unwrap_or("failed");
+                                errors.push(format!("{id}: {err}"));
+                            }
+                        }
+                    }
+                    Err(error) => errors.push(error),
+                }
             }
-            ASKED.set(None);
-            ask(&e, Vec::new(), false);
+            let applied = SEEN.with(|seen| {
+                let mut seen = seen.borrow_mut();
+                if !seen.finish(sequence) {
+                    return false;
+                }
+                if !errors.is_empty() {
+                    seen.note = errors.join("  ");
+                    seen.trouble = true;
+                } else {
+                    seen.note.clear();
+                    seen.trouble = false;
+                }
+                true
+            });
+            if applied {
+                ASKED.set(None);
+                ask(&e, Vec::new(), false);
+                crate::host::changed();
+            }
         });
         return Ok(json!({"accepted": true}));
     }
     let action = action.strip_prefix("twitch.").unwrap_or(action);
     match action {
         "refresh" => {
-            ASKED.set(Some(Instant::now()));
-            ask(engine, Vec::new(), true);
+            if ask_inner(engine, Vec::new(), true, true) {
+                ASKED.set(Some(Instant::now()));
+            }
             Ok(json!({"accepted": true}))
         }
         "clear_tags" => {
@@ -2275,11 +2363,7 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
         "snooze" => {
             if !now.can_ads(ONLY_TWITCH)[TWITCH] {
                 if now.can_live(ONLY_TWITCH)[TWITCH] && now.info[TWITCH].ads_unavailable {
-                    return Err(if now.info[TWITCH].ads.is_empty() {
-                        tr("stream.ads_twitch_ineligible").into()
-                    } else {
-                        now.info[TWITCH].ads.clone()
-                    });
+                    return Err(ads_unavailable_why(&now.info[TWITCH], "stream.ads_twitch_ineligible"));
                 }
                 return Err(none_why(&now, ONLY_TWITCH, true));
             }
@@ -2307,7 +2391,7 @@ fn kind_of(kind: &str) -> Option<(&str, Option<usize>)> {
     }
     let platform = match slug {
         None => None,
-        Some(slug) => Some(PLATFORMS.iter().position(|(key, _)| *key == slug)?),
+        Some(slug) => Some(platform_index(slug)?),
     };
     match (base, platform) {
         ("stream_ad", Some(i)) if !ADS[i] => None,
@@ -2440,11 +2524,7 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
         } else if now.access.ready[i] && base == "stream_ad" && now.info[i].live == Some(false) {
             tr("stream.needs_live").into()
         } else if now.access.ready[i] && base == "stream_ad" && now.info[i].ads_unavailable {
-            if now.info[i].ads.is_empty() {
-                tr("stream.ads_unavailable").into()
-            } else {
-                now.info[i].ads.clone()
-            }
+            ads_unavailable_why(&now.info[i], "stream.ads_unavailable")
         } else if now.access.ready[i] {
             String::new()
         } else if now.access.shown[i] {
@@ -2469,11 +2549,7 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
                 "tags" | "clear_tags" => unused(any(TAGS)),
                 "description" | "youtube_category" | "privacy" => unused(any(ONLY_YOUTUBE)),
                 "delay" => unused(delay_shown),
-                key => PLATFORMS
-                    .iter()
-                    .position(|(slug, _)| *slug == key)
-                    .map(off)
-                    .unwrap_or_default(),
+                key => platform_index(key).map(off).unwrap_or_default(),
             };
             (field, why)
         })
@@ -2578,13 +2654,7 @@ fn youtube_tags_length(tags: &[String]) -> usize {
 
 /// The changes a stream info form asks for, or what's wrong with it. An empty field keeps what is there.
 fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
-    let text = |key: &str| {
-        item.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
+    let text = |key: &str| text_field(item, key);
     let clear = item.get("clear_tags").and_then(Value::as_bool) == Some(true);
     let (title, category, description) = (text("title"), text("category"), text("description"));
     let tags = if clear { Vec::new() } else { texts(item.get("tags")) };
@@ -2668,6 +2738,9 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     if on[TWITCH] && tags.len() > TWITCH_TAGS_MAX {
         return Err(tr("stream.tags_limit").into());
     }
+    if on[KICK] && tags.len() > KICK_TAGS_MAX {
+        return Err("Kick takes up to ten tags.".into());
+    }
     if on[TWITCH] {
         if let Some(tag) = tags
             .iter()
@@ -2682,11 +2755,13 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     if on[YOUTUBE] && description.chars().count() > YOUTUBE_DESCRIPTION_MAX {
         return Err(tr("stream.description_limit").into());
     }
-    if on[YOUTUBE] && (description.contains(['<', '>']) || title.contains(['<', '>'])) {
+    if on[YOUTUBE]
+        && (description.contains(['<', '>'])
+            || title.contains(['<', '>'])
+            || tags.iter().any(|tag| tag.contains(['<', '>'])))
+    {
         return Err(tr("stream.youtube_brackets").into());
     }
-    remember(KNOWN_CATEGORIES, [category.clone()]);
-    remember(KNOWN_TAGS, tags.clone());
     let given = |text: &String| (!text.is_empty()).then(|| text.clone());
     let new_tags = (clear || !tags.is_empty()).then(|| tags.clone());
     let mut steps = Vec::new();
@@ -2746,6 +2821,12 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     if steps.is_empty() {
         return Err(tr("stream.unchanged").into());
     }
+    if any(categorised) {
+        remember(KNOWN_CATEGORIES, [category]);
+    }
+    if retag {
+        remember(KNOWN_TAGS, tags);
+    }
     Ok(steps)
 }
 
@@ -2756,14 +2837,20 @@ fn ad_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     }
     let index = item.get("duration").and_then(Value::as_u64).unwrap_or(0) as usize;
     let length = AD_LENGTHS[index.min(AD_LENGTHS.len() - 1)];
-    Ok((0..4).filter(|i| on[*i]).map(|i| (i, Job::Ad(length))).collect())
+    Ok((0..4)
+        .filter(|i| on[*i])
+        .map(|i| {
+            let secs = if i == KICK { length.min(KICK_AD_MAX) } else { length };
+            (i, Job::Ad(secs))
+        })
+        .collect())
 }
 
 fn thumbnail_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     if !seen.access.ready[YOUTUBE] {
         return Err(none_why(seen, ONLY_YOUTUBE, false));
     }
-    let file = item.get("file").and_then(Value::as_str).unwrap_or_default().trim();
+    let file = text_field(item, "file");
     let file = file.trim_matches('"');
     let lower = file.to_lowercase();
     if ![".jpg", ".jpeg", ".png"].iter().any(|end| lower.ends_with(end)) {
@@ -4362,6 +4449,153 @@ mod tests {
             obs_changed();
             assert!(ASKED.get().is_none());
             crate::scenario::fakes::uninstall();
+        });
+    }
+
+    #[test]
+    fn live_changed_refreshes_immediately_and_clears_offline_or_nothing_state() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut s = ready([true, true, true, true]);
+        s.info[TIKTOK].live = Some(true);
+        s.info[TIKTOK].likes = Some(120);
+        s.info[TIKTOK].coins = Some(50);
+        s.info[YOUTUBE].live = Some(false);
+        s.info[YOUTUBE].nothing = true;
+        reset(s);
+        assert!(ASKED.get().is_some());
+
+        live_changed("tiktok", false);
+        assert!(ASKED.get().is_none(), "live_changed must schedule a fresh read");
+        assert_eq!(seen().info[TIKTOK].live, Some(false));
+        assert_eq!(seen().info[TIKTOK].likes, None);
+        assert_eq!(seen().info[TIKTOK].coins, None);
+
+        ASKED.set(Some(Instant::now()));
+        live_changed("youtube", true);
+        assert!(ASKED.get().is_none());
+        assert_eq!(seen().info[YOUTUBE].live, Some(true));
+        assert!(!seen().info[YOUTUBE].nothing);
+    }
+
+    #[test]
+    fn refresh_if_due_preserves_pending_open_while_busy_and_refresh_clears_stale_note() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let mut s = ready([false; 4]);
+            s.busy = true;
+            s.note = "Old error".into();
+            s.trouble = true;
+            reset(s);
+            opened();
+            refresh_if_due(&engine);
+            assert!(OPENED.get(), "OPENED must not be lost while busy");
+
+            SEEN.with_borrow_mut(|st| st.busy = false);
+            refresh_if_due(&engine);
+            assert!(!OPENED.get());
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            // Background refresh keeps the mutation note; explicit Refresh clears it.
+            assert_eq!(seen().note, "Old error");
+            assert!(seen().trouble);
+            act(&engine, "refresh").unwrap();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(seen().note.is_empty());
+            assert!(!seen().trouble);
+        });
+    }
+
+    #[test]
+    fn kick_tags_youtube_tag_brackets_kick_ad_cap_and_catalog_hygiene() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::catalog::set(KNOWN_CATEGORIES, Vec::new());
+        crate::catalog::set(KNOWN_TAGS, Vec::new());
+        let seen = ready([true, true, true, false]);
+        // Kick rejects more than 10 tags instead of silently dropping extras.
+        let eleven: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
+        assert!(info_steps(&item(json!({"kick": true, "tags": eleven})), &seen).is_err());
+        // YouTube rejects angle brackets in tags too.
+        assert_eq!(
+            info_steps(&item(json!({"youtube": true, "tags": ["rust", "<script>"]})), &seen).unwrap_err(),
+            tr("stream.youtube_brackets")
+        );
+        // Unused category on YouTube-only save does not pollute KNOWN_CATEGORIES.
+        assert!(info_steps(
+            &item(json!({"youtube": true, "title": "Hi", "category": "UnusedCat"})),
+            &seen
+        )
+        .is_ok());
+        assert!(crate::catalog::get(KNOWN_CATEGORIES).is_empty());
+        // Multi-platform ad > 90s clamps Kick's job duration to 90s while keeping Twitch at 180s.
+        let ad = ad_steps(
+            &item(json!({"duration": 5, "twitch": true, "kick": true, "youtube": true})),
+            &seen,
+        )
+        .unwrap();
+        assert_eq!(
+            ad,
+            vec![(TWITCH, Job::Ad(180)), (KICK, Job::Ad(90)), (YOUTUBE, Job::Ad(180))]
+        );
+    }
+
+    #[test]
+    fn obs_outputs_section_uses_colon_separator_user_choice_fallback_and_reports_errors() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut s = ready([true, true, false, false]);
+        let inv = |conn_id: &str, id: &str, plat: &str, src: &str| crate::core::outputs::Inventory {
+            connection_id: conn_id.into(),
+            outputs: vec![crate::core::outputs::Output {
+                id: id.into(),
+                source: "main".into(),
+                name: "Main".into(),
+                platform: Some(plat.into()),
+                platform_source: Some(src.into()),
+                active: Some(false),
+                reconnecting: Some(false),
+                vertical: None,
+                controllable: true,
+                limitation: None,
+                required: true,
+                key: id.into(),
+            }],
+            canvases: Vec::new(),
+            capabilities: Vec::new(),
+        };
+        s.obs_inventories = vec![
+            ("Studio A".into(), inv("a", "obs:a", "kick", "user")),
+            ("Studio B".into(), inv("b", "obs:b", "twitch", "auto")),
+        ];
+        let section = obs_outputs_section(&s).unwrap();
+        let rows = section["rows"].as_array().unwrap();
+        let first_label = rows[1]["label"].as_str().unwrap();
+        assert!(first_label.starts_with("Studio A: "), "{first_label}");
+        assert!(
+            !first_label.contains('—') && !first_label.contains('–'),
+            "{first_label}"
+        );
+        assert_eq!(rows[1]["control"]["value"], 2, "user-pinned Kick choice is 2");
+        assert_eq!(rows[2]["control"]["value"], 0, "auto-detected Twitch choice is 0");
+
+        // obs.start_all respects busy and surfaces errors instead of swallowing them.
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let mut busy_state = s.clone();
+            busy_state.busy = true;
+            reset(busy_state);
+            assert_eq!(act(&engine, "obs.start_all").unwrap_err(), tr("stream.working"));
+
+            reset(s);
+            assert!(act(&engine, "obs.start_all").is_ok());
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            assert!(seen().trouble, "disconnected OBS error must surface in status note");
+            assert!(!seen().note.is_empty());
+            assert!(!seen().busy);
         });
     }
 }
