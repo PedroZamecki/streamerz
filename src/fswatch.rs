@@ -103,7 +103,8 @@ mod imp {
         | libc::IN_DELETE
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO
-        | libc::IN_DELETE_SELF;
+        | libc::IN_DELETE_SELF
+        | libc::IN_MOVE_SELF;
 
     struct Inotify {
         fd: AsyncFd<OwnedFd>,
@@ -112,54 +113,80 @@ mod imp {
     }
 
     #[derive(Default)]
-    struct Moves(HashMap<u32, (PathBuf, tokio::time::Instant)>);
+    struct Moves(HashMap<u32, Move>);
+
+    struct Move {
+        path: PathBuf,
+        deadline: tokio::time::Instant,
+        watched_dir: bool,
+    }
 
     impl Moves {
-        fn from(&mut self, cookie: u32, path: PathBuf, deadline: tokio::time::Instant) -> Option<Change> {
-            self.0
-                .insert(cookie, (path, deadline))
-                .map(|(old, _)| Change::Deleted(old))
+        fn from(&mut self, cookie: u32, pending: Move) -> Option<Move> {
+            self.0.insert(cookie, pending)
         }
 
-        fn to(&mut self, cookie: u32, path: PathBuf) -> Change {
-            match self.0.remove(&cookie) {
-                Some((old, _)) => Change::Renamed(old, path),
-                None => Change::Created(path),
-            }
+        fn to(&mut self, cookie: u32) -> Option<Move> {
+            self.0.remove(&cookie)
         }
 
         fn deadline(&self) -> Option<tokio::time::Instant> {
-            self.0.values().map(|(_, deadline)| *deadline).min()
+            self.0.values().map(|pending| pending.deadline).min()
         }
 
-        fn expire(&mut self, now: tokio::time::Instant, tx: &UnboundedSender<Change>) {
-            self.0.retain(|_, (path, deadline)| {
-                if *deadline <= now {
-                    let _ = tx.send(Change::Deleted(path.clone()));
-                    false
-                } else {
-                    true
+        fn expire(&mut self, now: tokio::time::Instant, ino: &mut Inotify, tx: &UnboundedSender<Change>) {
+            self.0.retain(|_, pending| {
+                if pending.deadline > now {
+                    return true;
                 }
+                if pending.watched_dir {
+                    ino.remove_tree(&pending.path);
+                }
+                let _ = tx.send(Change::Deleted(pending.path.clone()));
+                false
             });
         }
     }
 
     impl Inotify {
-        fn add(&mut self, dir: &Path, recursive: bool) {
-            let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
-                return;
-            };
+        fn add(&mut self, dir: &Path, recursive: bool) -> std::io::Result<()> {
+            let c = CString::new(dir.as_os_str().as_bytes())?;
             // SAFETY: a valid inotify fd and a NUL-terminated path.
             let wd = unsafe { libc::inotify_add_watch(self.fd.get_ref().as_raw_fd(), c.as_ptr(), self.mask) };
             if wd < 0 {
-                return;
+                return Err(std::io::Error::last_os_error());
             }
             self.dirs.insert(wd, dir.to_path_buf());
             if recursive {
                 for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                     if e.file_type().is_ok_and(|t| t.is_dir()) {
-                        self.add(&e.path(), true);
+                        let _ = self.add(&e.path(), true);
                     }
+                }
+            }
+            Ok(())
+        }
+
+        fn remove_tree(&mut self, root: &Path) {
+            let fd = self.fd.get_ref().as_raw_fd();
+            self.dirs.retain(|wd, path| {
+                if !path.starts_with(root) {
+                    return true;
+                }
+                // SAFETY: the descriptor is open and the watch belongs to this inotify instance.
+                unsafe { libc::inotify_rm_watch(fd, *wd) };
+                false
+            });
+        }
+
+        fn move_tree(&mut self, old: &Path, new: &Path) {
+            for path in self.dirs.values_mut() {
+                if let Ok(relative) = path.strip_prefix(old) {
+                    *path = if relative.as_os_str().is_empty() {
+                        new.to_path_buf()
+                    } else {
+                        new.join(relative)
+                    };
                 }
             }
         }
@@ -205,22 +232,20 @@ mod imp {
             fd: unsafe { AsyncFd::register(fd) }?,
             dirs: HashMap::new(),
         };
-        ino.add(&dir, recursive);
+        ino.add(&dir, recursive)?;
         let mut buf = vec![0u8; size];
         let mut moved = Moves::default();
         loop {
             // IN_MOVED_FROM and IN_MOVED_TO may be returned by separate reads. Only a move out
             // needs a short timeout; idle watchers have no timer.
-            let mut guard = if let Some(deadline) = moved.deadline() {
-                match tokio::time::timeout_at(deadline, ino.fd.readable()).await {
-                    Ok(ready) => ready?,
-                    Err(_) => {
-                        moved.expire(tokio::time::Instant::now(), &tx);
-                        continue;
-                    }
-                }
+            let ready = if let Some(deadline) = moved.deadline() {
+                tokio::time::timeout_at(deadline, ino.fd.readable()).await.ok()
             } else {
-                ino.fd.readable().await?
+                Some(ino.fd.readable().await)
+            };
+            let Some(mut guard) = ready.transpose()? else {
+                moved.expire(tokio::time::Instant::now(), &mut ino, &tx);
+                continue;
             };
             // SAFETY: reading into our buffer from the inotify fd.
             let n = unsafe { libc::read(ino.fd.get_ref().as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
@@ -240,34 +265,57 @@ mod imp {
                 let name = &buf[at + head..at + head + ev.len as usize];
                 let name = &name[..name.iter().position(|b| *b == 0).unwrap_or(name.len())];
                 at += head + ev.len as usize;
-                let Some(base) = ino.dirs.get(&ev.wd).cloned() else {
+                if ev.mask & libc::IN_IGNORED != 0 {
+                    ino.dirs.remove(&ev.wd);
+                    continue;
+                }
+                let Some(base) = ino.dirs.get(&ev.wd) else {
                     continue;
                 };
-                if ev.mask & libc::IN_DELETE_SELF != 0 && base == dir {
+                if ev.mask & (libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 && *base == dir {
                     return Ok(());
+                }
+                if moved
+                    .0
+                    .values()
+                    .any(|pending| pending.watched_dir && base.starts_with(&pending.path))
+                {
+                    continue;
                 }
                 let path = base.join(OsStr::from_bytes(name));
                 let is_dir = ev.mask & libc::IN_ISDIR != 0;
                 if ev.mask & libc::IN_MOVED_FROM != 0 {
-                    if let Some(change) = moved.from(
-                        ev.cookie,
+                    let pending = Move {
                         path,
-                        tokio::time::Instant::now() + std::time::Duration::from_millis(50),
-                    ) {
-                        let _ = tx.send(change);
+                        deadline: tokio::time::Instant::now() + std::time::Duration::from_millis(50),
+                        watched_dir: is_dir && recursive,
+                    };
+                    if let Some(old) = moved.from(ev.cookie, pending) {
+                        if old.watched_dir {
+                            ino.remove_tree(&old.path);
+                        }
+                        let _ = tx.send(Change::Deleted(old.path));
                     }
                     continue;
                 }
                 if ev.mask & libc::IN_MOVED_TO != 0 {
-                    let _ = tx.send(moved.to(ev.cookie, path.clone()));
-                    if is_dir && recursive {
-                        ino.add(&path, true);
-                    }
+                    let change = if let Some(old) = moved.to(ev.cookie) {
+                        if old.watched_dir {
+                            ino.move_tree(&old.path, &path);
+                        }
+                        Change::Renamed(old.path, path)
+                    } else {
+                        if is_dir && recursive {
+                            let _ = ino.add(&path, true);
+                        }
+                        Change::Created(path)
+                    };
+                    let _ = tx.send(change);
                     continue;
                 }
                 let change = if ev.mask & libc::IN_CREATE != 0 {
                     if is_dir && recursive {
-                        ino.add(&path, true);
+                        let _ = ino.add(&path, true);
                     }
                     Change::Created(path)
                 } else if ev.mask & libc::IN_DELETE != 0 {
@@ -290,10 +338,15 @@ mod imp {
         fn interleaved_renames_keep_their_own_cookies() {
             let mut moves = Moves::default();
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-            assert!(moves.from(1, "a".into(), deadline).is_none());
-            assert!(moves.from(2, "b".into(), deadline).is_none());
-            assert_eq!(moves.to(2, "d".into()), Change::Renamed("b".into(), "d".into()));
-            assert_eq!(moves.to(1, "c".into()), Change::Renamed("a".into(), "c".into()));
+            let pending = |path: &str| Move {
+                path: path.into(),
+                deadline,
+                watched_dir: false,
+            };
+            assert!(moves.from(1, pending("a")).is_none());
+            assert!(moves.from(2, pending("b")).is_none());
+            assert_eq!(moves.to(2).unwrap().path, Path::new("b"));
+            assert_eq!(moves.to(1).unwrap().path, Path::new("a"));
             assert!(moves.deadline().is_none());
         }
     }
@@ -495,6 +548,45 @@ mod tests {
             let _ = std::fs::remove_dir_all(d);
         });
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recursive_watch_tracks_renamed_subfolders_and_forgets_moved_out_ones() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let root = std::env::temp_dir().join(format!("streamerz-watch-move-{}", crate::engine::uuid()));
+            let dir = root.join("inside");
+            std::fs::create_dir_all(dir.join("old/sub")).unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(watch(dir.clone(), true, tx));
+            tokio::task::yield_now().await;
+            async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Change>) -> Change {
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+            let old = dir.join("old");
+            let renamed = dir.join("renamed");
+            std::fs::rename(&old, &renamed).unwrap();
+            assert_eq!(next(&mut rx).await, Change::Renamed(old, renamed.clone()));
+            let file = renamed.join("sub/file");
+            std::fs::write(&file, []).unwrap();
+            assert_eq!(next(&mut rx).await, Change::Created(file));
+            let outside = root.join("outside");
+            std::fs::rename(&renamed, &outside).unwrap();
+            assert_eq!(next(&mut rx).await, Change::Deleted(renamed));
+            std::fs::write(outside.join("sub/ignored"), []).unwrap();
+            let barrier = dir.join("barrier");
+            std::fs::write(&barrier, []).unwrap();
+            assert_eq!(next(&mut rx).await, Change::Created(barrier));
+            task.abort();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
     use super::*;
 
     #[test]
