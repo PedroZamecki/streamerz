@@ -155,26 +155,8 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                     )
                 });
                 window.on_window_should_close(cx, move |window, _| {
-                    let (bounds, maximized) = match window.window_bounds() {
-                        WindowBounds::Maximized(b) => (b, true),
-                        WindowBounds::Windowed(b) => (b, false),
-                        WindowBounds::Fullscreen(b) => (b, false),
-                    };
-                    let (x, y, w, h) = (
-                        f32::from(bounds.origin.x) as i32,
-                        f32::from(bounds.origin.y) as i32,
-                        f32::from(bounds.size.width) as i32,
-                        f32::from(bounds.size.height) as i32,
-                    );
-                    if w >= 400 && h >= 300 {
-                        send(json!({
-                            "request": "StreamerzWindowState",
-                            "x": x,
-                            "y": y,
-                            "w": w,
-                            "h": h,
-                            "maximized": maximized,
-                        }));
+                    if let Some(state) = app::window_state(window.window_bounds()) {
+                        send(state);
                     }
                     true
                 });

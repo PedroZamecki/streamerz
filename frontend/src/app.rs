@@ -30,8 +30,7 @@ pub struct Frontend {
     folded: bool,
     status_error: Option<crate::error::StreamerzError>,
     pub selected: String,
-    history: Vec<String>,
-    history_index: usize,
+    history: History,
     pub data: Value,
     lists: Vec<Entity<List>>,
     list_subscriptions: Vec<Subscription>,
@@ -57,7 +56,8 @@ pub struct Frontend {
     generation: u64,
     read_pending: bool,
     read_again: bool,
-    last_bounds: Option<(i32, i32, i32, i32, bool)>,
+    /// The window state last sent to the core.
+    last_window: Option<Value>,
     window_save_task: Option<Task<()>>,
 }
 impl Frontend {
@@ -91,8 +91,7 @@ impl Frontend {
             folded: false,
             status_error: None,
             selected: selected.clone(),
-            history: vec![selected],
-            history_index: 0,
+            history: History::new(selected),
             data: Value::Null,
             lists: Vec::new(),
             list_subscriptions: Vec::new(),
@@ -116,7 +115,7 @@ impl Frontend {
             generation: 0,
             read_pending: false,
             read_again: false,
-            last_bounds: None,
+            last_window: None,
             window_save_task: None,
         }
     }
@@ -349,9 +348,7 @@ impl Frontend {
                 "page": self.selected,
             }));
             if record_history {
-                self.history.truncate(self.history_index + 1);
-                self.history.push(page.to_owned());
-                self.history_index = self.history.len() - 1;
+                self.history.push(page);
             }
             self.lists.clear();
             self.list_subscriptions.clear();
@@ -376,38 +373,28 @@ impl Frontend {
         cx.notify();
     }
     pub fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (bounds, maximized) = match window.window_bounds() {
-            WindowBounds::Maximized(b) => (b, true),
-            WindowBounds::Windowed(b) => (b, false),
-            WindowBounds::Fullscreen(b) => (b, false),
+        let Some(state) = window_state(window.window_bounds()) else {
+            return;
         };
-        let (x, y, w, h) = (
-            f32::from(bounds.origin.x) as i32,
-            f32::from(bounds.origin.y) as i32,
-            f32::from(bounds.size.width) as i32,
-            f32::from(bounds.size.height) as i32,
-        );
-        if w < 400 || h < 300 {
+        if self.last_window.as_ref() == Some(&state) {
             return;
         }
-        let current = (x, y, w, h, maximized);
-        if self.last_bounds == Some(current) {
-            return;
-        }
-        self.last_bounds = Some(current);
+        self.last_window = Some(state.clone());
         self.window_save_task = Some(cx.spawn(async move |_, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(250))
                 .await;
-            send(json!({
-                "request": "StreamerzWindowState",
-                "x": x,
-                "y": y,
-                "w": w,
-                "h": h,
-                "maximized": maximized,
-            }));
+            send(state);
         }));
+    }
+    /// Hide closes the window (the core stays in the tray): where it is now is kept first, also when
+    /// it was moved a moment ago and the delayed save has not gone yet.
+    fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window_save_task = None;
+        if let Some(state) = window_state(window.window_bounds()) {
+            send(state);
+        }
+        cx.quit();
     }
     /// A new picture of the overlay preview is ready.
     pub fn preview_changed(&mut self, cx: &mut Context<Self>) {
@@ -428,25 +415,31 @@ impl Frontend {
             overlay.update(cx, |overlay, cx| overlay.leave(window, cx));
             return;
         }
-        if self.history_index > 0 {
-            self.history_index -= 1;
-            let target = self.history[self.history_index].clone();
+        if let Some(target) = self.history.back() {
             self.navigate_to(&target, false, window, cx);
         }
     }
     pub fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history_index + 1 < self.history.len() {
-            self.history_index += 1;
-            let target = self.history[self.history_index].clone();
+        if let Some(target) = self.history.forward() {
             self.navigate_to(&target, false, window, cx);
         }
+    }
+    /// Keeps a new status. False when it is the one already shown: the core answers a status request
+    /// on every change (each chat line, each preview frame), and most leave it as it was.
+    fn take_status(&mut self, value: Value) -> bool {
+        if self.status == value {
+            return false;
+        }
+        self.active_errors = crate::error::ActiveError::list_from_value(&value["activeErrors"]);
+        self.status = value;
+        true
     }
     pub fn apply(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let id = value["id"].as_str().unwrap_or_default().to_owned();
         if id == "status" {
-            self.active_errors = crate::error::ActiveError::list_from_value(&value["activeErrors"]);
-            self.status = value;
-            cx.notify();
+            if self.take_status(value) {
+                cx.notify();
+            }
             return;
         }
         if id == "save" {
@@ -705,6 +698,56 @@ impl Frontend {
     fn content_width(&self, window: &Window) -> f32 {
         content_width_for(f32::from(window.viewport_size().width), self.folded)
     }
+}
+
+/// The pages visited, for Back and Forward (the mouse's side buttons), the oldest dropped past a cap.
+#[derive(Debug)]
+struct History {
+    pages: Vec<String>,
+    index: usize,
+}
+const HISTORY_MAX: usize = 50;
+impl History {
+    fn new(page: String) -> Self {
+        Self {
+            pages: vec![page],
+            index: 0,
+        }
+    }
+    /// A page opened: the pages ahead of the current one are gone.
+    fn push(&mut self, page: &str) {
+        self.pages.truncate(self.index + 1);
+        self.pages.push(page.to_owned());
+        let extra = self.pages.len().saturating_sub(HISTORY_MAX);
+        self.pages.drain(..extra);
+        self.index = self.pages.len() - 1;
+    }
+    fn back(&mut self) -> Option<String> {
+        self.index = self.index.checked_sub(1)?;
+        Some(self.pages[self.index].clone())
+    }
+    fn forward(&mut self) -> Option<String> {
+        let next = self.pages.get(self.index + 1)?.clone();
+        self.index += 1;
+        Some(next)
+    }
+}
+
+/// The window's place and size for the core to remember, or nothing while it is smaller than any
+/// window it would open (a minimized window reports a tiny size).
+pub(crate) fn window_state(bounds: WindowBounds) -> Option<Value> {
+    let (bounds, maximized) = match bounds {
+        WindowBounds::Maximized(bounds) => (bounds, true),
+        WindowBounds::Windowed(bounds) | WindowBounds::Fullscreen(bounds) => (bounds, false),
+    };
+    let (x, y, w, h) = (
+        f32::from(bounds.origin.x) as i32,
+        f32::from(bounds.origin.y) as i32,
+        f32::from(bounds.size.width) as i32,
+        f32::from(bounds.size.height) as i32,
+    );
+    (w >= 400 && h >= 300)
+        .then(|| json!({"request": "StreamerzWindowState", "x": x, "y": y, "w": w, "h": h, "maximized": maximized}))
 }
 
 fn content_width_for(viewport_width: f32, folded: bool) -> f32 {
@@ -1245,7 +1288,7 @@ impl Render for Frontend {
                     .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("eye-off", tr("btn.hide"), small, cx))
                     .accessibility_label(tr("btn.hide"))
-                    .on_click(|_, _, cx| cx.quit()),
+                    .on_click(cx.listener(|this, _, window, cx| this.hide(window, cx))),
             )
             .child(
                 Button::new("quit")
@@ -1302,57 +1345,68 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn history_navigation_tracks_pages_and_back_forward() {
+    fn history_goes_back_and_forward_and_a_new_page_drops_what_was_ahead() {
+        let frontend = Frontend::new(json!([]), "Streamerz".into(), String::new(), None, vec![]);
+        assert_eq!(frontend.selected, "Chat");
+        let mut history = super::History::new("Chat".into());
+        assert_eq!(history.back(), None);
+        assert_eq!(history.forward(), None);
+        history.push("Actions");
+        history.push("Servers");
+        assert_eq!(history.back().as_deref(), Some("Actions"));
+        assert_eq!(history.back().as_deref(), Some("Chat"));
+        assert_eq!(history.back(), None);
+        assert_eq!(history.forward().as_deref(), Some("Actions"));
+        history.push("Settings");
+        assert_eq!(history.pages, ["Chat", "Actions", "Settings"]);
+        assert_eq!(history.forward(), None);
+        assert_eq!(history.back().as_deref(), Some("Actions"));
+    }
+
+    #[test]
+    fn history_keeps_only_the_newest_pages() {
+        let mut history = super::History::new("Chat".into());
+        for page in 0..super::HISTORY_MAX * 3 {
+            history.push(&format!("page {page}"));
+        }
+        assert_eq!(history.pages.len(), super::HISTORY_MAX);
+        assert_eq!(history.index, super::HISTORY_MAX - 1);
+        assert_eq!(history.pages.last().map(String::as_str), Some("page 149"));
+        assert_eq!(history.back().as_deref(), Some("page 148"));
+    }
+
+    #[test]
+    fn the_same_status_again_does_not_redraw_the_window() {
         let mut frontend = Frontend::new(json!([]), "Streamerz".into(), "Chat".into(), None, vec![]);
-        assert_eq!(frontend.selected, "Chat");
-        assert_eq!(frontend.history, vec!["Chat".to_string()]);
-        assert_eq!(frontend.history_index, 0);
+        let status = json!({"id": "status", "health": "up", "text": "2 of 2 connected", "activeErrors": [
+            {"key": "server.http", "title": "HTTP server start error", "description": "Port 7474 is in use"}
+        ]});
+        assert!(frontend.take_status(status.clone()));
+        assert_eq!(frontend.active_errors.len(), 1);
+        // A banner closed by hand stays closed until the core's status changes.
+        frontend.active_errors.clear();
+        assert!(!frontend.take_status(status.clone()));
+        assert!(frontend.active_errors.is_empty());
+        let mut changed = status;
+        changed["activeErrors"] = json!([]);
+        changed["text"] = "1 of 2 connected".into();
+        assert!(frontend.take_status(changed));
+        assert_eq!(frontend.status["text"], "1 of 2 connected");
+    }
 
-        let custom = Frontend::new(json!([]), "Streamerz".into(), "Settings".into(), None, vec![]);
-        assert_eq!(custom.selected, "Settings");
-        assert_eq!(custom.history, vec!["Settings".to_string()]);
-
-        // Select Actions
-        frontend.history.truncate(frontend.history_index + 1);
-        frontend.history.push("Actions".into());
-        frontend.history_index = frontend.history.len() - 1;
-        frontend.selected = "Actions".into();
-
-        // Select Servers
-        frontend.history.truncate(frontend.history_index + 1);
-        frontend.history.push("Servers".into());
-        frontend.history_index = frontend.history.len() - 1;
-        frontend.selected = "Servers".into();
-
-        assert_eq!(frontend.history, vec!["Chat", "Actions", "Servers"]);
-        assert_eq!(frontend.history_index, 2);
-
-        // Go back -> Actions
-        frontend.history_index -= 1;
-        frontend.selected = frontend.history[frontend.history_index].clone();
-        assert_eq!(frontend.selected, "Actions");
-        assert_eq!(frontend.history_index, 1);
-
-        // Go back -> Chat
-        frontend.history_index -= 1;
-        frontend.selected = frontend.history[frontend.history_index].clone();
-        assert_eq!(frontend.selected, "Chat");
-        assert_eq!(frontend.history_index, 0);
-
-        // Go forward -> Actions
-        frontend.history_index += 1;
-        frontend.selected = frontend.history[frontend.history_index].clone();
-        assert_eq!(frontend.selected, "Actions");
-        assert_eq!(frontend.history_index, 1);
-
-        // Select Settings while in middle of history -> truncates forward history
-        frontend.history.truncate(frontend.history_index + 1);
-        frontend.history.push("Settings".into());
-        frontend.history_index = frontend.history.len() - 1;
-        frontend.selected = "Settings".into();
-
-        assert_eq!(frontend.history, vec!["Chat", "Actions", "Settings"]);
-        assert_eq!(frontend.history_index, 2);
+    #[test]
+    fn window_state_keeps_real_sizes_and_skips_a_minimized_window() {
+        use gpui_kit::{point, px, size, Bounds, WindowBounds};
+        let bounds = Bounds::new(point(px(-1200.5), px(40.)), size(px(1100.), px(800.)));
+        let state = super::window_state(WindowBounds::Maximized(bounds)).expect("kept");
+        assert_eq!(
+            state,
+            json!({"request": "StreamerzWindowState", "x": -1200, "y": 40, "w": 1100, "h": 800, "maximized": true})
+        );
+        let windowed = super::window_state(WindowBounds::Windowed(bounds)).expect("kept");
+        assert_eq!(windowed["maximized"], false);
+        let tiny = Bounds::new(point(px(0.), px(0.)), size(px(160.), px(28.)));
+        assert_eq!(super::window_state(WindowBounds::Windowed(tiny)), None);
     }
 
     #[test]
