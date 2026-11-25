@@ -629,7 +629,11 @@ const PRONOUN_IDS: [&str; 13] = [
     "hehim", "sheher", "theythem", "itits", "any", "other", "xexem", "faefaer", "vever", "aeaer", "ziehir", "perper",
     "eem",
 ];
-type PronounCache = HashMap<String, (Instant, Option<u8>)>;
+/// What a lookup found (a pronoun from [`PRONOUN_IDS`] and when it was looked up), or that the user
+/// has none set.
+type PronounCache = HashMap<String, (Instant, Option<(u8, String)>)>;
+/// Chatters looked up in 15 minutes: past this, the expired ones go (all of them in a raid).
+const MAX_PRONOUNS: usize = 2048;
 
 fn cached_pronoun(id: Option<u8>) -> Option<PronounInfo> {
     id.and_then(|id| PRONOUN_IDS.get(id as usize))
@@ -638,65 +642,69 @@ fn cached_pronoun(id: Option<u8>) -> Option<PronounInfo> {
 static PRONOUN_CACHE: Mutex<Option<PronounCache>> = Mutex::new(None);
 const PRONOUN_TTL: Duration = Duration::from_secs(15 * 60);
 
-pub fn get_cached_pronoun(login: &str) -> Option<PronounInfo> {
-    let login = login.trim().to_ascii_lowercase();
-    let guard = PRONOUN_CACHE.lock().unwrap();
-    guard.as_ref().and_then(|m| m.get(&login)).and_then(|(ts, info)| {
-        if ts.elapsed() < PRONOUN_TTL {
-            cached_pronoun(*info)
-        } else {
-            None
-        }
-    })
+/// A Twitch login as it goes in the lookup's path: letters, digits and `_` only, so a name from chat
+/// can't point the request at another address.
+fn twitch_login(login: &str) -> Option<String> {
+    let login = login.trim().trim_start_matches('@');
+    let valid = !login.is_empty() && login.len() <= 25 && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    valid.then(|| login.to_ascii_lowercase())
 }
 
-pub async fn get_user_pronouns(login: &str) -> Option<PronounInfo> {
-    let login = login.trim().to_ascii_lowercase();
-    if login.is_empty() {
-        return None;
-    }
+/// A fresh entry for `login`: the pronoun and when it was cached.
+fn cached_entry(cache: &PronounCache, login: &str) -> Option<Option<(PronounInfo, String)>> {
+    let (_, found) = cache.get(login).filter(|(seen, _)| seen.elapsed() < PRONOUN_TTL)?;
+    Some(
+        found
+            .as_ref()
+            .and_then(|(id, at)| Some((cached_pronoun(Some(*id))?, at.clone()))),
+    )
+}
 
-    // Check cache
-    {
-        let mut guard = PRONOUN_CACHE.lock().unwrap();
-        let map = guard.get_or_insert_with(HashMap::new);
-        if let Some((ts, info)) = map.get(&login) {
-            if ts.elapsed() < PRONOUN_TTL {
-                return cached_pronoun(*info);
-            }
+/// Keeps a lookup without letting the cache grow past [`MAX_PRONOUNS`].
+fn remember(cache: &mut PronounCache, login: String, found: Option<(u8, String)>) {
+    if cache.len() >= MAX_PRONOUNS {
+        cache.retain(|_, (seen, _)| seen.elapsed() < PRONOUN_TTL);
+        if cache.len() >= MAX_PRONOUNS {
+            cache.clear();
         }
     }
+    cache.insert(login, (Instant::now(), found));
+}
 
-    // HTTP lookup
+pub fn get_cached_pronoun(login: &str) -> Option<PronounInfo> {
+    let login = twitch_login(login)?;
+    let guard = PRONOUN_CACHE.lock().unwrap();
+    cached_entry(guard.as_ref()?, &login)?.map(|(info, _)| info)
+}
+
+/// The user's pronoun and when it was looked up. None when they have none set, or the lookup failed
+/// (a failure isn't kept: the next call asks again).
+pub async fn get_user_pronouns(login: &str) -> Option<(PronounInfo, String)> {
+    let login = twitch_login(login)?;
+    if let Some(found) = PRONOUN_CACHE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|c| cached_entry(c, &login))
+    {
+        return found;
+    }
     let url = format!("https://pronouns.alejo.io/api/users/{login}");
-    let resp = crate::http::request("GET", &url, &[], b"").await;
-    let found = match resp {
-        Ok(r) if r.status == 200 => {
-            if let Ok(Value::Array(arr)) = serde_json::from_slice::<Value>(&r.body) {
-                arr.into_iter()
-                    .find_map(|u| u.get("pronoun_id").and_then(Value::as_str).map(|s| s.to_string()))
-                    .and_then(|id| lookup_pronoun(&id))
-            } else {
-                None
-            }
-        }
-        _ => None,
+    let resp = crate::http::request("GET", &url, &[], b"").await.ok()?;
+    let id = match resp.status {
+        200 => serde_json::from_slice::<Vec<Value>>(&resp.body)
+            .ok()?
+            .iter()
+            .find_map(|u| u["pronoun_id"].as_str())
+            .and_then(|id| PRONOUN_IDS.iter().position(|known| known.eq_ignore_ascii_case(id))),
+        404 => None,
+        _ => return None,
     };
-
-    // Store in cache
-    {
-        let mut guard = PRONOUN_CACHE.lock().unwrap();
-        let map = guard.get_or_insert_with(HashMap::new);
-        let id = found.as_ref().and_then(|info| {
-            PRONOUN_IDS
-                .iter()
-                .position(|id| lookup_pronoun(id).as_ref() == Some(info))
-                .map(|i| i as u8)
-        });
-        map.insert(login, (Instant::now(), id));
-    }
-
-    found
+    let found = id.map(|id| (id as u8, crate::engine::globals::iso_now()));
+    let mut guard = PRONOUN_CACHE.lock().unwrap();
+    remember(guard.get_or_insert_with(HashMap::new), login, found.clone());
+    let (id, at) = found?;
+    Some((cached_pronoun(Some(id))?, at))
 }
 
 pub fn pronoun_to_json(info: &PronounInfo, user_found: bool) -> Value {
@@ -746,7 +754,9 @@ pub fn default_pronoun_json() -> Value {
     })
 }
 
-pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&PronounInfo>) {
+/// The variables of Add Pronouns for User. A user with none set gets only `userFound: false`, as in
+/// Streamer.bot; `pronounLastCached` is when the pronoun was looked up.
+pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&(PronounInfo, String)>) {
     let key = |name: &str| -> String {
         if prefix.is_empty() {
             name.to_string()
@@ -755,9 +765,7 @@ pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&Pronoun
         }
     };
 
-    let now_str = crate::engine::globals::iso_now();
-
-    if let Some(info) = info {
+    if let Some((info, cached)) = info {
         args.insert(key("userFound"), true.into());
         args.insert(key("pronoun"), info.pronoun.into());
         args.insert(key("pronouns"), info.display.into());
@@ -776,27 +784,9 @@ pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&Pronoun
         args.insert(key("pronounCurrentTense"), info.current_tense.into());
         args.insert(key("pronounCurrentTenseLower"), info.current_tense_lower.into());
         args.insert(key("pronounPluralLower"), info.plural_lower.into());
-        args.insert(key("pronounLastCached"), now_str.into());
+        args.insert(key("pronounLastCached"), cached.as_str().into());
     } else {
         args.insert(key("userFound"), false.into());
-        args.insert(key("pronoun"), "Theirs".into());
-        args.insert(key("pronouns"), "(They/Them)".into());
-        args.insert(key("pronounSubject"), "They".into());
-        args.insert(key("pronounSubjectLower"), "they".into());
-        args.insert(key("pronounObject"), "Them".into());
-        args.insert(key("pronounObjectLower"), "them".into());
-        args.insert(key("pronounPossessive"), "Their".into());
-        args.insert(key("pronounPossessiveLower"), "their".into());
-        args.insert(key("pronounPronoun"), "Theirs".into());
-        args.insert(key("pronounPronounLower"), "theirs".into());
-        args.insert(key("pronounReflexive"), "Themselves".into());
-        args.insert(key("pronounReflexiveLower"), "themselves".into());
-        args.insert(key("pronounPastTense"), "Were".into());
-        args.insert(key("pronounPastTenseLower"), "were".into());
-        args.insert(key("pronounCurrentTense"), "Are".into());
-        args.insert(key("pronounCurrentTenseLower"), "are".into());
-        args.insert(key("pronounPluralLower"), "".into());
-        args.insert(key("pronounLastCached"), now_str.into());
     }
 }
 
@@ -851,6 +841,32 @@ pub mod tests {
     }
 
     #[test]
+    fn pronoun_logins_cannot_change_the_lookup_address() {
+        assert_eq!(twitch_login(" @Some_User1 ").as_deref(), Some("some_user1"));
+        for bad in ["", "two words", "../admin", "a?b", "a/b", "名前", &"a".repeat(26)] {
+            assert_eq!(twitch_login(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn pronoun_cache_stays_bounded() {
+        let mut cache = PronounCache::new();
+        for i in 0..MAX_PRONOUNS {
+            remember(&mut cache, format!("u{i}"), None);
+        }
+        assert_eq!(cache.len(), MAX_PRONOUNS);
+        assert_eq!(cached_entry(&cache, "u1"), Some(None));
+        // Full of fresh entries: they all go for the new one.
+        remember(&mut cache, "late".into(), Some((0, "then".into())));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            cached_entry(&cache, "late"),
+            Some(Some((lookup_pronoun("hehim").unwrap(), "then".into())))
+        );
+        assert_eq!(cached_entry(&cache, "u1"), None);
+    }
+
+    #[test]
     fn test_pronoun_definitions() {
         let they = lookup_pronoun("theythem").unwrap();
         assert_eq!(they.display, "(They/Them)");
@@ -875,8 +891,9 @@ pub mod tests {
     #[test]
     fn test_populate_pronoun_vars() {
         let mut args = Obj::new();
-        let he = lookup_pronoun("hehim");
-        populate_pronoun_vars(&mut args, "target", he.as_ref());
+        let he = (lookup_pronoun("hehim").unwrap(), "2024-03-02T13:00:47Z".to_string());
+        populate_pronoun_vars(&mut args, "target", Some(&he));
+        assert_eq!(args["target.pronounLastCached"], "2024-03-02T13:00:47Z");
         assert_eq!(args.get("target.userFound"), Some(&Value::Bool(true)));
         assert_eq!(args.get("target.pronounSubject"), Some(&Value::String("He".into())));
         assert_eq!(args.get("target.pronounObject"), Some(&Value::String("Him".into())));
@@ -884,6 +901,7 @@ pub mod tests {
         let mut empty_args = Obj::new();
         populate_pronoun_vars(&mut empty_args, "", None);
         assert_eq!(empty_args.get("userFound"), Some(&Value::Bool(false)));
-        assert_eq!(empty_args.get("pronounSubject"), Some(&Value::String("They".into())));
+        // Streamer.bot sets only userFound for a user with no pronouns.
+        assert_eq!(empty_args.len(), 1);
     }
 }
