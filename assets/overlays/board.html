@@ -23,11 +23,13 @@ const token = "__TOKEN__";
 if (!pads.length) document.body.prepend(Object.assign(document.createElement("p"), { textContent: "The Board has no pads yet: add them on the Sounds page." }));
 for (const pad of pads) {
   const b = Object.assign(document.createElement("button"), { textContent: pad.label, title: pad.label });
+  let off = 0;
   b.onclick = () => {
+    clearTimeout(off);
     b.classList.add("on");
     fetch("/sounds/board/play", { method: "POST", body: JSON.stringify({ id: pad.id, token }) })
-      .then(r => r.json()).then(r => r.ok || (b.title = r.error)).catch(e => (b.title = String(e)))
-      .finally(() => setTimeout(() => b.classList.remove("on"), 150));
+      .then(r => r.json()).then(r => (b.title = r.ok ? pad.label : r.error)).catch(e => (b.title = String(e)))
+      .finally(() => { off = setTimeout(() => b.classList.remove("on"), 150); });
   };
   document.getElementById("pads").append(b);
 }

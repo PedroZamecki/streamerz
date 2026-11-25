@@ -30,7 +30,7 @@
 // so it is at hand with no internet. The little Markdown it uses: headings, paragraphs, lists, tables,
 // code, bold and links.
 const text = __GUIDE__;
-const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const inline = s => {
   // Code first, so what is inside it is left as it is.
   const kept = [];

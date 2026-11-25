@@ -387,3 +387,94 @@ test("streamerz.d.ts declares every client.js API member and matches runtime pay
   assert.match(types, /badges\?: Badge\[\];/);
   assert.match(types, /msgId\?: string;/);
 });
+
+test("guide.html escapes double quotes in markdown link URLs", () => {
+  const html = readFileSync(new URL("../assets/overlays/guide.html", import.meta.url), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const page = { innerHTML: "" }, nav = { innerHTML: "" };
+  const md = '[click](https://example.com/"onclick="alert(1))';
+  vm.runInNewContext(script.replace("__GUIDE__", JSON.stringify(md)), { page, nav });
+  assert.equal(page.innerHTML.includes('"onclick='), false);
+  assert.match(page.innerHTML, /&quot;onclick=&quot;/);
+});
+
+test("controls.html syncs focused choices, guards missing options, and skips invalid numbers", () => {
+  const html = readFileSync(new URL("../assets/overlays/controls.html", import.meta.url), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const defs = [
+    { name: "mode", label: "Mode", kind: "choice" },
+    { name: "count", label: "Count", kind: "number" },
+    { name: "level", label: "Level", kind: "slider", min: 0, max: 10, step: 1 },
+  ];
+  const list = makeElement("main");
+  const handlers = new Map();
+  const sent = [];
+  const document = {
+    activeElement: null,
+    getElementById: id => (id === "defs" ? { textContent: JSON.stringify(defs) } : null),
+    createElement: tag => makeElement(tag),
+  };
+  const streamerz = {
+    control: Object.assign(
+      (name, fn) => { handlers.set(name, fn); },
+      { set: async (name, value) => { sent.push([name, value]); } },
+    ),
+  };
+  vm.runInNewContext(script, { window: {}, document, list, streamerz, console });
+
+  // Choice updates even when focused.
+  const select = list.children[0].children[1];
+  document.activeElement = select;
+  handlers.get("mode")("Fast");
+  assert.equal(select.value, "Fast");
+
+  // Number skips empty/NaN edits and suppresses remote updates while typing.
+  const num = list.children[1].children[1];
+  num.value = "";
+  num.onchange();
+  num.value = "abc";
+  num.onchange();
+  assert.deepEqual(sent, []);
+  num.value = "42";
+  num.onchange();
+  assert.deepEqual(sent, [["count", 42]]);
+  document.activeElement = num;
+  handlers.get("count")(99);
+  assert.equal(num.value, "42");
+});
+
+test("board.html resets button title after recovery and debounces rapid clicks", async () => {
+  const html = readFileSync(new URL("../assets/overlays/board.html", import.meta.url), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const padsEl = makeElement("main");
+  const timers = new Map();
+  let nextTimer = 0;
+  let responses = [{ ok: false, error: "busy" }, { ok: true }];
+  const document = {
+    body: { prepend() {} },
+    getElementById: id => (id === "pads" ? padsEl : null),
+    createElement: tag => makeElement(tag),
+  };
+  const code = script
+    .replace("__PADS__", JSON.stringify([{ id: "p1", label: "Horn" }]))
+    .replace("__TOKEN__", "tok");
+  vm.runInNewContext(code, {
+    document,
+    fetch: async () => ({ json: async () => responses.shift() }),
+    setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+
+  const btn = padsEl.children[0];
+  btn.onclick();
+  await new Promise(r => setImmediate(r));
+  assert.equal(btn.title, "busy");
+  assert.equal(timers.size, 1);
+
+  btn.onclick();
+  await new Promise(r => setImmediate(r));
+  assert.equal(btn.title, "Horn");
+  assert.equal(timers.size, 1);
+  [...timers.values()][0].fn();
+  assert.equal(btn.classList.contains("on"), false);
+});

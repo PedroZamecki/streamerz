@@ -63,7 +63,7 @@ for (const d of defs) {
     row.append(input, shown);
   } else if (d.kind === "choice") {
     input = el("select");
-    for (const o of d.options) input.append(el("option", { value: o, textContent: o }));
+    for (const o of d.options || []) input.append(el("option", { value: o, textContent: o }));
     input.onchange = () => set(input.value);
     row.append(input);
   } else if (d.kind === "color") {
@@ -72,15 +72,19 @@ for (const d of defs) {
     row.append(input, el("i"));
   } else {
     input = el("input", { type: d.kind === "number" ? "number" : "text" });
-    input.onchange = () => set(d.kind === "number" ? Number(input.value) : input.value);
+    input.onchange = () => {
+      if (d.kind !== "number") return set(input.value);
+      if (input.value === "" || Number.isNaN(Number(input.value))) return;
+      set(Number(input.value));
+    };
     row.append(input);
   }
   list.append(row);
   streamerz.control(d.name, v => {
-    if (document.activeElement === input && d.kind !== "toggle") return;
+    if (document.activeElement === input && (d.kind === "text" || d.kind === "number")) return;
     if (d.kind === "toggle") input.checked = !!v;
     else input.value = v ?? "";
-    if (shown) shown.textContent = v;
+    if (shown) shown.textContent = v ?? input.value;
   });
 }
 </script>
