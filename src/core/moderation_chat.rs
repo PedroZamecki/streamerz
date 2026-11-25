@@ -313,6 +313,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn response_distinguishes_disabled_delay_from_an_unavailable_setting() {
+        let mut response = json!({"data":[{"emote_mode":false,"subscriber_mode":false,"unique_chat_mode":false,
+            "follower_mode":false,"slow_mode":false}]});
+        let hidden = normalize(&response).unwrap();
+        assert_eq!(hidden["delay_available"], false);
+        response["data"][0]["non_moderator_chat_delay"] = false.into();
+        let disabled = normalize(&response).unwrap();
+        assert_eq!(disabled["delay_available"], true);
+        assert_eq!(disabled["non_moderator_chat_delay_duration"], 2);
+        response["data"][0]["non_moderator_chat_delay"] = true.into();
+        assert!(normalize(&response).is_err());
+        response["data"][0]["non_moderator_chat_delay_duration"] = 4.into();
+        assert_eq!(normalize(&response).unwrap()["non_moderator_chat_delay_duration"], 4);
+        assert!(normalize(&json!({"data":[]})).is_err());
+    }
+
+    #[test]
     fn external_change_does_not_get_overwritten() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
