@@ -38,16 +38,30 @@ pub fn matches(filter: &str, name: &str) -> bool {
     if f.is_empty() || f == "*" || f == "*.*" {
         return true;
     }
-    fn go(p: &[char], n: &[char]) -> bool {
-        match p.split_first() {
-            None => n.is_empty(),
-            Some(('*', rest)) => (0..=n.len()).any(|i| go(rest, &n[i..])),
-            Some(('?', rest)) => !n.is_empty() && go(rest, &n[1..]),
-            Some((c, rest)) => n.first().is_some_and(|x| x.eq_ignore_ascii_case(c)) && go(rest, &n[1..]),
+    let mut pattern = f.chars();
+    let mut name = name.chars();
+    let mut retry = None;
+    loop {
+        let rest = name.clone();
+        match (pattern.next(), name.next()) {
+            (Some('*'), _) => {
+                retry = Some((pattern.clone(), rest.clone()));
+                name = rest;
+            }
+            (Some(p), Some(n)) if p == '?' || n.eq_ignore_ascii_case(&p) => {}
+            (None, None) => return true,
+            _ => {
+                let Some((after_star, remaining)) = &mut retry else {
+                    return false;
+                };
+                if remaining.next().is_none() {
+                    return false;
+                }
+                pattern = after_star.clone();
+                name = remaining.clone();
+            }
         }
     }
-    let (p, n): (Vec<char>, Vec<char>) = (f.chars().collect(), name.chars().collect());
-    go(&p, &n)
 }
 
 /// A file's name as text.
@@ -491,6 +505,16 @@ mod tests {
         assert!(matches("log?.txt", "log1.txt"));
         assert!(!matches("log?.txt", "log10.txt"));
         assert!(!matches("*.json", "a.txt"));
+    }
+
+    #[test]
+    fn filters_handle_many_wildcards_and_unicode() {
+        let pattern = format!("{}z", "*a".repeat(32));
+        let name = "a".repeat(128);
+        assert!(!matches(&pattern, &name));
+        assert!(matches(&pattern, &format!("{name}z")));
+        assert!(matches("*?*.TXT", "á.txt"));
+        assert!(!matches("*?*.TXT", ".txt"));
     }
 
     /// Created, written, renamed and deleted, in a folder, one inside it and one made while watching.
