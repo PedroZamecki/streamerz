@@ -99,7 +99,7 @@ function amount(a) {
     case "raid": return n(g.viewers);
     case "giftbomb": return n(g.gifts) || n(g.count);
     case "resub": return n(g.cumulative) || n(g.cumulativeMonths) || n(g.months);
-    case "superchat": case "supersticker": return n(g.amount) || n(g.amountMicros) / 1e6;
+    case "superchat": case "supersticker": return n(g.microAmount) / 1e6 || n(g.amount);
     case "gift": return n(g.coins) || n(g.diamondCount) * (n(g.repeatCount) || 1);
     default: return n(g.amount) || n(g.count) || n(g.months);
   }
