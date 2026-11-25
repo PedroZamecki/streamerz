@@ -33,11 +33,12 @@ function draw() {
     const names = String(section.key || "").split(".").reduce((value, key) => value && Object.hasOwn(value, key) ? value[key] : null, credits);
     if (!Array.isArray(names) || !names.length) continue;
     add("h2", section.title);
-    for (const name of names) add("div", typeof name === "string" ? name : String(name.name || "")).className = "name";
+    for (const name of names) add("div", typeof name === "string" ? name : String(name?.name || "")).className = "name";
   }
   add("h2", settings.ending);
   motion?.cancel();
   const distance = innerHeight + roll.offsetHeight;
+  if (distance <= 0) return;
   motion = roll.animate([{ transform: "translateY(0)" }, { transform: "translateY(-" + distance + "px)" }], {
     duration: distance / Math.max(15, Number(settings.speed) || 60) * 1000,
     iterations: settings.repeat ? Infinity : 1, fill: "forwards", easing: "linear"
@@ -50,7 +51,7 @@ streamerz.onSettings(s => {
   style.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
   draw();
 });
-fetch(new URL("/GetCredits", location.href)).then(r => {
+fetch(new URL("/GetCredits", new URL(streamerz.asset(""), location.href))).then(r => {
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
 }).then(data => { credits = data; draw(); }).catch(error => {

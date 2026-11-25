@@ -542,3 +542,187 @@ test("poll and poll dock: skip chat announcements during Test, use zero idle tim
   h2.emitTopic("poll.state", { question: "Q?", options: [{ text: "A", total: 1 }], votes: 1, endsAt: 999_000, over: true });
   assert.equal(h2.timers.size, 0, "dock stops ticking once poll is over");
 });
+
+test("wheel: skips chat announcement during Test and redraws slice updates after spin", () => {
+  const { script } = readExample("wheel/files/index.html");
+  const h = harness({
+    ids: ["stage", "title", "wheel", "result"],
+    settings: {
+      spinSeconds: 2,
+      announce: true,
+      slices: [{ label: "A", weight: 1 }, { label: "B", weight: 1 }],
+    },
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Spin during Test must not post to real chat.
+  h.streamerz.testing = true;
+  h.emitTopic("wheel.spin", "tester", false);
+  h.streamerz.testing = false;
+
+  // Update slices mid-spin: redraw is deferred until spin completes so slice.from/to are never undefined.
+  h.emitSettings({ slices: [{ label: "Win $&", weight: 1 }, { label: "Gold", weight: 3 }] });
+  h.advance(2500);
+  h.runDueTimers();
+  assert.equal(h.said.length, 0);
+
+  // Next real spin uses redrawn slices without NaN rotation and announces safely.
+  h.emitTopic("wheel.spin", "ana", false);
+  for (const fn of h.rafs.values()) fn(h.ctx.performance.now());
+  assert.equal(h.byId.wheel.style.transform.includes("NaN"), false);
+  h.advance(2500);
+  h.runDueTimers();
+  assert.equal(h.said.length, 1);
+});
+
+test("scene-banner: rapid scene changes do not hide the newer scene", async () => {
+  const { script } = readExample("scene-banner/files/index.html");
+  const leaves = [];
+  const h = harness({
+    ids: ["banner"],
+    settings: {
+      seconds: 2,
+      banners: [{ scene: "BRB", text: "Be right back" }, { scene: "Live", text: "Now live" }],
+      enter: { name: "fade" },
+      leave: { name: "fade" },
+    },
+  });
+  h.byId.banner.hidden = true;
+  h.streamerz.animate = (el, anim, opts) => {
+    if (opts?.out) return new Promise(r => leaves.push(r));
+    return Promise.resolve();
+  };
+  vm.runInContext(script, h.ctx);
+
+  h.emitEvent("ObsStudio.SceneChanged", { sceneName: "BRB" });
+  assert.equal(h.byId.banner.hidden, false);
+  assert.equal(h.byId.banner.textContent, "Be right back");
+
+  // Auto-hide starts leaving, then a new scene arrives before leave completes.
+  h.advance(2000);
+  h.runDueTimers();
+  assert.equal(leaves.length, 1);
+
+  h.emitEvent("ObsStudio.SceneChanged", { sceneName: "Live" });
+  assert.equal(leaves.length, 2);
+  // First leave resolves late: must NOT hide the banner.
+  leaves[0]();
+  await new Promise(r => setImmediate(r));
+  // Second leave resolves: banner shows "Now live".
+  leaves[1]();
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.byId.banner.hidden, false);
+  assert.equal(h.byId.banner.textContent, "Now live");
+});
+
+test("song-queue: switching topics does not register duplicate listeners", () => {
+  const { script } = readExample("song-queue/files/index.html");
+  const h = harness({
+    ids: ["title", "rows", "empty"],
+    settings: { topic: "q.a", rows: 5, title: "Queue", empty: "None" },
+  });
+  vm.runInContext(script, h.ctx);
+  assert.equal(h.listeners.topics.get("q.a").length, 1);
+
+  h.emitSettings({ topic: "q.b" });
+  h.emitSettings({ topic: "q.a" });
+  assert.equal(h.listeners.topics.get("q.a").length, 1);
+  assert.equal(h.listeners.topics.get("q.b").length, 1);
+});
+
+test("sound-board player: cleans up playing Set when play rejects or errors", async () => {
+  const { script } = readExample("sound-board/files/player.html");
+  const h = harness({
+    settings: { overlap: false, pads: [{ sound: "bad.wav", volume: 80 }] },
+  });
+  let failNext = true;
+  const BaseAudio = h.MockAudio;
+  h.ctx.Audio = class extends BaseAudio {
+    play() {
+      if (failNext) { failNext = false; return Promise.reject(new Error("blocked")); }
+      return super.play();
+    }
+  };
+  vm.runInContext(script, h.ctx);
+
+  h.emitTopic("Demo.play", { pad: 0, at: 1 }, false);
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.logged.length, 1);
+  // A second play with overlap=false should not pause the already-removed failed audio.
+  h.emitTopic("Demo.play", { pad: 0, at: 2 }, false);
+  assert.equal(h.audios[0].paused, false);
+});
+
+test("tiktok-gifts: enforces minCoins on ongoing combos and supports coins fallback", () => {
+  const { script } = readExample("tiktok-gifts/files/index.html");
+  const h = harness({
+    ids: ["list"],
+    settings: { minCoins: 10, bigFrom: 50, most: 4, seconds: 5, text: "sent {gift}" },
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Ongoing combo below minCoins must not appear yet.
+  h.emitEvent("TikTok.Gift", { user: "Ana", userId: "u1", giftId: 1, giftName: "Rose", diamondCount: 1, repeatCount: 3, repeatEnd: false });
+  assert.equal(h.byId.list.children.length, 0);
+
+  // Once total reaches minCoins, the pill appears with full count.
+  h.emitEvent("TikTok.Gift", { user: "Ana", userId: "u1", giftId: 1, giftName: "Rose", diamondCount: 1, repeatCount: 10, repeatEnd: false });
+  assert.equal(h.byId.list.children.length, 1);
+
+  // Gift with coins only (no diamondCount) also passes.
+  h.emitEvent("TikTok.Gift", { user: "Bo", userId: "u2", giftId: 2, giftName: "Star", coins: 20, repeatCount: 1, repeatEnd: true });
+  assert.equal(h.byId.list.children.length, 2);
+});
+
+test("viewers: cancels overlapping rAF animations and guards null payload", () => {
+  const { script } = readExample("viewers/files/index.html");
+  const h = harness({ ids: ["row"], settings: { animationMs: 500, platforms: ["twitch"] } });
+  vm.runInContext(script, h.ctx);
+
+  h.emitTopic("viewers", { total: 10, twitch: 10, youtube: null, kick: null, tiktok: null });
+  const firstCount = h.rafs.size;
+  assert.equal(firstCount, 2); // total + twitch
+  // Rapid second update cancels prior rAFs rather than doubling them.
+  h.emitTopic("viewers", { total: 20, twitch: 20, youtube: null, kick: null, tiktok: null });
+  assert.equal(h.rafs.size, 2);
+  // Null payload does not throw.
+  h.emitTopic("viewers", null);
+});
+
+test("control-dock, top-gifters, goal and credits handle edge inputs safely", async () => {
+  // control-dock: overlapping loads keep only the latest response and clear stale error.
+  const cd = readExample("control-dock/files/dock.html");
+  const resolvers = [];
+  const h1 = harness({
+    ids: ["grid", "note", "reload"],
+    actions: () => new Promise(r => resolvers.push(r)),
+  });
+  vm.runInContext(cd.script, h1.ctx);
+  h1.byId.reload.onclick();
+  resolvers[1]([{ id: "2", name: "New", enabled: true }]);
+  await new Promise(r => setImmediate(r));
+  resolvers[0]([{ id: "1", name: "Old", enabled: true }]);
+  await new Promise(r => setImmediate(r));
+  assert.equal(h1.byId.grid.children.length, 1);
+  assert.equal(h1.byId.grid.children[0].textContent, "New");
+  assert.equal(h1.byId.note.textContent, "");
+
+  // top-gifters: numeric user names sort without throwing.
+  const tg = readExample("top-gifters/files/index.html");
+  const h2 = harness({ ids: ["title", "rows", "empty"], settings: { rows: 5, period: "1", title: "Top" } });
+  vm.runInContext(tg.script, h2.ctx);
+  h2.streamerz.testing = true;
+  h2.emitTopic("gifters.preview", [{ user: 123, count: 5 }, { user: "Ana", count: 5 }]);
+  assert.equal(h2.byId.rows.children.length, 2);
+
+  // goal: TikTok coins falls back to diamondCount * repeatCount.
+  const gl = readExample("goal/files/index.html");
+  const h3 = harness({
+    ids: ["goal", "title", "fill", "numbers", "reached"],
+    settings: { counts: "TikTok coins", target: 100, current: 0, title: "{current}/{target}", platforms: ["tiktok"] },
+  });
+  vm.runInContext(gl.script, h3.ctx);
+  h3.streamerz.testing = true;
+  h3.emitAlert({ kind: "gift", platform: "tiktok", args: { diamondCount: 5, repeatCount: 4 } });
+  assert.equal(h3.byId.title.textContent, "20/100");
+});

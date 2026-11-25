@@ -23,7 +23,7 @@
 // up to date by itself. A platform that is not connected is null: its counter is hidden.
 let settings = streamerz.settings;
 let last = null;
-const shown = {}, items = {};
+const shown = {}, items = {}, anims = {};
 const names = ["total", "twitch", "youtube", "kick", "tiktok"];
 
 for (const name of names) {
@@ -51,18 +51,25 @@ streamerz.onSettings(s => {
 
 // From the number on screen to the new one, easing out.
 function count(name, to) {
+  cancelAnimationFrame(anims[name]);
   const el = items[name].querySelector(".n"), from = shown[name], start = performance.now();
   const ms = Math.max(0, Number(settings.animationMs) || 0);
+  if (from === to || !ms) {
+    shown[name] = to;
+    el.textContent = to.toLocaleString();
+    return;
+  }
   const step = now => {
-    const k = ms ? Math.min(1, (now - start) / ms) : 1;
+    const k = Math.min(1, (now - start) / ms);
     shown[name] = Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3)));
     el.textContent = shown[name].toLocaleString();
-    if (k < 1) requestAnimationFrame(step);
+    if (k < 1) anims[name] = requestAnimationFrame(step);
   };
-  requestAnimationFrame(step);
+  anims[name] = requestAnimationFrame(step);
 }
 
 function draw(viewers) {
+  if (!viewers) return;
   // A "platforms" setting is the list of the ones ticked.
   const wanted = Array.isArray(settings.platforms) ? settings.platforms : names;
   for (const name of names) {

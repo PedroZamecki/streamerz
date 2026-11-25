@@ -81,7 +81,9 @@ function worth(alert) {
     case "Bits and Kicks":
       return alert.kind === "cheer" ? Number(args.bits || args.amount) || 0 : 0;
     case "TikTok coins":
-      return alert.kind === "gift" && alert.platform === "tiktok" ? Number(args.coins) || 0 : 0;
+      return alert.kind === "gift" && alert.platform === "tiktok"
+        ? Number(args.coins) || (Number(args.diamondCount) || 0) * (Number(args.repeatCount) || 1)
+        : 0;
     default:
       return alert.kind === "follow" ? 1 : 0;
   }
