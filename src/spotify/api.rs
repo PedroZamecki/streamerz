@@ -25,32 +25,15 @@ fn unpack(text: &str) -> (&str, &str) {
     }
 }
 
-/// What a Spotify link, URI or bare id points at: its kind and id.
-pub fn reference(text: &str) -> Option<(String, String)> {
-    let t = text.trim();
-    let ok = |id: &str| id.len() == 22 && id.bytes().all(|c| c.is_ascii_alphanumeric());
-    if let Some(rest) = t.strip_prefix("spotify:") {
-        let (kind, id) = rest.split_once(':')?;
-        return ok(id).then(|| (kind.to_string(), id.to_string()));
-    }
-    if let Some(rest) = t.strip_prefix("https://open.spotify.com/") {
-        let rest = match rest.strip_prefix("intl-") {
-            Some(r) => r.split_once('/')?.1,
-            None => rest,
-        };
-        let (kind, id) = rest.split_once('/')?;
-        let id = id.split(['?', '#', '/']).next()?;
-        return ok(id).then(|| (kind.to_string(), id.to_string()));
-    }
-    None
-}
+pub use super::reference;
 
 /// A playlist's id from a link, URI or the id itself.
 fn playlist_id(text: &str) -> Result<String, String> {
-    match reference(text) {
+    let t = text.trim();
+    match reference(t) {
         Some((kind, id)) if kind == "playlist" => Ok(id),
         Some(_) => Err("That is not a Spotify playlist".into()),
-        None if text.trim().len() == 22 => Ok(text.trim().to_string()),
+        None if super::is_id(t) => Ok(t.to_string()),
         None => Err("Enter a Spotify playlist link, URI or id".into()),
     }
 }
@@ -385,10 +368,20 @@ mod tests {
             reference(&format!("spotify:artist:{id}")),
             Some(("artist".into(), id.into()))
         );
+        assert_eq!(
+            reference(&format!("spotify:user:demo:playlist:{id}")),
+            Some(("playlist".into(), id.into()))
+        );
+        assert_eq!(
+            reference(&format!("https://open.spotify.com/user/demo/playlist/{id}?si=1")),
+            Some(("playlist".into(), id.into()))
+        );
         assert_eq!(reference("fireworks katy perry"), None);
         assert_eq!(playlist_id(id).unwrap(), id);
         assert!(playlist_id(&format!("spotify:track:{id}")).is_err());
         assert!(playlist_id("nope").is_err());
+        assert!(playlist_id("../../me/tracks?ids=xx").is_err());
+        assert!(playlist_id("this is 22 characters!").is_err());
     }
 
     #[test]

@@ -441,7 +441,7 @@ fn readings(query: &str) -> Vec<(Vec<String>, Vec<String>)> {
         out.push((rest, first));
     }
     if let Some(i) = lower.rfind(" by ") {
-        out.push((words(&query[..i]), words(&query[i + 4..])));
+        out.push((words(&lower[..i]), words(&lower[i + 4..])));
     }
     let all = words(query);
     if all.len() >= 2 {
@@ -522,6 +522,78 @@ pub enum Input {
     Search(String),
 }
 
+/// Whether `id` is a Spotify base-62 id (22 ASCII letters or digits).
+pub(crate) fn is_id(id: &str) -> bool {
+    id.len() == 22 && id.bytes().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Strip a leading ASCII prefix, ignoring case.
+fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
+/// The path after `open.spotify.com/` (with `https://`, `http://`, or no scheme).
+fn open_spotify_path(input: &str) -> Option<&str> {
+    let rest = strip_prefix_ci(input, "https://")
+        .or_else(|| strip_prefix_ci(input, "http://"))
+        .unwrap_or(input);
+    strip_prefix_ci(rest, "open.spotify.com/")
+}
+
+fn is_short_link(input: &str) -> bool {
+    let rest = strip_prefix_ci(input, "https://")
+        .or_else(|| strip_prefix_ci(input, "http://"))
+        .unwrap_or(input);
+    strip_prefix_ci(rest, "spotify.link/").is_some() || strip_prefix_ci(rest, "spotify.app.link/").is_some()
+}
+
+/// What a Spotify link or URI points at: its lowercased kind and 22-character id.
+pub fn reference(text: &str) -> Option<(String, String)> {
+    let t = text.trim();
+    if let Some(rest) = strip_prefix_ci(t, "spotify:") {
+        let mut parts = rest.split(':');
+        let first = parts.next()?;
+        let (kind, id) = if first.eq_ignore_ascii_case("user") {
+            let _user = parts.next()?;
+            let kind = parts.next()?;
+            let id = parts.next()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            (kind, id)
+        } else {
+            let id = parts.next()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            (first, id)
+        };
+        return (!kind.is_empty() && is_id(id)).then(|| (kind.to_ascii_lowercase(), id.to_string()));
+    }
+    if let Some(rest) = open_spotify_path(t) {
+        let path = rest.split(['?', '#']).next()?;
+        let mut parts = path.split('/').filter(|p| !p.is_empty());
+        let mut first = parts.next()?;
+        if strip_prefix_ci(first, "intl-").is_some() {
+            first = parts.next()?;
+        }
+        if first.eq_ignore_ascii_case("embed") {
+            first = parts.next()?;
+        }
+        if first.eq_ignore_ascii_case("user") {
+            let _user = parts.next()?;
+            first = parts.next()?;
+        }
+        let id = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        return is_id(id).then(|| (first.to_ascii_lowercase(), id.to_string()));
+    }
+    None
+}
+
 pub fn classify(input: &str) -> Input {
     let input = input.trim();
     let kind = |k: &str| match k {
@@ -535,27 +607,36 @@ pub fn classify(input: &str) -> Input {
     if let Some(uri) = track_uri(input) {
         return Input::Track(uri);
     }
-    if let Some(rest) = input.strip_prefix("spotify:") {
-        if let Some(k) = rest.split(':').next().and_then(kind) {
+    if let Some(rest) = strip_prefix_ci(input, "spotify:") {
+        let mut parts = rest.split(':');
+        let mut first = parts.next().unwrap_or("");
+        if first.eq_ignore_ascii_case("user") {
+            let _ = parts.next();
+            first = parts.next().unwrap_or("");
+        }
+        if let Some(k) = kind(&first.to_ascii_lowercase()) {
             return Input::Unsupported(k);
         }
     }
-    let lower = input.to_lowercase();
-    if lower.contains("spotify.link/") || lower.contains("spotify.app.link/") {
+    if is_short_link(input) {
         return Input::Unsupported("shortened");
     }
-    if let Some(i) = lower.find("open.spotify.com/") {
-        let path = input[i + "open.spotify.com/".len()..]
-            .split(['?', '#'])
-            .next()
-            .unwrap_or("");
+    if let Some(rest) = open_spotify_path(input) {
+        let path = rest.split(['?', '#']).next().unwrap_or("");
         let mut parts = path.split('/').filter(|p| !p.is_empty());
         let mut first = parts.next().unwrap_or("");
         // /intl-de/track/...
-        if first.starts_with("intl-") {
+        if strip_prefix_ci(first, "intl-").is_some() {
             first = parts.next().unwrap_or("");
         }
-        if let Some(k) = kind(first) {
+        if first.eq_ignore_ascii_case("embed") {
+            first = parts.next().unwrap_or("");
+        }
+        if first.eq_ignore_ascii_case("user") {
+            let _ = parts.next();
+            first = parts.next().unwrap_or("");
+        }
+        if let Some(k) = kind(&first.to_ascii_lowercase()) {
             return Input::Unsupported(k);
         }
     }
@@ -565,28 +646,15 @@ pub fn classify(input: &str) -> Input {
 /// A track's URI from a link, URI or id (blocked songs are typed as any of them).
 pub fn track_uri_of(text: &str) -> Option<String> {
     let t = text.trim();
-    track_uri(t).or_else(|| {
-        (t.len() == 22 && t.bytes().all(|c| c.is_ascii_alphanumeric())).then(|| format!("spotify:track:{t}"))
-    })
+    track_uri(t).or_else(|| is_id(t).then(|| format!("spotify:track:{t}")))
 }
 
-/// Accept Spotify track URIs and open.spotify.com links only (also with a language in them).
+/// Accept Spotify track URIs and open.spotify.com links only (also with a language or embed prefix).
 fn track_uri(input: &str) -> Option<String> {
-    let input = input.trim();
-    let id = if let Some(id) = input.strip_prefix("spotify:track:") {
-        id
-    } else {
-        let rest = input.strip_prefix("https://open.spotify.com/")?;
-        let rest = match rest.strip_prefix("intl-") {
-            Some(r) => r.split_once('/')?.1,
-            None => rest,
-        };
-        rest.strip_prefix("track/")?.split(['?', '#', '/']).next()?
-    };
-    if id.len() != 22 || !id.bytes().all(|c| c.is_ascii_alphanumeric()) {
-        return None;
+    match reference(input) {
+        Some((kind, id)) if kind == "track" => Some(format!("spotify:track:{id}")),
+        _ => None,
     }
-    Some(format!("spotify:track:{id}"))
 }
 
 /// What went wrong, in words for the streamer: Spotify's own reason when it gives one.
@@ -768,7 +836,7 @@ async fn find_at(base: &str, token: &str, query: &str) -> Result<Track, String> 
             _ => "Audiobooks are not supported. Please specify a track!".to_string(),
         }),
         Input::Search(text) => {
-            if text.starts_with("spotify:") || text.starts_with("https://open.spotify.com/") {
+            if strip_prefix_ci(&text, "spotify:").is_some() || open_spotify_path(&text).is_some() {
                 return Err("Enter a valid Spotify track link or URI".into());
             }
             let terms = words(&text);
@@ -1026,12 +1094,52 @@ mod tests {
     fn track_links_are_validated() {
         let uri = "spotify:track:0123456789ABCDEFGHIJKL";
         assert_eq!(track_uri(uri).as_deref(), Some(uri));
+        assert_eq!(track_uri("SPOTIFY:Track:0123456789ABCDEFGHIJKL").as_deref(), Some(uri));
         assert_eq!(
             track_uri("https://open.spotify.com/track/0123456789ABCDEFGHIJKL?si=123").as_deref(),
             Some(uri)
         );
+        assert_eq!(
+            track_uri("http://open.spotify.com/track/0123456789ABCDEFGHIJKL?si=123#top").as_deref(),
+            Some(uri)
+        );
+        assert_eq!(
+            track_uri("open.spotify.com/intl-pt-br/track/0123456789ABCDEFGHIJKL/").as_deref(),
+            Some(uri)
+        );
+        assert_eq!(
+            track_uri("HTTPS://OPEN.SPOTIFY.COM/embed/track/0123456789ABCDEFGHIJKL?utm_source=generator").as_deref(),
+            Some(uri)
+        );
         assert!(track_uri("https://evil.example/track/0123456789ABCDEFGHIJKL").is_none());
+        assert!(track_uri("https://evil.example/open.spotify.com/track/0123456789ABCDEFGHIJKL").is_none());
+        assert!(track_uri("https://open.spotify.com/track/0123456789ABCDEFGHIJKL/extra").is_none());
+        assert!(track_uri("spotify:track:0123456789ABCDEFGHIJKL:extra").is_none());
         assert!(track_uri("spotify:track:bad").is_none());
+    }
+
+    #[test]
+    fn case_expanding_unicode_never_panics_in_readings_or_classify() {
+        // 'İ' (U+0130) is 2 bytes in UTF-8 and lowercases to 3 bytes ("i\u{307}").
+        let track = t("Istanbul", &["Artist"], 50);
+        assert!(score("İİİ by Artist", &track) >= 0.0);
+        assert_eq!(
+            classify("İİ open.spotify.com/album/0123456789ABCDEFGHIJKL"),
+            Input::Search("İİ open.spotify.com/album/0123456789ABCDEFGHIJKL".into())
+        );
+        assert_eq!(
+            classify("SPOTIFY:USER:demo:PLAYLIST:37i9dQZF1DXcBWIGoYBM5M"),
+            Input::Unsupported("playlist")
+        );
+        assert_eq!(
+            classify("https://open.spotify.com/user/demo/playlist/37i9dQZF1DXcBWIGoYBM5M?si=1"),
+            Input::Unsupported("playlist")
+        );
+        assert_eq!(
+            classify("http://open.spotify.com/intl-de/embed/album/4aawyAB9vmqN3uQ7FjRGTy"),
+            Input::Unsupported("album")
+        );
+        assert_eq!(classify("http://spotify.app.link/abc"), Input::Unsupported("shortened"));
     }
     #[test]
     fn invalid_spotify_links_are_not_searched() {
@@ -1040,12 +1148,18 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            assert_eq!(
-                find_at("http://127.0.0.1:1", "test", "https://open.spotify.com/track/invalid")
-                    .await
-                    .unwrap_err(),
-                "Enter a valid Spotify track link or URI"
-            );
+            for bad in [
+                "https://open.spotify.com/track/invalid",
+                "http://open.spotify.com/track/invalid",
+                "open.spotify.com/intl-en/track/invalid",
+                "SPOTIFY:TRACK:invalid",
+            ] {
+                assert_eq!(
+                    find_at("http://127.0.0.1:1", "test", bad).await.unwrap_err(),
+                    "Enter a valid Spotify track link or URI",
+                    "{bad}"
+                );
+            }
             for (query, kind) in [
                 ("spotify:album:123", "Album"),
                 (
