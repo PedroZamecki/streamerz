@@ -1288,18 +1288,7 @@ struct Shield {
 thread_local! { static SHIELD: RefCell<Shield> = RefCell::default(); }
 
 pub fn shield_event(engine: &Rc<Engine>, event: &Value, active: bool) {
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     let key = account(engine);
@@ -1561,18 +1550,7 @@ pub fn automod_event(engine: &Rc<Engine>, event: &Value, held: bool) {
         return;
     };
     let key = account(engine);
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     AUTOMOD.with_borrow_mut(|queue| {
@@ -1777,7 +1755,7 @@ pub fn supports(domain: &str) -> bool {
     domain == DOMAIN
 }
 
-fn account(engine: &Engine) -> String {
+pub(super) fn account(engine: &Engine) -> String {
     let config = engine.config();
     format!(
         "{}|{}|{}",
@@ -1785,6 +1763,16 @@ fn account(engine: &Engine) -> String {
         config.twitch.channel_id,
         config.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
     )
+}
+
+pub(super) fn is_current_twitch_channel(engine: &Engine, event: &Value) -> bool {
+    let config = engine.config();
+    let expected = if config.twitch.channel_id.is_empty() {
+        config.twitch.broadcaster.as_ref().map_or("", |a| a.user_id.as_str())
+    } else {
+        config.twitch.channel_id.as_str()
+    };
+    !expected.is_empty() && event["broadcaster_user_id"].as_str() == Some(expected)
 }
 
 /// A snapshot belongs to a particular account and channel, and old replies must not replace it.

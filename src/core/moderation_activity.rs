@@ -1,4 +1,5 @@
 //! Recent moderation events observed from Twitch, kept only for the current session.
+use super::moderation::{account, is_current_twitch_channel};
 use crate::{engine::Engine, i18n::tr};
 use serde_json::{json, Value};
 use std::{cell::RefCell, rc::Rc};
@@ -11,15 +12,6 @@ struct State {
 }
 thread_local! { static STATE: RefCell<State> = RefCell::default(); }
 
-fn account(engine: &Engine) -> String {
-    let c = engine.config();
-    format!(
-        "{}|{}|{}",
-        c.twitch.channel,
-        c.twitch.channel_id,
-        c.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
-    )
-}
 fn label(action: &str) -> Option<&'static str> {
     Some(match action {
         "ban" | "shared_chat_ban" => "moderation.activity_ban",
@@ -60,18 +52,7 @@ pub fn event(engine: &Rc<Engine>, event: &Value) {
     if label(action).is_none() {
         return;
     }
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     let key = account(engine);

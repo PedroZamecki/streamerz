@@ -1,4 +1,5 @@
 //! Recent suspicious-user activity received through Twitch EventSub.
+use super::moderation::{account, is_current_twitch_channel};
 use crate::{
     automation::schema::{F, W},
     engine::Engine,
@@ -129,32 +130,11 @@ fn warn(engine: &Rc<Engine>, id: &str, item: &Obj) -> Result<Value, String> {
     Ok(json!({"accepted": true}))
 }
 
-fn account(engine: &Engine) -> String {
-    let c = engine.config();
-    format!(
-        "{}|{}|{}",
-        c.twitch.channel,
-        c.twitch.channel_id,
-        c.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
-    )
-}
-
 pub fn event(engine: &Rc<Engine>, event: &Value, message: bool) {
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
     let Some(id) = event["user_id"].as_str().filter(|id| !id.is_empty()) else {
         return;
     };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     let key = account(engine);

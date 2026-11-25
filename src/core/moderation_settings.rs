@@ -1,4 +1,5 @@
 //! Twitch AutoMod settings: read before editing and reject changes made by another moderator.
+use super::moderation::account;
 use crate::{
     automation::schema::{F, W},
     engine::Engine,
@@ -38,16 +39,6 @@ struct State {
     error: String,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::default(); }
-
-fn account(engine: &Engine) -> String {
-    let c = engine.config();
-    format!(
-        "{}|{}|{}",
-        c.twitch.channel,
-        c.twitch.channel_id,
-        c.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
-    )
-}
 
 fn begin(engine: &Rc<Engine>) -> Result<(u64, crate::twitch::TwitchHandle), String> {
     let twitch = engine
