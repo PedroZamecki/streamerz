@@ -120,6 +120,7 @@ impl Engine {
             "spotifyTitle",
             "spotifyArtist",
             "spotifyUri",
+            "spotifyDurationMs",
             "spotifyPosition",
             "spotifyTimeToPlay",
             "spotifyList",
@@ -230,7 +231,7 @@ impl Engine {
     pub(super) async fn song_control(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) {
         let result = match kind {
             99834 => {
-                let open = match super::n(o, "state") as u64 {
+                let open = match super::n(o, "state").max(0.0) as u64 {
                     0 => true,
                     1 => false,
                     _ => self.song_group(ctx).is_ok_and(|g| {
@@ -259,7 +260,7 @@ impl Engine {
                 Ok(())
             }
             99836 => {
-                let artist = super::n(o, "what") as u64 == 1;
+                let artist = super::n(o, "what").max(0.0) as u64 == 1;
                 let mut name = self
                     .expand(ctx, s(o, "value"))
                     .trim()
@@ -292,7 +293,7 @@ impl Engine {
                 }
             }
             _ => {
-                let rule = SONG_RULES[(super::n(o, "rule") as usize).min(SONG_RULES.len() - 1)];
+                let rule = SONG_RULES[(super::n(o, "rule").max(0.0) as usize).min(SONG_RULES.len() - 1)];
                 let text = self.expand(ctx, s(o, "value"));
                 self.song_setting(ctx, rule, &text).map(|v| {
                     ctx.args.insert("spotifyRule".into(), rule.into());
@@ -310,7 +311,12 @@ impl Engine {
         let to = crate::fmt::parse_number(&self.expand(ctx, s(o, "value")))
             .unwrap_or(0.0)
             .clamp(0.0, 100.0) as i64;
-        let over = (self.duration_number(ctx, o, "duration").max(0.0) * 1000.0) as u64;
+        let secs = self.duration_number(ctx, o, "duration");
+        let over = if secs.is_finite() && secs > 0.0 {
+            (secs.min(3600.0) * 1000.0) as u64
+        } else {
+            0
+        };
         let player = match self.music.player(self).await {
             Ok(p) => p,
             Err(e) => return crate::error(format!("Spotify: {}", crate::spotify::friendly(&e))),
@@ -354,7 +360,7 @@ impl Engine {
             name: text("spotifyTitle"),
             artists: vec![text("spotifyArtist")],
             playing: false,
-            duration_ms: 0,
+            duration_ms: text("spotifyDurationMs").parse().unwrap_or(0),
             explicit: false,
             popularity: 0,
             restricted: false,
@@ -394,6 +400,8 @@ impl Engine {
         ctx.args.insert("spotifyTitle".into(), t.name.clone().into());
         ctx.args.insert("spotifyArtist".into(), t.artist().into());
         ctx.args.insert("spotifyUri".into(), t.uri.clone().into());
+        ctx.args
+            .insert("spotifyDurationMs".into(), t.duration_ms.to_string().into());
         let by = self.songs.borrow().requester(&t.uri).map(|r| r.user.clone());
         if let Some(user) = by {
             ctx.args.insert("spotifyRequester".into(), user.clone().into());
@@ -405,28 +413,37 @@ impl Engine {
     async fn song_run(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) -> Done {
         let operation = s(o, "operation");
         let user = ctx.args.get("user").map(crate::vars::text).unwrap_or_default();
+        let user_login = ctx.args.get("userName").map(crate::vars::text).unwrap_or_default();
         let user_id = ctx
             .args
             .get("userId")
             .map(crate::vars::text)
             .filter(|i| !i.is_empty())
-            .unwrap_or(user.clone());
+            .unwrap_or_else(|| {
+                if !user_login.is_empty() {
+                    user_login.to_ascii_lowercase()
+                } else {
+                    user.to_ascii_lowercase()
+                }
+            });
         let lvl = level(&ctx.args);
         let who = self.song_text(ctx, o, "who");
         let (need, name) = required(&who);
         ctx.args.insert("spotifyWho".into(), name.into());
         // The viewer who asked for the song that plays can skip it, when the group lets them.
-        if lvl < need && !(operation == "skip" && self.song_flag(ctx, o, "skipOwn", true) && self.song_is_own(&user_id))
-        {
+        let check_own = lvl < need && operation == "skip" && self.song_flag(ctx, o, "skipOwn", true);
+        if lvl < need && !(check_own && self.songs.borrow().of(&user_id) > 0) {
             return Err(reject(
                 Reason::NotAllowed,
                 format!("Sorry, only {name} or higher can do that."),
             ));
         }
-        if list(&self.song_text(ctx, o, "blockedUsers"))
-            .iter()
-            .any(|b| b.trim_start_matches('@').eq_ignore_ascii_case(&user))
-        {
+        if list(&self.song_text(ctx, o, "blockedUsers")).iter().any(|b| {
+            let b = b.trim_start_matches('@');
+            b.eq_ignore_ascii_case(&user)
+                || (!user_login.is_empty() && b.eq_ignore_ascii_case(&user_login))
+                || (!user_id.is_empty() && b == user_id)
+        }) {
             return Err(reject(Reason::Silent, ""));
         }
         let music = self.music;
@@ -501,10 +518,26 @@ impl Engine {
             "remove" => self.song_remove(ctx, o, &user_id, lvl).await,
             "skip" => {
                 let wait = Duration::from_millis(self.song_limit(ctx, o, "skipCooldownMs"));
-                if self.song_skip_cooling(wait) {
+                if !check_own && self.song_skip_cooling(wait) {
                     return Err(reject(Reason::Cooldown, "Skipping is on cooldown."));
                 }
                 let player = music.player(self).await.map_err(failed)?;
+                {
+                    let mut songs = self.songs.borrow_mut();
+                    songs.sync(&player);
+                    *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
+                }
+                if check_own {
+                    if !self.song_is_own(&user_id) {
+                        return Err(reject(
+                            Reason::NotAllowed,
+                            format!("Sorry, only {name} or higher can do that."),
+                        ));
+                    }
+                    if self.song_skip_cooling(wait) {
+                        return Err(reject(Reason::Cooldown, "Skipping is on cooldown."));
+                    }
+                }
                 music.playback(self, "next").await.map_err(failed)?;
                 self.song_skipped(ctx, player.current.as_ref());
                 Ok(())
@@ -516,7 +549,11 @@ impl Engine {
                 }
                 let needed = self.song_limit(ctx, o, "votesNeeded").max(1) as usize;
                 let player = music.player(self).await.map_err(failed)?;
-                let uri = player.current.as_ref().map(|t| t.uri.clone()).unwrap_or_default();
+                let current = player
+                    .current
+                    .clone()
+                    .ok_or_else(|| reject(Reason::Other("msgEmpty"), "Nothing is playing."))?;
+                let uri = current.uri.clone();
                 let votes = {
                     let mut v = self.song_votes.borrow_mut();
                     if v.0 != uri {
@@ -527,11 +564,15 @@ impl Engine {
                     }
                     v.1.len()
                 };
+                self.song_fill(ctx, &current);
                 ctx.args
                     .insert("spotifyVotes".into(), format!("{votes}/{needed}").into());
                 if votes >= needed {
-                    music.playback(self, "next").await.map_err(failed)?;
-                    self.song_skipped(ctx, player.current.as_ref());
+                    if let Err(e) = music.playback(self, "next").await {
+                        self.song_votes.borrow_mut().1.remove(&user_id);
+                        return Err(failed(e));
+                    }
+                    self.song_skipped(ctx, Some(&current));
                     ctx.args
                         .insert("spotifyVotes".into(), format!("{votes}/{needed}").into());
                     self.song_votes.borrow_mut().1.clear();
@@ -571,10 +612,13 @@ impl Engine {
                     .current
                     .clone()
                     .ok_or_else(|| reject(Reason::Other("msgEmpty"), "Nothing is playing."))?;
-                if ctx.group.is_empty() {
-                    return Err(failed("The song requests need to be in a group to block a song".into()));
-                }
-                self.song_block(&ctx.group, &t.uri);
+                let group = if !ctx.group.is_empty() {
+                    ctx.group.clone()
+                } else {
+                    self.song_group(ctx)
+                        .map_err(|_| failed("The song requests need to be in a group to block a song".into()))?
+                };
+                self.song_block(&group, &t.uri);
                 music.playback(self, "next").await.map_err(failed)?;
                 self.song_fill(ctx, &t);
                 Ok(())
@@ -590,7 +634,7 @@ impl Engine {
                 self.song_fill(ctx, &t);
                 Ok(())
             }
-            "" | "request" => self.song_request(ctx, o, &user, &user_id, lvl).await,
+            "" | "request" => self.song_request(ctx, o, &user, &user_login, &user_id, lvl).await,
             other => Err(failed(format!("Unknown song request operation: {other}"))),
         }
     }
@@ -621,7 +665,9 @@ impl Engine {
                         format!("spotify{}{}", name[..1].to_uppercase(), &name[1..]),
                         v.clone().into(),
                     );
-                    self.spotify_note(code, v);
+                    if !v.is_empty() {
+                        self.spotify_note(code, v);
+                    }
                 }
                 ctx.args
                     .insert("spotifyPlaying".into(), text(&result["is_playing"]).into());
@@ -673,7 +719,10 @@ impl Engine {
         self.change(|c| {
             let mut values = crate::groups::values(c, group);
             let mut blocked = list(values.get("blockedSongs").and_then(Value::as_str).unwrap_or(""));
-            if !blocked.iter().any(|b| b == uri) {
+            if !blocked
+                .iter()
+                .any(|b| b == uri || crate::spotify::track_uri_of(b).as_deref() == Some(uri))
+            {
                 blocked.push(uri.to_string());
             }
             values.insert("blockedSongs".into(), blocked.join(", ").into());
@@ -694,7 +743,10 @@ impl Engine {
             // Moderators can take back someone else's: by the number in the queue, or by name.
             if lvl >= 3 && !target.is_empty() {
                 match target.parse::<usize>() {
-                    Ok(n) => songs.take_back_number(n),
+                    Ok(n) => n
+                        .checked_sub(1)
+                        .and_then(|i| player.queue.get(i))
+                        .and_then(|t| songs.take_back_uri(&t.uri)),
                     Err(_) => songs.take_back_of_name(target.trim_start_matches('@')),
                 }
             } else {
@@ -705,7 +757,10 @@ impl Engine {
         self.song_fill(ctx, &r.track);
         // It plays right now: skip it.
         if player.current.as_ref().is_some_and(|c| c.uri == r.track.uri) {
-            music.playback(self, "next").await.map_err(failed)?;
+            if let Err(e) = music.playback(self, "next").await {
+                self.songs.borrow_mut().restore_skip(&r.track.uri);
+                return Err(failed(e));
+            }
             self.songs.borrow_mut().take_skip(&r.track.uri);
         } else {
             self.song_watch_start();
@@ -713,7 +768,15 @@ impl Engine {
         Ok(())
     }
 
-    async fn song_request(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, user: &str, user_id: &str, lvl: u8) -> Done {
+    async fn song_request(
+        self: &Rc<Self>,
+        ctx: &mut Ctx,
+        o: &Obj,
+        user: &str,
+        user_login: &str,
+        user_id: &str,
+        lvl: u8,
+    ) -> Done {
         let music = self.music;
         let failed = |e: String| reject(Reason::Error, crate::spotify::friendly(&e));
         if !self.song_flag(ctx, o, "open", true) {
@@ -770,6 +833,7 @@ impl Engine {
         self.songs.borrow_mut().add(Request {
             user_id: user_id.into(),
             user: user.into(),
+            user_login: user_login.into(),
             track: track.clone(),
             skip: false,
         });
@@ -821,9 +885,12 @@ impl Engine {
                     Err(e) => {
                         failures += 1;
                         crate::warn(format!("Spotify: {e}"));
-                        if failures >= 5 || e.contains("disabled") || e.contains("login is required") {
+                        if e.contains("disabled") || e.contains("login is required") {
                             self.songs.borrow_mut().clear();
                             self.song_queue_changed();
+                            return;
+                        }
+                        if failures >= 5 {
                             return;
                         }
                         WATCH_MAX
@@ -925,8 +992,12 @@ fn place(player: &Player, t: &Track, requests: usize) -> (usize, u64) {
         .current
         .as_ref()
         .map_or(0, |c| c.duration_ms.saturating_sub(player.progress_ms));
-    let before: u64 = player.queue.iter().take(index).map(|q| q.duration_ms).sum();
-    (index + 1, left + before)
+    let before: u64 = player
+        .queue
+        .iter()
+        .take(index)
+        .fold(0u64, |acc, q| acc.saturating_add(q.duration_ms));
+    (index + 1, left.saturating_add(before))
 }
 
 #[cfg(test)]
@@ -1519,6 +1590,164 @@ mod tests {
             assert_eq!(e.history().len(), 2);
             assert_eq!(arg(&c, "spotifyError"), "");
             assert_eq!(c.args["spotifyCount"], 0);
+            // 204 / null player state (99823) must not fire spurious change triggers.
+            e.spotify_done(&mut c, 99823, "", &Value::Null);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(e.history().len(), 2);
+        });
+    }
+
+    #[test]
+    fn moderator_remove_by_number_matches_spotify_queue_order() {
+        let music = leak();
+        run(async {
+            let e = engine(music);
+            let mut a = ctx("ana", json!({}));
+            let mut b = ctx("bia", json!({}));
+            go(&e, &mut a, json!({"query": "playing_req"})).await;
+            // Start playing ana's request and put a non-requested track ahead of bia's request.
+            music.queued.borrow_mut().clear();
+            *music.track.borrow_mut() = Some(FakeMusic::track("playing_req"));
+            music.queued.borrow_mut().push("streamer_pick".into());
+            go(&e, &mut b, json!({"query": "bia_req"})).await;
+            let mut modr = ctx("mo", json!({"isModerator": true}));
+            // #1 in queue is streamer_pick (not a request): must not remove ana's playing song or bia's song.
+            assert_eq!(
+                go(&e, &mut modr, json!({"operation": "remove", "query": "1"})).await,
+                "false"
+            );
+            assert!(music.commands.borrow().is_empty());
+            // #2 in queue is bia_req.
+            assert_eq!(
+                go(
+                    &e,
+                    &mut modr,
+                    json!({"operation": "remove", "query": "2", "reply": "%spotifyTitle%"})
+                )
+                .await,
+                "true"
+            );
+            assert_eq!(arg(&modr, "spotifyReply"), "bia_req");
+        });
+    }
+
+    #[test]
+    fn blocked_users_limits_and_take_back_use_login_and_id() {
+        let music = leak();
+        run(async {
+            let e = engine(music);
+            let mut c = ctx("Ana Display", json!({"userId": "u42", "userName": "ana_login"}));
+            assert_eq!(go(&e, &mut c, json!({"query": "one", "maxPerUser": "1"})).await, "true");
+            // Same userId with a changed display name still hits the per-user limit.
+            let mut renamed = ctx("Other Name", json!({"userId": "u42", "userName": "ana_login"}));
+            assert_eq!(
+                go(&e, &mut renamed, json!({"query": "two", "maxPerUser": "1"})).await,
+                "false"
+            );
+            // Blocked by login or userId even when display name differs.
+            assert_eq!(
+                go(&e, &mut renamed, json!({"query": "two", "blockedUsers": "@ANA_LOGIN"})).await,
+                "false"
+            );
+            assert_eq!(arg(&renamed, "spotifyReply"), "");
+            assert_eq!(
+                go(&e, &mut renamed, json!({"query": "two", "blockedUsers": "u42"})).await,
+                "false"
+            );
+            assert_eq!(arg(&renamed, "spotifyReply"), "");
+            // 99835 takes back by userLogin even when display name differs.
+            let mut modr = ctx("mo", json!({}));
+            let o = json!({"type": 99835, "userLogin": "ana_login"})
+                .as_object()
+                .unwrap()
+                .clone();
+            e.one(&mut modr, &o).await;
+            assert_eq!(arg(&modr, "spotifyTakenBack"), "1");
+            // Without userId, casing changes in display name do not bypass maxPerUser.
+            let mut upper = Ctx {
+                args: json!({"user": "CaseUser"}).as_object().unwrap().clone(),
+                group: String::new(),
+            };
+            let mut lower = Ctx {
+                args: json!({"user": "caseuser"}).as_object().unwrap().clone(),
+                group: String::new(),
+            };
+            assert_eq!(
+                go(&e, &mut upper, json!({"query": "three", "maxPerUser": "1"})).await,
+                "true"
+            );
+            assert_eq!(
+                go(&e, &mut lower, json!({"query": "four", "maxPerUser": "1"})).await,
+                "false"
+            );
+        });
+    }
+
+    #[test]
+    fn skip_own_checks_fresh_player_and_voteskip_requires_playing_track() {
+        let music = leak();
+        run(async {
+            let e = engine(music);
+            // voteskip when nothing is playing returns msgEmpty.
+            let mut a = ctx("ana", json!({}));
+            let vote = json!({"operation": "voteskip", "votesNeeded": "2", "reply": "%spotifyTitle% (%spotifyVotes%)", "msgEmpty": "idle"});
+            assert_eq!(go(&e, &mut a, vote.clone()).await, "false");
+            assert_eq!(arg(&a, "spotifyReply"), "idle");
+
+            // ana requests "one" while "zero" is playing; later "one" starts without any command in between.
+            *music.track.borrow_mut() = Some(FakeMusic::track("zero"));
+            assert_eq!(go(&e, &mut a, json!({"query": "one"})).await, "true");
+            assert_eq!(e.song_playing.borrow().as_deref(), Some("spotify:track:zero"));
+            music.queued.borrow_mut().clear();
+            *music.track.borrow_mut() = Some(FakeMusic::track("one"));
+            // Vote fills track metadata even before reaching threshold.
+            assert_eq!(go(&e, &mut a, vote).await, "true");
+            assert_eq!(arg(&a, "spotifyReply"), "one (1/2)");
+            assert_eq!(arg(&a, "spotifyDurationMs"), "180000");
+
+            // ana can skip her own song even though cached song_playing was still "zero".
+            let skip = json!({"operation": "skip", "who": "moderators", "skipOwn": "true", "reply": "skipped"});
+            assert_eq!(go(&e, &mut a, skip.clone()).await, "true");
+            assert_eq!(*music.commands.borrow(), ["next"]);
+
+            // Now bia's song "two" starts playing while song_playing still caches "one": ana cannot skip it.
+            let mut b = ctx("bia", json!({}));
+            assert_eq!(go(&e, &mut b, json!({"query": "two"})).await, "true");
+            assert_eq!(go(&e, &mut a, json!({"query": "three"})).await, "true");
+            *e.song_playing.borrow_mut() = Some("spotify:track:three".into());
+            *music.track.borrow_mut() = Some(FakeMusic::track("two"));
+            assert_eq!(go(&e, &mut a, skip).await, "false");
+            assert_eq!(*music.commands.borrow(), ["next"]);
+        });
+    }
+
+    #[test]
+    fn bansong_uses_template_group_fallback_and_deduplicates_links() {
+        let music = leak();
+        let id = "0123456789ABCDEFGHIJKL";
+        *music.track.borrow_mut() = Some(FakeMusic::track(id));
+        run(async {
+            let e = engine(music);
+            e.change(|c| {
+                crate::templates::songs::made().add_to(c).unwrap();
+                let mut v = crate::groups::values(c, crate::templates::songs::GROUP);
+                v.insert(
+                    "blockedSongs".into(),
+                    json!(format!("https://open.spotify.com/track/{id}?si=abc")),
+                );
+                crate::groups::set_values(c, crate::templates::songs::GROUP, v).unwrap();
+            });
+            // Empty ctx.group falls back to the Song requests template group and does not duplicate the track.
+            let mut modr = ctx("mo", json!({"isModerator": true}));
+            assert_eq!(
+                go(&e, &mut modr, json!({"operation": "bansong", "who": "moderators"})).await,
+                "true"
+            );
+            let blocked = crate::groups::values(&e.config(), crate::templates::songs::GROUP)["blockedSongs"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(blocked, format!("https://open.spotify.com/track/{id}?si=abc"));
         });
     }
 }

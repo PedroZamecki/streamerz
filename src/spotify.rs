@@ -295,6 +295,7 @@ pub async fn login(client_id: &str) -> Result<Token, String> {
 }
 
 /// Spotify may omit a replacement refresh token, in which case the existing one is retained.
+#[cfg(test)]
 pub async fn refresh(client_id: &str, previous: &Token) -> Result<Token, String> {
     refresh_at(TOKEN, client_id, previous).await
 }
@@ -475,6 +476,7 @@ fn readings(query: &str) -> Vec<(Vec<String>, Vec<String>)> {
 /// How well a track answers a request: the share of the requested words in its title and artists, a
 /// good deal when the request reads as its title and its artist, a little when it names an artist of
 /// it, less for other recordings of it, and its popularity (when Spotify gives one) to break ties.
+#[cfg(test)]
 pub fn score(query: &str, t: &Track) -> f64 {
     let q = words(query);
     if q.is_empty() {
@@ -1734,16 +1736,18 @@ mod tests {
                             socket.write_all(resp.as_bytes()).await.unwrap();
                         }
                     });
-                    let mut config = crate::Config::default();
-                    config.spotify = SpotifyConfig {
-                        enabled: true,
-                        local_monitor: false,
-                        client_id: "cid".into(),
-                        token: Token {
-                            access_token: "old-access".into(),
-                            refresh_token: "keep-refresh".into(),
-                            expires_at: 1, // stale
+                    let config = crate::Config {
+                        spotify: SpotifyConfig {
+                            enabled: true,
+                            local_monitor: false,
+                            client_id: "cid".into(),
+                            token: Token {
+                                access_token: "old-access".into(),
+                                refresh_token: "keep-refresh".into(),
+                                expires_at: 1, // stale
+                            },
                         },
+                        ..Default::default()
                     };
                     let e = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
                     // Stale token refreshes, retains the refresh token when omitted, and caches the new one.

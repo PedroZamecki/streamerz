@@ -7,6 +7,7 @@ use crate::spotify::{Player, Track};
 pub struct Request {
     pub user_id: String,
     pub user: String,
+    pub user_login: String,
     pub track: Track,
     /// Taken back: skipped when it starts playing.
     pub skip: bool,
@@ -97,7 +98,11 @@ pub fn clock(ms: u64) -> String {
 
 impl Requests {
     /// Forget the requests that have played: the player no longer has them queued or playing.
+    /// When Spotify reports no active session (closed or idle), keep pending requests intact.
     pub fn sync(&mut self, player: &Player) {
+        if player.current.is_none() && player.queue.is_empty() {
+            return;
+        }
         self.list.retain(|r| {
             player.queue.iter().any(|t| t.uri == r.track.uri)
                 || player.current.as_ref().is_some_and(|c| c.uri == r.track.uri)
@@ -180,15 +185,30 @@ impl Requests {
         Some(r.clone())
     }
 
-    /// Take back the last request of the viewer called `name`.
+    /// Take back the last request of the viewer called `name` (display name, login or id).
     pub fn take_back_of_name(&mut self, name: &str) -> Option<Request> {
-        let r = self
-            .list
-            .iter_mut()
-            .rev()
-            .find(|r| r.user.eq_ignore_ascii_case(name) && !r.skip)?;
+        let r = self.list.iter_mut().rev().find(|r| {
+            !r.skip
+                && (r.user.eq_ignore_ascii_case(name)
+                    || (!r.user_login.is_empty() && r.user_login.eq_ignore_ascii_case(name))
+                    || (!r.user_id.is_empty() && r.user_id == name))
+        })?;
         r.skip = true;
         Some(r.clone())
+    }
+
+    /// Take back the pending request for `uri`.
+    pub fn take_back_uri(&mut self, uri: &str) -> Option<Request> {
+        let r = self.list.iter_mut().find(|r| r.track.uri == uri && !r.skip)?;
+        r.skip = true;
+        Some(r.clone())
+    }
+
+    /// Undo a skip mark (for example when skipping the playing track failed).
+    pub fn restore_skip(&mut self, uri: &str) {
+        if let Some(r) = self.list.iter_mut().find(|r| r.track.uri == uri && r.skip) {
+            r.skip = false;
+        }
     }
 
     /// Take back request number `n` (1 is the first).
@@ -239,6 +259,7 @@ mod tests {
         Request {
             user_id: user.into(),
             user: user.into(),
+            user_login: String::new(),
             track: track(song),
             skip: false,
         }
@@ -369,5 +390,67 @@ mod tests {
     fn time_shows_as_minutes_and_seconds() {
         assert_eq!(clock(185_000), "3:05");
         assert_eq!(clock(0), "0:00");
+    }
+
+    #[test]
+    fn sync_keeps_requests_when_spotify_is_closed() {
+        let mut q = Requests::default();
+        q.add(request("ana", "a"));
+        q.add(request("bia", "b"));
+        q.take_back_last("ana");
+        // Closed/idle Spotify reports no current track and an empty queue.
+        q.sync(&Player::default());
+        assert_eq!(q.pending().count(), 2);
+        assert!(q.has_skips());
+        assert_eq!(q.of("bia"), 1);
+    }
+
+    #[test]
+    fn take_back_matches_login_id_and_uri_and_restores_on_failure() {
+        let mut q = Requests::default();
+        q.add(Request {
+            user_id: "101".into(),
+            user: "Ana Display".into(),
+            user_login: "ana_login".into(),
+            track: track("a"),
+            skip: false,
+        });
+        q.add(Request {
+            user_id: "202".into(),
+            user: "Bia Display".into(),
+            user_login: "bia_login".into(),
+            track: track("b"),
+            skip: false,
+        });
+        assert_eq!(q.take_back_of_name("ANA_LOGIN").unwrap().track.name, "a");
+        q.restore_skip("spotify:track:a");
+        assert!(!q.has_skips());
+        assert_eq!(q.take_back_of_name("101").unwrap().track.name, "a");
+        assert_eq!(q.take_back_uri("spotify:track:b").unwrap().track.name, "b");
+        assert!(q.take_back_uri("spotify:track:b").is_none());
+    }
+
+    #[test]
+    fn per_user_limit_tracks_user_id_rather_than_display_name() {
+        let mut q = Requests::default();
+        let p = player(&["a", "b"]);
+        let lim = Rules {
+            max_per_user: 1,
+            ..Default::default()
+        };
+        q.add(Request {
+            user_id: "u1".into(),
+            user: "FirstName".into(),
+            user_login: "first".into(),
+            track: track("a"),
+            skip: false,
+        });
+        // Same user_id with a different display name is still limited.
+        assert_eq!(
+            q.check(&lim, "u1", &track("c"), &p).unwrap_err().reason,
+            Reason::MaxRequests
+        );
+        // Different user_id with the same display name gets its own quota.
+        assert!(q.check(&lim, "u2", &track("c"), &p).is_ok());
     }
 }
