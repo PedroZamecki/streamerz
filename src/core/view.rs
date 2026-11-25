@@ -75,11 +75,7 @@ pub fn supports(domain: &str) -> bool {
 /// page was just opened (it wasn't the one shown before).
 fn note_page(domain: &str) -> bool {
     // Only the sidebar's pages count: a dialog's or a popup's read says nothing about the page behind it.
-    let is_page = super::navigation::NAV
-        .iter()
-        .flat_map(|(_, _, pages)| pages.iter())
-        .any(|(id, _, _)| id.to_lowercase().replace(' ', "_") == domain);
-    if !is_page {
+    if super::navigation::page_of(domain).is_none() {
         return false;
     }
     // The Chat and Stream pages show viewer counts: the platforms are asked for them while one is open.
@@ -112,12 +108,8 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
         super::rewards::opened(engine);
     }
     super::sounds::opened(domain);
-    if let Some((page_id, _, _)) = super::navigation::NAV
-        .iter()
-        .flat_map(|(_, _, pages)| pages.iter())
-        .find(|(id, _, _)| id.to_lowercase().replace(' ', "_") == domain)
-    {
-        if engine.config().window.tab != *page_id {
+    if let Some(page_id) = super::navigation::page_of(domain) {
+        if engine.config().window.tab != page_id {
             engine.change(|config| config.window.tab = page_id.to_string());
         }
     }
