@@ -16,6 +16,9 @@ use tokio_tungstenite::tungstenite::Message;
 /// The fastest the pictures come: one each 33 ms (30 a second).
 const FRAME_GAP: Duration = Duration::from_millis(33);
 
+/// How long the browser has to answer a request while the preview starts.
+const ANSWER: Duration = Duration::from_secs(15);
+
 /// What is shown, and how to reach the browser that shows it.
 struct Session {
     /// The page and its size, so asking again for the same one keeps the browser.
@@ -82,13 +85,22 @@ pub fn start(ask: Ask) {
     });
 }
 
-/// Stops the preview and closes its browser.
+/// Stops the preview and closes its browser. Its last picture and the scene's go too: nothing of it
+/// stays in memory once the window has left the overlay.
 pub fn stop() {
     SESSION.with_borrow_mut(|s| s.take());
     if let Ok(mut frame) = FRAME.lock() {
         frame.bytes = Vec::new();
     }
+    forget_scene();
     ERROR.with_borrow_mut(String::clear);
+}
+
+/// Drops the scene's picture, keeping its number.
+fn forget_scene() {
+    if let Ok(mut scene) = SCENE.lock() {
+        scene.1 = String::new();
+    }
 }
 
 /// Whether a preview is running.
@@ -197,13 +209,14 @@ async fn run(
     mut input: mpsc::UnboundedReceiver<Value>,
 ) -> Result<(), String> {
     // The preview has sound: the page plays it as OBS would.
-    let (mut child, scratch, _name) = crate::overlay_shot::launch(ask.width, ask.height, false)?;
-    let address = crate::overlay_shot::devtools_address(&scratch.0).await?;
+    let browser = crate::overlay_shot::launch(ask.width, ask.height, false)?;
+    let address = crate::overlay_shot::devtools_address(&browser.profile).await?;
     let (mut ws, _) = tokio_tungstenite::connect_async(address)
         .await
         .map_err(|e| format!("cannot talk to the browser: {e}"))?;
     let mut next = 0u64;
-    // Requests are sent in order and their answers waited for, until the screencast starts.
+    // Requests are sent in order and their answers waited for, until the screencast starts. A browser
+    // that stops answering is given up (and closed) rather than waited for while the window waits too.
     macro_rules! call {
         ($session:expr, $method:expr, $params:expr) => {{
             next += 1;
@@ -214,19 +227,25 @@ async fn run(
             ws.send(Message::text(request.to_string()))
                 .await
                 .map_err(|e| format!("the browser went away: {e}"))?;
-            loop {
-                let message = ws.next().await.ok_or("the browser went away")?;
-                let Message::Text(text) = message.map_err(|e| format!("the browser went away: {e}"))? else {
-                    continue;
-                };
-                let message: Value = serde_json::from_str(&text).unwrap_or_default();
-                if message["id"] == next {
-                    if let Some(error) = message["error"]["message"].as_str() {
-                        break Err(format!("{}: {error}", $method));
+            let answer = tokio::time::timeout(ANSWER, async {
+                loop {
+                    let message = match ws.next().await {
+                        Some(Ok(message)) => message,
+                        Some(Err(e)) => break Err(format!("the browser went away: {e}")),
+                        None => break Err("the browser went away".to_string()),
+                    };
+                    let Message::Text(text) = message else { continue };
+                    let message: Value = serde_json::from_str(&text).unwrap_or_default();
+                    if message["id"] == next {
+                        if let Some(error) = message["error"]["message"].as_str() {
+                            break Err(format!("{}: {error}", $method));
+                        }
+                        break Ok(message["result"].clone());
                     }
-                    break Ok(message["result"].clone());
                 }
-            }
+            })
+            .await;
+            answer.unwrap_or_else(|_| Err(format!("{}: the browser did not answer", $method)))
         }};
     }
     let none: Option<&String> = None;
@@ -332,9 +351,7 @@ async fn run(
             json!({"id": next, "method": "Browser.close"}).to_string(),
         ))
         .await;
-    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-    let _ = child.kill().await;
-    drop(scratch);
+    browser.close(Duration::from_secs(2)).await;
     Ok(())
 }
 
@@ -403,12 +420,19 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_picture_comes_once_per_shot() {
+    fn the_scene_picture_comes_once_per_shot_and_goes_with_the_preview() {
         set_scene("data:image/jpg;base64,AAEC");
         let got = scene(0);
         let seq = got["sceneSeq"].as_u64().unwrap();
         assert_eq!(got["scene"], "AAEC", "the data without its prefix");
         assert!(scene(seq)["scene"].is_null());
+        forget_scene();
+        assert!(scene(0)["scene"].is_null(), "no picture kept once the preview stops");
+        assert_eq!(
+            scene(0)["sceneSeq"],
+            seq,
+            "its number stays, so the window never takes an old one"
+        );
     }
 
     #[test]
