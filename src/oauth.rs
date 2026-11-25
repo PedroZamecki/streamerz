@@ -105,7 +105,11 @@ impl Login {
             loop {
                 let (mut s, _) = self.listener.accept().await.map_err(|e| e.to_string())?;
                 let mut buf = vec![0u8; 8192];
-                let n = s.read(&mut buf).await.unwrap_or(0);
+                // A browser opens spare connections it may never send on: one of those must not keep
+                // the redirect, on the next, from being read.
+                let n = tokio::time::timeout(QUIET_CONNECTION, s.read(&mut buf))
+                    .await
+                    .map_or(0, |r| r.unwrap_or(0));
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let target = head.split_whitespace().nth(1).unwrap_or("");
                 let q = query(target);
@@ -143,6 +147,12 @@ impl Login {
     }
 }
 
+/// How long a connection to the login listener may send nothing before the next one is taken.
+#[cfg(not(test))]
+const QUIET_CONNECTION: std::time::Duration = std::time::Duration::from_secs(3);
+#[cfg(test)]
+const QUIET_CONNECTION: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The query of a request target, decoded.
 fn query(target: &str) -> Vec<(String, String)> {
     let q = target.split_once('?').map_or("", |x| x.1);
@@ -159,7 +169,11 @@ pub(crate) fn decode(s: &str) -> String {
     while i < b.len() {
         match b[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => match s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            b'%' if i + 2 < b.len() => match s
+                .get(i + 1..i + 3)
+                .filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()))
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 Some(x) => {
                     out.push(x);
                     i += 2;
@@ -237,6 +251,31 @@ mod tests {
     }
 
     #[test]
+    fn percent_escapes_take_two_hex_digits_only() {
+        assert_eq!(decode("a%2Fb"), "a/b");
+        // A sign isn't a hex digit (the `+` is then a space, as always).
+        assert_eq!(decode("%+1%-1"), "% 1%-1");
+        assert_eq!(decode("%zz%4"), "%zz%4");
+        assert_eq!(decode("%C3%A9+%E2%82%AC"), "é €");
+        assert_eq!(decode("é%"), "é%");
+        // Bytes that aren't UTF-8 don't panic.
+        assert_eq!(decode("%FF"), "\u{FFFD}");
+    }
+
+    #[test]
+    fn a_query_without_values_or_with_errors() {
+        assert!(query("/cb").is_empty());
+        assert_eq!(query("/cb?flag&x=1"), [("x".to_string(), "1".to_string())]);
+        assert_eq!(
+            query("/cb?error=access_denied&error_description=The+user+denied"),
+            [
+                ("error".to_string(), "access_denied".to_string()),
+                ("error_description".to_string(), "The user denied".to_string())
+            ]
+        );
+    }
+
+    #[test]
     fn token_exchange_without_network_or_clock() {
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         rt.block_on(async {
@@ -297,6 +336,54 @@ mod tests {
             let page = get(format!("/cb?code=abc&state={}", url_encode(&state))).await;
             assert!(page.ends_with("you can close this tab."));
             assert_eq!(wait.await.unwrap().unwrap(), "abc");
+        });
+    }
+
+    #[test]
+    fn a_spare_connection_does_not_hold_up_the_redirect() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let l = Login::bind(0, "/cb").await.unwrap();
+            let addr = l.redirect.trim_start_matches("http://").replace("/cb", "");
+            let state = url_encode(&l.state);
+            let wait = tokio::spawn(l.code());
+            // A browser's preconnect: opened first, never written to, kept open.
+            let _idle = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            s.write_all(format!("GET /cb?code=xyz&state={state} HTTP/1.1\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let code = tokio::time::timeout(std::time::Duration::from_secs(5), wait).await;
+            assert_eq!(code.expect("not held up").unwrap().unwrap(), "xyz");
+        });
+    }
+
+    #[test]
+    fn a_refused_login_or_a_wrong_state_is_an_error() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for (target, want) in [
+                ("/cb?error=access_denied", "login refused: access_denied"),
+                ("/cb?code=abc&state=forged", "state mismatch"),
+            ] {
+                let l = Login::bind(0, "/cb").await.unwrap();
+                let addr = l.redirect.trim_start_matches("http://").replace("/cb", "");
+                let wait = tokio::spawn(l.code());
+                let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+                s.write_all(format!("GET {target} HTTP/1.1\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                let mut page = String::new();
+                s.read_to_string(&mut page).await.unwrap();
+                assert!(page.contains("Login failed"), "{page}");
+                assert_eq!(wait.await.unwrap().unwrap_err(), want);
+            }
         });
     }
 }
