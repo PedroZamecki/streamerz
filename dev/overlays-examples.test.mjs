@@ -99,25 +99,35 @@ function makeEl(tag, id = "") {
     },
     querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
     querySelectorAll(sel) {
-      const out = [];
-      const match = node => {
+      const parts = sel.trim().split(/\s+/);
+      const matchPart = (node, part) => {
         if (!node || typeof node !== "object") return false;
-        if (sel.startsWith(".")) {
-          const cls = sel.slice(1);
+        if (part.startsWith(".")) {
+          const cls = part.slice(1);
           return node.classList.contains(cls) || String(node.className || "").split(/\s+/).includes(cls);
         }
-        return node.tagName === sel.toUpperCase();
+        return node.tagName === part.toUpperCase();
       };
-      const walk = node => {
-        for (const c of node.children || []) {
-          if (c && typeof c === "object") {
-            if (match(c)) out.push(c);
-            walk(c);
+      const find = (root, part) => {
+        const out = [];
+        const walk = node => {
+          for (const c of node.children || []) {
+            if (c && typeof c === "object") {
+              if (matchPart(c, part)) out.push(c);
+              walk(c);
+            }
           }
-        }
+        };
+        walk(root);
+        return out;
       };
-      walk(this);
-      return out;
+      let roots = [this];
+      for (const part of parts) {
+        const next = [];
+        for (const r of roots) next.push(...find(r, part));
+        roots = next;
+      }
+      return roots;
     },
     setAttribute(k, v) { this[k] = v; },
     getAttribute(k) { return this[k] ?? null; },
@@ -444,4 +454,91 @@ test("danmaku and emote-wall: handle zero-width sources, fallback cleanup, and m
   h2.advance(5000);
   h2.runDueTimers();
   assert.equal(h2.byId.wall.children.length, 0);
+});
+
+test("now-playing: runs progress interval only while playing and ignores stale cover loads", () => {
+  const { script } = readExample("now-playing/files/index.html");
+  const h = harness({
+    ids: ["stage", "card", "back", "cover", "words", "label", "title", "artist", "album", "progress", "now", "track", "bar", "end"],
+    settings: { hideWhenPaused: false, showFor: 0 },
+  });
+  h.byId.back.append(makeEl("i"), makeEl("i"));
+  for (const id of ["title", "artist", "album"]) h.byId[id].append(makeEl("span"));
+  vm.runInContext(script, h.ctx);
+
+  assert.equal(h.intervals.size, 0, "no interval before a song arrives");
+  h.emitTopic("song", { title: "One", artist: "A", playing: true, durationMs: 120000, positionMs: 0, at: 1_000_000, cover: 'https://c/a"b.png' });
+  assert.equal(h.intervals.size, 1);
+  assert.equal(h.byId.cover.style.backgroundImage, 'url("https://c/a\\"b.png")');
+
+  // Pausing stops the interval immediately.
+  h.emitTopic("song", { title: "One", artist: "A", playing: false, durationMs: 120000, positionMs: 5000, at: 1_005_000 });
+  assert.equal(h.intervals.size, 0);
+
+  // Null song payload does not throw.
+  h.emitTopic("song", null);
+  assert.equal(h.intervals.size, 0);
+});
+
+test("countdown-to and starting-soon: schedule zero timers when idle or ended", () => {
+  const ct = readExample("countdown-to/files/index.html");
+  const h = harness({ ids: ["card", "title", "time"], settings: { target: 0, done: "Go!", title: "Soon" } });
+  vm.runInContext(ct.script, h.ctx);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0, "idle countdown-to uses no timers");
+
+  // Setting a future target schedules one tick, and reaching 0 stops ticking.
+  h.emitSettings({ target: 1_000_000 + 2000 });
+  assert.equal(h.byId.time.textContent, "0:02");
+  assert.equal(h.timers.size, 1);
+  h.advance(2000);
+  h.runDueTimers();
+  assert.equal(h.byId.time.textContent, "Go!");
+  assert.equal(h.timers.size, 0, "ended countdown-to stops ticking");
+
+  // Starting soon stops ticking once minutes reach 0.
+  const ss = readExample("starting-soon/files/index.html");
+  const h2 = harness({ ids: ["picture", "title", "subtitle", "clock", "dots", "music"], settings: { minutes: 0, done: "Live!" } });
+  h2.byId.music.pause = () => {};
+  h2.byId.music.play = () => Promise.resolve();
+  vm.runInContext(ss.script, h2.ctx);
+  assert.equal(h2.intervals.size, 0);
+  assert.equal(h2.timers.size, 0, "starting-soon with minutes=0 runs no timers");
+});
+
+test("poll and poll dock: skip chat announcements during Test, use zero idle timers, and show dock errors", () => {
+  const p = readExample("poll/files/index.html");
+  const h = harness({ ids: ["stage", "poll", "clock", "question", "choices", "how"], settings: { seconds: 10, announce: true } });
+  vm.runInContext(p.script, h.ctx);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0, "idle poll uses no timers");
+
+  // Test poll must not announce to real chat on start or end.
+  h.streamerz.testing = true;
+  h.emitTopic("poll.start", "Dinner? | Pizza | Pasta", false);
+  h.streamerz.testing = false;
+  assert.equal(h.said.length, 0);
+  assert.equal(h.timers.size, 1);
+  h.emitTopic("poll.end", 1, false);
+  assert.equal(h.said.length, 0);
+
+  // Real poll announces start and winner (handling $& safely in winner text).
+  h.emitTopic("poll.start", "Prize? | Win $& Cash | Hat", false);
+  assert.equal(h.said.length, 1);
+  h.emitChat({ platform: "twitch", user: "ana", userId: "", text: "1" });
+  h.emitTopic("poll.end", 2, false);
+  assert.equal(h.said.length, 2);
+  assert.match(h.said[1].text, /Win \$& Cash won with 1 of 1 votes/);
+
+  // Poll dock shows validation error outside the hidden #state box and stops ticking when over.
+  const d = readExample("poll/files/dock.html");
+  const h2 = harness({ ids: ["question", "options", "seconds", "start", "end", "error", "state", "title", "rows", "note"] });
+  h2.byId.state.hidden = true;
+  vm.runInContext(d.script, h2.ctx);
+  assert.equal(h2.intervals.size, 0);
+  h2.byId.start.onclick();
+  assert.match(h2.byId.error.textContent, /two choices/);
+  assert.equal(h2.byId.state.hidden, true);
+  h2.emitTopic("poll.state", { question: "Q?", options: [{ text: "A", total: 1 }], votes: 1, endsAt: 999_000, over: true });
+  assert.equal(h2.timers.size, 0, "dock stops ticking once poll is over");
 });

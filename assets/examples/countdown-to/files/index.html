@@ -17,7 +17,7 @@
 // give a page: `target` is milliseconds since 1970, the styles become CSS with streamerz.css, the place
 // goes to streamerz.place, the animation to streamerz.animate, and the sound is an address and a volume.
 // extra: the minutes Add a minute (a live control) put on top of the target.
-let s = {}, ended = false, holdUntil = 0, extra = 0;
+let s = {}, ended = false, holdUntil = 0, extra = 0, started = false, timer = 0;
 
 function left() {
   return Math.max(0, (Number(s.target) || 0) + extra - Date.now());
@@ -34,16 +34,26 @@ function end(test) {
   title.style.display = "none";
   if (s.sound && s.sound.file) {
     const audio = new Audio(s.sound.file);
-    audio.volume = s.sound.volume;
+    audio.volume = Math.max(0, Math.min(1, Number(s.sound.volume) || 0));
     audio.play().catch(() => {});
   }
   streamerz.animate(card, s.enter);
   // A try shows the end for four seconds, then the countdown again.
-  if (test) holdUntil = Date.now() + 4000;
+  if (test) {
+    holdUntil = Date.now() + 4000;
+    clearTimeout(timer);
+    timer = setTimeout(tick, 4000);
+  }
 }
 
 function tick() {
-  if (Date.now() < holdUntil) return;
+  clearTimeout(timer);
+  timer = 0;
+  const hold = holdUntil - Date.now();
+  if (hold > 0) {
+    timer = setTimeout(tick, hold);
+    return;
+  }
   if (!s.target) {
     title.style.display = "";
     time.textContent = "--:--";
@@ -57,10 +67,12 @@ function tick() {
   ended = false;
   title.style.display = "";
   time.textContent = shown(ms);
+  timer = setTimeout(tick, ms % 1000 || 1000);
 }
 
 streamerz.onSettings(next => {
-  const first = !s.enter;
+  const first = !started;
+  started = true;
   s = next;
   title.textContent = s.title || "";
   title.style.cssText = streamerz.css(s.titleStyle);
@@ -88,8 +100,6 @@ streamerz.control("addMinute", (at, old) => {
   extra += 60000;
   tick();
 });
-
-setInterval(tick, 250);
 </script>
 </body>
 </html>
