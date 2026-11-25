@@ -1428,12 +1428,23 @@ fn main() {
         };
         match lock {
             Ok(lock) => Some(lock),
-            Err(e) => {
-                // Already running (in the tray, most likely): bring its window up unless started with --hidden.
-                if !args.iter().any(|a| a == "--hidden") && !instance::show_running(&resolve_config_path(path.clone()))
-                {
+            // Already running (in the tray, most likely): bring its window up unless started with --hidden.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if args.iter().any(|a| a == "--hidden") {
+                    return;
+                }
+                // The tray thread's window answers even when the WebSocket server is off.
+                #[cfg(windows)]
+                if tray::show_existing() {
+                    return;
+                }
+                if !instance::show_running(&resolve_config_path(path)) {
                     eprintln!("Streamerz could not acquire its instance lock: {e}");
                 }
+                return;
+            }
+            Err(e) => {
+                eprintln!("Streamerz could not acquire its instance lock: {e}");
                 return;
             }
         }
