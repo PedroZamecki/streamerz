@@ -104,6 +104,69 @@ mod tests {
             assert!(write(&mut Vec::new(), &json!([])).await.is_err());
         });
     }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    /// `{"t":"xxx..."}` and its newline, `len` bytes in all.
+    fn frame_of(len: usize) -> Vec<u8> {
+        let mut bytes = b"{\"t\":\"".to_vec();
+        bytes.resize(len - 3, b'x');
+        bytes.extend_from_slice(b"\"}\n");
+        assert_eq!(bytes.len(), len);
+        bytes
+    }
+
+    #[test]
+    fn an_endless_line_is_cut_at_the_limit_instead_of_growing() {
+        block_on(async {
+            // A renderer that never sends a newline: the read ends, it doesn't wait or grow forever.
+            let mut reader = Reader::new(BufReader::new(tokio::io::repeat(b' ')));
+            assert_eq!(reader.read().await.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert!(reader.pending.len() <= MAX_FRAME + 1);
+        });
+    }
+
+    #[test]
+    fn a_frame_may_be_as_long_as_the_limit_and_no_longer() {
+        block_on(async {
+            let fits = frame_of(MAX_FRAME);
+            let mut reader = Reader::new(BufReader::new(fits.as_slice()));
+            let value = reader.read().await.unwrap().unwrap();
+            assert_eq!(value["t"].as_str().map(str::len), Some(MAX_FRAME - 9));
+            let over = frame_of(MAX_FRAME + 1);
+            assert!(Reader::new(BufReader::new(over.as_slice())).read().await.is_err());
+            // Nor is one written that the other side would refuse.
+            let text = "x".repeat(MAX_FRAME);
+            let error = write(&mut Vec::new(), &json!({"t": text})).await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        });
+    }
+
+    #[test]
+    fn frames_sent_together_come_one_by_one_and_a_cut_one_is_an_error() {
+        block_on(async {
+            let bytes = b"{\"n\":1}\n{\"n\":2}\r\n{\"n\":3}\n{\"n\":";
+            let mut reader = Reader::new(BufReader::new(bytes.as_slice()));
+            for n in 1..=3 {
+                assert_eq!(reader.read().await.unwrap(), Some(json!({"n": n})));
+            }
+            // The renderer died in the middle of a frame.
+            assert!(reader.read().await.is_err());
+        });
+    }
+
+    #[test]
+    fn an_empty_line_is_not_a_frame() {
+        block_on(async {
+            assert!(Reader::new(BufReader::new(b"\n".as_slice())).read().await.is_err());
+        });
+    }
 }
 
 #[cfg(test)]
