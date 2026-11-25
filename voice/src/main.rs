@@ -20,7 +20,7 @@
 
 use serde_json::{json, Value};
 use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Floats in one Kokoro voice (a style vector for each length up to 510, 256 wide).
@@ -293,6 +293,9 @@ fn beside(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(n)
 }
 
+/// Maximum total unpacked bytes accepted from a voice model archive (1 GiB).
+const MAX_UNPACK_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// `archive` (`.tar.bz2`) unpacked into `into`, without its top folder: first into `<into>.part`, then
 /// renamed, so a cut leaves nothing half there. Only files and folders, and none outside `into`.
 fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
@@ -302,8 +305,9 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
     let entries = tar.entries().map_err(|e| e.to_string())?;
+    let mut total_written: u64 = 0;
     for entry in entries {
-        let mut entry = entry.map_err(|e| e.to_string())?;
+        let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.path().map_err(|e| e.to_string())?.into_owned();
         let mut parts = name.components();
         parts.next();
@@ -318,8 +322,15 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
                 if let Some(parent) = to.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
+                let remaining = MAX_UNPACK_BYTES.saturating_sub(total_written);
                 let mut f = std::fs::File::create(&to).map_err(|e| format!("{}: {e}", to.display()))?;
-                std::io::copy(&mut entry, &mut f).map_err(|e| format!("{}: {e}", to.display()))?;
+                let mut limited = entry.take(remaining + 1);
+                let copied = std::io::copy(&mut limited, &mut f).map_err(|e| format!("{}: {e}", to.display()))?;
+                total_written = total_written.saturating_add(copied);
+                if total_written > MAX_UNPACK_BYTES {
+                    let _ = std::fs::remove_dir_all(&part);
+                    return Err("voice archive exceeds maximum extracted size".into());
+                }
             }
             _ => {}
         }
@@ -447,5 +458,49 @@ mod tests {
             beside(Path::new("/tmp/kokoro-v1.0"), "part"),
             PathBuf::from("/tmp/kokoro-v1.0.part")
         );
+    }
+
+    #[test]
+    fn unpack_strips_top_folder_and_skips_traversal_and_symlinks() {
+        let tmp = std::env::temp_dir().join(format!("streamerz-voice-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let archive_path = tmp.join("model.tar.bz2");
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let enc = bzip2::write::BzEncoder::new(file, bzip2::Compression::fast());
+            let mut builder = tar::Builder::new(enc);
+            let mut add = |name: &str, data: &[u8]| {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, name, data).unwrap();
+            };
+            add("top-folder/tokens.txt", b"a b c\n");
+            add("top-folder/sub/model.onnx", b"onnx");
+            let mut sym = tar::Header::new_gnu();
+            sym.set_entry_type(tar::EntryType::Symlink);
+            sym.set_size(0);
+            sym.set_cksum();
+            builder.append_link(&mut sym, "top-folder/link", "/etc/passwd").unwrap();
+            builder.finish().unwrap();
+        }
+        let dest = tmp.join("out");
+        unpack(&archive_path, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a b c\n");
+        assert_eq!(std::fs::read(dest.join("sub/model.onnx")).unwrap(), b"onnx");
+        assert!(!dest.join("link").exists(), "symlinks must not be extracted");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn handle_rejects_unknown_ops_and_bad_requests() {
+        let mut loaded = None;
+        assert!(handle(&json!({"op": "hello"}), &mut loaded).is_ok());
+        assert!(handle(&json!({"op": "state"}), &mut loaded).is_ok());
+        assert!(handle(&json!({"op": "unload"}), &mut loaded).is_ok());
+        assert!(handle(&json!({"op": "nope"}), &mut loaded).is_err());
+        assert!(handle(&json!({"op": "load", "kind": "bad", "dir": "/tmp"}), &mut loaded).is_err());
     }
 }

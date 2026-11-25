@@ -644,6 +644,7 @@ pub fn preview(engine: &Rc<Engine>, form_kind: &str, value: &Value) -> Result<Va
         return Err(format!("cannot preview {form_kind}"));
     };
 
+    let mut cleanup_preview_rec: Option<std::path::PathBuf> = None;
     let mut custom = match kind {
         "mix" => build_mix(&item, Some("custom:__preview__"))?,
         "clone" => {
@@ -656,6 +657,7 @@ pub fn preview(engine: &Rc<Engine>, form_kind: &str, value: &Value) -> Result<Va
                 path
             } else {
                 let (file, _) = neural::import_recording(std::path::Path::new(&path), "custom:__preview__")?;
+                cleanup_preview_rec = Some(neural::recordings_dir().join(&file));
                 file
             };
             crate::voice::CustomVoice {
@@ -686,7 +688,11 @@ pub fn preview(engine: &Rc<Engine>, form_kind: &str, value: &Value) -> Result<Va
     let pitch = cfg.pitch;
 
     tokio::task::spawn_local(async move {
-        match crate::voice::speak_with(&sample, "custom:__preview__", speed, pitch, &cfg).await {
+        let spoken = crate::voice::speak_with(&sample, "custom:__preview__", speed, pitch, &cfg).await;
+        if let Some(temp_rec) = cleanup_preview_rec {
+            let _ = std::fs::remove_file(temp_rec);
+        }
+        match spoken {
             Ok(wav) => match crate::voice::to_file(&wav) {
                 Ok(file) => {
                     if let Ok(started) = crate::sound::play(&file, "speech", "Monitor", crate::sound::volume(volume)) {

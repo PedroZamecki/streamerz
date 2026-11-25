@@ -422,7 +422,9 @@ async fn spawn_worker() -> Result<WorkerProc, String> {
         stdout,
         version: String::new(),
     };
-    let (hello, _) = send_on(&mut proc, &json!({"op": "hello"})).await?;
+    let (hello, _) = send_on(&mut proc, &json!({"op": "hello"}))
+        .await
+        .map_err(WorkerErr::into_message)?;
     proc.version = hello["version"].as_str().unwrap_or("").to_string();
     {
         let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
@@ -433,39 +435,75 @@ async fn spawn_worker() -> Result<WorkerProc, String> {
     Ok(proc)
 }
 
-async fn send_on(proc: &mut WorkerProc, req: &Value) -> Result<(Value, Vec<u8>), String> {
-    let mut line = serde_json::to_string(req).map_err(|e| e.to_string())?;
-    line.push('\n');
-    proc.stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("Streamerz-Voice write failed: {e}"))?;
-    proc.stdin
-        .flush()
-        .await
-        .map_err(|e| format!("Streamerz-Voice flush failed: {e}"))?;
-    let mut resp_line = String::new();
-    let n = proc
-        .stdout
-        .read_line(&mut resp_line)
-        .await
-        .map_err(|e| format!("Streamerz-Voice read failed: {e}"))?;
-    if n == 0 {
-        return Err("Streamerz-Voice exited unexpectedly".into());
+/// Maximum audio response payload accepted from `Streamerz-Voice` (64 MiB).
+const MAX_WORKER_AUDIO: usize = 64 << 20;
+
+enum WorkerErr {
+    /// Logical error answered by a healthy worker (e.g. bad text or missing file); worker stays alive.
+    App(String),
+    /// Transport failure, timeout, or unexpected exit; worker must be dropped and restarted next time.
+    Transport(String),
+}
+
+impl WorkerErr {
+    fn into_message(self) -> String {
+        match self {
+            Self::App(msg) | Self::Transport(msg) => msg,
+        }
     }
-    let head: Value = serde_json::from_str(resp_line.trim()).map_err(|e| format!("bad Streamerz-Voice JSON: {e}"))?;
-    let len = head["bytes"].as_u64().unwrap_or(0) as usize;
-    let mut bytes = vec![0u8; len];
-    if len > 0 {
-        proc.stdout
-            .read_exact(&mut bytes)
+}
+
+async fn send_on(proc: &mut WorkerProc, req: &Value) -> Result<(Value, Vec<u8>), WorkerErr> {
+    let wait_secs = match req["op"].as_str() {
+        Some("unpack" | "load" | "speak") => 120,
+        _ => 10,
+    };
+    let fut = async {
+        let mut line = serde_json::to_string(req).map_err(|e| WorkerErr::App(e.to_string()))?;
+        line.push('\n');
+        proc.stdin
+            .write_all(line.as_bytes())
             .await
-            .map_err(|e| format!("Streamerz-Voice audio read failed: {e}"))?;
-    }
-    if head["ok"] != true {
-        return Err(head["error"].as_str().unwrap_or("Streamerz-Voice error").to_string());
-    }
-    Ok((head, bytes))
+            .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice write failed: {e}")))?;
+        proc.stdin
+            .flush()
+            .await
+            .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice flush failed: {e}")))?;
+        let mut resp_line = String::new();
+        let n = proc
+            .stdout
+            .read_line(&mut resp_line)
+            .await
+            .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice read failed: {e}")))?;
+        if n == 0 {
+            return Err(WorkerErr::Transport("Streamerz-Voice exited unexpectedly".into()));
+        }
+        let head: Value = serde_json::from_str(resp_line.trim())
+            .map_err(|e| WorkerErr::Transport(format!("bad Streamerz-Voice JSON: {e}")))?;
+        let raw_len = head["bytes"].as_u64().unwrap_or(0);
+        if raw_len > MAX_WORKER_AUDIO as u64 {
+            return Err(WorkerErr::Transport(format!(
+                "Streamerz-Voice audio payload too large ({raw_len} bytes)"
+            )));
+        }
+        let len = raw_len as usize;
+        let mut bytes = vec![0u8; len];
+        if len > 0 {
+            proc.stdout
+                .read_exact(&mut bytes)
+                .await
+                .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice audio read failed: {e}")))?;
+        }
+        if head["ok"] != true {
+            return Err(WorkerErr::App(
+                head["error"].as_str().unwrap_or("Streamerz-Voice error").to_string(),
+            ));
+        }
+        Ok((head, bytes))
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(wait_secs), fut)
+        .await
+        .map_err(|_| WorkerErr::Transport(format!("Streamerz-Voice timed out after {wait_secs}s")))?
 }
 
 /// Sends one request to the persistent `Streamerz-Voice` worker, spawning it lazily if needed.
@@ -474,29 +512,42 @@ async fn request(req: Value) -> Result<(Value, Vec<u8>), String> {
     if guard.is_none() {
         *guard = Some(spawn_worker().await?);
     }
-    let proc = guard.as_mut().unwrap();
-    let res = send_on(proc, &req).await;
-    if res.is_err() && proc.child.try_wait().ok().flatten().is_some() {
-        // Process died: drop handle so next request restarts cleanly.
-        *guard = None;
-        let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
-        m.running = false;
-        m.loaded = None;
-        m.memory = 0;
-        crate::host::changed();
-        return res;
-    }
-    // Refresh memory & loaded state cheaply right after load/speak.
-    if res.is_ok() && matches!(req["op"].as_str(), Some("speak" | "load")) {
-        if let Ok((st, _)) = send_on(proc, &json!({"op": "state"})).await {
-            let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
-            m.running = true;
-            m.loaded = st["loaded"].as_str().map(str::to_string);
-            m.memory = st["memory"].as_u64().unwrap_or(0);
+    let res = {
+        let proc = guard.as_mut().unwrap();
+        send_on(proc, &req).await
+    };
+    match res {
+        Ok(done) => {
+            // Refresh memory & loaded state cheaply right after load/speak.
+            if matches!(req["op"].as_str(), Some("speak" | "load")) {
+                let proc = guard.as_mut().unwrap();
+                if let Ok((st, _)) = send_on(proc, &json!({"op": "state"})).await {
+                    let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
+                    m.running = true;
+                    m.loaded = st["loaded"].as_str().map(str::to_string);
+                    m.memory = st["memory"].as_u64().unwrap_or(0);
+                }
+                crate::host::changed();
+            }
+            Ok(done)
         }
-        crate::host::changed();
+        Err(WorkerErr::App(msg)) => Err(msg),
+        Err(WorkerErr::Transport(msg)) => {
+            // Transport failure, timeout, or crash: always kill and drop so the next call respawns cleanly.
+            if let Some(mut dead) = guard.take() {
+                let _ = dead.child.kill().await;
+                let _ = dead.child.wait().await;
+            }
+            {
+                let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
+                m.running = false;
+                m.loaded = None;
+                m.memory = 0;
+            }
+            crate::host::changed();
+            Err(msg)
+        }
     }
-    res
 }
 
 /// Stops the `Streamerz-Voice` worker process completely, returning 100% of its RAM to the OS.
@@ -1200,6 +1251,78 @@ for line in sys.stdin:
         *TEST_PAREC.lock().unwrap() = None;
         *TEST_DIR.lock().unwrap() = None;
         let _ = std::fs::remove_file(&wav_path);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn worker_recovers_cleanly_after_unexpected_crash() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("streamerz-crash-recover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let flag = tmp.join("crashed-once");
+        let fake = tmp.join("Streamerz-Voice");
+        std::fs::write(
+            &fake,
+            format!(
+                r#"#!/usr/bin/env python3
+import json, os, struct, sys
+
+def sine_wav():
+    pcm = struct.pack('<100h', *([0] * 100))
+    return b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, 24000, 48000, 2, 16) + b'data' + struct.pack('<I', len(pcm)) + pcm
+
+flag = {flag:?}
+for line in sys.stdin:
+    req = json.loads(line)
+    op = req.get("op")
+    if op == "hello":
+        resp, blob = {{"ok": True, "version": "1.0.0"}}, b""
+    elif op == "speak":
+        if not os.path.exists(flag):
+            open(flag, "w").close()
+            sys.exit(1)
+        blob = sine_wav()
+        resp = {{"ok": True, "rate": 24000, "ms": 4, "bytes": len(blob)}}
+    elif op == "state":
+        resp, blob = {{"ok": True, "loaded": "piper|ok", "memory": 4096}}, b""
+    else:
+        resp, blob = {{"ok": True}}, b""
+    sys.stdout.buffer.write((json.dumps(resp) + "\n").encode() + blob)
+    sys.stdout.buffer.flush()
+"#,
+                flag = flag.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let voices_dir = tmp.join("voices");
+        *TEST_DIR.lock().unwrap() = Some(voices_dir);
+        *TEST_BINARY.lock().unwrap() = Some(fake);
+        let model = model_dir("piper:en_US-amy");
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(model.join("en_US-amy-medium.onnx"), b"fake").unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            unload().await;
+            let first = speak("crash me", "piper:en_US-amy", 1.0, 1.0).await;
+            assert!(first.is_err(), "first call must report worker crash");
+            assert!(!state().running, "worker state must reset to not running after crash");
+            let second = speak("recovered", "piper:en_US-amy", 1.0, 1.0).await.unwrap();
+            assert!(second.starts_with(b"RIFF"));
+            assert!(state().running);
+            unload().await;
+        });
+
+        *TEST_DIR.lock().unwrap() = None;
+        *TEST_BINARY.lock().unwrap() = None;
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
