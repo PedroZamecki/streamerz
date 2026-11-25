@@ -2312,6 +2312,48 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
     }
 }
 
+const MAX_HTTP_HEADER_BYTES: usize = 64 << 10;
+const MAX_HTTP_BODY_BYTES: usize = 1 << 20;
+
+fn http_body_length(headers: &[(&str, &str)]) -> Result<usize, u16> {
+    let mut length = None;
+    for &(name, value) in headers {
+        if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            return Err(400);
+        }
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            if length.is_some() || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(400);
+            }
+            length = Some(value.parse::<usize>().map_err(|_| 413u16)?);
+        }
+    }
+    let length = length.unwrap_or(0);
+    if length > MAX_HTTP_BODY_BYTES {
+        return Err(413);
+    }
+    Ok(length)
+}
+
+async fn read_http_body(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    mut buffered: Vec<u8>,
+    length: usize,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<Vec<u8>> {
+    buffered.truncate(length);
+    let remaining = length - buffered.len();
+    if remaining > 0 {
+        let mut body = reader.take(remaining as u64);
+        tokio::time::timeout_at(deadline, body.read_to_end(&mut buffered)).await??;
+        if buffered.len() != length {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+    }
+    Ok(buffered)
+}
+
 async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -2322,14 +2364,20 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break i;
         }
+        if buf.len() >= MAX_HTTP_HEADER_BYTES {
+            return Ok(());
+        }
         let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
             .await
             .map_err(|_| late())??;
-        if n == 0 || buf.len() > 64 << 10 {
+        if n == 0 {
             return Ok(());
         }
         buf.extend_from_slice(&chunk[..n]);
     };
+    if head_end + 4 > MAX_HTTP_HEADER_BYTES {
+        return Ok(());
+    }
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or("").split(' ');
@@ -2389,20 +2437,17 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             }
         };
     }
-    let len = h("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(1 << 20);
-    let mut body = buf.split_off(head_end + 4);
-    while body.len() < len {
-        let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
-            .await
-            .map_err(|_| late())??;
-        if n == 0 {
-            break;
+    let len = match http_body_length(&headers) {
+        Ok(len) => len,
+        Err(status) => return http_json_response(&mut tcp, status, None).await,
+    };
+    let body = match read_http_body(&mut tcp, buf.split_off(head_end + 4), len, deadline).await {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return http_json_response(&mut tcp, 400, None).await;
         }
-        body.extend_from_slice(&chunk[..n]);
-    }
+        Err(error) => return Err(error),
+    };
     if method == "POST" && path == "/sounds/board/play" {
         let (status, answer) = crate::core::sounds::board_press(e, &body);
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
@@ -2418,10 +2463,15 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }
     let (status, json) = http_answer(e, method, path, &body, h("x-patreon-signature"));
+    http_json_response(&mut tcp, status, json).await
+}
+
+async fn http_json_response(tcp: &mut TcpStream, status: u16, json: Option<Value>) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        413 => "Content Too Large",
         418 => "I'm a teapot",
         _ => "Internal Server Error",
     };
@@ -2474,6 +2524,47 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn http_body_uses_the_declared_length_and_requires_a_complete_read() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            let body = br#"{"action":{"name":"Example"}}"#;
+            let length = body.len().to_string();
+            assert_eq!(http_body_length(&[("content-length", &length)]), Ok(body.len()));
+            assert_eq!(
+                http_body_length(&[("Content-Length", &(MAX_HTTP_BODY_BYTES + 1).to_string())]),
+                Err(413)
+            );
+            assert_eq!(http_body_length(&[("Transfer-Encoding", "chunked")]), Err(400));
+            assert_eq!(http_body_length(&[("Content-Length", "abc")]), Err(400));
+
+            let mut rest = &body[10..];
+            let received = read_http_body(&mut rest, body[..10].to_vec(), body.len(), deadline)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&received).unwrap()["action"]["name"],
+                "Example"
+            );
+            let mut eof = &[][..];
+            let read_ahead = [body.as_slice(), b"next"].concat();
+            assert_eq!(
+                read_http_body(&mut eof, read_ahead, body.len(), deadline)
+                    .await
+                    .unwrap(),
+                body
+            );
+            assert_eq!(
+                read_http_body(&mut eof, body[..10].to_vec(), body.len(), deadline)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        });
+    }
+
     #[test]
     fn websocket_subscriptions_are_removed_when_the_connection_is_dropped() {
         let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
