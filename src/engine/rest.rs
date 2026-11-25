@@ -5673,8 +5673,10 @@ impl Engine {
             });
             return;
         }
-        feed.await;
-        let out = tokio::time::timeout(seconds(wait), child.wait_with_output()).await;
+        // Its input goes in while its output is read, all within the wait: a program that writes before
+        // it reads (or never reads) would otherwise hold the action forever.
+        let run = async { tokio::join!(feed, child.wait_with_output()).1 };
+        let out = tokio::time::timeout(seconds(wait), run).await;
         let Ok(Ok(out)) = out else {
             return crate::error(format!("Run a Program {prog}: didn't finish in {wait} s"));
         };
@@ -5874,6 +5876,26 @@ mod tests {
         assert_eq!(seconds(f64::NAN), Duration::ZERO);
         assert_eq!(seconds(1e300), seconds(f64::INFINITY));
         let _ = std::time::Instant::now() + seconds(1e300);
+    }
+
+    /// A program that writes more than a pipe holds before it reads its input still finishes (it used
+    /// to wait forever, with no timeout).
+    #[cfg(unix)]
+    #[test]
+    fn programs_get_input_while_their_output_is_read() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let e = engine(json!({"actions": []}));
+        let big = json!({"big": "x".repeat(300_000)});
+        let mut ctx = Ctx {
+            args: big.as_object().unwrap().clone(),
+            group: String::new(),
+        };
+        let o = json!({"command": "sh", "waitForExit": 20,
+            "arguments": "-c \"head -c 300000 /dev/zero | tr '\\0' a; cat >/dev/null\""});
+        let o = o.as_object().unwrap().clone();
+        run(async { e.run_program(&mut ctx, &o).await });
+        assert_eq!(ctx.args["outputCount"], 1);
+        assert_eq!(ctx.args["output0"].as_str().map(str::len), Some(300_000));
     }
 
     #[test]
