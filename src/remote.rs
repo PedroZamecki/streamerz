@@ -239,7 +239,8 @@ pub async fn discord_call(
 
 /// A multipart body: the message as JSON and one file (Discord's `payload_json` and `files[0]`).
 pub fn discord_upload_body(boundary: &str, payload: &Value, filename: &str, file: &[u8]) -> Vec<u8> {
-    let safe = filename.replace(['"', '\r', '\n'], "_");
+    // In a quoted name a backslash escapes what follows: "a\" would swallow the closing quote.
+    let safe = filename.replace(['"', '\\', '\r', '\n'], "_");
     let head = format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{payload}\r\n\
          --{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"{safe}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -899,6 +900,14 @@ pub mod tests {
         assert!(ifttt_address("live", None).is_err());
         assert!(ifttt_address("live", Some("")).is_err());
         assert!(ifttt_address("", Some("k")).is_err());
+    }
+
+    #[test]
+    fn upload_names_stay_in_their_quotes() {
+        let body = discord_upload_body("b", &json!({}), "a\\\"\r\nx.txt", b"data");
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("filename=\"a____x.txt\"\r\n"), "{body}");
+        assert!(body.ends_with("\r\n\r\ndata\r\n--b--\r\n"));
     }
 
     #[test]
