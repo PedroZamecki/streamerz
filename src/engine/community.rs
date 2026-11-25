@@ -136,6 +136,37 @@ fn unix() -> u64 {
 /// Streamer.bot's never.
 const NEVER: &str = "0001-01-01T00:00:00";
 
+/// Half an hour of silence separates visits and stops adding to `activeSecs`.
+const VISIT_GAP_SECS: i64 = 30 * 60;
+
+/// Compare two ISO 8601 timestamps, using parsed Unix seconds when possible.
+fn earlier_iso(a: &str, b: &str) -> bool {
+    match (super::rest_parse_iso(a), super::rest_parse_iso(b)) {
+        (Some(ta), Some(tb)) => ta < tb,
+        _ => a < b,
+    }
+}
+
+/// Whether `last` is more than half an hour before `now` (a new visit), and the active gap in seconds
+/// to add when they belong to the same visit.
+fn activity_gap(last: &str, now: &str) -> (bool, Option<u64>) {
+    if last.is_empty() || last == NEVER {
+        return (true, None);
+    }
+    let Some((a, b)) = super::rest_parse_iso(last).zip(super::rest_parse_iso(now)) else {
+        return (true, None);
+    };
+    let delta = b - a;
+    if delta > VISIT_GAP_SECS {
+        (true, None)
+    } else if delta >= 0 {
+        (false, Some(delta as u64))
+    } else {
+        // Clock moved backwards slightly: same visit, no negative time added.
+        (false, Some(0))
+    }
+}
+
 /// "YYYY-MM-DDTHH:MM:SS..." as a time (the offset is kept as written, no conversion).
 fn parse(iso: &str) -> Option<crate::fmt::Time> {
     let p = |a: usize, b: usize| iso.get(a..b)?.parse::<u32>().ok();
@@ -228,15 +259,34 @@ struct Snapshot<'a> {
     credits: &'a Credits,
 }
 
+fn unique_tmp_path(path: &std::path::Path) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
 fn write_snapshot(path: &std::path::Path, value: &impl Serialize) -> std::io::Result<()> {
     use std::io::Write;
     let _guard = crate::dev_write_guard()?;
-    let tmp = path.with_extension("json.tmp");
-    let mut writer = std::io::BufWriter::with_capacity(64 * 1024, std::fs::File::create(&tmp)?);
-    serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
-    writer.flush()?;
-    drop(writer);
-    std::fs::rename(tmp, path)
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = unique_tmp_path(path);
+    let result = (|| -> std::io::Result<()> {
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, std::fs::File::create(&tmp)?);
+        serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// `shrink`'s other way: the record as the program works with it.
@@ -300,15 +350,22 @@ impl Engine {
         if self.memory_saver {
             return Ok(());
         }
-        let c = &mut self.st.borrow_mut().community;
-        c.saved_at = unix();
-        write_snapshot(
-            &file(),
-            &Snapshot {
-                users: &c.users,
-                credits: &c.credits,
-            },
-        )
+        let result = {
+            let c = &self.st.borrow().community;
+            write_snapshot(
+                &file(),
+                &Snapshot {
+                    users: &c.users,
+                    credits: &c.credits,
+                },
+            )
+        };
+        if result.is_ok() {
+            let c = &mut self.st.borrow_mut().community;
+            c.saved_at = unix();
+            c.unsaved = 0;
+        }
+        result
     }
 
     /// Save according to the configured policy; explicit backups use the synchronous checked flush.
@@ -329,6 +386,7 @@ impl Engine {
         let text = {
             let c = &mut self.st.borrow_mut().community;
             c.saved_at = unix();
+            c.unsaved = 0;
             if legacy_save() {
                 let mut users: Vec<Obj> = c.users.iter().collect();
                 users.iter_mut().for_each(shrink);
@@ -341,15 +399,23 @@ impl Engine {
                 .unwrap_or_default()
             }
         };
-        let (path, tmp) = (file(), file().with_extension("json.tmp"));
+        let path = file();
+        let tmp = unique_tmp_path(&path);
         std::thread::Builder::new()
             .name("save-community".into())
             .spawn(move || {
                 let Ok(_guard) = crate::dev_write_guard() else { return };
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() && std::fs::create_dir_all(parent).is_err() {
+                        crate::error(format!("can't save {}", path.display()));
+                        return;
+                    }
+                }
                 if std::fs::write(&tmp, text)
                     .and_then(|()| std::fs::rename(&tmp, &path))
                     .is_err()
                 {
+                    let _ = std::fs::remove_file(&tmp);
                     crate::error(format!("can't save {}", path.display()));
                 }
             })
@@ -375,6 +441,9 @@ impl Engine {
 
     /// Whether this is `user`'s first message on `platform` since First Words were reset.
     pub fn first_words(&self, platform: &str, user: &str) -> bool {
+        if user.is_empty() {
+            return false;
+        }
         if self.memory_saver {
             let c = &mut self.st.borrow_mut().community;
             if c.speakers_failed {
@@ -420,7 +489,10 @@ impl Engine {
         }
         let speakers = &mut self.st.borrow_mut().community.speakers;
         match platform {
-            Some(p) => speakers.retain(|k| !k.starts_with(&format!("{p}:"))),
+            Some(p) => {
+                let prefix = format!("{p}:");
+                speakers.retain(|k| !k.starts_with(&prefix));
+            }
             None => speakers.clear(),
         }
     }
@@ -570,7 +642,7 @@ impl Engine {
                     let moved: Vec<Obj> = c.users.iter().filter(|u| of_old(u)).collect();
                     c.users.retain(|u| !of_old(u));
                     // Who is already in the new channel, by id: a lookup, not a scan per person.
-                    let at: std::collections::HashMap<String, usize> = c
+                    let mut at: std::collections::HashMap<String, usize> = c
                         .users
                         .iter()
                         .enumerate()
@@ -585,18 +657,31 @@ impl Engine {
                             Some(index) => {
                                 let mut x = c.users.get(index);
                                 for k in ["messages", "activeSecs"] {
-                                    let sum = n(&x, k) as u64 + n(&u, k) as u64;
+                                    let sum = (n(&x, k).max(0.0) as u64).saturating_add(n(&u, k).max(0.0) as u64);
                                     x.insert(k.into(), json!(sum));
                                 }
                                 // The first time seen is the earlier one.
-                                if s(&u, "firstMessage") < s(&x, "firstMessage") && !s(&u, "firstMessage").is_empty() {
+                                let u_first = s(&u, "firstMessage");
+                                let x_first = s(&x, "firstMessage");
+                                if !u_first.is_empty() && (x_first.is_empty() || earlier_iso(u_first, x_first)) {
                                     x.insert("firstMessage".into(), u["firstMessage"].clone());
+                                }
+                                // Keep the newer lastActive timestamp.
+                                let u_last = s(&u, "lastActive");
+                                let x_last = s(&x, "lastActive");
+                                if !u_last.is_empty()
+                                    && u_last != NEVER
+                                    && (x_last.is_empty() || x_last == NEVER || earlier_iso(x_last, u_last))
+                                {
+                                    x.insert("lastActive".into(), u["lastActive"].clone());
                                 }
                                 c.users.put(index, x);
                             }
                             None => {
                                 u.insert("channel".into(), new.clone().into());
+                                let pushed = c.users.len();
                                 c.users.push(u);
+                                at.insert(id, pushed);
                             }
                         }
                     }
@@ -624,7 +709,9 @@ impl Engine {
             111 => self.credit("hypetrains", &format!("Level {}", n(args, "level"))),
             112 | 35024 => {
                 self.credit("rewardredemptions", &who);
-                *self.st.borrow_mut().community.credits.redeems.entry(who).or_default() += 1;
+                if !who.is_empty() {
+                    *self.st.borrow_mut().community.credits.redeems.entry(who).or_default() += 1;
+                }
             }
             _ => {
                 if let Some(ev) = event_of(kind) {
@@ -729,27 +816,24 @@ impl Engine {
                 u.insert("channel".into(), channel.clone().into());
             }
             // A new visit (half an hour quiet): the last one becomes the previous.
+            // What the Community tab shows: messages sent, and the time spent chatting (gaps under half an
+            // hour between messages add up).
             let last = s(&u, "lastActive").to_string();
-            let quiet = parse(&last).zip(parse(&now)).is_none_or(|(a, b)| {
-                let mins = |t: crate::fmt::Time| {
-                    ((t.year * 372 + t.month as i32 * 31 + t.day as i32) * 1440) + (t.hour * 60 + t.min) as i32
-                };
-                mins(b) - mins(a) > 30
-            });
+            let (quiet, gap) = activity_gap(&last, &now);
             if quiet && last != NEVER {
                 u.insert("previousActive".into(), last.clone().into());
             }
-            // What the Community tab shows: messages sent, and the time spent chatting (gaps under half an
-            // hour between messages add up).
-            let (messages, active) = (n(&u, "messages") as u64, n(&u, "activeSecs") as u64);
-            let gap = super::rest_parse_iso(&last).map_or(u64::MAX, |t| unix().saturating_sub(t as u64));
-            u.insert("messages".into(), json!(messages + 1));
-            u.insert(
-                "activeSecs".into(),
-                json!(if gap <= 30 * 60 { active + gap } else { active }),
-            );
+            let (messages, active) = (n(&u, "messages").max(0.0) as u64, n(&u, "activeSecs").max(0.0) as u64);
+            u.insert("messages".into(), json!(messages.saturating_add(1)));
+            u.insert("activeSecs".into(), json!(active.saturating_add(gap.unwrap_or(0))));
+            let login = s(&c.args, "userName");
+            let name = if login.is_empty() {
+                display.to_lowercase()
+            } else {
+                login.to_lowercase()
+            };
             for (k, v) in [
-                ("name", json!(s(&c.args, "userName"))),
+                ("name", json!(name)),
                 ("display", json!(display)),
                 ("role", json!(role)),
                 ("subscribed", json!(c.subscriber)),
@@ -821,13 +905,20 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "quoteVariable"));
                 // The caller, else the broadcaster.
                 let a = &ctx.args;
-                let (user, id, platform) = if s(a, "userId").is_empty() && !a.contains_key("userId") {
-                    (s(a, "broadcastUser"), s(a, "broadcastUserId").to_string(), "twitch")
+                let caller_id = a
+                    .get("userId")
+                    .filter(|v| !v.is_null())
+                    .map(crate::vars::text)
+                    .unwrap_or_default();
+                let (user, id, platform) = if caller_id.is_empty() {
+                    let bid = a
+                        .get("broadcastUserId")
+                        .filter(|v| !v.is_null())
+                        .map(crate::vars::text)
+                        .unwrap_or_default();
+                    (s(a, "broadcastUser"), bid, "twitch")
                 } else {
-                    let id = a
-                        .get("userId")
-                        .map(|v| v.as_str().map_or_else(|| v.to_string(), String::from));
-                    (s(a, "user"), id.unwrap_or_default(), s(a, "userType"))
+                    (s(a, "user"), caller_id, s(a, "userType"))
                 };
                 let q = self.add_quote(&text, user, &id, if platform.is_empty() { "twitch" } else { platform });
                 ctx.args.insert("success".into(), true.into());
@@ -848,7 +939,7 @@ impl Engine {
             .filter_map(|q| q.get("id").and_then(Value::as_u64))
             .max()
             .unwrap_or(0)
-            + 1;
+            .saturating_add(1);
         let q = json!({"id": id, "timestamp": super::globals::iso_now(), "userId": user_id, "user": user,
             "platform": platform, "gameId": game_id, "gameName": game, "quote": text});
         let q = q.as_object().cloned().unwrap_or_default();
@@ -1120,6 +1211,12 @@ mod tests {
         std::fs::write(&path, b"previous").unwrap();
         assert!(write_snapshot(&path, &Broken).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+        // Failed atomic save leaves no orphan temporary files behind.
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftover, ["community.json"]);
         let value = json!({"users":[],"credits":{}});
         write_snapshot(&path, &value).unwrap();
         assert_eq!(
@@ -1127,6 +1224,111 @@ mod tests {
             value
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activity_gap_uses_exact_calendar_and_handles_never_and_month_rollover() {
+        assert_eq!(activity_gap(NEVER, "2026-03-01T00:05:00Z"), (true, None));
+        assert_eq!(activity_gap("", "2026-03-01T00:05:00Z"), (true, None));
+        // Feb 28 23:55 to Mar 1 00:05 is 10 minutes (same visit, 600s active).
+        assert_eq!(
+            activity_gap("2026-02-28T23:55:00Z", "2026-03-01T00:05:00Z"),
+            (false, Some(600))
+        );
+        // 30 minutes and 1 second starts a new visit.
+        assert_eq!(
+            activity_gap("2026-03-01T00:00:00Z", "2026-03-01T00:30:01Z"),
+            (true, None)
+        );
+        // Different timezone offsets representing 5 minutes apart.
+        assert_eq!(
+            activity_gap("2026-03-01T00:00:00-03:00", "2026-03-01T03:05:00Z"),
+            (false, Some(300))
+        );
+        // Slight clock skew backwards stays in the same visit with 0 added seconds.
+        assert_eq!(
+            activity_gap("2026-03-01T00:05:00Z", "2026-03-01T00:04:50Z"),
+            (false, Some(0))
+        );
+    }
+
+    #[test]
+    fn spoke_falls_back_to_display_login_and_empty_first_words_is_ignored() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = engine();
+            assert!(!e.first_words("twitch", ""));
+            e.spoke(&Chat {
+                platform: "twitch".into(),
+                user_id: "99".into(),
+                user: "MixedCase".into(),
+                ..Default::default()
+            });
+            let u = e.community_user("twitch", "99").unwrap();
+            assert_eq!(s(&u, "name"), "mixedcase");
+            assert_eq!(s(&u, "display"), "MixedCase");
+            assert_eq!(u["messages"], 1);
+            assert_eq!(u["activeSecs"], 0);
+            // Empty reward redemption user is not recorded in top.channelRewards.
+            e.record(112, &Obj::new());
+            assert_eq!(e.credits()["top"]["channelRewards"], json!([]));
+        });
+    }
+
+    #[test]
+    fn move_merges_empty_first_message_and_keeps_newer_last_active() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = engine();
+            e.cfg.send_modify(|c| c.kick.channel = "newch".into());
+            {
+                let c = &mut e.st.borrow_mut().community;
+                let mut old_rec = user("1", "oldch", 3, "2026-01-10T10:00:00Z");
+                old_rec.insert("lastActive".into(), json!("2026-05-01T12:00:00Z"));
+                let mut new_rec = user("1", "newch", 2, "");
+                new_rec.insert("lastActive".into(), json!("2026-03-01T12:00:00Z"));
+                c.users = vec![old_rec, new_rec].into();
+            }
+            e.channel_changed("kick", "oldch", Leftover::Move);
+            let merged = e.community_user("kick", "1").unwrap();
+            assert_eq!(merged["messages"], 5);
+            assert_eq!(s(&merged, "firstMessage"), "2026-01-10T10:00:00Z");
+            assert_eq!(s(&merged, "lastActive"), "2026-05-01T12:00:00Z");
+        });
+    }
+
+    #[test]
+    fn add_quote_sub_action_handles_numeric_and_empty_user_ids() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = engine();
+            let o = |v: Value| v.as_object().cloned().unwrap();
+            // Numeric userId from platform args.
+            let mut ctx = Ctx {
+                args: o(json!({"user": "Ana", "userId": 12345, "userType": "kick"})),
+                group: String::new(),
+            };
+            e.community_sub(&mut ctx, &o(json!({"quoteVariable": "hello"})), 1037);
+            assert_eq!(s(&ctx.args, "quoteUserId"), "12345");
+            assert_eq!(s(&ctx.args, "quotePlatform"), "kick");
+            // Empty/null userId falls back to broadcaster.
+            let mut ctx2 = Ctx {
+                args: o(json!({"userId": "", "broadcastUser": "Host", "broadcastUserId": 77})),
+                group: String::new(),
+            };
+            e.community_sub(&mut ctx2, &o(json!({"quoteVariable": "world"})), 1037);
+            assert_eq!(s(&ctx2.args, "quoteUser"), "Host");
+            assert_eq!(s(&ctx2.args, "quoteUserId"), "77");
+        });
     }
 
     /// A busy chat saves every 50 changes; a slow one a minute after the last save, so a crash loses

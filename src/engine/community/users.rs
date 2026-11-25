@@ -145,6 +145,10 @@ pub(super) struct Users {
 }
 
 impl Users {
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
     pub fn push(&mut self, value: Obj) {
         self.index_value(&value, self.records.len());
         self.records.push(Record::new(value));
@@ -320,6 +324,30 @@ mod tests {
         let round: Users = serde_json::from_slice(&serde_json::to_vec(&users).unwrap()).unwrap();
         assert_eq!(round.get(0)["extra"], value["extra"]);
         assert_eq!(round.get(0)["messages"], 9);
+    }
+
+    #[test]
+    fn retain_and_edit_matching_keep_index_consistent() {
+        let mut users: Users = serde_json::from_value(json!([
+            {"type":"twitch","id":"1","channel":"ch1","display":"Ana","messages":1},
+            {"type":"twitch","id":"2","channel":"ch1","display":"Bo","messages":2},
+            {"type":"kick","id":"1","channel":"ch2","display":"Cy","messages":3}
+        ]))
+        .unwrap();
+        users.edit_matching(
+            |u| s(u, "type") == "twitch",
+            |u| {
+                u.insert("channel".into(), json!("archived"));
+            },
+        );
+        assert_eq!(users.find("twitch", "1", "ch1"), None);
+        assert_eq!(users.find("twitch", "1", "archived"), Some(0));
+        assert_eq!(users.find("twitch", "2", "archived"), Some(1));
+        assert_eq!(users.find("kick", "1", "ch2"), Some(2));
+        users.retain(|u| s(u, "id") != "1" || s(u, "type") == "kick");
+        assert_eq!(users.find("twitch", "1", "archived"), None);
+        assert_eq!(users.find("twitch", "2", "archived"), Some(0));
+        assert_eq!(users.find("kick", "1", "ch2"), Some(1));
     }
 }
 
