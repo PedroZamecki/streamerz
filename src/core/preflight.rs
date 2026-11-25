@@ -452,6 +452,40 @@ pub fn evaluate_platform(
     }
 }
 
+/// What stops a platform from being ready to go live: `evaluate_platform`, then whether its chat and
+/// events are being read. A handle stays after Disconnect (its API still answers), so that alone
+/// doesn't say it reads; YouTube waiting on its broadcast counts as reading.
+fn stream_issue(engine: &Engine, platform: &str) -> Option<(&'static str, &'static str, String, PreflightFix)> {
+    let found = evaluate_platform(engine, platform);
+    if found.as_ref().is_some_and(|(severity, ..)| *severity == "blocker") {
+        return found;
+    }
+    let (name, code, up) = match platform {
+        "twitch" => ("Twitch", "twitch_disconnected", engine.twitch_connected()),
+        "kick" => ("Kick", "kick_disconnected", engine.kick_connected()),
+        "youtube" => (
+            "YouTube",
+            "youtube_disconnected",
+            engine.youtube_connected() || engine.youtube_standby(),
+        ),
+        _ => return found,
+    };
+    if up {
+        return found;
+    }
+    Some((
+        "blocker",
+        code,
+        trf("stream.not_connected", &[("where", name)]),
+        PreflightFix {
+            label: tr("nav.page.accounts").to_owned(),
+            page: "Accounts".to_owned(),
+            action: format!("{platform}.connect"),
+            ..Default::default()
+        },
+    ))
+}
+
 /// Build a complete `PreflightReport` from already-discovered `inventories` (and optional main
 /// stream service/server hints passed by the OBS companion script).
 pub fn evaluate_inventories(
@@ -614,7 +648,7 @@ pub fn evaluate_inventories(
                 youtube_outputs += 1;
             }
 
-            let (status, detail) = match evaluate_platform(engine, &plat) {
+            let (status, detail) = match stream_issue(engine, &plat) {
                 Some((severity, code, message, fix)) => {
                     issues.push(PreflightIssue {
                         severity: severity.into(),
@@ -701,7 +735,7 @@ pub fn evaluate_inventories(
             ),
         ] {
             if shown {
-                if let Some((severity, code, message, fix)) = evaluate_platform(engine, slug) {
+                if let Some((severity, code, message, fix)) = stream_issue(engine, slug) {
                     issues.push(PreflightIssue {
                         severity: severity.into(),
                         code: code.into(),
@@ -1806,5 +1840,54 @@ mod tests {
         assert!(!script.contains("super_secret_ws_password"));
         assert!(script.contains("OBS_FRONTEND_EVENT_STREAMING_STARTING"));
         assert!(script.contains("StreamerzPreflight"));
+    }
+
+    #[test]
+    fn a_platform_that_stopped_reading_blocks_going_live() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            clear_state();
+            let config: crate::Config = serde_json::from_value(json!({
+                "obs": {"connections": [{"id": "main", "name": "Studio"}]},
+                "kick": {"clientId": "id", "clientSecret": "secret", "broadcaster": {"userId": 1, "username": "me",
+                    "token": {"accessToken": "valid", "refreshToken": "refresh", "expiresAt": u64::MAX / 2}}}
+            }))
+            .unwrap();
+            let engine = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+            let _fakes = crate::scenario::fakes::install(&engine, &json!({"kick": {}}), None);
+            let kick = |report: &PreflightReport| {
+                report
+                    .issues
+                    .iter()
+                    .filter(|i| i.platform.as_deref() == Some("kick"))
+                    .map(|i| i.code.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert!(kick(&evaluate_inventories(&engine, &[], None, None)).is_empty());
+            // Disconnect keeps the handle: its API answers, but nothing is read.
+            engine.kick().unwrap().set_connected(false);
+            let report = evaluate_inventories(&engine, &[], None, None);
+            assert_eq!(kick(&report), ["kick_disconnected"]);
+            let issue = report.issues.iter().find(|i| i.code == "kick_disconnected").unwrap();
+            assert_eq!(
+                (issue.severity.as_str(), issue.fix.action.as_str()),
+                ("blocker", "kick.connect")
+            );
+            // The account itself still works, so an automation's API call isn't blamed for it.
+            assert!(evaluate_platform(&engine, "kick").is_none());
+            // A required output on that platform is held back too.
+            let inv = Inventory {
+                connection_id: "main".into(),
+                canvases: vec![],
+                capabilities: vec![],
+                outputs: vec![make_output("main", "aitum-multistream", "Kick", "Kick", Some("kick"))],
+            };
+            let report = evaluate_inventories(&engine, &[("Studio".into(), inv)], None, None);
+            assert_eq!(report.outputs[0].status, "blocked");
+            assert!(!report.ready);
+            engine.kick().unwrap().set_connected(true);
+            assert!(kick(&evaluate_inventories(&engine, &[], None, None)).is_empty());
+            crate::scenario::fakes::uninstall();
+        });
     }
 }

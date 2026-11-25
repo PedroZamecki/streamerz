@@ -244,6 +244,12 @@ impl KickHandle {
         self.connected.load(Ordering::Relaxed)
     }
 
+    /// A test's handle that dropped its connection (Disconnect keeps the handle).
+    #[cfg(test)]
+    pub fn set_connected(&self, on: bool) {
+        self.connected.store(on, Ordering::Relaxed)
+    }
+
     pub fn connect(&self) {
         let _ = self.tx.send(KickCmd::Connect);
     }
