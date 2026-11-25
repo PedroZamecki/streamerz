@@ -21,9 +21,6 @@
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub const S_WRITE_TO_FILE: u32 = 3;
 pub const S_READ_RANDOM_LINE: u32 = 5;
@@ -45,36 +42,12 @@ pub const T_PROCESS_STOPPED: u32 = 704;
 const NEWLINE: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 /// Write or append text to a file. Append starts a new line when the file is already there (even
-/// empty), as Streamer.bot does; a file it makes starts with the text. Overwrites go through a
-/// temporary file and rename when replacing a normal file, so readers never see a half-written file.
+/// empty), as Streamer.bot does; a file it makes starts with the text. Writes in place like .NET
+/// `File.WriteAllText` so OS file watchers see Created/Changed events instead of a rename.
 pub fn write_to_file(path: &Path, text: &str, append: bool) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
-        }
-    }
-    if !append {
-        let atomic = match std::fs::symlink_metadata(path) {
-            Ok(meta) => meta.is_file(),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => true,
-            Err(e) => return Err(e),
-        };
-        if atomic {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-                let tmp = path.with_file_name(format!(".{name}.{}.{seq}.tmp", std::process::id()));
-                let res = (|| {
-                    let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
-                    file.write_all(text.as_bytes())?;
-                    file.flush()?;
-                    drop(file);
-                    std::fs::rename(&tmp, path)
-                })();
-                if res.is_err() {
-                    let _ = std::fs::remove_file(&tmp);
-                }
-                return res;
-            }
         }
     }
     let text = if append && path.exists() {
@@ -203,15 +176,9 @@ mod tests {
         assert_eq!(lines2.len(), 4);
         assert_eq!(lines2[3], "line4");
 
-        // Overwrite replaces atomically without leaving temp files behind.
+        // Overwrite truncates in place so file watchers still see Created/Changed events.
         write_to_file(&file, "fresh", false).unwrap();
         assert_eq!(read_lines(&file).unwrap(), vec!["fresh"]);
-        let leftover: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
-            .collect();
-        assert!(leftover.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
