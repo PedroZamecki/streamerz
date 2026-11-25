@@ -2809,4 +2809,39 @@ mod tests {
         assert!(kept("twitch:chan:ana").is_null());
         AVATARS.with_borrow_mut(|kept| *kept = before);
     }
+
+    #[test]
+    fn every_advanced_field_is_shown_and_saved_under_the_same_key() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            for p in [P::Twitch, P::YouTube, P::Kick] {
+                let kind = format!("account_{}", p.slug());
+                let fields = external_fields(&kind).unwrap();
+                let mut item = advanced_item(&engine.config(), p);
+                for (key, _, _) in fields {
+                    assert!(item.get(*key).is_some(), "{kind} shows no {key}");
+                    item[*key] = match *key {
+                        "subCounterRollover" => json!(12),
+                        "videoId" => json!("abcdefghijk"),
+                        other => json!(format!("{other}-value")),
+                    };
+                }
+                save_external(&engine, &kind, item.as_object().unwrap().clone())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(advanced_item(&engine.config(), p), item, "{kind}");
+                // And the form shows what was saved.
+                let form = external_form(&engine, &kind).unwrap().unwrap();
+                let shown: Vec<&str> = form["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|field| field["key"].as_str().unwrap())
+                    .collect();
+                let keys: Vec<&str> = fields.iter().map(|(key, _, _)| *key).collect();
+                assert_eq!(shown, keys);
+            }
+        });
+    }
 }
