@@ -2,6 +2,7 @@
 //! ponytail: one connection per request (Connection: close); keep-alive per host when the platforms
 //! poll their APIs.
 
+use std::borrow::Cow;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -25,12 +26,10 @@ const MAX_BODY: usize = 16 << 20;
 
 /// scheme, host, port, path and query.
 fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
-    let (tls, rest) = if let Some(r) = url.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("http://") {
-        (false, r)
-    } else {
-        return Err(format!("not an http(s) URL: {url}"));
+    let (tls, rest) = match url.split_once("://") {
+        Some((s, r)) if s.eq_ignore_ascii_case("https") => (true, r),
+        Some((s, r)) if s.eq_ignore_ascii_case("http") => (false, r),
+        _ => return Err(format!("not an http(s) URL: {url}")),
     };
     // The fragment stays in the browser: it is never sent.
     let rest = rest.split('#').next().unwrap_or_default();
@@ -106,16 +105,18 @@ fn authority(tls: bool, host: &str, port: u16) -> String {
 /// Content-Length.
 pub async fn request(method: &str, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Response, String> {
     let mut url = url.to_string();
-    let mut method = method.to_string();
+    let (mut method, mut body, mut headers) = (method, body, Cow::Borrowed(headers));
     for _ in 0..6 {
-        let r = tokio::time::timeout(TIMEOUT, once(&method, &url, headers, body))
+        let r = tokio::time::timeout(TIMEOUT, once(method, &url, &headers, body))
             .await
             .map_err(|_| format!("{url}: timed out"))??;
-        match redirect(&url, r.status, &r.headers)? {
+        match follow(&url, r.status, &r.headers, &mut headers)? {
             Some(to) => {
                 url = to;
-                if r.status == 303 {
-                    method = "GET".into();
+                // 303 asks for a GET of another address: the body was for this one.
+                if r.status == 303 && method != "HEAD" {
+                    method = "GET";
+                    body = b"";
                 }
             }
             None => return Ok(r),
@@ -124,18 +125,59 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
     Err(format!("{url}: too many redirects"))
 }
 
-/// Where a redirect points, if `status` is one.
+/// Where a redirect points, if `status` is one: its Location, against `url` when it is relative.
 fn redirect(url: &str, status: u16, headers: &[(String, String)]) -> Result<Option<String>, String> {
     let location = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("location"));
-    match (status, location) {
-        (301 | 302 | 303 | 307 | 308, Some((_, to))) => Ok(Some(if to.starts_with("http") {
-            to.clone()
-        } else {
-            let (tls, host, port, _) = parse(url)?;
-            format!("{}://{host}:{port}{to}", if tls { "https" } else { "http" })
-        })),
-        _ => Ok(None),
+    let (301 | 302 | 303 | 307 | 308, Some((_, to))) = (status, location) else {
+        return Ok(None);
+    };
+    let to = to.trim();
+    if to
+        .split_once("://")
+        .is_some_and(|(s, _)| s.bytes().all(|b| b.is_ascii_alphabetic()))
+    {
+        return Ok(Some(to.into()));
     }
+    let (tls, host, port, path) = parse(url)?;
+    let scheme = if tls { "https" } else { "http" };
+    if let Some(rest) = to.strip_prefix("//") {
+        return Ok(Some(format!("{scheme}://{rest}")));
+    }
+    let origin = format!("{scheme}://{}", authority(tls, &host, port));
+    let dir = path.split('?').next().unwrap_or_default();
+    Ok(Some(match to.as_bytes().first() {
+        Some(b'/') => format!("{origin}{to}"),
+        Some(b'?') => format!("{origin}{dir}{to}"),
+        None | Some(b'#') => format!("{origin}{path}"),
+        // Relative to the folder of the current path: "b" from "/a/x" is "/a/b".
+        _ => format!("{origin}{}/{to}", &dir[..dir.rfind('/').unwrap_or(0)]),
+    }))
+}
+
+/// The next address after a redirect, if it may be followed. HTTPS never falls back to plain HTTP
+/// (the redirect is then the answer, as in .NET), and credentials never go to another site.
+fn follow(
+    url: &str,
+    status: u16,
+    got: &[(String, String)],
+    headers: &mut Cow<'_, [(String, String)]>,
+) -> Result<Option<String>, String> {
+    let Some(to) = redirect(url, status, got)? else {
+        return Ok(None);
+    };
+    let ((tls, host, port, _), (to_tls, to_host, to_port, _)) = (parse(url)?, parse(&to)?);
+    if tls && !to_tls {
+        return Ok(None);
+    }
+    if (tls, port) != (to_tls, to_port) || !host.eq_ignore_ascii_case(&to_host) {
+        let secret = |k: &str| {
+            ["authorization", "cookie", "proxy-authorization"]
+                .iter()
+                .any(|s| k.eq_ignore_ascii_case(s))
+        };
+        *headers = Cow::Owned(headers.iter().filter(|(k, _)| !secret(k)).cloned().collect());
+    }
+    Ok(Some(to))
 }
 
 /// A file [`download`] wrote.
@@ -162,12 +204,12 @@ pub async fn download(
 ) -> Result<Download, String> {
     use sha2::Digest;
     use std::io::Write;
-    let mut url = url.to_string();
+    let (mut url, mut headers) = (url.to_string(), Cow::Borrowed(headers));
     for _ in 0..6 {
-        let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, headers, b""))
+        let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, &headers, b""))
             .await
             .map_err(|_| format!("{url}: timed out"))??;
-        if let Some(next) = redirect(&url, open.status, &open.headers)? {
+        if let Some(next) = follow(&url, open.status, &open.headers, &mut headers)? {
             url = next;
             continue;
         }
@@ -218,7 +260,7 @@ pub async fn download_resumable(
     if have > max {
         have = 0;
     }
-    let mut url = url.to_string();
+    let (mut url, mut headers) = (url.to_string(), Cow::Borrowed(headers));
     for _ in 0..6 {
         let mut req_headers = headers.to_vec();
         if have > 0 && !req_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("range")) {
@@ -227,7 +269,7 @@ pub async fn download_resumable(
         let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, &req_headers, b""))
             .await
             .map_err(|_| format!("{url}: timed out"))??;
-        if let Some(next) = redirect(&url, open.status, &open.headers)? {
+        if let Some(next) = follow(&url, open.status, &open.headers, &mut headers)? {
             url = next;
             continue;
         }
@@ -597,6 +639,58 @@ mod tests {
             request_head("GET", "[::1]:8080", "/a", &[], 0).unwrap(),
             "GET /a HTTP/1.1\r\nHost: [::1]:8080\r\nConnection: close\r\nUser-Agent: Streamerz\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn redirects_resolve_against_the_current_address() {
+        let to = |from: &str, location: &str| {
+            redirect(from, 302, &[("location".into(), location.into())])
+                .unwrap()
+                .unwrap()
+        };
+        let from = "https://a.com/dir/page?x=1";
+        assert_eq!(to(from, "/b"), "https://a.com/b");
+        assert_eq!(to(from, "next?y=2"), "https://a.com/dir/next?y=2");
+        assert_eq!(to(from, "?y=2"), "https://a.com/dir/page?y=2");
+        assert_eq!(to(from, "//cdn.com/f"), "https://cdn.com/f");
+        assert_eq!(to(from, "HTTP://b.com/c"), "HTTP://b.com/c");
+        assert_eq!(to("http://[::1]:8080/a", "/b"), "http://[::1]:8080/b");
+        assert_eq!(to("http://h:81", "x"), "http://h:81/x");
+        assert_eq!(redirect(from, 200, &[("location".into(), "/b".into())]).unwrap(), None);
+        assert_eq!(redirect(from, 302, &[]).unwrap(), None);
+        assert_eq!(
+            parse("HTTPS://A.com/x").unwrap(),
+            (true, "A.com".into(), 443, "/x".into())
+        );
+    }
+
+    #[test]
+    fn redirects_keep_credentials_on_their_site_and_never_downgrade() {
+        let sent: Vec<(String, String)> = [("Authorization", "Bearer t"), ("Cookie", "c"), ("Accept", "*/*")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into();
+        let hop = |from: &str, location: &str| {
+            let mut headers = Cow::Borrowed(&sent[..]);
+            let next = follow(from, 307, &[("Location".into(), location.into())], &mut headers).unwrap();
+            (
+                next,
+                headers.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(","),
+            )
+        };
+        assert_eq!(
+            hop("https://a.com/x", "/y"),
+            (Some("https://a.com/y".into()), "Authorization,Cookie,Accept".into())
+        );
+        assert_eq!(
+            hop("https://a.com/x", "https://A.COM/y"),
+            (Some("https://A.COM/y".into()), "Authorization,Cookie,Accept".into())
+        );
+        assert_eq!(
+            hop("https://a.com/x", "https://b.com/y"),
+            (Some("https://b.com/y".into()), "Accept".into())
+        );
+        assert_eq!(hop("https://a.com/x", "https://a.com:8443/y").1, "Accept");
+        assert_eq!(hop("https://a.com/x", "http://a.com/y").0, None);
     }
 
     /// Text from chat often lands in a Fetch URL address: it must reach the server as one request.
