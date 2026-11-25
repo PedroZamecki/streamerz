@@ -150,9 +150,11 @@ const TWITCH_CHAT_TRIGGERS: &[u32] = &[120, 124, 133, 135, 157, 472];
 /// Twitch triggers only an Affiliate or Partner channel has.
 fn twitch_trigger_feature(code: u32) -> Option<Feature> {
     Some(match code {
-        102 | 143 | 480 => Feature::Bits,
+        // Power-ups are bought with Bits.
+        102 | 143 | 480 | 196 | 496 => Feature::Bits,
         103..=106 | 477..=479 => Feature::Subscriptions,
-        112..=115 | 171 => Feature::Rewards,
+        // Automatic rewards are paid in channel points.
+        112..=115 | 171 | 194 => Feature::Rewards,
         128..=132 => Feature::Predictions,
         139 | 186 => Feature::Ads,
         141 | 142 | 146 | 147 => Feature::Charity,
@@ -356,6 +358,9 @@ mod tests {
             (102, Feature::Bits),
             (103, Feature::Subscriptions),
             (112, Feature::Rewards),
+            (194, Feature::Rewards),
+            (196, Feature::Bits),
+            (496, Feature::Bits),
             (128, Feature::Predictions),
             (139, Feature::Ads),
             (141, Feature::Charity),
