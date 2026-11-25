@@ -280,6 +280,12 @@ pub(super) fn state_of(o: &Obj) -> f64 {
     }
 }
 
+/// Seconds someone typed as a wait: never negative, and at most a century (a bigger one, like 1e20,
+/// would overflow the clock and panic).
+fn seconds(secs: f64) -> Duration {
+    Duration::from_secs_f64(if secs > 0.0 { secs.min(3.2e9) } else { 0.0 })
+}
+
 /// The cursor for the page after `page` of a Helix list, if there is one. An empty page or the cursor
 /// it was asked with is the end: following it would ask for the same page forever.
 fn next_cursor(page: &Value, after: &str) -> Option<String> {
@@ -381,7 +387,7 @@ impl Engine {
                 let mut st = self.st.borrow_mut();
                 for (k, secs) in [(&id, n(c, "globalCooldown")), (&user_key, n(c, "userCooldown"))] {
                     if secs > 0.0 {
-                        st.cooldowns.insert(k.clone(), now + Duration::from_secs_f64(secs));
+                        st.cooldowns.insert(k.clone(), now + seconds(secs));
                     }
                 }
             }
@@ -650,7 +656,7 @@ impl Engine {
             } else {
                 lo
             };
-            tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            tokio::time::sleep(seconds(secs)).await;
             let now = self.st.borrow().chat_lines;
             if lines > 0 && now - seen < lines {
                 continue;
@@ -5668,7 +5674,7 @@ impl Engine {
             return;
         }
         feed.await;
-        let out = tokio::time::timeout(Duration::from_secs_f64(wait), child.wait_with_output()).await;
+        let out = tokio::time::timeout(seconds(wait), child.wait_with_output()).await;
         let Ok(Ok(out)) = out else {
             return crate::error(format!("Run a Program {prog}: didn't finish in {wait} s"));
         };
@@ -5859,6 +5865,15 @@ mod tests {
         assert_eq!(next_cursor(&page(json!([]), "b"), "a"), None);
         assert_eq!(next_cursor(&page(json!([1]), ""), "a"), None);
         assert_eq!(next_cursor(&json!({"data": [1]}), ""), None);
+    }
+
+    #[test]
+    fn typed_waits_never_overflow() {
+        assert_eq!(seconds(1.5), Duration::from_millis(1500));
+        assert_eq!(seconds(-3.0), Duration::ZERO);
+        assert_eq!(seconds(f64::NAN), Duration::ZERO);
+        assert_eq!(seconds(1e300), seconds(f64::INFINITY));
+        let _ = std::time::Instant::now() + seconds(1e300);
     }
 
     #[test]
