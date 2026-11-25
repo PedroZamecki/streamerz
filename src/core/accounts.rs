@@ -1680,7 +1680,11 @@ pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
             login(&engine, p, bot);
         }
     });
-    ASKS.with_borrow_mut(|asks| asks.push((p, bot, task.abort_handle())));
+    // The questions already answered go: only the open ones are kept.
+    ASKS.with_borrow_mut(|asks| {
+        asks.retain(|(_, _, handle)| !handle.is_finished());
+        asks.push((p, bot, task.abort_handle()))
+    });
 }
 
 thread_local! {
@@ -2757,5 +2761,27 @@ mod tests {
         assert_eq!(renewals(found), [(P::Twitch, false), (P::Kick, false), (P::Kick, true)]);
         assert_eq!(renewals(vec![(P::Twitch, true)]), [(P::Twitch, true)]);
         assert!(renewals(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn answered_relogin_questions_are_not_kept() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            let open = || ASKS.with_borrow(|asks| asks.len());
+            let start = open();
+            for _ in 0..3 {
+                ask_relogin(&engine, "YouTube", false);
+                let id = super::super::prompts::list().last().unwrap().id;
+                super::super::prompts::answer(id, json!(false)).unwrap();
+                tokio::task::yield_now().await;
+            }
+            // Each new question drops the ones already answered: one left, the last.
+            assert!(open() <= start + 1, "{} kept", open());
+            ask_relogin(&engine, "YouTube", false);
+            login_saved(P::YouTube, false);
+            assert!(ASKS.with_borrow(|asks| asks.iter().all(|(p, bot, _)| *p != P::YouTube || *bot)));
+            tokio::task::yield_now().await;
+        });
     }
 }
