@@ -411,4 +411,52 @@ mod tests {
         broker.notice(plain("Unlock logins", "The keyring stayed locked."));
         assert_eq!(broker.list().len(), 2);
     }
+
+    #[test]
+    fn a_prompt_is_answered_once_and_a_wait_goes_with_its_task() {
+        crate::engine::tests::run(async {
+            let mut broker = Broker::default();
+            let (sender, mut receiver) = oneshot::channel();
+            broker.insert(
+                Content::Confirm {
+                    text: "Sure?".into(),
+                    no: "No".into(),
+                    yes: "Yes".into(),
+                },
+                Reply::Confirm(sender),
+            );
+            let id = broker.list()[0].id;
+            assert!(
+                broker.answer(id, json!("yes")).is_err(),
+                "a confirm takes true or false"
+            );
+            broker.answer(id, json!(true)).unwrap();
+            assert_eq!(receiver.try_recv(), Ok(true));
+            assert_eq!(
+                broker.answer(id, json!(true)),
+                Err("prompt is no longer waiting".into())
+            );
+            // Answering a wait cancels its task; a task that ends takes its wait away.
+            let task = tokio::task::spawn_local(std::future::pending::<()>());
+            broker.insert(plain_wait("Logging in"), Reply::Abort(task.abort_handle()));
+            let id = broker.list()[0].id;
+            broker.answer(id, Value::Null).unwrap();
+            assert!(task.await.unwrap_err().is_cancelled());
+            let done = tokio::task::spawn_local(async {});
+            broker.insert(plain_wait("Logging in"), Reply::Abort(done.abort_handle()));
+            done.await.unwrap();
+            assert!(broker.list().is_empty());
+            // An id never given is not waiting.
+            assert!(broker.answer(u64::MAX, Value::Null).is_err());
+        });
+    }
+
+    fn plain_wait(title: &str) -> Content {
+        Content::Wait {
+            title: title.into(),
+            text: String::new(),
+            link: None,
+            copy: None,
+        }
+    }
 }
