@@ -808,10 +808,15 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let hidden = hidden(engine);
     let hidden_ids: Vec<&str> = hidden.iter().map(String::as_str).collect();
     let cleared = CLEARED.get();
-    let asked = request.get("seq").and_then(Value::as_u64);
+    let head = engine.chat_last_seq();
+    let asked = request.get("seq").and_then(Value::as_u64).filter(|seq| *seq <= head);
     let client_gen = request.get("gen").and_then(Value::as_u64).unwrap_or(0);
     // What lines look like changes with the options: a view drawn with other ones starts over.
-    let look = u64::from(!config.window.chat_no_time)
+    let visibility = PLATFORMS.iter().enumerate().fold(0, |mask, (at, p)| {
+        mask | (u64::from(hidden_ids.contains(p)) << (at + 3))
+    });
+    let look = visibility
+        | u64::from(!config.window.chat_no_time)
         | u64::from(!config.window.chat_no_badges) << 1
         | u64::from(config.window.chat_youtube_tag) << 2;
     let (generation, mut reset, mut lines) = engine.chat_sync(client_gen, asked.unwrap_or(0).max(cleared));
@@ -827,7 +832,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     if asked.is_none() {
         reset = true;
     }
-    if reset && engine.chat_last_seq() > 0 {
+    if reset && head > 0 {
         lines = engine.chat_sync(u64::MAX, 0).2;
     }
     let first_kept = lines
@@ -1890,6 +1895,41 @@ mod tests {
         assert_eq!(model["rows"][0]["fill"], "@Ágata");
         assert_eq!(model["rows"][1]["fill"], "@ÁLICE");
         assert_eq!(model["rows"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_changed_platform_filter_resets_even_when_the_line_count_matches() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|c| {
+                c.window.chat.save_history = true;
+                c.window.chat_hidden = vec!["twitch".into()];
+            });
+            engine
+                .inject_chat("kick", "bo", "12", "viewer", "first", &json!({}))
+                .unwrap();
+            engine
+                .inject_chat("twitch", "ana", "13", "viewer", "second", &json!({}))
+                .unwrap();
+            let prior = &read(&engine, &json!({})).unwrap()["chat"];
+            assert_eq!(prior["lines"][0]["platform"], "kick");
+            engine.change(|c| c.window.chat_hidden = vec!["kick".into()]);
+            let read_cursor = |seq| {
+                read(
+                    &engine,
+                    &json!({"seq": seq, "gen": prior["gen"], "look":prior["look"], "have":1}),
+                )
+                .unwrap()
+            };
+            let current = &read_cursor(prior["seq"].clone())["chat"];
+            assert_eq!(current["reset"], true);
+            assert_eq!(current["lines"][0]["platform"], "twitch");
+            let restarted = &read_cursor(json!(u64::MAX))["chat"];
+            assert_eq!(restarted["reset"], true);
+            assert_eq!(restarted["seq"], current["seq"]);
+        });
     }
 
     #[test]
