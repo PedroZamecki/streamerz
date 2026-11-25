@@ -55,6 +55,7 @@ jobs:
           shared-key: "streamerz-deps"
           cache-all-crates: true
       - run: cargo test --profile ci-test --locked
+      - run: cargo test --profile ci-test -p streamerz-frontend --features test-support --locked
       - run: cargo clippy --profile ci-test --all-targets --locked -- -D warnings
       - run: cargo test --manifest-path voice/Cargo.toml --locked
       - run: cargo clippy --manifest-path voice/Cargo.toml --all-targets --locked -- -D warnings

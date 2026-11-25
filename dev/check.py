@@ -23,6 +23,7 @@ def main():
         ["cargo", "fmt", "--check"],
         ["cargo", "fmt", "--check", "--manifest-path", "voice/Cargo.toml"],
         ["cargo", "test", "--profile", "ci-test", "--locked"],
+        ["cargo", "test", "--profile", "ci-test", "-p", "streamerz-frontend", "--features", "test-support", "--locked"],
         ["cargo", "clippy", "--profile", "ci-test", "--all-targets", "--locked", "--", "-D", "warnings"],
         ["cargo", "test", "--manifest-path", "voice/Cargo.toml", "--locked"],
         ["cargo", "clippy", "--manifest-path", "voice/Cargo.toml", "--all-targets", "--locked", "--", "-D", "warnings"],

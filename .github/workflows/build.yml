@@ -144,6 +144,7 @@ jobs:
           cargo build --release --locked --manifest-path voice/Cargo.toml
           mkdir -p dist
           cp voice/target/release/Streamerz-Voice.exe dist/Streamerz-Voice-windows-x86_64.exe
+          test -s dist/Streamerz-Voice-windows-x86_64.exe
           sha=$(sha256sum dist/Streamerz-Voice-windows-x86_64.exe | awk '{print $1}')
           size=$(stat -c%s dist/Streamerz-Voice-windows-x86_64.exe 2>/dev/null || wc -c < dist/Streamerz-Voice-windows-x86_64.exe)
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
@@ -154,20 +155,24 @@ jobs:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
           STREAMERZ_VOICE_SHA256: ${{ steps.voice_win.outputs.sha256 }}
           STREAMERZ_VOICE_SIZE: ${{ steps.voice_win.outputs.size }}
-      # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
-      # watcher, Windows line endings), on the PR runner. Reuses release profile artifacts already built.
-      - if: github.event_name == 'pull_request'
-        name: Run the unit tests on Windows
-        run: cargo test --release --locked --bin Streamerz
-      # Every scenario (tests/scenarios) on the exe just built, on real Windows.
-      - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
-        name: Run the scenarios on the Windows exe
-        run: ./target/release/Streamerz.exe --scenario tests/scenarios
       - if: needs.version.outputs.reuse == ''
         name: Stage Windows binary
         run: |
           mkdir -p dist
           cp target/release/Streamerz.exe dist/Streamerz-windows-x86_64.exe
+      # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
+      # watcher, Windows line endings), on the PR runner. Keeps the same env so Cargo reuses build.rs output.
+      - if: github.event_name == 'pull_request'
+        name: Run the unit tests on Windows
+        run: cargo test --release --locked --bin Streamerz
+        env:
+          STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+          STREAMERZ_VOICE_SHA256: ${{ steps.voice_win.outputs.sha256 }}
+          STREAMERZ_VOICE_SIZE: ${{ steps.voice_win.outputs.size }}
+      # Every scenario (tests/scenarios) on the exe just built, on real Windows.
+      - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
+        name: Run the scenarios on the Windows exe
+        run: ./dist/Streamerz-windows-x86_64.exe --scenario tests/scenarios
       - if: needs.version.outputs.reuse == ''
         name: Verify the Windows executable icon
         run: python dev/check-windows-icon.py dist/Streamerz-windows-x86_64.exe
@@ -313,6 +318,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends rpm > /dev/null
           rpm -qlp dist/Streamerz-linux-x86_64.rpm | grep -qx '/etc/yum.repos.d/streamerz.repo'
           cmp target/release/Streamerz dist/Streamerz-linux-x86_64
+          test -s dist/Streamerz-Voice-linux-x86_64
           flatpak repo target/flatpak/repo
       - name: Prune transient build artifacts before caching
         if: needs.version.outputs.reuse == ''
