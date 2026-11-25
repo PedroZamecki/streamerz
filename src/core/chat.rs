@@ -564,25 +564,27 @@ struct Show {
 /// names of who chatted while an `@` is. `start` is where the word being typed begins (in characters), so
 /// a pick replaces it; `more` means typing goes on after the pick.
 pub fn suggest(users: &[String], platform: &str, text: &str, cursor: usize, commercials: bool) -> Value {
-    let before: String = text.chars().take(cursor).collect();
-    let start = before
-        .rfind(char::is_whitespace)
-        .map_or(0, |at| at + before[at..].chars().next().map_or(1, char::len_utf8));
+    let end = text.char_indices().nth(cursor).map_or(text.len(), |(index, _)| index);
+    let before = &text[..end];
+    let start = before.len() - before.rsplit(char::is_whitespace).next().unwrap_or_default().len();
     let token = &before[start..];
     let mention = token.starts_with('@');
-    let mut rows: Vec<Value> = if let Some(prefix) = token.strip_prefix('@') {
+    let rows: Vec<Value> = if let Some(prefix) = token.strip_prefix('@') {
+        let prefix = prefix.to_lowercase();
         users
             .iter()
-            .filter(|name| name.to_lowercase().starts_with(&prefix.to_lowercase()))
+            .map(|name| name.trim_start_matches('@'))
+            .filter(|name| !name.is_empty() && name.to_lowercase().starts_with(&prefix))
+            .take(7)
             .map(|name| json!({"fill": format!("@{name}"), "title": format!("@{name}"), "args": "", "about": tr("chat.mention_hint"), "more": true}))
             .collect()
     } else {
         crate::slash::suggestions(text, platform, commercials)
             .into_iter()
+            .take(7)
             .map(|row| json!({"fill": row.fill, "title": row.title, "args": row.args, "about": tr(row.about), "more": row.more}))
             .collect()
     };
-    rows.truncate(7);
     json!({"mention": mention, "start": before[..start].chars().count(), "rows": rows,
         "header": tr(if mention { "chat.mention_header" } else { "slash.header" }).to_uppercase()})
 }
@@ -1878,6 +1880,16 @@ mod tests {
             text: text.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn suggestions_follow_unicode_cursors_and_keep_one_at_sign() {
+        let users = vec!["@Ágata".to_owned(), "ÁLICE".to_owned(), "Ana".to_owned()];
+        let model = suggest(&users, "youtube", "🚀　@á afterward", 4, false);
+        assert_eq!(model["start"], 2);
+        assert_eq!(model["rows"][0]["fill"], "@Ágata");
+        assert_eq!(model["rows"][1]["fill"], "@ÁLICE");
+        assert_eq!(model["rows"].as_array().unwrap().len(), 2);
     }
 
     #[test]
