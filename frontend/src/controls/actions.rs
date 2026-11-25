@@ -10,10 +10,7 @@ use crate::theme::{
     SPACE_XS,
 };
 use crate::{i18n::tr, send};
-use gpui_kit::component::{
-    button::{Button, ButtonVariants},
-    ActiveTheme, WindowExt,
-};
+use gpui_kit::component::{button::Button, ActiveTheme, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -235,33 +232,9 @@ impl ActionsPage {
         let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
         let danger = spec["danger"] == true;
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let (owner, spec, node) = (owner.clone(), spec.clone(), node.clone());
-            let confirm = Button::new("confirm-action")
-                .label(label.clone())
-                .on_click(move |_, window, cx| {
-                    let (spec, node) = (spec.clone(), node.clone());
-                    let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
-                    window.close_dialog(cx);
-                });
-            let buttons = div()
-                .id("action-confirmation")
-                .test_support()
-                .role(Role::Group)
-                .aria_label(label.clone())
-                .flex()
-                .justify_end()
-                .gap(px(SPACE_SM))
-                .child(
-                    Button::new("cancel-action")
-                        .label(tr("dialogs.cancel"))
-                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
-                )
-                .child(if danger { confirm.danger() } else { confirm });
-            let footer = crate::controls::dialog::footer(None, buttons, cx);
-            crate::controls::dialog::shell(dialog, label.clone(), 448., window, cx)
-                .child(crate::controls::dialog::body(question.clone()))
-                .footer(footer)
+        super::dialog::confirm(window, cx, label, question, danger, move |_, cx| {
+            let (spec, node) = (spec.clone(), node.clone());
+            let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
         });
     }
 

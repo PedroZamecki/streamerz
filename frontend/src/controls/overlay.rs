@@ -510,29 +510,7 @@ impl OverlayPage {
             let danger = button["danger"] == true;
             let request = json!({"request": "StreamerzCoreAction", "domain": "overlays", "table": "overlay",
                 "action": button["id"], "itemId": self.id(), "id": format!("{}:act", self.route)});
-            window.open_dialog(cx, move |dialog, window, cx| {
-                let request = request.clone();
-                let confirm = Button::new("overlay-confirm")
-                    .label(label.clone())
-                    .on_click(move |_, window, cx| {
-                        send(request.clone());
-                        window.close_dialog(cx);
-                    });
-                let buttons = div()
-                    .flex()
-                    .justify_end()
-                    .gap(px(SPACE_SM))
-                    .child(
-                        Button::new("overlay-confirm-cancel")
-                            .label(tr("dialogs.cancel"))
-                            .on_click(|_, window, cx| super::dialog::dismiss(window, cx)),
-                    )
-                    .child(if danger { confirm.danger() } else { confirm });
-                let footer = super::dialog::footer(None, buttons, cx);
-                super::dialog::shell(dialog, label.clone(), 448., window, cx)
-                    .child(super::dialog::body(question.clone()))
-                    .footer(footer)
-            });
+            super::dialog::confirm(window, cx, label, question, danger, move |_, _| send(request.clone()));
             return;
         }
         if let Some(kind) = button["form"].as_str() {
