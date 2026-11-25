@@ -1485,6 +1485,20 @@ pub fn save_companion_script(config: &crate::Config, target: Option<&Path>) -> R
     Ok(path)
 }
 
+/// Where a request may save the companion script: a folder (the script goes in it) or a path ending in
+/// the script's own name. Any other file is refused, so a request can't overwrite one.
+fn script_target(raw: &Path) -> Result<PathBuf, String> {
+    if raw.is_dir() {
+        return Ok(raw.join(SCRIPT_FILE_NAME));
+    }
+    if raw.file_name().is_some_and(|name| name == SCRIPT_FILE_NAME) {
+        return Ok(raw.to_path_buf());
+    }
+    Err(format!(
+        "The companion script is saved as {SCRIPT_FILE_NAME}: give its folder or a path ending in that name"
+    ))
+}
+
 /// Build the `"obs_companion"` sections dialog model.
 pub fn companion_sections(engine: &Rc<Engine>) -> Vec<Value> {
     let config = engine.config();
@@ -1709,7 +1723,11 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
         }
         "companion_script" => {
             let save = req["save"].as_bool().unwrap_or(false);
-            let target = req["path"].as_str().filter(|s| !s.trim().is_empty()).map(PathBuf::from);
+            let target = req["path"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| script_target(Path::new(s)))
+                .transpose()?;
             let path = if save || target.is_some() {
                 save_companion_script(&engine.config(), target.as_deref())?
             } else {
@@ -1889,5 +1907,24 @@ mod tests {
             assert!(kick(&evaluate_inventories(&engine, &[], None, None)).is_empty());
             crate::scenario::fakes::uninstall();
         });
+    }
+
+    #[test]
+    fn a_request_saves_the_script_only_under_its_own_name() {
+        let dir = std::env::temp_dir().join(format!("streamerz-companion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(script_target(&dir).unwrap(), dir.join(SCRIPT_FILE_NAME));
+        let named = dir.join("nested").join(SCRIPT_FILE_NAME);
+        assert_eq!(script_target(&named).unwrap(), named);
+        for other in [
+            dir.join(".bashrc"),
+            dir.join("streamerz.json"),
+            PathBuf::from("/etc/passwd"),
+        ] {
+            assert!(script_target(&other).is_err(), "{}", other.display());
+        }
+        let saved = save_companion_script(&crate::Config::default(), Some(&script_target(&dir).unwrap())).unwrap();
+        assert!(std::fs::read_to_string(&saved).unwrap().contains("StreamerzPreflight"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
