@@ -95,7 +95,7 @@ fn meta_header(meta: &[Value], cx: &App) -> impl IntoElement {
 
 pub struct Prompt {
     model: Value,
-    input: Entity<InputState>,
+    input: Option<Entity<InputState>>,
     selected: Option<String>,
     pub pending: bool,
     pub error: Option<crate::error::StreamerzError>,
@@ -103,8 +103,12 @@ pub struct Prompt {
 }
 impl Prompt {
     pub fn new(model: Value, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx
-            .new(|cx| InputState::new(window, cx).default_value(model["text"].as_str().unwrap_or_default().to_owned()));
+        let needs_input = !matches!(model["kind"].as_str(), Some("wait" | "notice" | "confirm" | "choice"));
+        let input = needs_input.then(|| {
+            cx.new(|cx| {
+                InputState::new(window, cx).default_value(model["text"].as_str().unwrap_or_default().to_owned())
+            })
+        });
         Self {
             model,
             input,
@@ -112,8 +116,15 @@ impl Prompt {
             pending: false,
             error: None,
             buttons_view: {
-                let weak = cx.entity().downgrade();
-                cx.new(|_| PromptButtons(weak))
+                let entity = cx.entity();
+                let weak = entity.downgrade();
+                cx.new(|cx| {
+                    let sub = cx.observe(&entity, |_, _, cx| cx.notify());
+                    PromptButtons {
+                        prompt: weak,
+                        _subscription: sub,
+                    }
+                })
             },
         }
     }
@@ -121,7 +132,9 @@ impl Prompt {
         if self.pending {
             return;
         }
-        let id = self.model["id"].as_u64().unwrap_or_default();
+        let Some(id) = self.model["id"].as_u64() else {
+            return;
+        };
         send(json!({"request":"StreamerzAnswerPrompt", "promptId":id, "value":value, "id":format!("prompt:{id}")}));
         self.pending = true;
         self.error = None;
@@ -213,10 +226,10 @@ impl Render for Prompt {
                         })),
                 );
             }
-        } else {
+        } else if let Some(input) = &self.input {
             let label = self.model["prompt"].as_str().unwrap_or_default().to_owned();
             body = body.child(label.clone()).child(
-                Input::new(&self.input)
+                Input::new(input)
                     .small()
                     .min_h(px(CONTROL_HEIGHT))
                     .aria_label(label)
@@ -278,11 +291,18 @@ impl Prompt {
                             let value = if confirm {
                                 json!(true)
                             } else if choice {
-                                json!(prompt.selected)
+                                let Some(selected) = prompt.selected.clone() else {
+                                    return;
+                                };
+                                json!(selected)
                             } else if notice {
                                 Value::Null
                             } else {
-                                json!(prompt.input.read(cx).value().to_string())
+                                json!(prompt
+                                    .input
+                                    .as_ref()
+                                    .map(|input| input.read(cx).value().to_string())
+                                    .unwrap_or_default())
                             };
                             prompt.answer(value, cx);
                         })),
@@ -298,12 +318,172 @@ impl Prompt {
 }
 
 /// A prompt's buttons, drawn in its dialog's footer.
-pub struct PromptButtons(WeakEntity<Prompt>);
+pub struct PromptButtons {
+    prompt: WeakEntity<Prompt>,
+    _subscription: Subscription,
+}
 impl Render for PromptButtons {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.0.upgrade() {
+        match self.prompt.upgrade() {
             Some(prompt) => prompt.update(cx, |prompt, cx| prompt.buttons(cx)).into_any_element(),
             None => div().into_any_element(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::Prompt;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+    use serde_json::json;
+
+    struct PromptHost(Entity<Prompt>);
+    impl Render for PromptHost {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .p_4()
+                .flex()
+                .flex_col()
+                .child(self.0.clone())
+                .child(self.0.read(cx).buttons_view())
+        }
+    }
+
+    fn open_prompt(
+        model: serde_json::Value,
+        cx: &mut TestAppContext,
+    ) -> (gpui_kit::WindowHandle<gpui_kit::base::Root>, Entity<Prompt>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Prompt>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(540.), px(480.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let prompt = cx.new(|cx| Prompt::new(model, window, cx));
+                    *s.borrow_mut() = Some(prompt.clone());
+                    cx.new(|_| PromptHost(prompt))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let prompt = slot.borrow().clone().expect("prompt created");
+        (window, prompt)
+    }
+
+    #[gpui_kit::test]
+    fn choice_prompt_skips_input_allocation_and_updates_footer_when_selected(cx: &mut TestAppContext) {
+        let model = json!({
+            "id": 7,
+            "kind": "choice",
+            "title": "Choose broadcast",
+            "options": [
+                {"id": "b1", "label": "Main Stream"},
+                {"id": "b2", "label": "Test Stream"}
+            ]
+        });
+        let (window, prompt) = open_prompt(model, cx);
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(prompt.read(cx).input.is_none());
+            assert!(!prompt.read(cx).pending);
+            // OK starts disabled until an option is picked.
+            window.click("answer-prompt", cx);
+            assert!(!prompt.read(cx).pending);
+
+            window.click(("prompt-choice", 1usize), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(prompt.read(cx).selected.as_deref(), Some("b2"));
+            window.click("answer-prompt", cx);
+            assert!(prompt.read(cx).pending);
+            // A second answer while pending is ignored.
+            prompt.update(cx, |prompt, cx| prompt.cancel(cx));
+            assert!(prompt.read(cx).pending);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn prompt_without_id_refuses_to_send_and_notice_markdown_renders_meta(cx: &mut TestAppContext) {
+        let missing_id = json!({
+            "kind": "confirm",
+            "text": "Proceed?",
+            "yes": "Yes",
+            "no": "No"
+        });
+        let (window, prompt) = open_prompt(missing_id, cx);
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(prompt.read(cx).input.is_none());
+            prompt.update(cx, |prompt, cx| prompt.answer(json!(true), cx));
+            assert!(!prompt.read(cx).pending);
+        })
+        .unwrap();
+
+        let notice = json!({
+            "id": 42,
+            "kind": "notice",
+            "title": "Help",
+            "text": "Details here.",
+            "markdown": true,
+            "meta": [
+                {"key": "Kind", "value": "trigger"},
+                {"key": "Category", "value": "Twitch/Channel"},
+                {"key": "Code", "value": "101"},
+                {"key": "Needs", "value": "Twitch login"}
+            ]
+        });
+        let (window, prompt) = open_prompt(notice, cx);
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(prompt.read(cx).input.is_none());
+            let meta = window.find_by_label("Trigger, Twitch > Channel, #101, Needs: Twitch login");
+            assert_eq!(
+                meta.label(),
+                Some("Trigger, Twitch > Channel, #101, Needs: Twitch login")
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn input_prompt_allocates_input_and_answers_once(cx: &mut TestAppContext) {
+        let model = json!({
+            "id": 9,
+            "kind": "input",
+            "title": "Rename",
+            "prompt": "New name",
+            "text": "Initial"
+        });
+        let (window, prompt) = open_prompt(model, cx);
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(prompt.read(cx).input.is_some());
+            window.click("answer-prompt", cx);
+            assert!(prompt.read(cx).pending);
+        })
+        .unwrap();
     }
 }
