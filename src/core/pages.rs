@@ -340,9 +340,10 @@ fn run_id(record: &crate::engine::Record) -> String {
 }
 
 fn history(engine: &Rc<Engine>) -> Value {
-    let runs = engine.history().iter().rev().cloned().collect::<Vec<_>>();
+    let runs = engine.history();
     let rows = runs
         .iter()
+        .rev()
         .map(|record| {
             let result = match record.outcome.status() {
                 "failed" => "automation.failed",
@@ -354,6 +355,8 @@ fn history(engine: &Rc<Engine>) -> Value {
                 record.after.len().to_string(), tr(result)]})
         })
         .collect();
+    let any = !runs.is_empty();
+    drop(runs);
     let mut model = table(
         "history_run",
         "",
@@ -371,10 +374,7 @@ fn history(engine: &Rc<Engine>) -> Value {
             button("values_after", "btn.variables_after_run", "braces", true),
             button("run_again", "btn.run_again", "rotate-ccw", true),
             {
-                let mut b = danger(button_if(
-                    button("clear", "btn.clear", "eraser", false),
-                    !runs.is_empty(),
-                ));
+                let mut b = danger(button_if(button("clear", "btn.clear", "eraser", false), any));
                 b["top"] = true.into();
                 b["iconOnly"] = true.into();
                 b["hideDisabled"] = true.into();
@@ -911,6 +911,7 @@ pub fn save_quote(engine: &Rc<Engine>, id: &str, item: crate::model::Obj) -> Res
         return Ok(json!({"saved": made.get("id")}));
     }
     let number: u64 = id.parse().map_err(|_| "that quote is gone")?;
+    let mut found = false;
     engine.change(|config| {
         if let Some(saved) = config
             .quotes
@@ -920,8 +921,12 @@ pub fn save_quote(engine: &Rc<Engine>, id: &str, item: crate::model::Obj) -> Res
             for key in ["quote", "user", "gameName"] {
                 saved.insert(key.into(), text(&item, key).into());
             }
+            found = true;
         }
     });
+    if !found {
+        return Err("that quote is gone".into());
+    }
     Ok(json!({"saved": id}))
 }
 
@@ -1210,22 +1215,42 @@ pub fn save_mcp_connection(engine: &Rc<Engine>, mut item: crate::model::Obj) -> 
 
 // Plugins
 
-/// What the list shows for each plugin file: id, manifest (None when it doesn't load), on, load error.
-fn plugin_rows(engine: &Rc<Engine>) -> Vec<(String, Option<crate::engine::plugins::Manifest>, bool, String)> {
+type PluginRow = (String, Option<crate::engine::plugins::Manifest>, bool, String);
+
+/// What the list shows for a plugin file: id, manifest (None when it doesn't load), on, load error.
+/// A plugin that is off is loaded to read its manifest.
+fn plugin_row(
+    engine: &Rc<Engine>,
+    on: &[(String, crate::engine::plugins::Manifest)],
+    id: String,
+    path: &std::path::Path,
+) -> PluginRow {
+    match on.iter().find(|plugin| plugin.0 == id) {
+        Some((_, manifest)) => (id, Some(manifest.clone()), true, String::new()),
+        None => match crate::engine::plugins::load(&id, path, std::rc::Weak::new()) {
+            Ok(plugin) => {
+                let enabled = engine.config().plugins.get(&id).is_some_and(|plugin| plugin.enabled);
+                (id, Some(plugin.manifest.clone()), enabled, String::new())
+            }
+            Err(error) => (id, None, false, error),
+        },
+    }
+}
+
+fn plugin_rows(engine: &Rc<Engine>) -> Vec<PluginRow> {
     let on = engine.plugins_on();
     crate::engine::plugins::installed()
         .into_iter()
-        .map(|(id, path)| match on.iter().find(|plugin| plugin.0 == id) {
-            Some((_, manifest)) => (id, Some(manifest.clone()), true, String::new()),
-            None => match crate::engine::plugins::load(&id, &path, std::rc::Weak::new()) {
-                Ok(plugin) => {
-                    let enabled = engine.config().plugins.get(&id).is_some_and(|plugin| plugin.enabled);
-                    (id, Some(plugin.manifest.clone()), enabled, String::new())
-                }
-                Err(error) => (id, None, false, error),
-            },
-        })
+        .map(|(id, path)| plugin_row(engine, &on, id, &path))
         .collect()
+}
+
+/// The row of one installed plugin, loading only that one.
+fn find_plugin(engine: &Rc<Engine>, id: &str) -> Option<PluginRow> {
+    let (id, path) = crate::engine::plugins::installed()
+        .into_iter()
+        .find(|(installed, _)| installed == id)?;
+    Some(plugin_row(engine, &engine.plugins_on(), id, &path))
 }
 
 fn plugins(engine: &Rc<Engine>) -> Value {
@@ -1347,9 +1372,7 @@ pub fn plugin_settings_fields(
 }
 
 fn plugin_manifest(engine: &Rc<Engine>, id: &str) -> Result<crate::engine::plugins::Manifest, String> {
-    plugin_rows(engine)
-        .into_iter()
-        .find(|row| row.0 == id)
+    find_plugin(engine, id)
         .and_then(|row| row.1)
         .ok_or_else(|| format!("no plugin {id}"))
 }
@@ -1736,10 +1759,7 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
             }
         }
         ("plugins", "toggle") => {
-            let row = plugin_rows(engine)
-                .into_iter()
-                .find(|row| row.0 == id)
-                .ok_or("that plugin is gone")?;
+            let row = find_plugin(engine, id).ok_or("that plugin is gone")?;
             if row.1.is_none() {
                 return Err(row.3);
             }
