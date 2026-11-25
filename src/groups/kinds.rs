@@ -72,7 +72,13 @@ pub fn is_event(kind: &str) -> bool {
 pub fn date(text: &str) -> Option<(i64, u32, u32)> {
     let mut parts = text.trim().splitn(3, '-');
     let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
-    if y.len() != 4 || m.len() != 2 || d.len() != 2 {
+    if y.len() != 4
+        || m.len() != 2
+        || d.len() != 2
+        || !y.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+        || !d.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
     }
     let (y, m, d): (i64, u32, u32) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
@@ -84,8 +90,15 @@ pub fn date(text: &str) -> Option<(i64, u32, u32)> {
 /// `H:MM` or `HH:MM`.
 pub fn time(text: &str) -> Option<(u32, u32)> {
     let (h, m) = text.trim().split_once(':')?;
+    if !(1..=2).contains(&h.len())
+        || m.len() != 2
+        || !h.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
     let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
-    (h < 24 && m < 60 && text.trim().len() <= 5).then_some((h, m))
+    (h < 24 && m < 60).then_some((h, m))
 }
 
 /// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
@@ -143,7 +156,9 @@ pub fn moment(text: &str) -> Option<u64> {
         return Some(0);
     }
     if let Some(after) = t.strip_prefix('+') {
-        return parse_duration(after).map(|ms| (now_ms() + ms) / 1000 * 1000);
+        return parse_duration(after)
+            .and_then(|ms| now_ms().checked_add(ms))
+            .map(|ms| ms / 1000 * 1000);
     }
     if let Some((h, m)) = time(t) {
         let today = date(&day_from_today(0))?;
@@ -152,15 +167,20 @@ pub fn moment(text: &str) -> Option<u64> {
     }
     if let Some((day, clock)) = t.split_once([' ', 'T']) {
         let clock = clock.trim();
-        let (hm, sec) = match clock.get(5..) {
-            Some(rest) if !rest.is_empty() => (
-                &clock[..5],
-                rest.strip_prefix(':')?.parse::<u64>().ok().filter(|s| *s < 60)?,
-            ),
-            _ => (clock, 0),
+        let parts: Vec<&str> = clock.split(':').collect();
+        let (hm, sec) = match parts[..] {
+            [_, _] => (clock, 0u64),
+            [h, m, s] => {
+                if s.len() != 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let sec = s.parse::<u64>().ok().filter(|&s| s < 60)?;
+                (&clock[..h.len() + 1 + m.len()], sec)
+            }
+            _ => return None,
         };
         let (h, m) = time(hm)?;
-        return local_ms(date(day)?, h, m).map(|ms| ms + sec * 1000);
+        return local_ms(date(day)?, h, m).and_then(|ms| ms.checked_add(sec * 1000));
     }
     if let Some(day) = date(t) {
         return local_ms(day, 0, 0);
@@ -215,7 +235,7 @@ pub fn parse(kind: Kind, t: &str) -> Option<Result<Value, String>> {
             let Some((at, len)) = cut else {
                 return Some(Err("two numbers: from - to".into()));
             };
-            let number = |s: &str| crate::fmt::parse_number(s.trim());
+            let number = |s: &str| crate::fmt::parse_number(s.trim()).filter(|n| n.is_finite());
             match (number(&t[..at]), number(&t[at + len..])) {
                 (Some(a), Some(b)) => Ok(json!([tidy(a.min(b)), tidy(a.max(b))])),
                 _ => Err("two numbers: from - to".into()),
@@ -331,13 +351,24 @@ pub fn object_fits(kind: Kind, v: &Value) -> bool {
 pub fn gradient_parts(css: &str) -> Option<(f64, Vec<String>)> {
     let inner = css.trim().strip_prefix("linear-gradient(")?.strip_suffix(')')?;
     let mut parts = inner.split(',').map(str::trim);
-    let angle = parts.next()?.strip_suffix("deg")?.trim().parse::<f64>().ok()?;
+    let angle = parts
+        .next()?
+        .strip_suffix("deg")?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|a| a.is_finite())?;
     let colors: Vec<String> = parts.map(str::to_owned).collect();
     (colors.len() >= 2 && colors.iter().all(|c| is_color(c))).then_some((angle, colors))
 }
 
 pub fn gradient_css(angle: f64, colors: &[String]) -> String {
-    let angle = tidy(angle.rem_euclid(360.0));
+    let angle = if angle.is_finite() {
+        angle.rem_euclid(360.0)
+    } else {
+        0.0
+    };
+    let angle = tidy(angle);
     format!("linear-gradient({angle}deg, {})", colors.join(", "))
 }
 
@@ -408,5 +439,27 @@ mod tests {
             Some((90.0, vec!["#ff0000".into(), "#0000ff".into()]))
         );
         assert_eq!(gradient_parts("radial-gradient(red, blue)"), None);
+        assert_eq!(gradient_parts("linear-gradient(NaNdeg, #ff0000, #0000ff)"), None);
+        assert_eq!(gradient_parts("linear-gradient(infdeg, #ff0000, #0000ff)"), None);
+        assert_eq!(
+            gradient_css(f64::NAN, &["#ff0000".into(), "#0000ff".into()]),
+            "linear-gradient(0deg, #ff0000, #0000ff)"
+        );
+    }
+
+    #[test]
+    fn strict_date_time_single_digit_hour_seconds_and_finite_ranges() {
+        assert_eq!(date("+202-01-01"), None);
+        assert_eq!(date("2026-+1-01"), None);
+        assert_eq!(time("+1:05"), None);
+        assert_eq!(time("09:+5"), None);
+        assert_eq!(time("9:5"), None);
+        // Single-digit hour with seconds parses cleanly.
+        let base = moment("2030-05-04 09:15").unwrap();
+        assert_eq!(moment("2030-05-04 9:15:30"), Some(base + 30_000));
+        assert_eq!(moment("2030-05-04 9:15:5"), None);
+        // Non-finite values in ranges are refused.
+        assert!(Kind::Range.parse("inf - 10").is_err());
+        assert!(Kind::Range.parse("NaN - 10").is_err());
     }
 }
