@@ -789,9 +789,17 @@ impl Engine {
         if query.trim().is_empty() {
             return Err(reject(Reason::NoQuery, "Please specify a song to add to the queue."));
         }
-        // The limits of this viewer's role.
-        let (explicit_level, _) = required(&self.song_text(ctx, o, "explicitWho"));
-        let (unlimited_level, _) = required(&self.song_text(ctx, o, "unlimitedWho"));
+        // The limits of this viewer's role: empty bypass fields default to nobody, not everyone.
+        let bypass = |key: &str| {
+            let v = self.song_text(ctx, o, key);
+            if v.trim().is_empty() {
+                5
+            } else {
+                required(&v).0
+            }
+        };
+        let explicit_level = bypass("explicitWho");
+        let unlimited_level = bypass("unlimitedWho");
         let mut max = self.song_limit(ctx, o, "maxPerUser");
         if lvl >= 1 {
             let subs = self.song_limit(ctx, o, "maxPerSubscriber");
@@ -1680,6 +1688,13 @@ mod tests {
                 go(&e, &mut lower, json!({"query": "four", "maxPerUser": "1"})).await,
                 "false"
             );
+            // Empty explicitWho defaults to nobody, so blockExplicit still applies.
+            music.explicit.borrow_mut().push("dirty".into());
+            assert_eq!(
+                go(&e, &mut lower, json!({"query": "dirty", "blockExplicit": "true"})).await,
+                "false"
+            );
+            assert!(arg(&lower, "spotifyReply").contains("explicit"));
         });
     }
 

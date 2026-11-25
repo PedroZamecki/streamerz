@@ -212,6 +212,7 @@ impl Requests {
     }
 
     /// Take back request number `n` (1 is the first).
+    #[cfg(test)]
     pub fn take_back_number(&mut self, n: usize) -> Option<Request> {
         let r = self.list.get_mut(n.checked_sub(1)?).filter(|r| !r.skip)?;
         r.skip = true;
