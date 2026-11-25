@@ -52,13 +52,6 @@ pub fn find_linked_person(engine: &Engine, query: &str, platform_hint: &str) -> 
     let clean = q.trim_start_matches('@');
     let hint = platform_hint.trim().to_ascii_lowercase();
     let config = engine.config();
-    if let Some(link) = config
-        .moderation_links
-        .iter()
-        .find(|link| link.id == q || link.name.eq_ignore_ascii_case(q))
-    {
-        return Some(link.clone());
-    }
     let field_eq = |stored: &str, candidate: &str| {
         !stored.is_empty()
             && (stored.eq_ignore_ascii_case(candidate)
@@ -66,16 +59,26 @@ pub fn find_linked_person(engine: &Engine, query: &str, platform_hint: &str) -> 
                     .trim_start_matches('@')
                     .eq_ignore_ascii_case(candidate.trim_start_matches('@')))
     };
+    // A platform's ID names a person only on that platform: Twitch and Kick IDs are both numbers.
     if !hint.is_empty() {
-        if let Some(link) = config.moderation_links.iter().find(|link| match hint.as_str() {
-            "twitch" => field_eq(&link.twitch, clean),
-            "kick" => field_eq(&link.kick, clean),
-            "youtube" => field_eq(&link.youtube, q),
-            "tiktok" => field_eq(&link.tiktok, clean),
-            _ => false,
-        }) {
-            return Some(link.clone());
-        }
+        return config
+            .moderation_links
+            .iter()
+            .find(|link| match hint.as_str() {
+                "twitch" => field_eq(&link.twitch, clean),
+                "kick" => field_eq(&link.kick, clean),
+                "youtube" => field_eq(&link.youtube, q),
+                "tiktok" => field_eq(&link.tiktok, clean),
+                _ => false,
+            })
+            .cloned();
+    }
+    if let Some(link) = config
+        .moderation_links
+        .iter()
+        .find(|link| link.id == q || link.name.eq_ignore_ascii_case(q))
+    {
+        return Some(link.clone());
     }
     config
         .moderation_links
@@ -2199,6 +2202,39 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_platform_id_matches_only_that_platforms_link() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| {
+                c.moderation_links = vec![
+                    LinkedPerson {
+                        id: "a".into(),
+                        name: "Alice".into(),
+                        kick: "42".into(),
+                        ..Default::default()
+                    },
+                    LinkedPerson {
+                        id: "b".into(),
+                        name: "42".into(),
+                        twitch: "7".into(),
+                        ..Default::default()
+                    },
+                ];
+            });
+            assert!(find_linked_person(&engine, "42", "twitch").is_none());
+            assert_eq!(find_linked_person(&engine, "42", "kick").unwrap().id, "a");
+            assert_eq!(find_linked_person(&engine, "alice", "").unwrap().id, "a");
+            let args = json!({"userType": "Twitch", "userId": "42", "userName": "Alice"});
+            assert!(find_linked_person_from_args(&engine, args.as_object().unwrap()).is_none());
+            // Linking a Twitch ID makes a new person, not a merge into Alice's Kick ID.
+            let bob = link_identity_from_action(&engine, "Bob", "42", "", "", "").unwrap();
+            assert!(bob.id != "a" && bob.kick.is_empty());
+            assert_eq!(find_linked_person(&engine, "Alice", "").unwrap().kick, "42");
+        });
+    }
 
     #[test]
     fn kick_observed_bans_are_partial_and_unban_by_id() {
