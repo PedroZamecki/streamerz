@@ -159,6 +159,9 @@ impl Wasapi {
 
 impl Output for Wasapi {
     fn write(&mut self, frames: &[f32]) -> Result<(), String> {
+        if !frames.len().is_multiple_of(CHANNELS) {
+            return Err("incomplete sound frame".into());
+        }
         let mut rest = frames;
         while !rest.is_empty() {
             // SAFETY: the buffer handed out holds `n` frames, written and released at once.
@@ -181,15 +184,16 @@ impl Output for Wasapi {
         Ok(())
     }
 
-    fn drain(&mut self) {
+    fn drain(&mut self) -> Result<(), String> {
         // SAFETY: plain calls on the open client.
         unsafe {
-            while self.client.GetCurrentPadding().is_ok_and(|p| p > 0) {
+            while self.client.GetCurrentPadding().map_err(|e| e.to_string())? > 0 {
                 if !self.wait() {
-                    break;
+                    return Err("the sound output stopped".into());
                 }
             }
         }
+        Ok(())
     }
 }
 

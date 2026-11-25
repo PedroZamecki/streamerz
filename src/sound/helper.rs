@@ -60,13 +60,12 @@ pub fn open(device: &str) -> Result<Box<dyn Output>, String> {
         bytes: Vec::new(),
     };
     // It says "ok" once the device is open, or why it isn't (and ends).
-    let mut line = String::new();
-    let ready = helper
-        .child
-        .stdout
-        .take()
-        .map(|out| std::io::BufReader::new(out).read_line(&mut line));
-    if !matches!(ready, Some(Ok(_))) || line.trim() != "ok" {
+    let ready = helper.child.stdout.take().is_some_and(|out| {
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(out.take(16));
+        reader.read_line(&mut line).is_ok() && line == "ok\n"
+    });
+    if !ready {
         return Err(helper.why());
     }
     Ok(Box::new(helper))
@@ -74,6 +73,9 @@ pub fn open(device: &str) -> Result<Box<dyn Output>, String> {
 
 impl Output for Helper {
     fn write(&mut self, frames: &[f32]) -> Result<(), String> {
+        if !frames.len().is_multiple_of(CHANNELS) {
+            return Err("incomplete sound frame".into());
+        }
         self.bytes.clear();
         self.bytes.extend(frames.iter().flat_map(|s| s.to_le_bytes()));
         let Some(stdin) = self.stdin.as_mut() else {
@@ -85,10 +87,14 @@ impl Output for Helper {
         Ok(())
     }
 
-    fn drain(&mut self) {
+    fn drain(&mut self) -> Result<(), String> {
         // Closing its input tells it to play what it has and end.
         self.stdin = None;
-        let _ = self.child.wait();
+        match self.child.wait() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(_) => Err(self.why()),
+            Err(e) => Err(format!("cannot wait for the sound output: {e}")),
+        }
     }
 }
 
@@ -115,17 +121,26 @@ pub fn run(device: &str) -> i32 {
             return 1;
         }
     }
+    match forward(std::io::stdin().lock(), &mut *out).and_then(|()| out.drain()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn forward(mut stdin: impl Read, out: &mut dyn Output) -> Result<(), String> {
     let frame = CHANNELS * 4;
     let mut bytes = vec![0u8; CHUNK * frame];
     let mut have = 0;
     let mut samples = Vec::with_capacity(CHUNK * CHANNELS);
-    let mut stdin = std::io::stdin().lock();
     loop {
         let n = match stdin.read(&mut bytes[have..]) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+            Err(e) => return Err(e.to_string()),
         };
         have += n;
         let whole = have / frame * frame;
@@ -134,13 +149,57 @@ pub fn run(device: &str) -> i32 {
         }
         samples.clear();
         samples.extend(bytes[..whole].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
-        if let Err(e) = out.write(&samples) {
-            eprintln!("{e}");
-            return 1;
-        }
+        out.write(&samples)?;
         bytes.copy_within(whole..have, 0);
         have -= whole;
     }
-    out.drain();
-    0
+    if have == 0 {
+        Ok(())
+    } else {
+        Err("incomplete sound frame".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Capture(Vec<f32>);
+
+    impl Output for Capture {
+        fn write(&mut self, frames: &[f32]) -> Result<(), String> {
+            assert_eq!(frames.len() % CHANNELS, 0);
+            self.0.extend_from_slice(frames);
+            Ok(())
+        }
+
+        fn drain(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Fragmented<'a>(&'a [u8]);
+
+    impl Read for Fragmented<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(3);
+            self.0.read(&mut buf[..n])
+        }
+    }
+
+    #[test]
+    fn helper_decodes_fragmented_little_endian_stereo() {
+        let data: Vec<u8> = [0.25f32, -0.5, 1.0, -0.25]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut out = Capture::default();
+        forward(Fragmented(&data), &mut out).unwrap();
+        assert_eq!(out.0, [0.25, -0.5, 1.0, -0.25]);
+
+        let mut out = Capture::default();
+        assert!(forward(Fragmented(&data[..data.len() - 1]), &mut out).is_err());
+        assert_eq!(out.0, [0.25, -0.5]);
+    }
 }
