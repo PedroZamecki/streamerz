@@ -30,6 +30,12 @@ pub fn supports(domain: &str) -> bool {
 const LASTS: [u64; 6] = [60, 120, 180, 300, 600, 1800];
 const LAST_NAMES: &[&str] = &["1 min", "2 min", "3 min", "5 min", "10 min", "30 min"];
 
+/// Twitch Helix character limits for polls and predictions.
+const TWITCH_POLL_TITLE_MAX: usize = 60;
+const TWITCH_PREDICTION_TITLE_MAX: usize = 45;
+const TWITCH_OPTION_MAX: usize = 25;
+const MAX_RENDERED_POLL_OPTIONS: u64 = 20;
+
 const POLL_FIELDS: &[F] = &[
     ("question", "Question", W::Text),
     ("choices", "Choices", W::Lines),
@@ -53,6 +59,8 @@ struct Seen {
     note: String,
     /// Something asked last didn't go through (the note says what).
     trouble: bool,
+    /// Whether `note` came from a failed lookup rather than a user action.
+    note_from_lookup: bool,
     ready: [bool; 2],
     /// Logged in to Twitch but reading someone else's channel: the account and the channel. Polls and
     /// predictions need the owner's login, so Twitch isn't ready.
@@ -198,6 +206,15 @@ fn availability(seen: &Seen) -> ([bool; 2], [bool; 4]) {
     (poll, prediction)
 }
 
+/// The currently active Twitch poll, if any.
+fn actionable_poll(response: &Value) -> Option<&Value> {
+    response
+        .get("data")?
+        .as_array()?
+        .iter()
+        .find(|poll| poll.get("status").and_then(Value::as_str) == Some("ACTIVE"))
+}
+
 /// Get Active Prediction excludes locked predictions, but this page must keep their outcomes
 /// available for resolution. Use the same actionable statuses as the lock/resolve sub-actions.
 fn actionable_prediction(response: &Value) -> Option<&Value> {
@@ -238,7 +255,7 @@ type Step = (u64, Value, String);
 
 /// Runs `steps` (sub-action code and settings, and what to say about it), then reads the current poll
 /// and prediction again; the model shows it all when it comes. False when a request is already running.
-fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
+fn ask(engine: &Rc<Engine>, steps: Vec<Step>, clear_note: bool) -> bool {
     let mutation = !steps.is_empty();
     let Some(sequence) = SEEN.with(|seen| seen.borrow_mut().begin(mutation)) else {
         return false;
@@ -299,25 +316,46 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
             };
             notes.push(trf(message, &[("what", &what)]));
         }
-        let twitch_poll = if ready[0] {
-            e.run_one(566, Obj::new()).await
-        } else {
-            Obj::new()
-        };
+        let mut twitch_poll = Obj::new();
         let mut prediction = Obj::new();
         let mut prediction_known = false;
         if let Some(twitch) = e.twitch().filter(|_| ready[0]) {
-            match twitch
-                .helix(
+            let (polls_res, predictions_res) = tokio::join!(
+                twitch.helix(
+                    "GET",
+                    "polls",
+                    vec![("broadcaster_id", "{broadcaster_id}")],
+                    None,
+                    false,
+                    true,
+                ),
+                twitch.helix(
                     "GET",
                     "predictions",
                     vec![("broadcaster_id", "{broadcaster_id}")],
                     None,
                     false,
                     true,
-                )
-                .await
-            {
+                ),
+            );
+            match polls_res {
+                Ok(response) => {
+                    if let Some(current) = actionable_poll(&response) {
+                        crate::engine::poll_args(current, &mut twitch_poll);
+                    }
+                }
+                Err(error) => {
+                    trouble = true;
+                    notes.push(trf(
+                        "polls.lookup_failed",
+                        &[
+                            ("what", tr("polls.poll")),
+                            ("error", &crate::twitch::plain_error(&error)),
+                        ],
+                    ));
+                }
+            }
+            match predictions_res {
                 Ok(response) => {
                     prediction_known = true;
                     if let Some(current) = actionable_prediction(&response) {
@@ -332,7 +370,7 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
                             ("what", tr("polls.prediction")),
                             ("error", &crate::twitch::plain_error(&error)),
                         ],
-                    ))
+                    ));
                 }
             }
         }
@@ -350,6 +388,11 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
             if !notes.is_empty() {
                 seen.note = notes.join("  ");
                 seen.trouble = trouble;
+                seen.note_from_lookup = !mutation;
+            } else if clear_note || seen.note_from_lookup {
+                seen.note.clear();
+                seen.trouble = false;
+                seen.note_from_lookup = false;
             }
             true
         });
@@ -364,8 +407,11 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
 fn refresh_if_due(engine: &Rc<Engine>) {
     let dirty = crate::host::POLLS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed);
     if dirty || ASKED.get().is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
-        ASKED.set(Some(Instant::now()));
-        ask(engine, Vec::new());
+        if ask(engine, Vec::new(), false) {
+            ASKED.set(Some(Instant::now()));
+        } else if dirty {
+            crate::host::POLLS_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
@@ -383,7 +429,11 @@ fn model(seen: &Seen) -> Vec<Value> {
     let mut poll_rows = Vec::new();
     let tp = &seen.twitch_poll;
     if seen.twitch_poll_active() {
-        let n = tp.get("poll.choices.count").and_then(Value::as_u64).unwrap_or(0);
+        let n = tp
+            .get("poll.choices.count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(MAX_RENDERED_POLL_OPTIONS);
         for i in 0..n {
             poll_rows.push(
                 json!({"id": format!("twitch|{i}"), "name": s(tp, "poll.Title"), "enabled": true,
@@ -394,12 +444,24 @@ fn model(seen: &Seen) -> Vec<Value> {
     }
     let yp = &seen.youtube_poll;
     if seen.youtube_poll_active() {
-        let n = yp.get("poll.options.count").and_then(Value::as_u64).unwrap_or(0);
+        let n = yp
+            .get("poll.options.count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(MAX_RENDERED_POLL_OPTIONS);
         for i in 0..n {
-            poll_rows.push(json!({"id": format!("youtube|{i}"), "name": s(yp, "poll.question"), "enabled": true,
+            let votes = num(yp, &format!("poll.option{i}.votes"));
+            let pct = s(yp, &format!("poll.option{i}.votePercentage"));
+            let display = if pct.is_empty() {
+                votes
+            } else {
+                format!("{votes} ({pct})")
+            };
+            poll_rows.push(
+                json!({"id": format!("youtube|{i}"), "name": s(yp, "poll.question"), "enabled": true,
                 "cells": [{"brand": "youtube", "text": "YouTube"}, s(yp, "poll.question"),
-                    s(yp, &format!("poll.option{i}.text")),
-                    format!("{} ({})", num(yp, &format!("poll.option{i}.votes")), s(yp, &format!("poll.option{i}.votePercentage")))]}));
+                    s(yp, &format!("poll.option{i}.text")), display]}),
+            );
         }
     }
     let p = &seen.prediction;
@@ -541,7 +603,7 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
     let now = seen();
     let (poll, prediction) = availability(&now);
     let go = |steps: Vec<Step>| {
-        if ask(engine, steps) {
+        if ask(engine, steps, true) {
             accepted.clone()
         } else {
             Err(tr("polls.working").into())
@@ -561,8 +623,9 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
     };
     match action {
         "refresh" => {
-            ASKED.set(Some(Instant::now()));
-            ask(engine, Vec::new());
+            if ask(engine, Vec::new(), true) {
+                ASKED.set(Some(Instant::now()));
+            }
             accepted
         }
         "new" | "new_prediction" => Err(trf(
@@ -632,6 +695,7 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                                 json!({"winningIndex": index}),
                                 trf("polls.resolve_as", &[("outcome", name)]),
                             )],
+                            true,
                         );
                     }
                 }
@@ -754,22 +818,34 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         .unwrap_or_default()
         .trim()
         .to_string();
-    let secs = LASTS[item.get("duration").and_then(Value::as_u64).unwrap_or(0).min(5) as usize];
+    let secs = LASTS[item
+        .get("duration")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min((LASTS.len() - 1) as u64) as usize];
     let now = seen();
     let flag = |key: &str| item.get(key).and_then(Value::as_bool) == Some(true);
-    let steps: Result<Vec<Step>, &str> = match kind {
+    let steps: Result<Vec<Step>, String> = match kind {
         "poll" => {
             let choices = texts(&item, "choices");
             // A platform that can't run it is off, whatever the check box says.
             let on = [flag("twitch") && now.ready[0], flag("youtube") && now.ready[1]];
             if question.is_empty() || choices.len() < 2 {
-                Err("polls.need_two")
+                Err(tr("polls.need_two").into())
             } else if !on.iter().any(|on| *on) {
-                Err("polls.pick_where")
+                Err(tr("polls.pick_where").into())
             } else if on[1] && choices.len() > 4 {
-                Err("polls.youtube_limit")
+                Err(tr("polls.youtube_limit").into())
             } else if choices.len() > 5 {
-                Err("polls.poll_limit")
+                Err(tr("polls.poll_limit").into())
+            } else if on[0] && question.chars().count() > TWITCH_POLL_TITLE_MAX {
+                Err(format!(
+                    "Twitch poll questions take up to {TWITCH_POLL_TITLE_MAX} characters."
+                ))
+            } else if on[0] && choices.iter().any(|c| c.chars().count() > TWITCH_OPTION_MAX) {
+                Err(format!(
+                    "Twitch poll choices take up to {TWITCH_OPTION_MAX} characters each."
+                ))
             } else {
                 let mut steps = Vec::new();
                 if on[0] {
@@ -793,11 +869,21 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         "prediction" => {
             let outcomes = texts(&item, "outcomes");
             if question.is_empty() || outcomes.len() < 2 {
-                Err("polls.need_two")
+                Err(tr("polls.need_two").into())
             } else if outcomes.len() > 10 {
-                Err("polls.outcome_limit")
+                Err(tr("polls.outcome_limit").into())
             } else if !now.ready[0] {
-                return Some(Err(twitch_why(&now)));
+                Err(twitch_why(&now))
+            } else if matches!(s(&now.prediction, "prediction.Status"), "ACTIVE" | "LOCKED") {
+                Err(tr("polls.prediction_exists").into())
+            } else if question.chars().count() > TWITCH_PREDICTION_TITLE_MAX {
+                Err(format!(
+                    "Twitch prediction questions take up to {TWITCH_PREDICTION_TITLE_MAX} characters."
+                ))
+            } else if outcomes.iter().any(|o| o.chars().count() > TWITCH_OPTION_MAX) {
+                Err(format!(
+                    "Twitch prediction outcomes take up to {TWITCH_OPTION_MAX} characters each."
+                ))
             } else {
                 Ok(vec![(
                     568,
@@ -809,9 +895,9 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         _ => return None,
     };
     Some(match steps {
-        Err(why) => Err(tr(why).into()),
+        Err(why) => Err(why),
         Ok(steps) => {
-            if ask(engine, steps) {
+            if ask(engine, steps, true) {
                 Ok(json!({"accepted": true}))
             } else {
                 Err(tr("polls.working").into())
@@ -1193,6 +1279,203 @@ mod tests {
             // The same through the actions request.
             let act = json!({"request": "StreamerzCoreAction", "domain": "polls", "action": "refresh"});
             assert_eq!(crate::servers::answer(&engine, &act, true).unwrap()["status"], "ok");
+        });
+    }
+
+    #[test]
+    fn actionable_poll_picks_active_only() {
+        let response = json!({"data": [
+            {"id": "done", "status": "COMPLETED"},
+            {"id": "live", "status": "ACTIVE", "title": "Next?"}
+        ]});
+        assert_eq!(actionable_poll(&response).unwrap()["id"], "live");
+        assert!(actionable_poll(&json!({"data": [{"id": "old", "status": "TERMINATED"}]})).is_none());
+        assert!(actionable_poll(&json!({"data": []})).is_none());
+    }
+
+    #[test]
+    fn twitch_poll_and_prediction_validation_enforces_real_limits_and_active_guard() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            reset(Seen {
+                received: 1,
+                ready: [true, true],
+                prediction_known: true,
+                ..Seen::default()
+            });
+            let save = |kind: &str, value: Value| save_external(&engine, kind, item(value)).unwrap();
+            // Twitch poll title max 60 chars, choice max 25 chars.
+            assert!(save(
+                "poll",
+                json!({"question": "a".repeat(TWITCH_POLL_TITLE_MAX + 1), "choices": ["Yes", "No"], "twitch": true})
+            )
+            .is_err());
+            assert!(save(
+                "poll",
+                json!({"question": "Pick", "choices": ["a".repeat(TWITCH_OPTION_MAX + 1), "No"], "twitch": true})
+            )
+            .is_err());
+            // YouTube-only poll is not rejected by Twitch's 60-char title limit.
+            assert!(save(
+                "poll",
+                json!({"question": "a".repeat(TWITCH_POLL_TITLE_MAX + 5), "choices": ["Yes", "No"], "twitch": false, "youtube": true})
+            )
+            .is_ok());
+            // Wait for that busy mutation to settle before testing predictions.
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            reset(Seen {
+                received: 1,
+                ready: [true, false],
+                prediction_known: true,
+                ..Seen::default()
+            });
+            // Twitch prediction title max 45 chars, outcome max 25 chars.
+            assert!(save(
+                "prediction",
+                json!({"question": "a".repeat(TWITCH_PREDICTION_TITLE_MAX + 1), "outcomes": ["Yes", "No"]})
+            )
+            .is_err());
+            assert!(save(
+                "prediction",
+                json!({"question": "Win?", "outcomes": ["a".repeat(TWITCH_OPTION_MAX + 1), "No"]})
+            )
+            .is_err());
+            // Active or locked prediction blocks creating a second one.
+            let mut active = Obj::new();
+            active.insert("prediction.Status".into(), "LOCKED".into());
+            reset(Seen {
+                received: 1,
+                ready: [true, false],
+                prediction_known: true,
+                prediction: active,
+                ..Seen::default()
+            });
+            assert_eq!(
+                save("prediction", json!({"question": "Win?", "outcomes": ["Yes", "No"]})).unwrap_err(),
+                tr("polls.prediction_exists")
+            );
+        });
+    }
+
+    #[test]
+    fn lookup_errors_report_on_polls_and_clear_on_recovery_or_refresh() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let token = json!({"accessToken": "a", "refreshToken": "r", "expiresAt": u64::MAX / 2});
+            let config: crate::Config = serde_json::from_value(json!({
+                "twitch": {"broadcaster": {"userId": "1", "login": "me", "displayName": "Me", "token": token}}
+            }))
+            .unwrap();
+            let engine = Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(config).0), |_| {});
+            let _fakes = crate::scenario::fakes::install(
+                &engine,
+                &json!({
+                    "twitch": {
+                        "GET polls": {
+                            "$seq": [
+                                {"error": "HTTP 500"},
+                                {"data": [{"id": "p1", "title": "Color?", "status": "ACTIVE", "duration": 60,
+                                    "choices": [{"id": "1", "title": "Red", "votes": 4, "channel_points_votes": 0},
+                                        {"id": "2", "title": "Blue", "votes": 2, "channel_points_votes": 0}]}]}
+                            ]
+                        },
+                        "GET predictions": {
+                            "$seq": [
+                                {"error": "HTTP 500"},
+                                {"data": []}
+                            ]
+                        }
+                    }
+                }),
+                None,
+            );
+            let settle = || async {
+                for _ in 0..30 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            reset(Seen::default());
+            ask(&engine, Vec::new(), false);
+            settle().await;
+            let first = seen();
+            assert!(first.trouble);
+            assert!(first.note_from_lookup);
+            assert!(first.note.contains(tr("polls.poll")), "{}", first.note);
+            assert!(first.note.contains(tr("polls.prediction")), "{}", first.note);
+
+            // Second lookup succeeds: stale lookup error clears automatically and active poll loads.
+            ask(&engine, Vec::new(), false);
+            settle().await;
+            let recovered = seen();
+            assert!(!recovered.trouble, "{}", recovered.note);
+            assert!(recovered.note.is_empty(), "{}", recovered.note);
+            assert!(recovered.twitch_poll_active());
+            assert_eq!(s(&recovered.twitch_poll, "poll.Title"), "Color?");
+            assert!(recovered.prediction_known);
+
+            // A user-action note survives a background refresh, and clears on explicit Refresh.
+            SEEN.with(|st| {
+                let mut st = st.borrow_mut();
+                st.note = "Action failed".into();
+                st.trouble = true;
+                st.note_from_lookup = false;
+            });
+            ask(&engine, Vec::new(), false);
+            settle().await;
+            assert_eq!(seen().note, "Action failed");
+            assert!(seen().trouble);
+            act(&engine, "refresh").unwrap();
+            settle().await;
+            assert!(seen().note.is_empty());
+            assert!(!seen().trouble);
+
+            crate::scenario::fakes::uninstall();
+        });
+    }
+
+    #[test]
+    fn refresh_if_due_preserves_dirty_flag_while_busy_and_model_handles_youtube_edges() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            reset(Seen {
+                received: 1,
+                busy: true,
+                ..Seen::default()
+            });
+            ASKED.set(None);
+            crate::host::POLLS_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            refresh_if_due(&engine);
+            assert!(
+                crate::host::POLLS_DIRTY.load(std::sync::atomic::Ordering::Relaxed),
+                "dirty flag must not be lost while busy"
+            );
+            assert!(ASKED.get().is_none(), "ASKED must not advance while busy");
+            crate::host::POLLS_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // YouTube poll with empty percentage omits empty parentheses and caps malformed counts.
+            let mut yp = Obj::new();
+            yp.insert("poll.question".into(), "Tea or coffee?".into());
+            yp.insert("poll.options.count".into(), 9999.into());
+            yp.insert("poll.option0.text".into(), "Tea".into());
+            yp.insert("poll.option0.votes".into(), 3.into());
+            yp.insert("poll.option0.votePercentage".into(), "".into());
+            yp.insert("poll.option1.text".into(), "Coffee".into());
+            yp.insert("poll.option1.votes".into(), 7.into());
+            yp.insert("poll.option1.votePercentage".into(), "70%".into());
+            let tables = model(&Seen {
+                youtube_poll: yp,
+                ready: [false, true],
+                received: 1,
+                ..Seen::default()
+            });
+            let rows = tables[0]["rows"].as_array().unwrap();
+            assert_eq!(rows.len(), MAX_RENDERED_POLL_OPTIONS as usize);
+            assert_eq!(rows[0]["cells"][3], "3");
+            assert_eq!(rows[1]["cells"][3], "7 (70%)");
         });
     }
 }
