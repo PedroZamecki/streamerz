@@ -13,6 +13,8 @@ extern "C" {
 thread_local! {
     /// The last answer handed to streamerz: kept until the next one (it reads it before then).
     static LAST: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Xorshift state seeded once from `now`, so multiple dice in one roll don't share one timestamp.
+    static RNG: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Hands Streamerz JSON it reads from our memory: ptr << 32 | len.
@@ -65,11 +67,15 @@ pub extern "C" fn manifest() -> u64 {
 
 /// A number from 1 to `sides`, from the clock (xorshift).
 fn roll(sides: u64) -> u64 {
-    let now = ask(json!({"op": "now"}))["unix"].as_f64().unwrap_or(0.0);
-    let mut x = (now * 1e6) as u64 | 1;
+    let mut x = RNG.get();
+    if x == 0 {
+        let now = ask(json!({"op": "now"}))["unix"].as_f64().unwrap_or(0.0);
+        x = (now * 1e6) as u64 | 1;
+    }
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
+    RNG.set(x);
     1 + x % sides.max(1)
 }
 
@@ -88,12 +94,13 @@ pub extern "C" fn on_event(ptr: *mut u8, len: usize) -> u64 {
             0
         }
         "subaction" => {
-            let n = ev["fields"]["count"].as_u64().unwrap_or(1).max(1);
+            let n = ev["fields"]["count"].as_u64().unwrap_or(1).clamp(1, 100);
             let rolls: Vec<u64> = (0..n).map(|_| roll(sides)).collect();
             if rolls.contains(&sides) {
                 ask(json!({"op": "trigger", "event": "Rolled a six", "args": {"roll": sides}}));
             }
-            out(&json!({"args": {"roll": rolls.iter().sum::<u64>(), "rolls": format!("{rolls:?}")}}))
+            let total = rolls.iter().copied().fold(0u64, u64::saturating_add);
+            out(&json!({"args": {"roll": total, "rolls": format!("{rolls:?}")}}))
         }
         "trigger" if ev["args"]["message"].as_str().is_some_and(|m| m.trim() == "!roll") => {
             let user = ev["args"]["user"].as_str().unwrap_or("someone");

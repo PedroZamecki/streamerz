@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use wasmi::{Caller, Config, Instance, Linker, Memory, Module, Store, TypedFunc};
+use wasmi::{Caller, Config, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc};
 
 /// Its sub-action type ("Plugin", with `plugin` and `name`) and trigger type ("Plugin Event", with
 /// `plugin` and `event`): outside Streamer.bot's codes, so its imports skip them.
@@ -22,6 +22,18 @@ pub const T_PLUGIN: u32 = 99801;
 
 /// Instructions a plugin may run per event before it's stopped.
 const FUEL: u64 = 200_000_000;
+/// Most host `call` invocations one event may make before trapping.
+const MAX_CALLS: usize = 1024;
+/// Largest linear memory a plugin may hold (16 MiB).
+const MAX_MEMORY: usize = 16 * 1024 * 1024;
+/// Largest `.wasm` file read from disk (32 MiB).
+const MAX_WASM_BYTES: u64 = 32 * 1024 * 1024;
+/// Largest JSON payload exchanged with a plugin (4 MiB).
+const MAX_IO_BYTES: usize = 4 * 1024 * 1024;
+/// Most deferred ops (`say`, `http`, `timer`, ...) one event may queue.
+const MAX_OPS: usize = 64;
+/// Most active timers one plugin may hold at once.
+const MAX_TIMERS: usize = 64;
 
 /// A setting, or a sub-action's field.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -78,6 +90,9 @@ struct Host {
     id: String,
     engine: Weak<Engine>,
     ops: Vec<Value>,
+    ops_truncated: bool,
+    calls: usize,
+    limits: StoreLimits,
     /// The plugin's memory and `alloc`, kept once it has started: a host call reads them here, since
     /// wasmi's `Caller::get_export` is miscompiled on Windows at opt-level 0 (it read a name's length
     /// as a pointer and crashed).
@@ -123,8 +138,11 @@ pub fn installed() -> Vec<(String, PathBuf)> {
 
 /// JSON at `packed` (ptr << 32 | len) in `mem`.
 fn read(mem: &[u8], packed: i64) -> Option<Value> {
-    let (ptr, len) = ((packed as u64 >> 32) as usize, (packed as u64 & 0xffff_ffff) as usize);
     if packed == 0 {
+        return None;
+    }
+    let (ptr, len) = ((packed as u64 >> 32) as usize, (packed as u64 & 0xffff_ffff) as usize);
+    if len == 0 || len > MAX_IO_BYTES {
         return None;
     }
     serde_json::from_slice(mem.get(ptr..ptr.checked_add(len)?)?).ok()
@@ -133,51 +151,77 @@ fn read(mem: &[u8], packed: i64) -> Option<Value> {
 /// A host function's answer: `v` written into the plugin's memory (through its `alloc`), packed.
 fn write(caller: &mut Caller<'_, Host>, v: &Value) -> i64 {
     let bytes = v.to_string().into_bytes();
+    if bytes.len() > MAX_IO_BYTES {
+        return 0;
+    }
+    let Ok(len) = i32::try_from(bytes.len()) else {
+        return 0;
+    };
     let Some((mem, alloc)) = caller.data().exports else {
         return 0;
     };
-    let Ok(ptr) = alloc.call(&mut *caller, bytes.len() as i32) else {
+    let Ok(ptr) = alloc.call(&mut *caller, len) else {
         return 0;
     };
-    if mem.write(&mut *caller, ptr as usize, &bytes).is_err() {
+    if mem.write(&mut *caller, ptr as u32 as usize, &bytes).is_err() {
         return 0;
     }
-    ((ptr as u32 as i64) << 32) | bytes.len() as i64
+    ((ptr as u32 as i64) << 32) | (len as u32 as i64)
 }
 
 /// Loads the plugin in `path` as `id`; `engine` answers its calls (none: only its manifest is wanted).
 pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if meta.len() > MAX_WASM_BYTES {
+        return Err(format!("{}: plugin file is larger than 32 MB", path.display()));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut cfg = Config::default();
     cfg.consume_fuel(true);
     let wasm = wasmi::Engine::new(&cfg);
     let module = Module::new(&wasm, &bytes[..]).map_err(|e| format!("not a plugin: {e}"))?;
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(MAX_MEMORY)
+        .table_elements(10_000)
+        .memories(4)
+        .tables(4)
+        .instances(4)
+        .build();
     let mut store = Store::new(
         &wasm,
         Host {
             id: id.into(),
             engine,
             ops: Vec::new(),
+            ops_truncated: false,
+            calls: 0,
+            limits,
             exports: None,
         },
     );
+    store.limiter(|host| &mut host.limits);
     let mut linker = <Linker<Host>>::new(&wasm);
     linker
         .func_wrap(
             "streamerz",
             "call",
-            |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> i64 {
+            |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> Result<i64, wasmi::Error> {
+                let host = caller.data_mut();
+                host.calls += 1;
+                if host.calls > MAX_CALLS {
+                    return Err(wasmi::Error::new("plugin exceeded host call limit"));
+                }
                 // None while the plugin starts: its start function gets no answers.
-                let Some((mem, _)) = caller.data().exports else {
-                    return 0;
+                let Some((mem, _)) = host.exports else {
+                    return Ok(0);
                 };
                 let req = read(mem.data(&caller), ((ptr as u32 as i64) << 32) | len as u32 as i64);
-                let Some(req) = req else { return 0 };
+                let Some(req) = req else { return Ok(0) };
                 let answer = answer(caller.data_mut(), req);
-                match answer {
+                Ok(match answer {
                     Some(v) => write(&mut caller, &v),
                     None => 0,
-                }
+                })
             },
         )
         .map_err(|e| e.to_string())?;
@@ -235,7 +279,15 @@ fn answer(host: &mut Host, req: Value) -> Option<Value> {
         }
         "now" => Some(json!({"unix": crate::fmt::unix_now().as_secs_f64()})),
         _ => {
-            host.ops.push(req);
+            if host.ops.len() < MAX_OPS {
+                host.ops.push(req);
+            } else if !host.ops_truncated {
+                host.ops_truncated = true;
+                crate::warn(format!(
+                    "Plugin {}: queued more than {MAX_OPS} ops in one event; extras ignored",
+                    host.id
+                ));
+            }
             None
         }
     }
@@ -245,15 +297,22 @@ impl Loaded {
     /// Gives the plugin `ev`; its answer, and what it asked to do.
     fn deliver(&mut self, ev: &Value) -> Result<(Option<Value>, Vec<Value>), String> {
         let bytes = ev.to_string().into_bytes();
+        if bytes.len() > MAX_IO_BYTES {
+            return Err("event payload is too large for plugin".into());
+        }
+        let len = i32::try_from(bytes.len()).map_err(|_| "event payload is too large for plugin".to_string())?;
         let _ = self.store.set_fuel(FUEL);
-        let ptr = self
-            .alloc
-            .call(&mut self.store, bytes.len() as i32)
-            .map_err(|e| e.to_string())?;
+        {
+            let host = self.store.data_mut();
+            host.ops.clear();
+            host.ops_truncated = false;
+            host.calls = 0;
+        }
+        let ptr = self.alloc.call(&mut self.store, len).map_err(|e| e.to_string())?;
         self.memory
-            .write(&mut self.store, ptr as usize, &bytes)
+            .write(&mut self.store, ptr as u32 as usize, &bytes)
             .map_err(|e| e.to_string())?;
-        let r = self.on_event.call(&mut self.store, (ptr, bytes.len() as i32));
+        let r = self.on_event.call(&mut self.store, (ptr, len));
         let ops = std::mem::take(&mut self.store.data_mut().ops);
         let packed = r.map_err(|e| e.to_string())?;
         Ok((read(self.memory.data(&self.store), packed), ops))
@@ -456,6 +515,20 @@ impl Engine {
                 let ms = op["ms"].as_u64().unwrap_or(1000).max(50);
                 let repeat = op["repeat"].as_bool().unwrap_or(false);
                 let (e, pid, n) = (self.clone(), id.to_string(), name.clone());
+                let mut ps = self.plugins.borrow_mut();
+                let Some(p) = ps.iter_mut().find(|p| p.id == id) else {
+                    return;
+                };
+                p.timers.retain(|(_, h)| !h.is_finished());
+                // One timer per name: a new one replaces it.
+                for (_, h) in p.timers.iter().filter(|(k, _)| *k == name) {
+                    h.abort();
+                }
+                p.timers.retain(|(k, _)| *k != name);
+                if p.timers.len() >= MAX_TIMERS {
+                    crate::warn(format!("Plugin {id}: timer limit ({MAX_TIMERS}) reached"));
+                    return;
+                }
                 let t = tokio::task::spawn_local(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
@@ -465,15 +538,7 @@ impl Engine {
                         }
                     }
                 });
-                let mut ps = self.plugins.borrow_mut();
-                if let Some(p) = ps.iter_mut().find(|p| p.id == id) {
-                    // One timer per name: a new one replaces it.
-                    for (_, h) in p.timers.iter().filter(|(k, _)| *k == name) {
-                        h.abort();
-                    }
-                    p.timers.retain(|(k, _)| *k != name);
-                    p.timers.push((name, t.abort_handle()));
-                }
+                p.timers.push((name, t.abort_handle()));
             }
             "timer_cancel" => {
                 let name = s("id");
@@ -573,12 +638,121 @@ mod tests {
           (func (export "alloc") (param i32) (result i32) (i32.const 100))
           (func (export "manifest") (result i64) (i64.const 2))
           (func (export "on_event") (param i32 i32) (result i64) (loop (br 0)) (i64.const 0)))"#;
-        let dir = std::env::temp_dir().join(format!("sz-spin-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("spin.wasm");
-        std::fs::write(&path, spin).unwrap();
-        let mut p = load("spin", &path, Weak::new()).unwrap();
+        let mut p = load_wat("spin", spin).unwrap();
         assert!(p.deliver(&json!({})).is_err());
+    }
+
+    fn load_wat(name: &str, wat_src: &str) -> Result<Loaded, String> {
+        let dir = std::env::temp_dir().join(format!("sz-plugin-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.wasm"));
+        std::fs::write(&path, wat_src).unwrap();
+        let res = load(name, &path, Weak::new());
         let _ = std::fs::remove_dir_all(dir);
+        res
+    }
+
+    #[test]
+    fn memory_limits_stop_oversized_initial_and_grown_memory() {
+        let huge_init = r#"(module (memory (export "memory") 512)
+          (data (i32.const 0) "{}")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64) (i64.const 0)))"#;
+        assert!(load_wat("huge-init", huge_init).is_err());
+
+        // Attempting to grow past MAX_MEMORY returns -1 (memory.grow fails instead of OOMing).
+        let grow = r#"(module (memory (export "memory") 1)
+          (data (i32.const 0) "{}")
+          (data (i32.const 10) "{\"grew\":false}")
+          (data (i32.const 40) "{\"grew\":true}")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64)
+            (if (result i64) (i32.eq (memory.grow (i32.const 400)) (i32.const -1))
+              (then (i64.or (i64.shl (i64.const 10) (i64.const 32)) (i64.const 14)))
+              (else (i64.or (i64.shl (i64.const 40) (i64.const 32)) (i64.const 13))))))"#;
+        let mut p = load_wat("grow", grow).unwrap();
+        let (reply, _) = p.deliver(&json!({})).unwrap();
+        assert_eq!(reply.unwrap()["grew"], false);
+    }
+
+    #[test]
+    fn invalid_guest_pointers_and_lengths_never_panic() {
+        let bad_ptrs = r#"(module
+          (import "streamerz" "call" (func $call (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{}")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64)
+            (drop (call $call (i32.const -1) (i32.const 10)))
+            (drop (call $call (i32.const 65500) (i32.const 1000)))
+            (drop (call $call (i32.const 0) (i32.const -5)))
+            (i64.const -1)))"#;
+        let mut p = load_wat("bad-ptrs", bad_ptrs).unwrap();
+        let (reply, ops) = p.deliver(&json!({})).unwrap();
+        assert!(reply.is_none());
+        assert!(ops.is_empty());
+
+        let bad_alloc = r#"(module (memory (export "memory") 1)
+          (data (i32.const 0) "{}")
+          (func (export "alloc") (param i32) (result i32) (i32.const -1))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64) (i64.const 0)))"#;
+        let mut p = load_wat("bad-alloc", bad_alloc).unwrap();
+        assert!(p.deliver(&json!({"a": 1})).is_err());
+    }
+
+    #[test]
+    fn host_call_and_ops_limits_stop_abusive_plugins() {
+        let spam_ops = r#"(module
+          (import "streamerz" "call" (func $call (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{}")
+          (data (i32.const 20) "{\"op\":\"log\",\"text\":\"x\"}")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64)
+            (local $i i32)
+            (loop $l
+              (drop (call $call (i32.const 20) (i32.const 23)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br_if $l (i32.lt_u (local.get $i) (i32.const 100))))
+            (i64.const 0)))"#;
+        let mut p = load_wat("spam-ops", spam_ops).unwrap();
+        let (_, ops) = p.deliver(&json!({})).unwrap();
+        assert_eq!(ops.len(), MAX_OPS);
+
+        let spam_calls = r#"(module
+          (import "streamerz" "call" (func $call (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{}")
+          (data (i32.const 20) "{\"op\":\"now\"}")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 2))
+          (func (export "on_event") (param i32 i32) (result i64)
+            (loop $l
+              (drop (call $call (i32.const 20) (i32.const 12)))
+              (br $l))
+            (i64.const 0)))"#;
+        let mut p = load_wat("spam-calls", spam_calls).unwrap();
+        let err = p.deliver(&json!({})).unwrap_err();
+        assert!(err.contains("host call limit"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_missing_exports_and_invalid_manifest() {
+        assert!(load_wat("not-wasm", "not valid wasm").is_err());
+        assert!(load_wat("no-mem", r#"(module)"#).err().unwrap().contains("memory"));
+        let bad_manifest = r#"(module (memory (export "memory") 1)
+          (data (i32.const 0) "not-json")
+          (func (export "alloc") (param i32) (result i32) (i32.const 100))
+          (func (export "manifest") (result i64) (i64.const 8))
+          (func (export "on_event") (param i32 i32) (result i64) (i64.const 0)))"#;
+        assert!(load_wat("bad-manifest", bad_manifest)
+            .err()
+            .unwrap()
+            .contains("manifest"));
     }
 }
