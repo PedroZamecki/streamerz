@@ -682,3 +682,58 @@ Checked locally on Linux (2026-11-24):
 Not run locally: `cargo-audit` and `actionlint` (not installed on this machine), native Windows runtime
 and `Streamerz-Voice.exe` build/run, release packaging/signing/GitHub artifact publication, live OBS
 alert box capture, and the connected Twitch + OBS hidden RSS/CPU comparison.
+
+### Production readiness audit and bug-detection hardening (2026-11-24)
+
+Additional production audit on `release/1.10.0` before opening the release PR found and fixed:
+
+- Release-build abort on scenario/backend exit (`LocalSet` dropped outside the Tokio runtime, causing
+  active Linux `zbus::MessageStream` notification tasks to panic with `no reactor running`): kept
+  `rt.enter()` active across `drop(local)` in `src/main.rs` and `src/scenario.rs`, and silenced OS
+  notifications during headless scenario runs (`src/notify.rs`).
+- `Engine::chatters` returning empty when `save_history` is off (the production default; `cfg!(test)`
+  had masked it in `cargo test`, breaking YouTube and TikTok chatter sub-actions in real binaries):
+  recorded bounded session chatters (`Seen.name`, `seen_seq`, capped at `max(total, 256)`) even when
+  chat history lines are not retained (`src/engine/chatlog.rs`).
+- Neural voice worker resilience and cleanup: per-operation timeouts (120 s for unpack/load/speak,
+  10 s for control ops), 64 MiB worker audio cap, crash recovery that drops the broken child process
+  and resets state on transport/EOF/timeout errors (`src/voice/neural.rs`), 1 GiB extracted-size cap
+  in `Streamerz-Voice` archive unpacking (`voice/src/main.rs`), and temporary preview recording
+  cleanup (`src/core/voices.rs`).
+- CI and automated bug detection: wired all 52 `streamerz-frontend` UI/control tests into
+  `.github/workflows/lint.yml` and `dev/check.py` (previously skipped by `default-members = ["."]`),
+  preserved `STREAMERZ_VERSION` / `STREAMERZ_VOICE_SHA256` / `STREAMERZ_VOICE_SIZE` across the
+  Windows test step in `.github/workflows/build.yml` so Cargo does not recompile `Streamerz.exe` with
+  dev metadata before staging, added `Streamerz-Voice` non-empty staging checks, and expanded
+  `dev/ui-smoke.py` to exercise Sounds > Voices, Find voices, the Commercial filter toggle and the
+  wrapped Download license confirmation dialog.
+
+Final pre-PR local checks on Linux (2026-11-24):
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `cargo fmt --check` (root and `voice/`) | Passed. |
+| `cargo clippy --profile ci-test --all-targets --locked -- -D warnings` (root and `voice/`) | Passed, zero warnings. |
+| `cargo test --profile ci-test --locked -- --test-threads=4` | **817 passed, 0 failed, 13 ignored** (includes `worker_recovers_cleanly_after_unexpected_crash` and session-chatter check with `save_history = false`). |
+| `cargo test --profile ci-test -p streamerz-frontend --features test-support --locked` | **52 passed, 0 failed, 0 ignored**. |
+| `cargo test --manifest-path voice/Cargo.toml --locked` | **5 passed, 0 failed, 0 ignored** (includes symlink/path-traversal archive check and unknown-op rejection). |
+| `./target/release/Streamerz --scenario tests/scenarios` | **188 of 188 scenarios passed**, exit 0, zero panics. |
+| `dev/ui-smoke.py` (`en_US` and `pt_BR`, `target/fast/Streamerz`, `xvfb-run`) | Passed in both locales (`en_US` hidden backend RSS 25,948 KiB after Hide), covering Sounds > Voices, Find voices, Commercial filter toggle and Download license confirmation dialog. |
+| `dev/locale.py check` | Passed (`pt_BR`: 51 of 2,915 entries still match English). |
+| `node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs` and `node dev/test-subathon-overlay.cjs` | **17 passed, 0 failed**; Subathon overlay check passed. |
+| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | **16 passed, 0 failed**. |
+| `dev/scan_secrets.py`, `dev/scan_secrets.py --history`, `dev/package-extensions.py` | Passed (9 recorded legacy home-path fingerprints in history; 3 extension zips created). |
+| `cargo xwin check --locked --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed (type-check only). |
+
+Hidden RSS and idle CPU (Linux release build, scratch config, disconnected, 2 samples of 15 s at 100 Hz):
+
+| Build | Binary size | Hidden RSS (KiB / MiB) | Idle CPU ticks (15 s) |
+| --- | --- | --- | --- |
+| Baseline (`320f067`, pre-studio release build) | 44 MiB | 28,588 to 28,924 KiB (27.92 to 28.25 MiB) | 0, 0 |
+| `release/1.10.0` (this branch) | 50 MiB | 32,252 to 32,348 KiB (31.50 to 31.59 MiB) | 0, 0 |
+
+Unavailable / not run locally: `cargo-audit`, `actionlint`, `dpkg-deb`, `rpmbuild`, `flatpak-builder`,
+`appimagetool` and `linuxdeploy` (not installed on this machine); native Windows runtime and
+`Streamerz-Voice.exe` execution; GPG / SignPath signing and store uploads; GitHub Actions artifact
+reuse and publication; live OBS alert box capture; and the connected Twitch + OBS hidden RSS/CPU
+measurement.

@@ -1051,7 +1051,7 @@ Kept for later in this version, in this order:
   Offset (99768) and Set Audio Balance (99769). Live test with OBS still to do.
 - Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway. Left out until there's
   a live account to test against.
-- [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
+- [x] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
 - [x] Quality of life: chat mode for a while, then back (99544); one step to update the stream
   everywhere (Update Stream, 99734: title, category and tags on each platform picked).
 - Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
