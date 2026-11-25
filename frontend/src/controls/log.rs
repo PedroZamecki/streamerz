@@ -1,6 +1,6 @@
 //! The log page: recent lines, filtered by the core for a level and some words.
+use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_BODY, LINE_BODY, SPACE_MD, SPACE_SM, SPACE_XS};
-use crate::{i18n::tr, send};
 use gpui_kit::component::{
     button::Button,
     input::{Input, InputEvent, InputState},
@@ -79,11 +79,21 @@ impl LogView {
                 }));
             self.level = Some(level);
         }
+        // New lines keep the view at the bottom, unless it was scrolled up to read older ones.
+        // Another filter shows other lines: they start at the bottom.
+        let filtered = self.model["log"]["level"] != model["log"]["level"]
+            || self.model["log"]["search"] != model["log"]["search"];
+        self.stick |= filtered || at_bottom(f32::from(self.scroll.offset().y), f32::from(self.scroll.max_offset().y));
         self.model = model;
-        self.stick = true;
         cx.notify();
     }
 }
+/// Whether a list scrolled by `offset` (0 or less, as the toolkit counts it) shows its last line: a
+/// few pixels short counts, and so does a list too short to scroll.
+fn at_bottom(offset: f32, max: f32) -> bool {
+    -offset >= max - 4.
+}
+
 impl Render for LogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let narrow = f32::from(window.viewport_size().width) < 600.;
@@ -173,7 +183,6 @@ impl Render for LogView {
         if std::mem::take(&mut self.stick) {
             self.scroll.scroll_to_bottom();
         }
-        let _ = tr("log.show");
         div()
             .size_full()
             .flex()
@@ -199,6 +208,15 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
             div().size_full().p_4().child(self.0.clone())
         }
+    }
+
+    #[test]
+    fn the_log_follows_new_lines_only_from_its_bottom() {
+        assert!(super::at_bottom(0., 0.));
+        assert!(super::at_bottom(-500., 500.));
+        assert!(super::at_bottom(-497., 500.));
+        assert!(!super::at_bottom(-200., 500.));
+        assert!(!super::at_bottom(0., 500.));
     }
 
     #[gpui_kit::test]
