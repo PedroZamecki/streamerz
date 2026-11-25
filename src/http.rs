@@ -32,6 +32,8 @@ fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
     } else {
         return Err(format!("not an http(s) URL: {url}"));
     };
+    // The fragment stays in the browser: it is never sent.
+    let rest = rest.split('#').next().unwrap_or_default();
     let (authority, path) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
     let path = if path.starts_with('?') {
         format!("/{path}")
@@ -40,16 +42,51 @@ fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
     } else {
         path.into()
     };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') || p.is_empty() => {
-            (h.to_string(), p.parse().map_err(|_| format!("bad port in {url}"))?)
-        }
-        _ => (authority.to_string(), if tls { 443 } else { 80 }),
+    // An IPv6 host is in brackets ("[::1]:8080"); the host kept is the address alone.
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, "")) => (h, None),
+            Some((h, p)) => (
+                h,
+                Some(p.strip_prefix(':').ok_or_else(|| format!("bad host in {url}"))?),
+            ),
+            None => return Err(format!("bad host in {url}")),
+        },
+        None => match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        },
+    };
+    let port = match port {
+        Some(p) => p.parse().map_err(|_| format!("bad port in {url}"))?,
+        None => default_port(tls),
     };
     if host.is_empty() {
         return Err(format!("no host in {url}"));
     }
-    Ok((tls, host, port, path))
+    Ok((tls, host.to_string(), port, path))
+}
+
+fn default_port(tls: bool) -> u16 {
+    if tls {
+        443
+    } else {
+        80
+    }
+}
+
+/// `host:port` as a URL or a Host header writes it: brackets around an IPv6 address, no default port.
+fn authority(tls: bool, host: &str, port: u16) -> String {
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    if port == default_port(tls) {
+        host
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 /// Send a request, following up to 5 redirects. Headers are (name, value); a body gets its
@@ -330,6 +367,23 @@ async fn once(method: &str, url: &str, headers: &[(String, String)], body_bytes:
     })
 }
 
+/// The request line and headers, up to the blank line before the body.
+fn request_head(method: &str, host: &str, path: &str, headers: &[(String, String)], len: usize) -> String {
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+    if !has("user-agent") {
+        req += "User-Agent: Streamerz\r\n";
+    }
+    for (k, v) in headers {
+        req += &format!("{k}: {v}\r\n");
+    }
+    if len > 0 || matches!(method, "POST" | "PUT" | "PATCH") {
+        req += &format!("Content-Length: {len}\r\n");
+    }
+    req += "\r\n";
+    req
+}
+
 /// Sends the request and reads the response's head.
 async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Open, String> {
     let (tls, host, port, path) = parse(url)?;
@@ -342,24 +396,7 @@ async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
     } else {
         Box::new(tcp)
     };
-    let default_port = if tls { 443 } else { 80 };
-    let host_header = if port == default_port {
-        host.clone()
-    } else {
-        format!("{host}:{port}")
-    };
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
-    let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
-    if !has("user-agent") {
-        req += "User-Agent: Streamerz\r\n";
-    }
-    for (k, v) in headers {
-        req += &format!("{k}: {v}\r\n");
-    }
-    if !body.is_empty() || matches!(method, "POST" | "PUT" | "PATCH") {
-        req += &format!("Content-Length: {}\r\n", body.len());
-    }
-    req += "\r\n";
+    let req = request_head(method, &authority(tls, &host, port), &path, headers, body.len());
     io.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
     io.write_all(body).await.map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
@@ -508,6 +545,31 @@ mod tests {
         );
         assert_eq!(parse("http://h?q").unwrap(), (false, "h".into(), 80, "/?q".into()));
         assert!(parse("ftp://h").is_err());
+        assert!(parse("http://").is_err());
+        assert!(parse("http://h:x").is_err());
+        assert!(parse("http://h:65536").is_err());
+    }
+
+    #[test]
+    fn ipv6_hosts_and_fragments() {
+        assert_eq!(
+            parse("http://[::1]:8080/a#top").unwrap(),
+            (false, "::1".into(), 8080, "/a".into())
+        );
+        assert_eq!(
+            parse("https://[2001:db8::1]").unwrap(),
+            (true, "2001:db8::1".into(), 443, "/".into())
+        );
+        assert_eq!(parse("http://h#x").unwrap(), (false, "h".into(), 80, "/".into()));
+        assert!(parse("http://[::1").is_err());
+        assert!(parse("http://[::1]x").is_err());
+        assert_eq!(authority(false, "::1", 8080), "[::1]:8080");
+        assert_eq!(authority(true, "::1", 443), "[::1]");
+        assert_eq!(authority(true, "a.com", 8443), "a.com:8443");
+        assert_eq!(
+            request_head("GET", "[::1]:8080", "/a", &[], 0),
+            "GET /a HTTP/1.1\r\nHost: [::1]:8080\r\nConnection: close\r\nUser-Agent: Streamerz\r\n\r\n"
+        );
     }
 
     /// Against a one-shot local server: chunked body, then a redirect to a plain one.
