@@ -620,11 +620,11 @@ fn visible_columns(mins: &[f32], priorities: &[u64], hidden: &[bool], fit: f32) 
     visible
 }
 
-/// Narrows `widths` to `fit` (each keeps a readable minimum), or widens the last one to fill it.
-/// `fit` 0 means unknown: nothing changes.
 /// The narrowest a column shrinks to.
 const MIN_WIDTH: f32 = 48.;
 
+/// Narrows `widths` to `fit` (each keeps a readable minimum), or widens the last one to fill it.
+/// `fit` 0 means unknown: nothing changes.
 #[cfg(test)]
 pub fn fit_widths(widths: &mut [f32], fit: f32) {
     fit_widths_above(widths, &vec![MIN_WIDTH; widths.len()], fit);
@@ -669,7 +669,67 @@ pub fn fit_widths_above(widths: &mut [f32], mins: &[f32], fit: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::fit_widths;
+    use super::{fit_widths, Action};
+    use serde_json::json;
+
+    fn ids(model: &serde_json::Value) -> Vec<String> {
+        Action::actions(model)
+            .into_iter()
+            .map(|action| action.id(model))
+            .collect()
+    }
+
+    #[test]
+    fn a_model_lists_its_buttons_and_the_defaults_fill_in() {
+        assert_eq!(ids(&json!({})), ["add", "edit", "toggle", "delete"]);
+        let model = json!({"actions": ["edit", "no-such", {"id": "test", "label": "Test", "icon": "play"}, 7]});
+        assert_eq!(ids(&model), ["edit", "test"]);
+        assert!(matches!(Action::actions(&model)[1], Action::Custom(2)));
+        assert_eq!(Action::Custom(2).label(&model), "Test");
+        // A switch column adds On/Off; connections add Connect, and all of them for two rows or more.
+        let model = json!({"actions": ["add"], "switchToggle": true, "connection": {}, "rows": [{}, {}]});
+        assert_eq!(
+            ids(&model),
+            ["add", "toggle", "connect", "connect-all", "disconnect-all"]
+        );
+        let one = json!({"actions": [], "connection": {}, "rows": [{}]});
+        assert_eq!(ids(&one), ["connect"]);
+    }
+
+    #[test]
+    fn row_buttons_follow_the_cores_can_flags() {
+        let model = json!({
+            "actions": ["edit", "delete", {"id": "test", "needs": "row"}, {"id": "off", "enabled": false}],
+            "rows": [{"can": {"delete": false}}, {"can": {"test": false}}]
+        });
+        assert!(Action::Edit.enabled(&model, Some(0)));
+        assert!(!Action::Delete.enabled(&model, Some(0)));
+        assert!(Action::Delete.enabled(&model, Some(1)));
+        assert!(!Action::Edit.enabled(&model, None), "a row action needs a row");
+        assert!(
+            !Action::Edit.enabled(&model, Some(usize::MAX)),
+            "a row past the end is none"
+        );
+        assert!(Action::Add.enabled(&model, None));
+        assert!(Action::Custom(2).enabled(&model, Some(0)));
+        assert!(!Action::Custom(2).enabled(&model, Some(1)));
+        assert!(!Action::Custom(2).enabled(&model, None));
+        assert!(!Action::Custom(3).enabled(&model, Some(0)));
+    }
+
+    #[test]
+    fn connect_says_what_it_will_do() {
+        let model = json!({"connection": {"canConnect": true}, "rows": [{"connected": true}, {"connected": false}]});
+        assert_eq!(Action::Connect.row_label(&model, Some(0)), "btn.disconnect");
+        assert_eq!(Action::Connect.row_label(&model, Some(1)), "btn.connect");
+        assert_eq!(Action::Connect.row_label(&model, None), "btn.connect_all");
+        let all_up = json!({"connection": {"canConnect": false}, "rows": [{}, {}]});
+        assert_eq!(Action::Connect.row_label(&all_up, None), "btn.disconnect_all");
+        let empty = json!({"connection": {}, "rows": []});
+        assert_eq!(Action::Connect.row_label(&empty, None), "btn.connect");
+        assert!(!Action::Connect.enabled(&empty, None));
+        assert!(Action::Connect.enabled(&model, None));
+    }
 
     #[test]
     fn narrow_tables_drop_secondary_columns_without_hiding_identity() {

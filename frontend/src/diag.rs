@@ -394,6 +394,17 @@ mod tests {
     }
 
     #[test]
+    fn civil_dates_cover_leap_days_and_times_before_1970() {
+        // 2024-02-29 23:59:59 UTC.
+        assert_eq!(civil_from_unix(1_709_251_199), (2024, 2, 29, 23, 59, 59));
+        assert_eq!(civil_from_unix(1_709_251_200), (2024, 3, 1, 0, 0, 0));
+        assert_eq!(civil_from_unix(-1), (1969, 12, 31, 23, 59, 59));
+        assert_eq!(civil_from_unix(951_782_400), (2000, 2, 29, 0, 0, 0));
+        // A clock set before 1970 gives the epoch, not a panic.
+        assert_eq!(format_utc_stamp(UNIX_EPOCH - Duration::from_secs(5)), "19700101-000000");
+    }
+
+    #[test]
     fn ui_report_matches_crash_summary_header_and_redacts_home() {
         let dir = std::env::temp_dir().join(format!("streamerz-diag-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
