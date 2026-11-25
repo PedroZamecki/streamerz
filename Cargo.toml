@@ -23,7 +23,6 @@ tokio = { version = "1.53.3", features = [
     "io-util",
     "fs",
     "process",
-    "signal",
 ] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = [
@@ -75,6 +74,10 @@ codegen-units = 16
 panic = "abort"
 strip = true
 
+# Signals only end the program on Unix (main.rs `ended`); Windows has none to catch.
+[target.'cfg(unix)'.dependencies]
+tokio = { version = "1.53.3", features = ["signal"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3.6"
 # Already in the build through ksni (same version): the Secret Service for secrets.rs.
@@ -84,6 +87,7 @@ libc = "0.2"
 
 [target."cfg(windows)".dependencies]
 tray-icon = { version = "0.26.0", default-features = false }
+# Media_Core: SpeechSynthesizer::SynthesizeTextToStreamAsync is gated on it (voice.rs), though unnamed.
 windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "Media_Core", "Media_SpeechSynthesis", "Storage_Streams", "UI_Notifications", "Win32_System_WinRT",
     # Sounds (sound/wasapi.rs).
     "Win32_Devices_FunctionDiscovery", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security",
