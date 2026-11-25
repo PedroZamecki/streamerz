@@ -358,3 +358,90 @@ test("alert-box: queue never deadlocks without animationend, mutes voice, and gu
   h.emitAlert({ kind: "gift", platform: "tiktok", user: "Dee", userId: "d1", args: { giftId: 1, giftName: "Rose", repeatCount: 2 } });
   assert.equal(h.window.alertBox.waiting.length, 1);
 });
+
+test("chat-aloud: serializes async speak calls, cancels on disable/skip, and bounds queue", async () => {
+  const { script } = readExample("chat-aloud/files/index.html");
+  const pending = [];
+  const h = harness({
+    ids: ["caption"],
+    settings: { platforms: ["twitch"], prefix: "%user% says", volume: 100, skipCommands: true, skipLinks: true, maxLength: 200 },
+    speak: text => new Promise(resolve => {
+      const a = new h.MockAudio("/speech/" + pending.length);
+      pending.push({ text, audio: a, resolve: () => resolve(a) });
+    }),
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Two messages arrive while first speak() is still pending: second must wait, not overlap.
+  h.emitChat({ platform: "twitch", user: "a$&b", text: "first message" });
+  h.emitChat({ platform: "twitch", user: "bob", text: "second message" });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].text, "a$&b says first message");
+
+  // Turning reading off while synthesis is in flight cancels playback and clears the queue.
+  h.emitControl("on", false);
+  pending[0].resolve();
+  await new Promise(r => setImmediate(r));
+  assert.equal(pending[0].audio.played, undefined);
+  assert.equal(pending.length, 1);
+
+  // Messages arriving while off are dropped.
+  h.emitChat({ platform: "twitch", user: "carol", text: "ignored while off" });
+  h.emitControl("on", true);
+  assert.equal(pending.length, 1);
+});
+
+test("chat: cancels fade timers on trim and isolates cross-platform moderation", () => {
+  const { script } = readExample("chat/files/index.html");
+  const h = harness({
+    ids: ["chat"],
+    settings: { platforms: ["twitch", "kick"], max: 2, fadeAfter: 10 },
+  });
+  vm.runInContext(script, h.ctx);
+
+  h.emitChat({ platform: "twitch", user: "a", userId: "1", msgId: "m1", text: "one" });
+  h.emitChat({ platform: "kick", user: "b", userId: "2", msgId: "m1", text: "two" });
+  assert.equal(h.timers.size, 4);
+
+  // Deleting msgId "m1" on twitch must not remove kick's msgId "m1", and must clear twitch's timers.
+  h.emitRemoved({ platform: "twitch", msgId: "m1", userId: "" });
+  assert.equal(h.byId.chat.children.length, 1);
+  assert.equal(h.byId.chat.children[0].dataset.user, "kick:2");
+  assert.equal(h.timers.size, 2);
+
+  // Empty msgId + empty userId must not wipe unrelated messages.
+  h.emitChat({ platform: "kick", user: "c", userId: "", msgId: "", text: "no id" });
+  h.emitRemoved({ platform: "kick", msgId: "", userId: "" });
+  assert.equal(h.byId.chat.children.length, 2);
+
+  // Trimming when max is exceeded clears timers of trimmed messages.
+  h.emitChat({ platform: "twitch", user: "d", userId: "3", msgId: "m3", text: "three" });
+  assert.equal(h.byId.chat.children.length, 2);
+  assert.equal(h.timers.size, 4);
+});
+
+test("danmaku and emote-wall: handle zero-width sources, fallback cleanup, and moderation", () => {
+  const dan = readExample("danmaku/files/index.html");
+  const h = harness({ ids: ["sky"], settings: { platforms: ["twitch"], speed: 5, most: 10 } });
+  h.byId.sky.clientWidth = 0;
+  vm.runInContext(dan.script, h.ctx);
+  // Zero width + zero offsetWidth must not lock a lane with Infinity.
+  const origLine = h.streamerz.line;
+  h.streamerz.line = l => { const el = origLine(l); el.offsetWidth = 0; return el; };
+  h.emitChat({ platform: "twitch", user: "a", userId: "1", msgId: "1", text: "hi" });
+  assert.equal(h.byId.sky.children.length, 1);
+  h.advance(7000);
+  h.runDueTimers();
+  assert.equal(h.byId.sky.children.length, 0);
+
+  // Emote wall handles missing platforms array and cleans up on fallback timer.
+  const ew = readExample("emote-wall/files/index.html");
+  const h2 = harness({ ids: ["wall"], settings: { seconds: 3, most: 10 } });
+  vm.runInContext(ew.script, h2.ctx);
+  h2.emitChat({ platform: "twitch", user: "a", msgId: "1", parts: [{ e: "Kappa", u: "https://e/1.png" }] });
+  assert.equal(h2.byId.wall.children.length, 1);
+  assert.equal(h2.byId.wall.children[0].dataset.user, "twitch:");
+  h2.advance(5000);
+  h2.runDueTimers();
+  assert.equal(h2.byId.wall.children.length, 0);
+});

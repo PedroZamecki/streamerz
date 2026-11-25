@@ -83,10 +83,15 @@ streamerz.onSettings(s => {
   trim();
 });
 
+function drop(el) {
+  if (el._timers) el._timers.forEach(clearTimeout);
+  el.remove();
+}
+
 // Only as many messages as the setting says stay on the page.
 function trim() {
   const max = Math.max(1, Number(settings.max) || 15);
-  while (chat.children.length > max) chat.firstChild.remove();
+  while (chat.children.length > max) drop(chat.firstChild);
 }
 
 function add(line) {
@@ -104,8 +109,10 @@ function add(line) {
   trim();
   const seconds = Number(settings.fadeAfter) || 0;
   if (seconds > 0) {
-    setTimeout(() => el.classList.add("gone"), seconds * 1000);
-    setTimeout(() => el.remove(), seconds * 1000 + 800);
+    el._timers = [
+      setTimeout(() => el.classList.add("gone"), seconds * 1000),
+      setTimeout(() => drop(el), seconds * 1000 + 800),
+    ];
   }
 }
 
@@ -115,7 +122,8 @@ streamerz.chat(add, {
   history: 10,
   removed: r => {
     for (const el of [...chat.children]) {
-      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.remove();
+      const samePlatform = !r.platform || (el.dataset.user || "").startsWith(r.platform + ":");
+      if (r.msgId ? (el.dataset.msg === r.msgId && samePlatform) : (r.userId && el.dataset.user === r.platform + ":" + r.userId)) drop(el);
     }
   },
 });

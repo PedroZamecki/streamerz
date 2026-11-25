@@ -14,8 +14,9 @@
 <script>
 // Each chat message is spoken (streamerz.speak, needs voice.speak) in turn, as an <audio> of this page,
 // so OBS hears it on this source. The live controls Reading and Skip turn it off and skip one.
-let s = {}, on = true, now = null;
+let s = {}, on = true, now = null, busy = false, seq = 0;
 const waiting = [];
+const MAX_WAITING = 50;
 
 function fit(line) {
   let text = String(line.text || "").trim();
@@ -24,29 +25,47 @@ function fit(line) {
   const most = Number(s.maxLength) || 0;
   if (most > 0 && text.length > most) text = text.slice(0, most).replace(/\s+\S*$/, "");
   if (!/[\p{L}\p{N}]/u.test(text)) return "";
-  const before = String(s.prefix || "").replace(/%user%/g, line.user || "");
+  const before = String(s.prefix || "").replace(/%user%/g, () => line.user || "");
   return (before ? before + " " : "") + text;
 }
 
+function stopCurrent() {
+  seq++;
+  if (now) {
+    const audio = now;
+    now = null;
+    audio.pause();
+    if (audio.onended) audio.onended();
+  }
+}
+
 async function next() {
-  if (now || !on || !waiting.length) return;
+  if (busy || !on || !waiting.length) return;
   const line = waiting.shift();
   const text = fit(line);
   if (!text) return next();
+  busy = true;
+  const run = ++seq;
   try {
-    now = await streamerz.speak(text, s.voice ? { voice: s.voice } : {});
-    now.volume = Math.min(1, (Number(s.volume ?? 100) || 0) / 100);
+    const audio = await streamerz.speak(text, s.voice ? { voice: s.voice } : {});
+    if (!on || run !== seq) return;
+    now = audio;
+    audio.volume = Math.max(0, Math.min(1, (Number(s.volume ?? 100) || 0) / 100));
     if (s.caption !== false) (caption.textContent = line.user), (caption.hidden = false);
     window.lastSpoken = text;
     await new Promise(done => {
-      now.onended = now.onerror = done;
-      now.play().catch(done);
+      audio.onended = audio.onerror = done;
+      audio.play().catch(done);
     });
   } catch (e) {
     streamerz.log("Read chat aloud: " + e.message);
+  } finally {
+    if (run === seq) {
+      caption.hidden = true;
+      now = null;
+    }
+    busy = false;
   }
-  caption.hidden = true;
-  now = null;
   next();
 }
 
@@ -57,18 +76,24 @@ streamerz.onSettings(next_ => {
 });
 
 streamerz.chat(line => {
-  if (!(s.platforms || []).includes(line.platform)) return;
+  if (!on) return;
+  if (Array.isArray(s.platforms) && !s.platforms.includes(line.platform)) return;
+  if (waiting.length >= MAX_WAITING) waiting.shift();
   waiting.push(line);
   next();
 });
 
 streamerz.control("on", value => {
   on = value !== false;
-  if (!on && now) now.pause(), now.onended && now.onended();
-  if (on) next();
+  if (!on) {
+    waiting.length = 0;
+    stopCurrent();
+  } else {
+    next();
+  }
 });
 streamerz.control("skip", (at, old) => {
-  if (old !== undefined && now) now.pause(), now.onended && now.onended();
+  if (old !== undefined) stopCurrent();
 });
 </script>
 </body>

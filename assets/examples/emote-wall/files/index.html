@@ -19,35 +19,43 @@
 let settings = streamerz.settings;
 const wall = document.getElementById("wall");
 const limit = () => Math.max(1, Math.min(200, Number(settings.most) || 80));
+function drop(image) {
+  clearTimeout(image._timer);
+  image.remove();
+}
 streamerz.onSettings(s => {
   settings = s;
-  while (wall.children.length > limit()) wall.firstChild.remove();
+  while (wall.children.length > limit()) drop(wall.firstChild);
 });
 streamerz.chat(line => {
-  if (!settings.platforms.includes(line.platform) || line.deleted) return;
+  if ((Array.isArray(settings.platforms) && !settings.platforms.includes(line.platform)) || line.deleted) return;
   let added = 0;
   for (const part of line.parts || []) {
     if (!part.u || !part.e) continue;
     if (added >= Math.max(1, Math.min(50, Number(settings.perMessage) || 12)) || wall.children.length >= limit()) break;
     added++;
+    const seconds = Math.max(2, Number(settings.seconds) || 8);
     const image = document.createElement("img");
     image.className = "emote";
     image.alt = part.e;
     image.src = part.u;
     image.dataset.msg = line.msgId || "";
-    image.dataset.user = line.platform + ":" + line.userId;
+    image.dataset.user = line.platform + ":" + (line.userId || "");
     image.style.left = Math.random() * 90 + "%";
     image.style.setProperty("--size", Math.max(24, Number(settings.size) || 80) + "px");
-    image.style.setProperty("--seconds", Math.max(2, Number(settings.seconds) || 8) + "s");
+    image.style.setProperty("--seconds", seconds + "s");
     image.style.setProperty("--drift", (Math.random() - .5) * 240 + "px");
     image.style.setProperty("--turn", (Math.random() - .5) * 120 + "deg");
-    image.addEventListener("animationend", () => image.remove());
-    image.addEventListener("error", () => image.remove());
+    const clean = () => drop(image);
+    image._timer = setTimeout(clean, (seconds + 1) * 1000);
+    image.addEventListener("animationend", clean, { once: true });
+    image.addEventListener("error", clean, { once: true });
     wall.append(image);
   }
 }, { removed: r => {
   for (const image of [...wall.children]) {
-    if (r.msgId ? image.dataset.msg === r.msgId : image.dataset.user === r.platform + ":" + r.userId) image.remove();
+    const samePlatform = !r.platform || (image.dataset.user || "").startsWith(r.platform + ":");
+    if (r.msgId ? (image.dataset.msg === r.msgId && samePlatform) : (r.userId && image.dataset.user === r.platform + ":" + r.userId)) drop(image);
   }
 }});
 </script>
