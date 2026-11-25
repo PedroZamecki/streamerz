@@ -56,7 +56,20 @@ pub fn event(engine: &Rc<Engine>, event: &Value) {
         return;
     }
     let key = account(engine);
-    let detail = &event[action.strip_prefix("shared_chat_").unwrap_or(action)];
+    let detail = &event[match action {
+        "approve_unban_request" | "deny_unban_request" => "unban_request",
+        "add_blocked_term" | "add_permitted_term" | "remove_blocked_term" | "remove_permitted_term" => "automod_terms",
+        _ => action,
+    }];
+    let reason = if let Some(terms) = detail["terms"].as_array() {
+        terms.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+    } else {
+        detail["reason"]
+            .as_str()
+            .or_else(|| detail["moderator_message"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
     STATE.with_borrow_mut(|s| {
         if s.account != key {
             *s = State {
@@ -71,7 +84,7 @@ pub fn event(engine: &Rc<Engine>, event: &Value) {
         let id = s.next_id.to_string();
         s.rows.push(
             json!({"id": id, "action": action, "source": event["source_broadcaster_user_name"], "moderator": event["moderator_user_name"],
-            "target": detail["user_name"], "reason": detail["reason"], "received": crate::oauth::now()}),
+            "target": detail["user_name"], "reason": reason, "received": crate::oauth::now()}),
         );
     });
     crate::host::changed();
@@ -102,6 +115,49 @@ pub fn table(engine: &Rc<Engine>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eventsub_activity_displays_shared_targets_and_resolution_details() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.twitch.channel_id = "owner".into());
+            let cases = [
+                (
+                    "shared_chat_ban",
+                    "shared_chat_ban",
+                    json!({"user_name":"Alice", "reason":"Spam"}),
+                    json!("Alice"),
+                    "Spam",
+                ),
+                (
+                    "approve_unban_request",
+                    "unban_request",
+                    json!({"user_name":"Bob", "moderator_message":"Approved"}),
+                    json!("Bob"),
+                    "Approved",
+                ),
+                (
+                    "add_blocked_term",
+                    "automod_terms",
+                    json!({"terms":["first term", "second term"]}),
+                    Value::Null,
+                    "first term, second term",
+                ),
+            ];
+            for (action, field, detail, target, reason) in cases {
+                let mut entry = json!({"broadcaster_user_id":"owner", "action":action});
+                entry[field] = detail;
+                event(&engine, &entry);
+                let row = &table(&engine)["rows"][0]["cells"];
+                assert_eq!(row[3], target);
+                assert_eq!(row[4], reason);
+            }
+            let count = table(&engine)["rows"].as_array().unwrap().len();
+            event(&engine, &json!({"action":"unknown","broadcaster_user_id":"owner"}));
+            assert_eq!(table(&engine)["rows"].as_array().unwrap().len(), count);
+        });
+    }
 
     #[test]
     fn moderation_activity_is_scoped_and_bounded() {
