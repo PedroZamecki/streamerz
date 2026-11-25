@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -425,6 +426,9 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
     }
 }
 
+const WEBSOCKET_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_WEBSOCKET_CLIENTS: usize = 128;
+
 /// A custom WebSocket server: each connection gets a sessionId; fires Opened / Message (data) /
 /// Closed, with sessionId and ip.
 async fn custom_server(e: Rc<Engine>, s: Obj) {
@@ -447,32 +451,38 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
         "custom server {name} on ws://{addr}:{port}{}",
         field(&s, "endpoint")
     ));
+    let mut open = tokio::task::JoinSet::new();
     loop {
-        let Ok((tcp, peer)) = l.accept().await else { continue };
-        let (e, s) = (e.clone(), s.clone());
-        tokio::task::spawn_local(async move {
-            let allowed = e.config().websockets.allowed_origins.clone();
-            let Ok((ws, _)) = accept(tcp, field(&s, "endpoint").to_string(), allowed, false).await else {
-                return;
-            };
-            let mut args = Obj::new();
-            args.insert("sessionId".into(), crate::engine::uuid().into());
-            args.insert("ip".into(), peer.ip().to_string().into());
-            ws_event(&e, false, "Open", &s, args.clone());
-            let (_sink, mut stream) = ws.split();
-            while let Some(Ok(m)) = stream.next().await {
-                match frame_text(m) {
-                    Some(Ok(data)) => {
-                        let mut a = args.clone();
-                        a.insert("data".into(), data.into());
-                        ws_event(&e, false, "Message", &s, a);
+        tokio::select! {
+            accepted = l.accept(), if open.len() < MAX_WEBSOCKET_CLIENTS => {
+                let Ok((tcp, peer)) = accepted else { continue };
+                let (e, s) = (e.clone(), s.clone());
+                open.spawn_local(async move {
+                    let allowed = e.config().websockets.allowed_origins.clone();
+                    let Ok((ws, _)) = accept(tcp, field(&s, "endpoint").to_string(), allowed, false).await else {
+                        return;
+                    };
+                    let mut args = Obj::new();
+                    args.insert("sessionId".into(), crate::engine::uuid().into());
+                    args.insert("ip".into(), peer.ip().to_string().into());
+                    ws_event(&e, false, "Open", &s, args.clone());
+                    let (_sink, mut stream) = ws.split();
+                    while let Some(Ok(m)) = stream.next().await {
+                        match frame_text(m) {
+                            Some(Ok(data)) => {
+                                let mut a = args.clone();
+                                a.insert("data".into(), data.into());
+                                ws_event(&e, false, "Message", &s, a);
+                            }
+                            Some(Err(())) => break,
+                            None => {}
+                        }
                     }
-                    Some(Err(())) => break,
-                    None => {}
-                }
+                    ws_event(&e, false, "Close", &s, args);
+                });
             }
-            ws_event(&e, false, "Close", &s, args);
-        });
+            Some(_) = open.join_next(), if !open.is_empty() => {}
+        }
     }
 }
 
@@ -537,9 +547,16 @@ async fn accept(
         *r.status_mut() = status;
         Err(r)
     };
-    let ws = tokio_tungstenite::accept_hdr_async(tcp, check)
-        .await
-        .map_err(|e| e.to_string())?;
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    let message_limit = config.max_frame_size;
+    let config = config.read_buffer_size(4 << 10).max_message_size(message_limit);
+    let ws = tokio::time::timeout(
+        WEBSOCKET_IO_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async_with_config(tcp, check, Some(config)),
+    )
+    .await
+    .map_err(|_| "WebSocket handshake timed out".to_owned())?
+    .map_err(|e| e.to_string())?;
     Ok((ws, is_bridge.load(Ordering::Relaxed)))
 }
 
@@ -1701,17 +1718,20 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
     ));
     // The TikTok extension connects here: its files follow this address and version.
     crate::tiktok_bridge::refresh(&e.config());
-    let mut next = 0u64;
+    let mut open = tokio::task::JoinSet::new();
     loop {
-        let Ok((tcp, _)) = l.accept().await else { continue };
-        next += 1;
-        let (e, s, id) = (e.clone(), s.clone(), next);
-        tokio::task::spawn_local(async move {
-            if let Err(err) = connection(&e, &s, tcp, id).await {
-                crate::warn(format!("WebSocket client: {err}"));
+        tokio::select! {
+            accepted = l.accept(), if open.len() < MAX_WEBSOCKET_CLIENTS => {
+                let Ok((tcp, _)) = accepted else { continue };
+                let (e, s, id) = (e.clone(), s.clone(), next_websocket_id());
+                open.spawn_local(async move {
+                    if let Err(err) = connection(&e, &s, tcp, id).await {
+                        crate::warn(format!("WebSocket client: {err}"));
+                    }
+                });
             }
-            e.listen(id, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
-        });
+            Some(_) = open.join_next(), if !open.is_empty() => {}
+        }
     }
 }
 
@@ -1981,6 +2001,32 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
     }
 }
 
+fn next_websocket_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Removes subscriptions even when the listener aborts this connection.
+struct Subscription<'a>(&'a Engine, u64);
+
+impl Drop for Subscription<'_> {
+    fn drop(&mut self) {
+        self.0
+            .listen(self.1, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
+    }
+}
+
+async fn send_websocket(
+    sink: &mut (impl futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
+    message: Message,
+) -> Result<(), String> {
+    tokio::time::timeout(WEBSOCKET_IO_TIMEOUT, sink.send(message))
+        .await
+        .map_err(|_| "WebSocket write timed out".to_owned())?
+        .map_err(|error| error.to_string())
+}
+
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
     let local_peer = tcp.peer_addr().is_ok_and(|peer| peer.ip().to_canonical().is_loopback());
     let bridge = crate::tiktok_bridge::set_up(&e.config());
@@ -1990,14 +2036,16 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
         return Ok(());
     }
     let (mut sink, mut stream) = ws.split();
-    let (salt, challenge) = (random_b64(), random_b64());
     let mut hello = json!({"timestamp": crate::engine::globals::iso_now(), "session": crate::engine::uuid(),
         "request": "Hello", "info": info(e)});
-    if s.enable_auth {
+    let expected_auth = s.enable_auth.then(|| {
+        let (salt, challenge) = (random_b64(), random_b64());
+        let expected = auth_response(&s.auth_password, &salt, &challenge);
         hello["authentication"] = json!({"salt": salt, "challenge": challenge});
-    }
+        expected
+    });
     let text = |v: Value| Message::Text(v.to_string().into());
-    sink.send(text(hello)).await.map_err(|e| e.to_string())?;
+    send_websocket(&mut sink, text(hello)).await?;
     let close = |reason: &'static str| {
         Message::Close(Some(CloseFrame {
             code: CloseCode::from(4009),
@@ -2005,6 +2053,7 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
         }))
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<str>>();
+    let _subscription = Subscription(e, conn);
     let mut subs = events::Subs::new();
     let mut authed = false;
     loop {
@@ -2017,25 +2066,25 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                 };
                 let req = serde_json::from_str::<Value>(&t).ok().filter(|r| r.get("request").and_then(Value::as_str).is_some());
                 let Some(req) = req else {
-                    sink.send(Message::Text("{ \"error\": \"malformed command\" }".into())).await.map_err(|e| e.to_string())?;
+                    send_websocket(&mut sink, Message::Text("{ \"error\": \"malformed command\" }".into())).await?;
                     continue;
                 };
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
                 let kind = req["request"].as_str().unwrap_or("");
                 if kind == "StreamerzShowWindow" && local_peer {
                     crate::host::show();
-                    sink.send(text(ok(&id, json!({"accepted": true})))).await.map_err(|e| e.to_string())?;
+                    send_websocket(&mut sink, text(ok(&id, json!({"accepted": true})))).await?;
                     continue;
                 }
                 if s.enable_auth && s.auth_enforce && !authed && kind != "Authenticate" {
-                    let _ = sink.send(close("Authentication required")).await;
+                    let _ = send_websocket(&mut sink, close("Authentication required")).await;
                     return Ok(());
                 }
                 let reply = match kind {
                     "Authenticate" => {
                         let given = req.get("authentication").and_then(Value::as_str).unwrap_or("");
-                        if s.enable_auth && given != auth_response(&s.auth_password, &salt, &challenge) {
-                            let _ = sink.send(close("Authentication failed")).await;
+                        if expected_auth.as_deref().is_some_and(|expected| given != expected) {
+                            let _ = send_websocket(&mut sink, close("Authentication failed")).await;
                             return Ok(());
                         }
                         authed = true;
@@ -2058,10 +2107,10 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                     }
                     _ => request(e, &req, s.enable_auth, authed).await,
                 };
-                sink.send(text(reply)).await.map_err(|e| e.to_string())?;
+                send_websocket(&mut sink, text(reply)).await?;
             }
-            Some(ev) = rx.recv() => {
-                sink.send(Message::Text(ev.to_string().into())).await.map_err(|e| e.to_string())?;
+            Some(event) = rx.recv() => {
+                send_websocket(&mut sink, Message::Text(event.to_string().into())).await?;
             }
         }
     }
@@ -2425,6 +2474,27 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn websocket_subscriptions_are_removed_when_the_connection_is_dropped() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let id = next_websocket_id();
+            assert_ne!(id, next_websocket_id());
+            let subscription = Subscription(&e, id);
+            let mut subs = events::Subs::new();
+            events::update(&mut subs, &json!({"General": ["Custom"]}), true);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            e.listen(id, &subs, &tx);
+            e.emit("General", "Custom", || json!({"sequence": 0}));
+            let event: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(event["event"], json!({"source": "General", "type": "Custom"}));
+            assert_eq!(event["data"]["sequence"], 0);
+            drop(subscription);
+            assert!(!e.listening("General", "Custom"));
+        });
+    }
+
     #[test]
     fn optional_auth_protects_core_requests_and_allows_compatibility_reads() {
         let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
