@@ -12,7 +12,7 @@ use std::{cell::RefCell, rc::Rc};
 #[derive(Default)]
 struct State {
     account: String,
-    generation: u64,
+    pending_status_user: Option<String>,
     operation: u64,
     busy: bool,
     error: String,
@@ -140,22 +140,21 @@ pub fn event(engine: &Rc<Engine>, event: &Value, message: bool) {
     let key = account(engine);
     STATE.with_borrow_mut(|state| {
         if state.account != key {
-            let generation = state.generation.wrapping_add(1);
             let operation = state.operation.wrapping_add(1);
             *state = State {
                 account: key,
-                generation,
                 operation,
                 ..State::default()
             };
         }
-        state.generation = state.generation.wrapping_add(1);
+        if state.pending_status_user.as_deref() == Some(id) {
+            state.pending_status_user = None;
+        }
         let previous = state
             .rows
             .iter()
-            .find(|row| row["user_id"].as_str() == Some(id))
-            .cloned();
-        state.rows.retain(|row| row["user_id"].as_str() != Some(id));
+            .position(|row| row["user_id"].as_str() == Some(id))
+            .map(|at| state.rows.remove(at));
         if event["low_trust_status"] == "none" && !message {
             return;
         }
@@ -186,12 +185,13 @@ pub fn act(engine: &Rc<Engine>, id: &str, status: &str) -> Result<Value, String>
     let twitch = engine
         .twitch()
         .ok_or_else(|| tr("moderation.twitch_disconnected").to_string())?;
-    let (generation, operation) = STATE.with_borrow_mut(|s| {
+    let operation = STATE.with_borrow_mut(|s| {
         s.operation = s.operation.wrapping_add(1);
+        s.pending_status_user = Some(id.to_owned());
         s.busy = true;
         s.error.clear();
         s.message.clear();
-        (s.generation, s.operation)
+        s.operation
     });
     let engine = engine.clone();
     let id = id.to_string();
@@ -216,8 +216,9 @@ pub fn act(engine: &Rc<Engine>, id: &str, status: &str) -> Result<Value, String>
                 return;
             }
             s.busy = false;
+            let no_new_event = s.pending_status_user.take().is_some();
             match result {
-                Ok(_) if s.generation == generation => {
+                Ok(_) if no_new_event => {
                     if status == "none" {
                         s.rows.retain(|row| row["user_id"].as_str() != Some(id.as_str()));
                     } else if let Some(row) = s
@@ -241,11 +242,9 @@ pub fn table(engine: &Rc<Engine>) -> Value {
     let key = account(engine);
     STATE.with_borrow_mut(|s| {
         if s.account != key {
-            let generation = s.generation.wrapping_add(1);
             let operation = s.operation.wrapping_add(1);
             *s = State {
                 account: key,
-                generation,
                 operation,
                 ..State::default()
             };
@@ -271,6 +270,39 @@ pub fn table(engine: &Rc<Engine>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_updates_survive_other_users_events_and_respect_target_events() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.twitch.channel_id = "owner".into());
+            crate::scenario::fakes::install(&engine, &json!({"twitch": {}}), None);
+            let message = json!({"broadcaster_user_id":"owner", "user_id":"5", "low_trust_status":"active_monitoring"});
+            event(&engine, &message, false);
+            act(&engine, "5", "RESTRICTED").unwrap();
+            let mut other = message.clone();
+            other["user_id"] = "6".into();
+            event(&engine, &other, false);
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                STATE.with_borrow(|s| s.rows[0]["low_trust_status"].clone()),
+                "restricted"
+            );
+            act(&engine, "5", "RESTRICTED").unwrap();
+            event(&engine, &message, false);
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                STATE.with_borrow(|s| s.rows.last().unwrap()["low_trust_status"].clone()),
+                "active_monitoring"
+            );
+            crate::scenario::fakes::uninstall();
+        });
+    }
 
     #[test]
     fn observed_users_are_scoped_and_can_be_restricted() {
