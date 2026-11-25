@@ -930,4 +930,27 @@ mod tests {
         let fresh = Readiness::default();
         assert!(fresh.action_has_warnings(&action(json!([]), json!([{"type": 14004}]))));
     }
+
+    #[test]
+    fn the_report_names_each_service_and_what_it_holds_back() {
+        let mut ready = ready(working(), Some(""));
+        ready.obs.push(Link {
+            id: "a".into(),
+            name: "Stream PC".into(),
+            up: false,
+        });
+        ready.others.push((Service::Spotify, Simple::default()));
+        let services = ready.services();
+        let entry = |id: &str| services.iter().find(|s| s["service"] == id).unwrap().clone();
+        assert_eq!(entry("twitch")["status"], "ready");
+        assert_eq!(entry("twitch")["plan"], "none");
+        assert_eq!(entry("kick")["status"], "not_set_up");
+        assert_eq!(entry("obs")["status"], "attention");
+        assert_eq!(entry("obs")["issue"]["code"], "obs_disconnected");
+        assert_eq!(entry("slobs")["status"], "not_set_up");
+        assert_eq!(entry("spotify")["status"], "not_set_up");
+        // A warning repeated by two needs of one type is listed once.
+        let found = ready.for_code(Kind::SubAction, 30, "");
+        assert_eq!(codes(&found), ["obs_disconnected"]);
+    }
 }
