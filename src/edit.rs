@@ -478,7 +478,7 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
         .and_then(|v| v.get("groups"))
         .and_then(Value::as_object);
     if let Some(g) = imported_groups {
-        crate::groups::import_meta(&mut Config::default(), g)?;
+        crate::groups::validate_import_meta(g)?;
     }
     for a in raw {
         let mut a: Action = serde_json::from_value(Value::Object(a)).map_err(|e| format!("bad action: {e}"))?;
