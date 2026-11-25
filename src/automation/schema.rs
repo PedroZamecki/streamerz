@@ -1993,6 +1993,8 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
 
 /// A core trigger's fields; None when it has no form.
 pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
+    let code = u32::try_from(kind).ok()?;
+    crate::types::name(crate::types::TRIGGERS, code)?;
     Some(match kind {
         401 | 402 => &[("commandId", "field.command", Command)],
         701 => &[("timerId", "field.timer", Timer)],
@@ -2101,7 +2103,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         501..=504 => &[("watcherId", "field.watcher_none_any", FileWatcher)],
         511 => &[("tailId", "field.file_tail_none_any", FileTail)],
         703 | 704 => &[("processName", "field.process_name", Text)],
-        code if crate::docs::available("trigger", code as u32) => &[],
+        _ if crate::docs::available("trigger", code) => &[],
         _ => return None,
     })
 }
@@ -2182,6 +2184,12 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_out_of_range_trigger_does_not_inherit_a_known_types_schema() {
+        assert!(trigger_fields(101).is_some());
+        assert!(trigger_fields(u64::from(u32::MAX) + 1 + 101).is_none());
     }
 
     /// Every field's label and every choice is a translation key, so the form reads in the user's
