@@ -424,21 +424,16 @@ impl Readiness {
     }
 
     /// Whether any trigger or sub-action of `action` has a warning, for its row.
+    /// The Actions page asks this for every row it draws: nested sub-actions are read in place.
     pub fn action_has_warnings(&self, action: &crate::model::Action) -> bool {
-        fn any(ready: &Readiness, list: &[Obj]) -> bool {
-            list.iter().any(|sub| {
-                !ready.warnings(Kind::SubAction, sub).is_empty()
-                    || sub.get("subActions").and_then(Value::as_array).is_some_and(|kids| {
-                        let kids: Vec<Obj> = kids.iter().filter_map(|kid| kid.as_object().cloned()).collect();
-                        any(ready, &kids)
-                    })
-            })
+        fn has(ready: &Readiness, sub: &Obj) -> bool {
+            !ready.warnings(Kind::SubAction, sub).is_empty() || kids(sub).any(|kid| has(ready, kid))
         }
         action
             .triggers
             .iter()
             .any(|trigger| !self.warnings(Kind::Trigger, trigger).is_empty())
-            || any(self, &action.sub_actions)
+            || action.sub_actions.iter().any(|sub| has(self, sub))
     }
 
     /// Each service, and whether it is as it should be, for a report's header.
@@ -517,14 +512,23 @@ fn report_item(action: &crate::model::Action, kind: Kind, id: String, item: &Obj
         "warnings": warnings_json(warnings)})
 }
 
-fn collect_subs(
+/// The sub-actions nested in `sub` (a group's, an If's), as they are stored.
+fn kids(sub: &Obj) -> impl Iterator<Item = &Obj> {
+    sub.get("subActions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+}
+
+fn collect_subs<'a>(
     ready: &Readiness,
     action: &crate::model::Action,
-    list: &[Obj],
+    list: impl Iterator<Item = &'a Obj>,
     path: &mut edit::Path,
     out: &mut Vec<Value>,
 ) {
-    for (index, sub) in list.iter().enumerate() {
+    for (index, sub) in list.enumerate() {
         path.push(index);
         let warnings = ready.warnings(Kind::SubAction, sub);
         if !warnings.is_empty() {
@@ -536,12 +540,7 @@ fn collect_subs(
                 &warnings,
             ));
         }
-        let kids: Vec<Obj> = sub
-            .get("subActions")
-            .and_then(Value::as_array)
-            .map(|kids| kids.iter().filter_map(|kid| kid.as_object().cloned()).collect())
-            .unwrap_or_default();
-        collect_subs(ready, action, &kids, path, out);
+        collect_subs(ready, action, kids(sub), path, out);
         path.pop();
     }
 }
@@ -580,7 +579,7 @@ pub fn report(engine: &Engine, action: &str, kind: Option<Kind>) -> Result<Value
             }
         }
         if kind != Some(Kind::Trigger) {
-            collect_subs(&ready, action, &action.sub_actions, &mut Vec::new(), &mut items);
+            collect_subs(&ready, action, action.sub_actions.iter(), &mut Vec::new(), &mut items);
         }
     }
     let count = |severity: &str| {
@@ -912,5 +911,23 @@ mod tests {
             assert_eq!(local["ok"], true);
             assert!(type_report(&engine, Kind::Trigger, u32::MAX, "").is_err());
         });
+    }
+
+    #[test]
+    fn a_row_has_warnings_when_any_nested_item_does() {
+        let action = |subs: serde_json::Value, triggers: serde_json::Value| -> crate::model::Action {
+            serde_json::from_value(json!({"id": "a", "name": "A", "subActions": subs, "triggers": triggers})).unwrap()
+        };
+        let ready = ready(working(), Some("partner"));
+        assert!(!ready.action_has_warnings(&action(json!([]), json!([]))));
+        // An OBS sub-action two groups deep, with no OBS set up.
+        let deep = json!([{"type": 1020}, {"type": 128, "subActions": [
+            {"type": 1020}, {"type": 128, "subActions": [{"type": 30}]}]}]);
+        assert!(ready.action_has_warnings(&action(deep, json!([]))));
+        let local = json!([{"type": 128, "subActions": [{"type": 1020}, "not an object"]}]);
+        assert!(!ready.action_has_warnings(&action(local, json!([]))));
+        // A trigger alone is enough.
+        let fresh = Readiness::default();
+        assert!(fresh.action_has_warnings(&action(json!([]), json!([{"type": 14004}]))));
     }
 }
