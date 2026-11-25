@@ -18,8 +18,8 @@ use serde_json::{json, Value};
 
 /// The file's own version: a file made by a newer Streamerz says so instead of half working.
 const FORMAT: u64 = 1;
-/// The most a file may unpack to: what a zip can hold. A file that says less and holds more is refused.
-const LIMIT: u64 = u32::MAX as u64;
+/// The most a package may unpack to in memory (128 MiB). A file that says less and holds more is refused.
+const LIMIT: u64 = 128 << 20;
 pub const EXTENSION: &str = "streamerz";
 
 /// A template file, read and checked, not yet installed.
@@ -55,12 +55,11 @@ pub fn pack(c: &Config, group: &str, values: bool) -> Result<Vec<u8>, String> {
     if !groups::exists(c, group) {
         return Err(format!("no group named {group}"));
     }
-    let mut meta = groups::meta_with_files(c, group);
+    let mut meta = groups::meta(c, group);
+    meta.store.clear();
     let mut files = Vec::new();
     for f in &mut meta.files {
-        let bytes = b64()
-            .decode(&f.content)
-            .map_err(|_| format!("cannot read {}", f.name))?;
+        let bytes = groups::read_file(c, group, &f.name).ok_or_else(|| format!("cannot read {}", f.name))?;
         f.size = bytes.len() as u64;
         f.content = String::new();
         files.push((format!("files/{}", f.name), bytes));
@@ -95,8 +94,15 @@ pub fn unpacked(entries: &[(String, Vec<u8>)]) -> Result<Package, String> {
     let entry = |name: &str| entries.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice());
     let about: Value = serde_json::from_slice(entry("template.json").ok_or("this is not a template file")?)
         .map_err(|e| format!("its template.json is damaged ({e})"))?;
-    if about["format"].as_u64().is_none_or(|f| f > FORMAT) {
-        return Err("this template was made by a newer Streamerz: update to import it".into());
+    if !about.is_object() {
+        return Err("its template.json is damaged".into());
+    }
+    match about["format"].as_u64() {
+        Some(1..=FORMAT) => {}
+        Some(f) if f > FORMAT => {
+            return Err("this template was made by a newer Streamerz: update to import it".into());
+        }
+        _ => return Err("its template.json is damaged (invalid format)".into()),
     }
     let name = about["name"].as_str().unwrap_or("").trim().to_string();
     if name.is_empty() || name.len() > 200 {
@@ -105,10 +111,17 @@ pub fn unpacked(entries: &[(String, Vec<u8>)]) -> Result<Package, String> {
     let mut meta: Meta =
         serde_json::from_value(about["meta"].clone()).map_err(|e| format!("its template.json is damaged ({e})"))?;
     meta.store.clear();
-    let mut size = 0;
+    let mut size = 0u64;
+    let mut seen_files = std::collections::HashSet::with_capacity(meta.files.len());
     for f in &mut meta.files {
         let bytes = entry(&format!("files/{}", f.name)).ok_or_else(|| format!("the file {} is missing", f.name))?;
-        size += bytes.len() as u64;
+        if !groups::valid_file_path(&f.name) || !seen_files.insert(f.name.to_ascii_lowercase()) {
+            return Err(format!("invalid or duplicate file name: {}", f.name));
+        }
+        size = size
+            .checked_add(bytes.len() as u64)
+            .filter(|&s| s <= LIMIT)
+            .ok_or_else(|| "the template files exceed the size limit".to_string())?;
         f.size = 0;
         f.content = b64().encode(bytes);
     }
@@ -117,7 +130,10 @@ pub fn unpacked(entries: &[(String, Vec<u8>)]) -> Result<Package, String> {
         Some(bytes) => serde_json::from_slice(bytes).map_err(|e| format!("its actions.json is damaged ({e})"))?,
         None => Obj::new(),
     };
-    export.entry("data").or_insert_with(|| json!({}));
+    let data = export.entry("data").or_insert_with(|| json!({}));
+    if !data.is_object() {
+        return Err("its actions.json is damaged".into());
+    }
     // Only this group comes in, under the name the file says: whatever else the export names is dropped.
     let ours = export.entry("streamerz").or_insert_with(|| json!({}));
     if !ours.is_object() {
@@ -225,9 +241,178 @@ pub fn install(c: &mut Config, p: &Package) -> Result<(String, Vec<&'static str>
     install_as(c, p, &target)
 }
 
+/// Give incoming items fresh IDs and names whenever they collide with items belonging to another
+/// group, so importing a package never silently overwrites unrelated actions, commands or timers.
+fn isolate_conflicts(c: &Config, export: &mut Obj, group: &str) {
+    use std::collections::{HashMap, HashSet};
+    let (own_commands, own_timers) = groups::members(c, group);
+    let own_commands: HashSet<&str> = own_commands.iter().map(String::as_str).collect();
+    let own_timers: HashSet<&str> = own_timers.iter().map(String::as_str).collect();
+    fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
+        v.get(k).and_then(Value::as_str).unwrap_or("")
+    }
+    fn obj_str<'a>(o: &'a Obj, k: &str) -> &'a str {
+        o.get(k).and_then(Value::as_str).unwrap_or("")
+    }
+
+    let mut ext_action_ids: HashSet<String> = c
+        .actions
+        .actions
+        .iter()
+        .filter(|a| a.group != group)
+        .map(|a| a.id.clone())
+        .collect();
+    let mut ext_action_names: HashSet<String> = c
+        .actions
+        .actions
+        .iter()
+        .filter(|a| a.group != group)
+        .map(|a| a.name.clone())
+        .collect();
+    let mut ext_command_ids: HashSet<String> = c
+        .commands
+        .iter()
+        .filter(|o| obj_str(o, "group") != group && !own_commands.contains(obj_str(o, "id")))
+        .map(|o| obj_str(o, "id").to_string())
+        .collect();
+    let mut ext_command_names: HashSet<String> = c
+        .commands
+        .iter()
+        .filter(|o| obj_str(o, "group") != group && !own_commands.contains(obj_str(o, "id")))
+        .map(|o| obj_str(o, "name").to_string())
+        .collect();
+    let mut ext_timer_ids: HashSet<String> = c
+        .timers
+        .iter()
+        .filter(|o| obj_str(o, "group") != group && !own_timers.contains(obj_str(o, "id")))
+        .map(|o| obj_str(o, "id").to_string())
+        .collect();
+    let mut ext_timer_names: HashSet<String> = c
+        .timers
+        .iter()
+        .filter(|o| obj_str(o, "group") != group && !own_timers.contains(obj_str(o, "id")))
+        .map(|o| obj_str(o, "name").to_string())
+        .collect();
+
+    let pick_name = |base: &str, taken: &mut HashSet<String>| -> String {
+        let first = format!("{base} ({group})");
+        if taken.insert(first.clone()) {
+            return first;
+        }
+        for n in 2..1000 {
+            let candidate = format!("{base} ({group} {n})");
+            if taken.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+        let fallback = format!("{base} ({})", crate::engine::uuid());
+        taken.insert(fallback.clone());
+        fallback
+    };
+
+    let mut remap_list = |list: &str, taken_ids: &mut HashSet<String>, taken_names: &mut HashSet<String>| {
+        let mut id_map = HashMap::new();
+        if let Some(items) = export
+            .get_mut("data")
+            .and_then(|d| d.get_mut(list))
+            .and_then(Value::as_array_mut)
+        {
+            for item in items {
+                let id = str_of(item, "id").to_string();
+                let name = str_of(item, "name").to_string();
+                let Some(obj) = item.as_object_mut() else { continue };
+                if !id.is_empty() && !taken_ids.insert(id.clone()) {
+                    let fresh = crate::engine::uuid();
+                    taken_ids.insert(fresh.clone());
+                    obj.insert("id".into(), fresh.clone().into());
+                    id_map.insert(id, fresh);
+                }
+                if !name.is_empty() && !taken_names.insert(name.clone()) {
+                    let unique = pick_name(&name, taken_names);
+                    obj.insert("name".into(), unique.into());
+                }
+            }
+        }
+        id_map
+    };
+
+    let cmd_map = remap_list("commands", &mut ext_command_ids, &mut ext_command_names);
+    let timer_map = remap_list("timers", &mut ext_timer_ids, &mut ext_timer_names);
+    let action_map = remap_list("actions", &mut ext_action_ids, &mut ext_action_names);
+
+    if !cmd_map.is_empty() || !timer_map.is_empty() || !action_map.is_empty() {
+        fn rewrite_subs(subs: &mut [Value], action_map: &HashMap<String, String>) {
+            for sub in subs {
+                if let Some(obj) = sub.as_object_mut() {
+                    if let Some(old) = obj.get("actionId").and_then(Value::as_str) {
+                        if let Some(new) = action_map.get(old) {
+                            obj.insert("actionId".into(), new.clone().into());
+                        }
+                    }
+                    if let Some(kids) = obj.get_mut("subActions").and_then(Value::as_array_mut) {
+                        rewrite_subs(kids, action_map);
+                    }
+                }
+            }
+        }
+        if let Some(actions) = export
+            .get_mut("data")
+            .and_then(|d| d.get_mut("actions"))
+            .and_then(Value::as_array_mut)
+        {
+            for action in actions {
+                if let Some(triggers) = action.get_mut("triggers").and_then(Value::as_array_mut) {
+                    for tr in triggers {
+                        if let Some(obj) = tr.as_object_mut() {
+                            if let Some(old) = obj.get("commandId").and_then(Value::as_str) {
+                                if let Some(new) = cmd_map.get(old) {
+                                    obj.insert("commandId".into(), new.clone().into());
+                                }
+                            }
+                            if let Some(old) = obj.get("timerId").and_then(Value::as_str) {
+                                if let Some(new) = timer_map.get(old) {
+                                    obj.insert("timerId".into(), new.clone().into());
+                                }
+                            }
+                        }
+                    }
+                }
+                if !action_map.is_empty() {
+                    if let Some(subs) = action.get_mut("subActions").and_then(Value::as_array_mut) {
+                        rewrite_subs(subs, &action_map);
+                    }
+                }
+            }
+        }
+        if let Some(meta) = export
+            .get_mut("streamerz")
+            .and_then(|s| s.get_mut("groups"))
+            .and_then(|g| g.get_mut(group))
+            .and_then(Value::as_object_mut)
+        {
+            for (field, map) in [("commands", &cmd_map), ("timers", &timer_map)] {
+                if !map.is_empty() {
+                    if let Some(ids) = meta.get_mut(field).and_then(Value::as_array_mut) {
+                        for id in ids {
+                            if let Some(new) = id.as_str().and_then(|old| map.get(old)) {
+                                *id = new.clone().into();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Bring a package in under this group name, whatever it is called in the file.
 pub fn install_as(c: &mut Config, p: &Package, group: &str) -> Result<(String, Vec<&'static str>), String> {
-    let export = renamed(p.export.clone(), &p.name, group);
+    let group = group.trim();
+    if group.is_empty() {
+        return Err("the group name cannot be empty".into());
+    }
+    let mut export = renamed(p.export.clone(), &p.name, group);
+    isolate_conflicts(c, &mut export, group);
     let unsupported = crate::edit::import(c, &export)?;
     // What comes with actions, commands or timers is a group of actions, connected to its overlay.
     let count = |k: &str| p.export["data"][k].as_array().map_or(0, Vec::len);
@@ -455,10 +640,36 @@ pub(crate) async fn request(e: &std::rc::Rc<crate::engine::Engine>, req: &Value)
     }
 }
 
+/// Whether `url` is an allowed template download address: `https://` or loopback `http://`.
+fn allowed_download_url(url: &str) -> bool {
+    if let Some(rest) = url.strip_prefix("https://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        return !authority.is_empty() && !authority.contains('@');
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some((ipv6, after)) = bracketed.split_once(']') else {
+            return false;
+        };
+        if !after.is_empty() && !after.starts_with(':') {
+            return false;
+        }
+        ipv6
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
 /// A template file from a web address, whole. Only `https` (and `http` on this computer).
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
-    let local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost");
-    if !url.starts_with("https://") && !local {
+    if !allowed_download_url(url) {
         return Err("a template is downloaded from an https address".into());
     }
     let answer = crate::http::request("GET", url, &[], &[]).await?;
@@ -814,5 +1025,112 @@ mod tests {
             <a href="/overlays"></a><a href="mailto:a@b.c"></a><div style="background:url('img/b.png')"></div>
             <img src="${dynamic}"><a href="//cdn.example/x.js"></a>"#;
         assert_eq!(links(html), ["page2.html", "js/a.js", "img/b.png"]);
+    }
+
+    #[test]
+    fn download_url_checks_exact_loopback_host_and_rejects_spoofing() {
+        assert!(allowed_download_url("https://example.com/a.streamerz"));
+        assert!(allowed_download_url("http://127.0.0.1:8080/a.streamerz"));
+        assert!(allowed_download_url("http://localhost/a.streamerz"));
+        assert!(allowed_download_url("http://[::1]:9000/a.streamerz"));
+        for bad in [
+            "http://localhost.evil.com/a.streamerz",
+            "http://127.0.0.1.evil.com/a.streamerz",
+            "http://localhost@evil.com/a.streamerz",
+            "https://user@example.com/a.streamerz",
+            "http://example.com/a.streamerz",
+            "file:///etc/passwd",
+        ] {
+            assert!(!allowed_download_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pack_fails_when_disk_file_missing_and_unpacked_rejects_duplicate_file_bomb() {
+        let mut c = wheel();
+        let path = groups::file_path(&c, "Wheel", "img/wheel.png").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(pack(&c, "Wheel", false).unwrap_err().contains("cannot read"));
+        groups::remove(&mut c, "Wheel");
+
+        // Duplicate entries in template.json referencing one file must be rejected before encoding.
+        let mut entries = vec![
+            (
+                "template.json".into(),
+                json!({
+                    "format": 1,
+                    "name": "Dup",
+                    "meta": {
+                        "files": [
+                            {"name": "a.html"},
+                            {"name": "A.HTML"}
+                        ]
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+            ("files/a.html".into(), b"<p>hi</p>".to_vec()),
+            ("files/A.HTML".into(), b"<p>hi</p>".to_vec()),
+        ];
+        assert!(unpacked(&entries).unwrap_err().contains("duplicate"));
+
+        // Format 0 is rejected as invalid format rather than accepted.
+        entries[0].1 = json!({"format": 0, "name": "Zero", "meta": {}})
+            .to_string()
+            .into_bytes();
+        assert!(unpacked(&entries).is_err());
+    }
+
+    #[test]
+    fn install_as_never_overwrites_items_in_other_groups_and_rejects_empty_name() {
+        let mut maker = wheel();
+        let cmd_id = crate::engine::uuid();
+        maker.commands.push(
+            json!({"id": cmd_id, "name": "SpinCmd", "group": "Wheel"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let mut trig = crate::edit::new_trigger(401);
+        trig.insert("commandId".into(), cmd_id.clone().into());
+        maker.actions.actions[0].triggers.push(trig);
+        let action_id = maker.actions.actions[0].id.clone();
+        let pkg = open(&pack(&maker, "Wheel", false).unwrap()).unwrap();
+
+        let mut user = Config::default();
+        assert!(install_as(&mut user, &pkg, "   ").is_err());
+        // Pre-populate another group with the exact same action ID, action name, command ID and command name.
+        let mut existing = crate::edit::new_action("Spin", "Other");
+        existing.id = action_id.clone();
+        user.actions.actions.push(existing);
+        user.commands.push(
+            json!({"id": cmd_id, "name": "SpinCmd", "group": "Other"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let (group, _) = install_as(&mut user, &pkg, "Wheel Copy").unwrap();
+        assert_eq!(group, "Wheel Copy");
+        // Both the original "Other" action/command and the imported "Wheel Copy" ones exist intact.
+        assert_eq!(user.actions.actions.len(), 2);
+        assert_eq!(user.commands.len(), 2);
+        assert!(user
+            .actions
+            .actions
+            .iter()
+            .any(|a| a.group == "Other" && a.id == action_id && a.name == "Spin"));
+        let imported_action = user.actions.actions.iter().find(|a| a.group == "Wheel Copy").unwrap();
+        assert_ne!(imported_action.id, action_id);
+        assert_ne!(imported_action.name, "Spin");
+        let imported_cmd = user.commands.iter().find(|c| c["group"] == "Wheel Copy").unwrap();
+        assert_ne!(imported_cmd["id"].as_str(), Some(cmd_id.as_str()));
+        // Trigger commandId was rewritten to the new command ID.
+        assert_eq!(
+            imported_action.triggers[0]["commandId"].as_str(),
+            imported_cmd["id"].as_str()
+        );
+        groups::remove(&mut maker, "Wheel");
+        groups::remove(&mut user, "Wheel Copy");
     }
 }
