@@ -1927,4 +1927,55 @@ mod tests {
         assert!(std::fs::read_to_string(&saved).unwrap().contains("StreamerzPreflight"));
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn a_platform_choice_is_saved_by_index_or_name_and_checked() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let id = json!(["main", "aitum-multistream", "Kick"]).to_string();
+            set_output_by_id(&engine, &id, &json!("YouTube")).unwrap();
+            let prefs = engine.config().obs_output_prefs.clone();
+            assert_eq!(prefs.len(), 1);
+            assert_eq!(
+                (prefs[0].platform.as_deref(), prefs[0].required),
+                (Some("youtube"), true)
+            );
+            let output = make_output("main", "aitum-multistream", "Kick", "Kick", None);
+            assert_eq!(choice_index_for(&output, &prefs, "main"), 3);
+            assert_eq!(choice_index_for(&output, &prefs, "other"), 0, "another OBS has its own");
+            // Ignore keeps a pref that isn't required; Auto removes it.
+            set_output_by_id(&engine, &id, &json!(5)).unwrap();
+            let prefs = engine.config().obs_output_prefs.clone();
+            assert_eq!((prefs.len(), prefs[0].required), (1, false));
+            assert_eq!(choice_index_for(&output, &prefs, "main"), 5);
+            set_output_by_id(&engine, &id, &json!("auto")).unwrap();
+            assert!(engine.config().obs_output_prefs.is_empty());
+            for (bad_id, value) in [
+                (id.as_str(), json!(6)),
+                (id.as_str(), json!("orkut")),
+                (id.as_str(), json!(true)),
+                ("[\"main\"]", json!(1)),
+                ("not json", json!(1)),
+                ("[\"\", \"obs\", \"main\"]", json!(1)),
+            ] {
+                assert!(set_output_by_id(&engine, bad_id, &value).is_err(), "{bad_id} {value}");
+            }
+            assert!(engine.config().obs_output_prefs.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_auto_choice_names_the_platform_it_found() {
+        let labels = option_labels(Some("kick"));
+        assert_eq!(labels.len(), OUTPUT_PLATFORM_VALUES.len());
+        assert_eq!(
+            labels[0],
+            trf("preflight.platform_auto_detected", &[("platform", "Kick")])
+        );
+        for unknown in [None, Some(""), Some("orkut")] {
+            assert_eq!(option_labels(unknown)[0], tr("preflight.platform_auto_unknown"));
+        }
+        assert!(same("@Ana Bia", "anabia") && !same("", "") && !same("ana", "bia"));
+    }
 }
