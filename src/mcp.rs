@@ -138,6 +138,15 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
 
+const PROTOCOL_VERSION: &str = "2025-06-18";
+
+fn protocol_version(requested: &Value) -> &'static str {
+    match requested.as_str() {
+        Some("2024-11-05") => "2024-11-05",
+        _ => PROTOCOL_VERSION,
+    }
+}
+
 fn tools() -> Value {
     let list: Vec<Value> = TOOLS
         .iter()
@@ -639,7 +648,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
         || m["jsonrpc"] != "2.0"
         || !m["method"].is_string()
         || m.get("id")
-            .is_some_and(|id| !id.is_null() && !id.is_string() && !id.is_i64() && !id.is_u64())
+            .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
     {
         return Some(rpc_error(Value::Null, -32600, "Invalid Request"));
     }
@@ -649,7 +658,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
     }
     let result = match m["method"].as_str().unwrap_or("") {
         "initialize" => json!({
-            "protocolVersion": m["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "protocolVersion": protocol_version(&m["params"]["protocolVersion"]),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "Streamerz", "version": crate::brand::VERSION},
             "instructions": "Use guide MCP for setup, tool workflows and limitations. Local tools (guide, docs, \
@@ -664,9 +673,18 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
         "tools/list" => tools(),
         "tools/call" => {
             let p = &m["params"];
+            let Some(name) = p["name"].as_str() else {
+                return Some(rpc_error(id, -32602, "name must be a string"));
+            };
+            if !TOOLS.iter().any(|tool| tool.0 == name) {
+                return Some(rpc_error(id, -32602, &format!("no tool {name}")));
+            }
             let empty = json!({});
             let args = p.get("arguments").unwrap_or(&empty);
-            let (text, failed) = match c.call(p["name"].as_str().unwrap_or(""), args).await {
+            if !args.is_object() {
+                return Some(rpc_error(id, -32602, "arguments must be an object"));
+            }
+            let (text, failed) = match c.call(name, args).await {
                 Ok(v) => (serde_json::to_string(&v).unwrap_or_default(), false),
                 Err(e) => (e.format_mcp(), true),
             };
@@ -728,6 +746,7 @@ mod tests {
                 json!([]),
                 json!({"id": 1, "method": "ping"}),
                 json!({"jsonrpc": "2.0", "id": {}, "method": "ping"}),
+                json!({"jsonrpc": "2.0", "id": null, "method": "ping"}),
             ] {
                 assert_eq!(handle(&mut client, &message).await.unwrap()["error"]["code"], -32600);
             }
@@ -1003,19 +1022,70 @@ mod tests {
     }
 
     #[test]
+    fn initialize_negotiates_supported_versions() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut client = Client { ws: None, next: 0 };
+            for (requested, expected) in [
+                ("2024-11-05", "2024-11-05"),
+                ("2025-03-26", "2025-06-18"),
+                ("2025-06-18", "2025-06-18"),
+                ("2099-01-01", "2025-06-18"),
+            ] {
+                let reply = handle(
+                    &mut client,
+                    &json!({
+                        "jsonrpc": "2.0", "id": "init", "method": "initialize",
+                        "params": {"protocolVersion": requested}
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["id"], "init");
+                assert_eq!(reply["result"]["protocolVersion"], expected);
+            }
+        });
+    }
+
+    #[test]
+    fn malformed_tool_calls_return_invalid_params() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut client = Client { ws: None, next: 0 };
+            for params in [
+                json!({}),
+                json!({"name": "no_such_tool"}),
+                json!({"name": "get", "arguments": []}),
+            ] {
+                let reply = handle(
+                    &mut client,
+                    &json!({
+                        "jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": params
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["id"], 42);
+                assert_eq!(reply["error"]["code"], -32602);
+                assert!(reply.get("result").is_none());
+            }
+        });
+    }
+
+    #[test]
     fn structured_mcp_tool_error_includes_title_description_and_recommendation() {
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         rt.block_on(async {
             let mut client = Client { ws: None, next: 0 };
             let reply = handle(
                 &mut client,
-                &json!({"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "no_such_tool"}}),
+                &json!({"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "get"}}),
             )
             .await
             .unwrap();
             assert_eq!(reply["result"]["isError"], true);
             let text = reply["result"]["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("no tool no_such_tool"));
+            assert!(text.contains("missing argument what"));
             assert!(text.contains(crate::i18n::tr("error.recommended_prefix")));
         });
     }
