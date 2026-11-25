@@ -1019,8 +1019,7 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
             let engine = engine.clone();
             tokio::task::spawn_local(async move {
                 match overlays::add_to_obs(&engine, &group, &file).await {
-                    Ok(("updated", name)) => crate::say(trf("overlays.obs.updated", &[("name", &name)])),
-                    Ok((_, name)) => crate::say(trf("overlays.obs.added", &[("name", &name)])),
+                    Ok((what, name)) => told_obs(what, &name),
                     Err(error) => super::prompts::notice(
                         tr("overlays.btn.add_to_obs").into(),
                         trf("overlays.obs.failed", &[("error", &error)]),
@@ -1031,25 +1030,9 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
         }
         "delete" => {
             let (group, file) = row(engine, id)?;
-            let mut result = Ok(());
-            engine.change(|config| {
-                let mut meta = groups::meta(config, &group);
-                meta.files.retain(|f| f.name != file);
-                meta.template.pages.retain(|p| p.file != file);
-                if meta.template.picture == file {
-                    meta.template.picture.clear();
-                }
-                // An overlay with no page left is nothing: it goes whole, unless a group of actions
-                // of its name still uses its settings.
-                let last = !meta.files.iter().any(|f| groups::is_page(&f.name));
-                if last && !groups::listed(config, &group) {
-                    groups::remove(config, &group);
-                    result = Ok(());
-                } else {
-                    result = groups::set_meta(config, &group, meta);
-                }
-            });
-            result.map(|()| json!({"accepted": true}))
+            let mut result = Ok(false);
+            engine.change(|config| result = remove_files(config, &group, Some(&file)));
+            result.map(|_| json!({"accepted": true}))
         }
         "disconnect" => {
             let (group, _) = row(engine, id)?;
@@ -1063,6 +1046,52 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
         }
         _ => Err(format!("no overlay operation {action}")),
     }
+}
+
+/// Says in the log that a page went into OBS: `added`, or `updated` (a source of its name was pointed
+/// at it again).
+fn told_obs(what: &str, name: &str) {
+    let key = if what == "updated" {
+        "overlays.obs.updated"
+    } else {
+        "overlays.obs.added"
+    };
+    crate::say(trf(key, &[("name", name)]));
+}
+
+/// Sends `rounds` of made-up events to an overlay's open pages (Test); what each round was.
+fn send_samples(engine: &Rc<Engine>, group: &str, rounds: u64) -> Vec<Value> {
+    (0..rounds)
+        .map(|_| {
+            let made = sample(engine, group);
+            engine.emit("Test", group, || made.clone());
+            made
+        })
+        .collect()
+}
+
+/// Takes a file out of an overlay (every file with `None`), with its page and its picture. With no
+/// page left the overlay goes whole, unless a group of actions of its name still uses its settings:
+/// then that group stays, and the answer is true.
+fn remove_files(config: &mut crate::Config, group: &str, file: Option<&str>) -> Result<bool, String> {
+    let mut meta = groups::meta(config, group);
+    match file {
+        None => meta.files.clear(),
+        Some(file) if meta.files.iter().any(|f| f.name == file) => meta.files.retain(|f| f.name != file),
+        Some(file) => return Err(format!("{group} has no file {file}")),
+    }
+    let have = |name: &str| meta.files.iter().any(|f| f.name == name);
+    meta.template.pages.retain(|p| have(&p.file));
+    if !have(&meta.template.picture) {
+        meta.template.picture.clear();
+    }
+    let last = !meta.files.iter().any(|f| groups::is_page(&f.name));
+    if last && !groups::listed(config, group) {
+        groups::remove(config, group);
+        return Ok(false);
+    }
+    groups::set_meta(config, group, meta)?;
+    Ok(last)
 }
 
 /// The inspector as a dialog: the overlay's open pages and what each listens to, the last messages
@@ -1457,12 +1486,14 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     }
 }
 
+/// The words of a permission, as the page form and the import question show it.
 fn permission_label(permission: &str) -> &'static str {
     match permission {
         "chat.read" => "overlays.permission.chat_read",
         "alerts.read" => "overlays.permission.alerts_read",
         "chat.send" => "overlays.permission.chat_send",
         "actions.run" => "overlays.permission.actions_run",
+        "voice.speak" => "overlays.permission.voice_speak",
         _ => "overlays.permission.values_write",
     }
 }
@@ -1586,14 +1617,7 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
                     Err(error) => Err(error),
                 };
                 match result {
-                    Ok((what, name)) => crate::say(trf(
-                        if what == "updated" {
-                            "overlays.obs.updated"
-                        } else {
-                            "overlays.obs.added"
-                        },
-                        &[("name", &name)],
-                    )),
+                    Ok((what, name)) => told_obs(what, &name),
                     Err(error) => super::prompts::notice(
                         tr("overlays.btn.add_to_obs").into(),
                         trf("overlays.obs.partial", &[("error", &error)]),
@@ -2189,34 +2213,10 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
         "delete" => {
             known()?;
             let file = text("file");
-            let mut result = Ok(());
-            let mut kept = false;
-            engine.change(|config| {
-                let mut meta = groups::meta(config, &overlay);
-                if file.is_empty() {
-                    meta.files.clear();
-                } else if meta.files.iter().any(|f| f.name == file) {
-                    meta.files.retain(|f| f.name != file);
-                } else {
-                    result = Err(format!("{overlay} has no file {file}"));
-                    return;
-                }
-                let have = |name: &str| meta.files.iter().any(|f| f.name == name);
-                let pages: Vec<Page> = meta.template.pages.iter().filter(|p| have(&p.file)).cloned().collect();
-                meta.template.pages = pages;
-                if !have(&meta.template.picture) {
-                    meta.template.picture.clear();
-                }
-                // With no page left it is no overlay: it goes whole, unless actions still use its settings.
-                let last = !meta.files.iter().any(|f| groups::is_page(&f.name));
-                if last && !groups::listed(config, &overlay) {
-                    groups::remove(config, &overlay);
-                } else {
-                    kept = last;
-                    result = groups::set_meta(config, &overlay, meta);
-                }
-            });
-            result.map(|()| json!({"groupKept": kept}))
+            let file = (!file.is_empty()).then_some(file.as_str());
+            let mut result = Ok(false);
+            engine.change(|config| result = remove_files(config, &overlay, file));
+            result.map(|kept| json!({"groupKept": kept}))
         }
         "test" => {
             known()?;
@@ -2225,19 +2225,14 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
                 return Err(tr("overlays.test.closed").into());
             }
             let own = req.get("events").is_some() || req.get("topics").is_some();
-            let mut all = Vec::new();
-            if own {
+            let all = if own {
                 let made = json!({"events": req["events"].as_array().cloned().unwrap_or_default(),
                     "topics": req["topics"].as_object().cloned().unwrap_or_default()});
                 engine.emit("Test", &overlay, || made.clone());
-                all.push(made);
+                vec![made]
             } else {
-                for _ in 0..req["rounds"].as_u64().unwrap_or(1).clamp(1, 20) {
-                    let made = sample(engine, &overlay);
-                    engine.emit("Test", &overlay, || made.clone());
-                    all.push(made);
-                }
-            }
+                send_samples(engine, &overlay, req["rounds"].as_u64().unwrap_or(1).clamp(1, 20))
+            };
             Ok(json!({"pages": pages, "sent": all}))
         }
         "inspect" => {
@@ -2324,10 +2319,7 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
             let (engine2, group) = (engine.clone(), overlay.clone());
             crate::overlay_shot::take(ask, move || {
                 // The page is open and listening by now: the made-up events go to it before the picture.
-                for _ in 0..rounds {
-                    let made = sample(&engine2, &group);
-                    engine2.emit("Test", &group, || made.clone());
-                }
+                send_samples(&engine2, &group, rounds);
             })
             .await
         }
@@ -2339,6 +2331,67 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
 mod tests {
     use super::*;
     use crate::engine::tests::{engine, run};
+
+    #[test]
+    fn every_permission_is_told_in_its_own_words() {
+        let mut seen = std::collections::HashSet::new();
+        for (permission, _) in overlays::PERMISSIONS {
+            let key = permission_label(permission);
+            assert!(seen.insert(key), "{permission} is shown as another permission");
+            assert_ne!(tr(key), key, "{permission} has no words in the catalog");
+        }
+        let question = import_question(&json!({"name": "Talker", "permissions": [{"name": "voice.speak"}]}));
+        assert!(question.contains(tr("overlays.permission.voice_speak")), "{question}");
+        assert!(!question.contains(tr("overlays.permission.values_write")), "{question}");
+    }
+
+    #[test]
+    fn deleting_files_takes_their_pages_and_picture_and_the_overlay_with_its_last_page() {
+        use base64::Engine as _;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = crate::Config::default();
+        let file = |name: &str| groups::File {
+            name: name.into(),
+            content: base64::engine::general_purpose::STANDARD.encode("x"),
+            ..Default::default()
+        };
+        let meta = groups::Meta {
+            description: "d".into(),
+            files: vec![file("index.html"), file("chat.html"), file("cover.png")],
+            template: groups::Template {
+                picture: "cover.png".into(),
+                pages: vec![
+                    Page {
+                        file: "index.html".into(),
+                        ..Default::default()
+                    },
+                    Page {
+                        file: "chat.html".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        groups::set_meta(&mut c, "Cleanup", meta).unwrap();
+        assert!(remove_files(&mut c, "Cleanup", Some("nope.html")).is_err());
+        assert_eq!(remove_files(&mut c, "Cleanup", Some("cover.png")), Ok(false));
+        let meta = groups::meta(&c, "Cleanup");
+        assert!(meta.template.picture.is_empty(), "the picture went with its file");
+        assert_eq!(remove_files(&mut c, "Cleanup", Some("chat.html")), Ok(false));
+        assert_eq!(
+            groups::meta(&c, "Cleanup")
+                .template
+                .pages
+                .iter()
+                .map(|p| p.file.as_str())
+                .collect::<Vec<_>>(),
+            ["index.html"]
+        );
+        assert_eq!(remove_files(&mut c, "Cleanup", None), Ok(false));
+        assert!(!groups::exists(&c, "Cleanup"), "no page left: the overlay goes");
+    }
 
     #[test]
     fn overlay_setup_is_explicit_and_destinations_do_not_follow_later_scene_changes() {

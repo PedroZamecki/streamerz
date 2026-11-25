@@ -1568,6 +1568,7 @@
   "overlays.permission.chat_send": "Enviar mensagens como você",
   "overlays.permission.actions_run": "Executar as ações conectadas a ele",
   "overlays.permission.values_write": "Guardar valores próprios",
+  "overlays.permission.voice_speak": "Falar textos em voz alta com as suas vozes",
   "overlays.export.title": "Compartilhar {name}",
   "overlays.export.hint": "Um arquivo .streamerz com as páginas, os arquivos e as configurações, e as ações, os comandos e os timers conectados. Qualquer pessoa pode importar.",
   "overlays.export.file": "Salvar como",
