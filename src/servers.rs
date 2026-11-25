@@ -1555,7 +1555,7 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
             _ => crate::core::pages::delete_global(e, item_id),
         };
     }
-    if !KINDS.contains(&what) && crate::automation::entities::fields(what).is_none() {
+    if !KINDS.contains(&what) && crate::automation::entities::items(&e.config(), what).is_none() {
         return Err(format!("what: one of {}", KINDS.join(", ")));
     }
     let list = |c: &crate::Config| -> Vec<Value> {
@@ -2524,6 +2524,22 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authoring_rejects_entities_without_a_config_list() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            for (operation, entity) in [("StreamerzSave", "quote"), ("StreamerzDelete", "user_group")] {
+                let request = json!({"request": operation, "id": "edit", "what": entity,
+                    "item": {"id": "sample"}, "itemId": "sample"});
+                let reply = answer(&e, &request, true).unwrap();
+                assert_eq!(reply["id"], "edit");
+                assert_eq!(reply["status"], "error");
+                assert!(reply["error"].as_str().unwrap().starts_with("what: one of "));
+            }
+        });
+    }
+
     #[test]
     fn http_body_uses_the_declared_length_and_requires_a_complete_read() {
         let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
