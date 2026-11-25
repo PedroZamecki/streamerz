@@ -4,7 +4,7 @@
 //! lines (the core keeps no more), follows the newest one until the reader scrolls up, and asks the
 //! core for just the lines newer than the last one it has. Pictures are files the core downloaded:
 //! the page asks for the ones it shows and draws them when they land.
-use super::emotes::{EmotePicker, Picked};
+use super::emotes::{EmotePicker, ImageCache, Picked};
 use super::sections::Sections;
 use crate::send;
 use crate::theme::{
@@ -44,6 +44,25 @@ trait Type: Styled + Sized {
 }
 impl<T: Styled> Type for T {}
 
+/// Visit every picture URL referenced by a chat line.
+fn for_each_line_url(line: &Value, mut visit: impl FnMut(&str)) {
+    for part in line["parts"].as_array().into_iter().flatten() {
+        if let Some(url) = part["u"].as_str() {
+            visit(url);
+        }
+    }
+    for badge in line["badges"].as_array().into_iter().flatten() {
+        if let Some(url) = badge["url"].as_str().filter(|url| !url.is_empty()) {
+            visit(url);
+        }
+    }
+    for key in ["picture", "gif", "costIcon"] {
+        if let Some(url) = line[key].as_str().filter(|url| !url.is_empty()) {
+            visit(url);
+        }
+    }
+}
+
 /// The names of our accounts, from the page's model.
 fn value_me(model: &Value) -> Vec<String> {
     model["chat"]["me"]
@@ -73,8 +92,10 @@ static HOVERED: AtomicU64 = AtomicU64::new(0);
 const MOST: usize = 1000;
 /// Pictures asked for in one request.
 const BATCH: usize = 64;
-/// Pictures remembered before the map starts over.
+/// Pictures remembered before stale entries are evicted.
 const REMEMBERED: usize = 3000;
+/// Most pending picture URLs kept queued at once.
+const MAX_MISSING: usize = 512;
 
 /// The page asks to go to another one (Accounts, when no chat is connected).
 pub struct Go(pub String);
@@ -108,9 +129,7 @@ pub struct ChatView {
     /// The box of "Message all".
     all_input: Entity<InputState>,
     reply: Option<(u64, String, String)>,
-    images: HashMap<String, PathBuf>,
-    missing: HashSet<String>,
-    asking_images: bool,
+    images: ImageCache,
     reading: bool,
     read_again: bool,
     error: Option<crate::error::StreamerzError>,
@@ -184,9 +203,7 @@ impl ChatView {
             model: Value::Null,
             all_input,
             reply: None,
-            images: HashMap::new(),
-            missing: HashSet::new(),
-            asking_images: false,
+            images: ImageCache::new(BATCH, REMEMBERED, MAX_MISSING),
             reading: false,
             read_again: false,
             error: None,
@@ -224,6 +241,7 @@ impl ChatView {
 
     /// Pictures arrived: the ones the page waits for are asked for again.
     pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
+        self.images.mark_arrived();
         self.ask_images();
         if self.wants_pictures {
             self.refresh();
@@ -250,11 +268,11 @@ impl ChatView {
                 input.update(cx, |input, cx| put_emote(input, name, url, window, cx));
                 if let Some(picker_ref) = view.picker.as_ref() {
                     if let Some(file) = picker_ref.read(cx).image_file(url) {
-                        view.images.insert(url.clone(), file.clone());
+                        view.images.insert_file(url.clone(), file.clone());
                     }
                 }
-                if !url.is_empty() && !view.images.contains_key(url) {
-                    view.missing.insert(url.clone());
+                if !url.is_empty() && view.images.get(url).is_none() {
+                    view.images.want(url);
                     view.ask_images();
                 }
                 view.ask_suggest(pane, cx);
@@ -275,37 +293,14 @@ impl ChatView {
     }
 
     fn ask_images(&mut self) {
-        if self.asking_images || self.missing.is_empty() {
-            return;
+        if let Some(urls) = self.images.next_batch() {
+            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:images"}));
         }
-        let urls: Vec<&String> = self.missing.iter().take(BATCH).collect();
-        self.asking_images = true;
-        send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:images"}));
     }
 
     /// Note the pictures of a line the page has not got yet.
     fn want(&mut self, line: &Value) {
-        let mut urls: Vec<&str> = Vec::new();
-        for part in line["parts"].as_array().into_iter().flatten() {
-            if let Some(url) = part["u"].as_str() {
-                urls.push(url);
-            }
-        }
-        for badge in line["badges"].as_array().into_iter().flatten() {
-            if let Some(url) = badge["url"].as_str().filter(|url| !url.is_empty()) {
-                urls.push(url);
-            }
-        }
-        for key in ["picture", "gif", "costIcon"] {
-            if let Some(url) = line[key].as_str().filter(|url| !url.is_empty()) {
-                urls.push(url);
-            }
-        }
-        for url in urls {
-            if !self.images.contains_key(url) {
-                self.missing.insert(url.to_owned());
-            }
-        }
+        for_each_line_url(line, |url| self.images.want(url));
     }
 
     pub fn update_model(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
@@ -774,17 +769,22 @@ impl ChatView {
                 }
             }
             "images" => {
-                self.asking_images = false;
-                if let Some(files) = value["files"].as_object() {
-                    if self.images.len() > REMEMBERED {
-                        self.images.clear();
+                let open_card = self.card.as_ref().map(|open| open.read(cx).card.clone());
+                let lines = &self.lines;
+                let more = self.images.apply_reply(&value, || {
+                    let mut keep = HashSet::new();
+                    for line in lines {
+                        for_each_line_url(line, |url| {
+                            keep.insert(url.to_owned());
+                        });
                     }
-                    for (url, file) in files {
-                        if let Some(file) = file.as_str() {
-                            self.images.insert(url.clone(), PathBuf::from(file));
-                            self.missing.remove(url);
-                        }
+                    if let Some(card) = &open_card {
+                        keep.extend(Self::card_urls(card));
                     }
+                    keep
+                });
+                if more {
+                    self.ask_images();
                 }
                 // What the core is still fetching comes with the images topic.
                 if let Some(open) = self.card.clone() {
@@ -861,8 +861,8 @@ impl ChatView {
                 // The words typed, with their emotes drawn as pictures in the box (their pictures asked for).
                 let parts = value["preview"].as_array().cloned().unwrap_or_default();
                 for part in &parts {
-                    if let Some(url) = part["u"].as_str().filter(|url| !self.images.contains_key(*url)) {
-                        self.missing.insert(url.to_owned());
+                    if let Some(url) = part["u"].as_str() {
+                        self.images.want(url);
                     }
                 }
                 self.ask_images();
@@ -953,9 +953,7 @@ impl ChatView {
     /// Ask for the pictures a card needs and the page does not have.
     fn want_card(&mut self, card: &Value) {
         for url in Self::card_urls(card) {
-            if !self.images.contains_key(&url) {
-                self.missing.insert(url);
-            }
+            self.images.want(&url);
         }
         self.ask_images();
     }
@@ -1931,7 +1929,7 @@ impl ChatView {
         }
         let accent = line["accent"].as_str().map(|hex| color(hex, theme.border));
         let line_id = if seq > 0 { seq as usize } else { at };
-        let body = line_content(line, &self.images, line_id, &self.me, cx);
+        let body = line_content(line, self.images.files(), line_id, &self.me, cx);
         let mut column = div().flex().flex_col().flex_1().min_w_0().gap(px(SPACE_XS));
         if let Some(tag) = line["tag"].as_str() {
             column = column.child(

@@ -2,6 +2,7 @@
 //! a gift's price) and opens a searchable grid of them, with "any" first. The core sends the items
 //! (`choices` with `picture`, `detail` and `tip`) and what the field says (`gallery`); the grid is
 //! virtualised and asks the core for the pictures of the rows in view only. Ids stay out of sight.
+use super::emotes::ImageCache;
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, FONT_MICRO, LINE_CAPTION, LINE_MICRO, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
@@ -14,9 +15,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
 
 /// Cells per row, a cell's size and its picture's.
 const COLUMNS: usize = 6;
@@ -25,6 +24,10 @@ const CELL_H: f32 = 92.;
 const PICTURE: f32 = 40.;
 /// Pictures asked for in one request.
 const BATCH: usize = 48;
+/// Pictures remembered before stale entries are evicted.
+const REMEMBERED: usize = 1000;
+/// Most pending picture URLs kept queued at once.
+const MAX_MISSING: usize = 512;
 
 struct Item {
     id: String,
@@ -60,9 +63,7 @@ pub struct Gallery {
     search: Entity<InputState>,
     /// The items the search keeps, by index.
     shown: Vec<usize>,
-    images: HashMap<String, PathBuf>,
-    missing: HashSet<String>,
-    asking: bool,
+    images: ImageCache,
     /// The request id pictures come back with.
     images_id: String,
     /// Reload, as the core described it (`request`, `label`), and whether it is on its way.
@@ -94,9 +95,7 @@ impl Gallery {
             open: false,
             search,
             shown: Vec::new(),
-            images: HashMap::new(),
-            missing: HashSet::new(),
-            asking: false,
+            images: ImageCache::new(BATCH, REMEMBERED, MAX_MISSING),
             images_id: format!("{route}:images"),
             refresh: field["refresh"].clone(),
             refresh_id: format!("{route}:choices"),
@@ -106,6 +105,7 @@ impl Gallery {
             _subscription: subscription,
         };
         gallery.filter(cx);
+        gallery.want_selected();
         // No list yet: load it as the form opens.
         if gallery.refresh["auto"] == true {
             gallery.reload(cx);
@@ -118,6 +118,19 @@ impl Gallery {
         self.shown = (0..self.items.len())
             .filter(|at| query.is_empty() || self.items[*at].label.to_lowercase().contains(&query))
             .collect();
+        self.images.clear_pending();
+    }
+
+    fn want_selected(&mut self) {
+        if let Some(url) = self
+            .items
+            .iter()
+            .find(|item| !self.selected.is_empty() && item.id == self.selected)
+            .map(|item| item.picture.clone())
+        {
+            self.want(&url);
+            self.ask_images();
+        }
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -145,40 +158,40 @@ impl Gallery {
             }
         }
         self.filter(cx);
+        self.want_selected();
         cx.notify();
     }
 
     /// Pictures the grid asked for.
     pub fn images(&mut self, reply: &Value, cx: &mut Context<Self>) {
-        self.asking = false;
-        for (url, file) in reply["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-                self.missing.remove(url);
-            }
+        let items = &self.items;
+        let more = self.images.apply_reply(reply, || {
+            items
+                .iter()
+                .filter(|item| !item.picture.is_empty())
+                .map(|item| item.picture.clone())
+                .collect()
+        });
+        if more {
+            self.ask_images();
         }
         cx.notify();
     }
 
     /// The core downloaded pictures: ask again for the ones still missing.
     pub fn images_arrived(&mut self) {
-        self.asking = false;
+        self.images.mark_arrived();
         self.ask_images();
     }
 
     fn ask_images(&mut self) {
-        if self.asking || self.missing.is_empty() {
-            return;
+        if let Some(urls) = self.images.next_batch() {
+            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": self.images_id}));
         }
-        let urls: Vec<&String> = self.missing.iter().take(BATCH).collect();
-        self.asking = true;
-        send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": self.images_id}));
     }
 
     fn want(&mut self, url: &str) {
-        if url.starts_with("http") && !self.images.contains_key(url) {
-            self.missing.insert(url.to_owned());
-        }
+        self.images.want(url);
     }
 
     /// The icon drawn for "any" and for a picture not here yet (`gallery.icon`, else an image).

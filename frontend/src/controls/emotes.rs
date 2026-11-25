@@ -17,7 +17,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -27,6 +27,128 @@ const CELL: f32 = 40.;
 const PICTURE: f32 = 28.;
 /// Pictures asked for in one request.
 const BATCH: usize = 48;
+/// Pictures remembered before stale entries are evicted.
+const REMEMBERED: usize = 2000;
+/// Most pending picture URLs kept queued at once.
+const MAX_MISSING: usize = 512;
+
+/// Bounded cache of downloaded image files and a FIFO queue of pending HTTP URLs.
+pub(super) struct ImageCache {
+    files: HashMap<String, PathBuf>,
+    unasked: VecDeque<String>,
+    asked: VecDeque<String>,
+    pending: HashSet<String>,
+    asking: bool,
+    batch: usize,
+    max_files: usize,
+    max_pending: usize,
+}
+
+impl ImageCache {
+    pub(super) fn new(batch: usize, max_files: usize, max_pending: usize) -> Self {
+        Self {
+            files: HashMap::new(),
+            unasked: VecDeque::new(),
+            asked: VecDeque::new(),
+            pending: HashSet::new(),
+            asking: false,
+            batch: batch.max(1),
+            max_files: max_files.max(1),
+            max_pending: max_pending.max(1),
+        }
+    }
+
+    pub(super) fn get(&self, url: &str) -> Option<&PathBuf> {
+        self.files.get(url)
+    }
+
+    pub(super) fn files(&self) -> &HashMap<String, PathBuf> {
+        &self.files
+    }
+
+    pub(super) fn insert_file(&mut self, url: String, path: PathBuf) {
+        if self.pending.remove(&url) {
+            self.unasked.retain(|item| item != &url);
+            self.asked.retain(|item| item != &url);
+        }
+        self.files.insert(url, path);
+    }
+
+    /// Queue an HTTP(S) picture URL if it is neither cached nor already queued.
+    pub(super) fn want(&mut self, url: &str) {
+        if !url.starts_with("http") || self.files.contains_key(url) || self.pending.contains(url) {
+            return;
+        }
+        while self.unasked.len() + self.asked.len() >= self.max_pending {
+            if let Some(dropped) = self.asked.pop_front().or_else(|| self.unasked.pop_front()) {
+                self.pending.remove(&dropped);
+            }
+        }
+        let owned = url.to_owned();
+        self.pending.insert(owned.clone());
+        self.unasked.push_back(owned);
+    }
+
+    /// Mark already-asked URLs ready to be queried again after downloads arrive.
+    pub(super) fn mark_arrived(&mut self) {
+        self.unasked.extend(self.asked.drain(..));
+    }
+
+    /// Drop queued URLs (for example when switching tabs or filters).
+    pub(super) fn clear_pending(&mut self) {
+        self.unasked.clear();
+        self.asked.clear();
+        self.pending.clear();
+    }
+
+    /// Take the next batch of unasked URLs, moving them to `asked` so failing URLs cannot starve newer ones.
+    pub(super) fn next_batch(&mut self) -> Option<Vec<String>> {
+        if self.asking || self.unasked.is_empty() {
+            return None;
+        }
+        let count = self.batch.min(self.unasked.len());
+        let mut urls = Vec::with_capacity(count);
+        for _ in 0..count {
+            if let Some(url) = self.unasked.pop_front() {
+                urls.push(url.clone());
+                self.asked.push_back(url);
+            }
+        }
+        self.asking = true;
+        Some(urls)
+    }
+
+    /// Apply an `"images"` reply, evicting stale entries above `max_files` while preserving `active` URLs.
+    /// Returns `true` when more unasked URLs remain and another batch should be sent now.
+    pub(super) fn apply_reply(&mut self, reply: &Value, active: impl FnOnce() -> HashSet<String>) -> bool {
+        self.asking = false;
+        let mut resolved = false;
+        for (url, file) in reply["files"].as_object().into_iter().flatten() {
+            if let Some(file) = file.as_str() {
+                self.files.insert(url.clone(), PathBuf::from(file));
+                if self.pending.remove(url) {
+                    resolved = true;
+                }
+            }
+        }
+        if resolved {
+            self.unasked.retain(|url| self.pending.contains(url));
+            self.asked.retain(|url| self.pending.contains(url));
+        }
+        if self.files.len() > self.max_files {
+            let keep = active();
+            self.files.retain(|url, _| keep.contains(url));
+            if self.files.len() > self.max_files {
+                let excess = self.files.len() - self.max_files;
+                let drop_keys: Vec<String> = self.files.keys().take(excess).cloned().collect();
+                for key in drop_keys {
+                    self.files.remove(&key);
+                }
+            }
+        }
+        !self.unasked.is_empty()
+    }
+}
 
 /// An emote was picked: its name, picture URL, and whether the picker stays open for more.
 pub struct Picked(pub String, pub String, pub bool);
@@ -52,9 +174,7 @@ pub struct EmotePicker {
     folded: HashSet<String>,
     favorites: HashSet<String>,
     input: Entity<InputState>,
-    images: HashMap<String, PathBuf>,
-    missing: HashSet<String>,
-    asking: bool,
+    images: ImageCache,
     error: Option<crate::error::StreamerzError>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -77,9 +197,7 @@ impl EmotePicker {
             folded: HashSet::new(),
             favorites: HashSet::new(),
             input,
-            images: HashMap::new(),
-            missing: HashSet::new(),
-            asking: false,
+            images: ImageCache::new(BATCH, REMEMBERED, MAX_MISSING),
             error: None,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -130,6 +248,7 @@ impl EmotePicker {
         self.frequent = pairs(&data["frequent"]);
         self.data = data;
         self.layout();
+        self.images.clear_pending();
         let wanted: Vec<String> = self.frequent.iter().map(|(_, url)| url.clone()).collect();
         self.want_urls(wanted);
         cx.notify();
@@ -160,27 +279,31 @@ impl EmotePicker {
         if self.rows.iter().all(|row| matches!(row, Row::Head { .. })) {
             self.request(cx);
         }
+        self.images.mark_arrived();
         self.ask_images();
     }
 
     pub fn images(&mut self, value: &Value, cx: &mut Context<Self>) {
-        self.asking = false;
-        for (url, file) in value["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-                self.missing.remove(url);
+        let (frequent, rows) = (&self.frequent, &self.rows);
+        let more = self.images.apply_reply(value, || {
+            let mut urls: HashSet<String> = frequent.iter().map(|(_, url)| url.clone()).collect();
+            for row in rows {
+                if let Row::Cells(cells) = row {
+                    urls.extend(cells.iter().map(|(_, url)| url.clone()));
+                }
             }
+            urls
+        });
+        if more {
+            self.ask_images();
         }
         cx.notify();
     }
 
     fn ask_images(&mut self) {
-        if self.asking || self.missing.is_empty() {
-            return;
+        if let Some(urls) = self.images.next_batch() {
+            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:emoteimages"}));
         }
-        let urls: Vec<&String> = self.missing.iter().take(BATCH).collect();
-        self.asking = true;
-        send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:emoteimages"}));
     }
 
     /// Note the pictures of the rows in view that are not here yet.
@@ -201,9 +324,7 @@ impl EmotePicker {
 
     fn want_urls(&mut self, urls: Vec<String>) {
         for url in urls {
-            if url.starts_with("http") && !self.images.contains_key(&url) {
-                self.missing.insert(url);
-            }
+            self.images.want(&url);
         }
         self.ask_images();
     }
@@ -250,7 +371,7 @@ impl EmotePicker {
                     .into_any_element(),
                 None => div()
                     .text_size(px(FONT_CAPTION))
-.line_height(px(LINE_CAPTION))
+                    .line_height(px(LINE_CAPTION))
                     .text_color(theme.muted_foreground)
                     .child(name.chars().take(3).collect::<String>())
                     .into_any_element(),
@@ -487,6 +608,94 @@ impl Render for EmotePicker {
             ),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::ImageCache;
+    use serde_json::json;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    #[test]
+    fn image_cache_ignores_non_http_and_advances_past_failing_batches() {
+        let mut cache = ImageCache::new(2, 10, 10);
+        cache.want("");
+        cache.want("coins");
+        cache.want("https://a/1");
+        cache.want("https://a/2");
+        cache.want("https://a/3");
+        // Duplicate is ignored.
+        cache.want("https://a/1");
+
+        // First batch takes 1 and 2; if neither resolves (e.g. 404), next batch still reaches 3.
+        assert_eq!(
+            cache.next_batch(),
+            Some(vec!["https://a/1".to_owned(), "https://a/2".to_owned()])
+        );
+        // While in flight, next_batch returns None.
+        assert_eq!(cache.next_batch(), None);
+
+        let more = cache.apply_reply(&json!({"files": {}}), HashSet::new);
+        assert!(more, "unasked URL 3 remains");
+        assert_eq!(cache.next_batch(), Some(vec!["https://a/3".to_owned()]));
+
+        let more = cache.apply_reply(&json!({"files": {"https://a/3": "/tmp/3.png"}}), HashSet::new);
+        assert!(!more, "all queued URLs have been asked");
+        assert_eq!(cache.get("https://a/3"), Some(&PathBuf::from("/tmp/3.png")));
+        assert_eq!(cache.next_batch(), None, "does not spin on unresolved URLs");
+
+        // When downloads arrive, unresolved URLs become askable again.
+        cache.mark_arrived();
+        assert_eq!(
+            cache.next_batch(),
+            Some(vec!["https://a/1".to_owned(), "https://a/2".to_owned()])
+        );
+    }
+
+    #[test]
+    fn image_cache_bounds_pending_and_evicts_only_inactive_files() {
+        let mut cache = ImageCache::new(2, 2, 2);
+        cache.want("https://a/1");
+        cache.want("https://a/2");
+        let _ = cache.next_batch();
+        let _ = cache.apply_reply(&json!({"files": {}}), HashSet::new);
+        // Adding a 3rd URL evicts oldest already-asked URL first.
+        cache.want("https://a/3");
+        assert_eq!(cache.next_batch(), Some(vec!["https://a/3".to_owned()]));
+        let _ = cache.apply_reply(&json!({"files": {}}), HashSet::new);
+        cache.mark_arrived();
+        assert_eq!(
+            cache.next_batch(),
+            Some(vec!["https://a/2".to_owned(), "https://a/3".to_owned()])
+        );
+
+        // Exceeding max_files preserves active URLs and drops inactive ones.
+        let keep = || HashSet::from(["https://a/2".to_owned(), "https://a/3".to_owned()]);
+        let _ = cache.apply_reply(
+            &json!({
+                "files": {
+                    "https://a/1": "/tmp/1.png",
+                    "https://a/2": "/tmp/2.png",
+                    "https://a/3": "/tmp/3.png"
+                }
+            }),
+            keep,
+        );
+        assert!(cache.get("https://a/1").is_none());
+        assert_eq!(cache.get("https://a/2"), Some(&PathBuf::from("/tmp/2.png")));
+        assert_eq!(cache.get("https://a/3"), Some(&PathBuf::from("/tmp/3.png")));
+    }
+
+    #[test]
+    fn image_cache_clear_pending_drops_stale_queue() {
+        let mut cache = ImageCache::new(4, 10, 10);
+        cache.want("https://a/old");
+        cache.clear_pending();
+        assert_eq!(cache.next_batch(), None);
+        cache.mark_arrived();
+        assert_eq!(cache.next_batch(), None);
     }
 }
 
