@@ -40,8 +40,9 @@ fn channel_url(p: &str, user: &str) -> String {
     }
 }
 
-/// "2h 5m", "45m", "30s".
+/// "2h 5m", "45m", "30s" (a start ahead of the clock is "0s").
 pub fn duration(secs: i64) -> String {
+    let secs = secs.max(0);
     let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
     match (h, m) {
         (0, 0) => format!("{s}s"),
@@ -421,5 +422,49 @@ mod tests {
         assert_eq!(duration(7500), "2h 5m");
         assert_eq!(duration(59), "59s");
         assert_eq!(channel_url("kick", "@Absi"), "https://kick.com/absi");
+    }
+
+    /// A stream that started a moment "after" this computer's clock is just live, not "-5s".
+    #[test]
+    fn an_uptime_is_never_negative() {
+        assert_eq!(duration(-5), "0s");
+        assert_eq!(duration(0), "0s");
+        assert_eq!(duration(3600), "1h 0m");
+        assert_eq!(duration(61), "1m");
+    }
+
+    #[test]
+    fn platforms_read_as_source_bits_and_back() {
+        assert_eq!(sources_from("yt tt"), Some(1024 | 4_194_304));
+        assert_eq!(sources_from(""), None);
+        assert_eq!(sources_from("twitch,,"), Some(1));
+        assert_eq!(sources_text(sources_from("kick twitch").unwrap()), "twitch, kick");
+        assert_eq!(sources_text(0), "");
+    }
+
+    #[test]
+    fn channel_links_follow_each_platform() {
+        assert_eq!(channel_url("twitch", "@Ana"), "https://twitch.tv/ana");
+        assert_eq!(channel_url("youtube", "Ana"), "https://youtube.com/@Ana");
+        assert_eq!(channel_url("tiktok", "@ana"), "https://tiktok.com/@ana");
+        assert_eq!(platform_name("youtube"), "YouTube");
+    }
+
+    /// The built-ins are ordinary commands, on every platform, each with its own alias.
+    #[test]
+    fn the_defaults_are_distinct_commands_on_every_platform() {
+        let all = defaults();
+        let mut aliases: Vec<String> = all
+            .iter()
+            .flat_map(crate::commands::aliases)
+            .map(|a| a.to_lowercase())
+            .collect();
+        let count = aliases.len();
+        aliases.dedup();
+        assert_eq!(aliases.len(), count);
+        assert_eq!(count, 5);
+        assert!(all.iter().all(|c| c["sources"] == ALL && c["group"] == "Built-in"));
+        let ids: std::collections::HashSet<&str> = all.iter().filter_map(|c| c["id"].as_str()).collect();
+        assert_eq!(ids.len(), 5);
     }
 }
