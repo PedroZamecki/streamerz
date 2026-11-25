@@ -201,7 +201,7 @@ pub fn sub_action(code: u32) -> Vec<Need> {
     let top = category.split('/').next().unwrap_or_default();
     if let Some(service) = platform_service(top) {
         // Groups of users and the sub counter are kept here, not asked of the platform.
-        let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || matches!(code, 22 | 550);
+        let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || code == 550;
         if local {
             return Vec::new();
         }
@@ -335,6 +335,7 @@ mod tests {
         let needs = sub_action(15);
         assert_eq!(service(&needs, Service::Twitch), Some(Level::Login));
         assert!(!needs.iter().any(|need| matches!(need, Need::TwitchPlan(_))));
+        assert_eq!(service(&sub_action(22), Service::Twitch), Some(Level::Login));
     }
 
     #[test]
@@ -407,7 +408,7 @@ mod tests {
     #[test]
     fn nothing_that_runs_here_alone_needs_a_service() {
         // Logic, files, globals, groups of users and the sub counter are local.
-        for code in [10001, 120, 121, 1001, 1009, 99901, 553, 551, 22, 550] {
+        for code in [10001, 120, 121, 1001, 1009, 99901, 553, 551, 550] {
             assert!(sub_action(code).is_empty(), "sub-action {code}");
         }
         for code in [401, 701, 709] {
@@ -431,8 +432,7 @@ mod tests {
                 continue;
             }
             let top = category.split('/').next().unwrap_or_default();
-            let local =
-                category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || matches!(code, 22 | 550);
+            let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || code == 550;
             let wanted = matches!(
                 top,
                 "Twitch" | "Kick" | "YouTube" | "TikTok" | "OBS Studio" | "Streamlabs Desktop"
