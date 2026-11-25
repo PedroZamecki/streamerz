@@ -70,6 +70,7 @@ pub struct Gallery {
     refresh: Value,
     refresh_id: String,
     pub loading: bool,
+    error: Option<crate::error::StreamerzError>,
     scroll: UniformListScrollHandle,
     id: SharedString,
     _subscription: Subscription,
@@ -100,6 +101,7 @@ impl Gallery {
             refresh: field["refresh"].clone(),
             refresh_id: format!("{route}:choices"),
             loading: false,
+            error: None,
             scroll: UniformListScrollHandle::new(),
             id: SharedString::from(route),
             _subscription: subscription,
@@ -141,6 +143,7 @@ impl Gallery {
         request["id"] = self.refresh_id.clone().into();
         send(request);
         self.loading = true;
+        self.error = None;
         cx.notify();
     }
 
@@ -148,8 +151,9 @@ impl Gallery {
     pub fn set_choices(&mut self, reply: &Value, cx: &mut Context<Self>) {
         self.loading = false;
         if let Some(err) = crate::error::StreamerzError::from_response(reply) {
-            self.spec["status"] = json!(err.summary_line());
+            self.error = Some(err);
         } else {
+            self.error = None;
             self.items = items_of(&reply["choices"]);
             self.spec["status"] = reply["status"].clone();
             // A trigger saved with a gift the old list didn't have may be named now.
@@ -434,6 +438,12 @@ impl Render for Gallery {
             .flex_col()
             .gap(px(SPACE_SM))
             .child(header);
+        if let Some(err) = &self.error {
+            panel = panel.child(super::notice::error(err, cx));
+            if self.items.is_empty() {
+                return panel.into_any_element();
+            }
+        }
         // Loading, failed or empty, said in place of the grid (what is known still shows).
         let status = self.spec["status"].as_str().filter(|_| self.items.is_empty());
         if let Some(status) = status {
@@ -480,9 +490,14 @@ impl Render for Gallery {
             "gallery-rows",
             rows,
             cx.processor(move |gallery, range: Range<usize>, _, cx| {
+                let live_count = any + gallery.shown.len();
                 for at in range.clone().flat_map(|row| row * COLUMNS..(row + 1) * COLUMNS) {
-                    if let Some(index) = at.checked_sub(any).and_then(|at| gallery.shown.get(at)) {
-                        let url = gallery.items[*index].picture.clone();
+                    if let Some(item) = at
+                        .checked_sub(any)
+                        .and_then(|at| gallery.shown.get(at))
+                        .and_then(|&index| gallery.items.get(index))
+                    {
+                        let url = item.picture.clone();
                         gallery.want(&url);
                     }
                 }
@@ -490,7 +505,7 @@ impl Render for Gallery {
                 range
                     .map(|row| {
                         let mut line = div().h(px(CELL_H)).flex();
-                        for at in row * COLUMNS..((row + 1) * COLUMNS).min(count) {
+                        for at in row * COLUMNS..((row + 1) * COLUMNS).min(live_count) {
                             let cell = if at < any {
                                 let icon = Icon::empty()
                                     .path(gallery.icon())
@@ -507,7 +522,13 @@ impl Render for Gallery {
                                     cx,
                                 )
                             } else {
-                                let item = &gallery.items[gallery.shown[at - any]];
+                                let Some(item) = at
+                                    .checked_sub(any)
+                                    .and_then(|i| gallery.shown.get(i))
+                                    .and_then(|&idx| gallery.items.get(idx))
+                                else {
+                                    continue;
+                                };
                                 let (id, label, tip) = (item.id.clone(), item.label.clone(), item.tip.clone());
                                 let picture = gallery.picture(&item.picture, PICTURE, cx);
                                 let detail = (!item.detail.is_empty()).then(|| gallery.detail(&item.detail, true, cx));
@@ -636,6 +657,28 @@ mod tests {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(gallery.read(cx).selected, "g-rose");
+
+            // A failed reload keeps existing items and surfaces the error instead of swallowing it.
+            gallery.update(cx, |gallery, cx| {
+                gallery.set_choices(&json!({"status": "error", "error": "catalog offline"}), cx);
+            });
+            assert!(gallery.read(cx).error.is_some());
+            assert_eq!(gallery.read(cx).items.len(), 3);
+
+            // A successful reload clears the error and replaces choices.
+            gallery.update(cx, |gallery, cx| {
+                gallery.set_choices(
+                    &json!({
+                        "choices": [
+                            {"id": "g-rose", "label": "Rose", "picture": "https://example.com/rose.png", "detail": "5"}
+                        ]
+                    }),
+                    cx,
+                );
+            });
+            assert!(gallery.read(cx).error.is_none());
+            assert_eq!(gallery.read(cx).items.len(), 1);
+            window.render_frame(cx);
         })
         .unwrap();
     }
