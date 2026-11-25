@@ -2766,8 +2766,14 @@ pub(crate) fn handle_notification(
             match kind {
                 "watch_streak" => {
                     let w = &event["watch_streak"];
-                    args.insert("streak".into(), w["streak_count"].clone());
-                    args.insert("pointsAwarded".into(), w["channel_points_awarded"].clone());
+                    // Streamer.bot's names, and the ones Streamerz used before.
+                    for k in ["watchStreak", "streak"] {
+                        args.insert(k.into(), w["streak_count"].clone());
+                    }
+                    for k in ["channelPointsAwarded", "pointsAwarded"] {
+                        args.insert(k.into(), w["channel_points_awarded"].clone());
+                    }
+                    args.insert("watchStreakId".into(), event["message_id"].clone());
                     go(
                         engine,
                         T_WATCH_STREAK,
@@ -3491,6 +3497,7 @@ pub(crate) fn handle_notification(
             event_by(&mut args, event, "moderator", "createdBy");
             let perm = event["is_permanent"].as_bool().unwrap_or(true);
             args.insert("reason".into(), es(event, "/reason").into());
+            args.insert("createdAt".into(), created_at(es(event, "/banned_at")).into());
             args.insert("isPermanent".into(), perm.into());
             if perm {
                 go(
@@ -3538,6 +3545,7 @@ pub(crate) fn handle_notification(
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "user");
             event_by(&mut args, event, "moderator", "createdBy");
+            args.insert("createdAt".into(), created_at("").into());
             // EventSub has one unban for both; Streamer.bot has two triggers.
             go(
                 engine,
@@ -4327,6 +4335,15 @@ pub(crate) fn handle_notification(
             go(engine, code, name, "Twitch/Channel Points", id, &args);
         }
         _ => {}
+    }
+}
+
+/// When a moderation happened, as Streamer.bot's `createdAt`: the event's own time, else now.
+fn created_at(at: &str) -> String {
+    if at.is_empty() {
+        crate::fmt::date(&crate::fmt::now(), "o")
+    } else {
+        at.to_string()
     }
 }
 
