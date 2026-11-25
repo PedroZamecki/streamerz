@@ -146,72 +146,7 @@ pub fn trigger_categorize(name: &str) -> String {
     }
     // Twitch
     else if let Some(rest) = name.strip_prefix("Twitch") {
-        if rest.contains("Shared") {
-            if rest.contains("Session") {
-                "Twitch/Shared Chat/Sessions".into()
-            } else if rest.contains("Sub") || rest.contains("PayItForward") || rest.contains("Upgrade") {
-                "Twitch/Shared Chat/Subscriptions".into()
-            } else if rest.contains("Banned") || rest.contains("Timedout") || rest.contains("Deleted") {
-                "Twitch/Shared Chat/Moderation".into()
-            } else {
-                "Twitch/Shared Chat/Messages & Announcements".into()
-            }
-        } else if rest.contains("Cheer") || rest.contains("Bits") || rest.contains("Coin") || rest.contains("HypeChat")
-        {
-            "Twitch/Chat/Bits & Cheers".into()
-        } else if rest.contains("Whisper") || rest.contains("Announcement") || rest.contains("FirstWord") {
-            "Twitch/Chat/Special Messages".into()
-        } else if rest.contains("ChatMessage")
-            || rest.contains("Deleted")
-            || rest.contains("Clear")
-            || rest.contains("EmoteOnly")
-            || rest.contains("FollowersOnly")
-            || rest.contains("Slow")
-            || rest.contains("SubOnly")
-            || rest.contains("SubscriberOnly")
-        {
-            "Twitch/Chat/Messages & Modes".into()
-        } else if rest.contains("SubGift")
-            || rest.contains("Gift")
-            || rest.contains("Community")
-            || rest.contains("PayItForward")
-            || rest.contains("PrimePaidUpgrade")
-        {
-            "Twitch/Subscriptions/Gift Subscriptions".into()
-        } else if rest.contains("Sub") {
-            "Twitch/Subscriptions/Channel Subscriptions".into()
-        } else if rest.contains("Ban")
-            || rest.contains("TimeOut")
-            || rest.contains("TimedOut")
-            || rest.contains("Untimed")
-            || rest.contains("Unban")
-        {
-            "Twitch/Moderation/Bans & Timeouts".into()
-        } else if rest.contains("AutoMod")
-            || rest.contains("Shield")
-            || rest.contains("Warned")
-            || rest.contains("Suspicious")
-        {
-            "Twitch/Moderation/Automod & Safety".into()
-        } else if rest.contains("Mod") || rest.contains("Vip") || rest.contains("Shoutout") {
-            "Twitch/Moderation/Roles & Shoutouts".into()
-        } else if rest.contains("Reward") || rest.contains("PowerUp") || rest.contains("Point") {
-            "Twitch/Rewards & Points".into()
-        } else if rest.contains("HypeTrain") || rest.contains("Raid") {
-            "Twitch/Community/Hype Train & Raids".into()
-        } else if rest.contains("Charity") || rest.contains("Goal") {
-            "Twitch/Community/Charity & Goals".into()
-        } else if rest.contains("Ad") || rest.contains("Pyramid") || rest.contains("Streak") {
-            "Twitch/Community/Ads & Milestones".into()
-        } else if rest.contains("Poll") || rest.contains("Prediction") {
-            "Twitch/Polls & Predictions".into()
-        } else if rest.contains("GuestStar") {
-            "Twitch/Guest Star".into()
-        } else if rest.contains("Emote") {
-            "Twitch/Channel/Emotes & Badges".into()
-        } else {
-            "Twitch/Channel/Follow & Stream".into()
-        }
+        twitch_category(rest).into()
     }
     // OBS Studio
     else if let Some(rest) = name.strip_prefix("Obs") {
@@ -242,9 +177,9 @@ pub fn trigger_categorize(name: &str) -> String {
     else if let Some(rest) = name.strip_prefix("Kick") {
         if rest.contains("Chat") || rest.contains("FirstWord") || rest.contains("Mode") || rest.contains("inned") {
             "Kick/Chat".into()
-        } else if rest.contains("Sub") {
+        } else if rest.contains("Sub") || rest.contains("Resub") {
             "Kick/Subscriptions".into()
-        } else if rest.contains("Ban") || rest.contains("TimeOut") || rest.contains("Deleted") {
+        } else if rest.contains("Ban") || rest.contains("TimedOut") || rest.contains("Deleted") {
             "Kick/Moderation".into()
         } else if rest.contains("Reward") {
             "Kick/Rewards".into()
@@ -270,13 +205,13 @@ pub fn trigger_categorize(name: &str) -> String {
     }
     // YouTube
     else if let Some(rest) = name.strip_prefix("YouTube").or_else(|| name.strip_prefix("Youtube")) {
-        if rest.contains("Message") || rest.contains("Super") || rest.contains("Jewel") {
+        if rest.contains("Message") || rest.contains("Super") || rest.contains("Jewel") || rest.contains("FirstWord") {
             "YouTube/Chat & Super Chats".into()
         } else if rest.contains("Broadcast") {
             "YouTube/Broadcast".into()
         } else if rest.contains("Member") || rest.contains("Sponsor") {
             "YouTube/Memberships".into()
-        } else if rest.contains("Ban") || rest.contains("TimeOut") {
+        } else if rest.contains("Ban") || rest.contains("Timedout") {
             "YouTube/Moderation".into()
         } else if rest.contains("Emote") || rest.contains("Poll") {
             "YouTube/Community".into()
@@ -403,6 +338,63 @@ pub fn trigger_categorize(name: &str) -> String {
         "Core/Application Lifecycle".into()
     } else {
         "Core/Other".into()
+    }
+}
+
+/// Where a Twitch trigger goes, from its name without "Twitch" (the groups of Streamer.bot's docs).
+/// The order matters: "ChatEmoteModeOn" is a chat mode, not an emote; "SevenTVEmoteAdded" is not an ad.
+fn twitch_category(rest: &str) -> &'static str {
+    let has = |words: &[&str]| words.iter().any(|w| rest.contains(w));
+    if let Some(shared) = rest.strip_prefix("SharedChat").or_else(|| rest.strip_prefix("Shared")) {
+        let has = |words: &[&str]| words.iter().any(|w| shared.contains(w));
+        return if has(&["Session"]) {
+            "Twitch/Shared Chat/Sessions"
+        } else if has(&["Sub", "Resub", "PayItForward", "Upgrade"]) {
+            "Twitch/Shared Chat/Subscriptions"
+        } else if has(&["Banned", "Unbanned", "Timedout", "Untimedout", "Deleted"]) {
+            "Twitch/Shared Chat/Moderation"
+        } else {
+            "Twitch/Shared Chat/Messages & Announcements"
+        };
+    }
+    if has(&["Connected", "Disconnected", "Authenticated"]) {
+        "Twitch/Connections"
+    } else if rest.starts_with("Chat") && rest.contains("Mode") {
+        "Twitch/Chat/Messages & Modes"
+    } else if has(&["Emote"]) {
+        "Twitch/Channel/Emotes & Badges"
+    } else if has(&["Reward", "PowerUp", "Point"]) {
+        "Twitch/Rewards & Points"
+    } else if has(&["Cheer", "Bits", "Coin", "HypeChat"]) {
+        "Twitch/Chat/Bits & Cheers"
+    } else if has(&["Whisper", "Announcement", "FirstWord", "Modiversary"]) {
+        "Twitch/Chat/Special Messages"
+    } else if matches!(rest, "ChatMessageDeleted" | "ChatCleared") {
+        "Twitch/Moderation/Chat Messages"
+    } else if rest == "ChatMessage" {
+        "Twitch/Chat/Messages & Modes"
+    } else if has(&["Gift", "PayItForward", "PrimePaidUpgrade"]) {
+        "Twitch/Subscriptions/Gift Subscriptions"
+    } else if has(&["Sub"]) {
+        "Twitch/Subscriptions/Channel Subscriptions"
+    } else if has(&["Banned", "Unban", "TimedOut", "UntimedOut"]) {
+        "Twitch/Moderation/Bans & Timeouts"
+    } else if has(&["AutoMod", "Shield", "Warn", "Suspicious", "Terms"]) {
+        "Twitch/Moderation/Automod & Safety"
+    } else if has(&["Moderator", "Vip", "Shoutout"]) {
+        "Twitch/Moderation/Roles & Shoutouts"
+    } else if has(&["HypeTrain", "Raid"]) {
+        "Twitch/Community/Hype Train & Raids"
+    } else if has(&["Charity", "Goal"]) {
+        "Twitch/Community/Charity & Goals"
+    } else if rest.starts_with("Ad") || rest.ends_with("Ad") || has(&["Pyramid", "Streak"]) {
+        "Twitch/Community/Ads & Milestones"
+    } else if has(&["Poll", "Prediction"]) {
+        "Twitch/Polls & Predictions"
+    } else if has(&["GuestStar"]) {
+        "Twitch/Guest Star"
+    } else {
+        "Twitch/Channel/Follow & Stream"
     }
 }
 
@@ -726,6 +718,58 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_triggers_land_in_their_docs_groups() {
+        for (name, want) in [
+            ("TwitchChatEmoteModeOn", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatFollowerModeChanged", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatSubscriberModeOff", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatUniqueModeOn", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatSlowModeOn", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatMessage", "Twitch/Chat/Messages & Modes"),
+            ("TwitchChatMessageDeleted", "Twitch/Moderation/Chat Messages"),
+            ("TwitchChatCleared", "Twitch/Moderation/Chat Messages"),
+            ("TwitchRewardDeleted", "Twitch/Rewards & Points"),
+            ("TwitchCustomPowerUpRedemption", "Twitch/Rewards & Points"),
+            ("TwitchCommunityGoalContribution", "Twitch/Community/Charity & Goals"),
+            ("TwitchBroadcasterEventSubConnected", "Twitch/Connections"),
+            ("TwitchBotEventSubDisconnected", "Twitch/Connections"),
+            ("TwitchBroadcasterAuthenticated", "Twitch/Connections"),
+            ("TwitchSevenTVEmoteAdded", "Twitch/Channel/Emotes & Badges"),
+            ("TwitchBetterTTVEmoteAdded", "Twitch/Channel/Emotes & Badges"),
+            ("TwitchBlockedTermsAdded", "Twitch/Moderation/Automod & Safety"),
+            ("TwitchPermittedTermsDeleted", "Twitch/Moderation/Automod & Safety"),
+            ("TwitchWarningAcknowledged", "Twitch/Moderation/Automod & Safety"),
+            ("TwitchUserUntimedOut", "Twitch/Moderation/Bans & Timeouts"),
+            ("TwitchUnbanRequestCreated", "Twitch/Moderation/Bans & Timeouts"),
+            ("TwitchModeratorAdded", "Twitch/Moderation/Roles & Shoutouts"),
+            ("TwitchModiversary", "Twitch/Chat/Special Messages"),
+            ("TwitchAdRun", "Twitch/Community/Ads & Milestones"),
+            ("TwitchUpcomingAd", "Twitch/Community/Ads & Milestones"),
+            ("TwitchGiftPaidUpgrade", "Twitch/Subscriptions/Gift Subscriptions"),
+            ("TwitchSubCounterRollover", "Twitch/Subscriptions/Channel Subscriptions"),
+            ("TwitchSharedChatResub", "Twitch/Shared Chat/Subscriptions"),
+            ("TwitchSharedChatUserUnbanned", "Twitch/Shared Chat/Moderation"),
+            ("TwitchSharedChatUserUntimedout", "Twitch/Shared Chat/Moderation"),
+            ("TwitchSharedChatSessionBegin", "Twitch/Shared Chat/Sessions"),
+            ("KickResubscription", "Kick/Subscriptions"),
+            ("KickUserTimedOut", "Kick/Moderation"),
+            ("YouTubeFirstWords", "YouTube/Chat & Super Chats"),
+            ("YouTubeUserTimedout", "YouTube/Moderation"),
+        ] {
+            assert_eq!(trigger_categorize(name), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn every_twitch_trigger_is_filed_under_twitch() {
+        for &(code, name) in TRIGGERS {
+            if name.starts_with("Twitch") {
+                assert!(trigger_categorize(name).starts_with("Twitch/"), "{code} {name}");
+            }
+        }
+    }
 
     #[test]
     fn trigger_categorize_and_descriptions() {
