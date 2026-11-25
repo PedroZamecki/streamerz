@@ -89,6 +89,11 @@ fn default_port(tls: bool) -> u16 {
     }
 }
 
+/// Who a URL is for, as errors name it: never its path or query, which can hold a key or a token.
+fn site(url: &str) -> String {
+    parse(url).map_or_else(|_| "HTTP".into(), |(tls, host, port, _)| authority(tls, &host, port))
+}
+
 /// `host:port` as a URL or a Host header writes it: brackets around an IPv6 address, no default port.
 fn authority(tls: bool, host: &str, port: u16) -> String {
     let host = if host.contains(':') {
@@ -111,7 +116,7 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
     for _ in 0..6 {
         let r = tokio::time::timeout(TIMEOUT, once(method, &url, &headers, body))
             .await
-            .map_err(|_| format!("{url}: timed out"))??;
+            .map_err(|_| format!("{}: timed out", site(&url)))??;
         match follow(&url, r.status, &r.headers, &mut headers)? {
             Some(to) => {
                 url = to;
@@ -124,7 +129,7 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
             None => return Ok(r),
         }
     }
-    Err(format!("{url}: too many redirects"))
+    Err(format!("{}: too many redirects", site(&url)))
 }
 
 /// Where a redirect points, if `status` is one: its Location, against `url` when it is relative.
@@ -210,7 +215,7 @@ pub async fn download(
     for _ in 0..6 {
         let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, &headers, b""))
             .await
-            .map_err(|_| format!("{url}: timed out"))??;
+            .map_err(|_| format!("{}: timed out", site(&url)))??;
         if let Some(next) = follow(&url, open.status, &open.headers, &mut headers)? {
             url = next;
             continue;
@@ -242,7 +247,7 @@ pub async fn download(
             magic,
         });
     }
-    Err(format!("{url}: too many redirects"))
+    Err(format!("{}: too many redirects", site(&url)))
 }
 
 /// Resumable download into `to` (appending when `to` already holds bytes and the server answers
@@ -270,7 +275,7 @@ pub async fn download_resumable(
         }
         let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, &req_headers, b""))
             .await
-            .map_err(|_| format!("{url}: timed out"))??;
+            .map_err(|_| format!("{}: timed out", site(&url)))??;
         if let Some(next) = follow(&url, open.status, &open.headers, &mut headers)? {
             url = next;
             continue;
@@ -369,7 +374,7 @@ pub async fn download_resumable(
             magic,
         });
     }
-    Err(format!("{url}: too many redirects"))
+    Err(format!("{}: too many redirects", site(&url)))
 }
 
 /// Where a `206 Partial Content` part starts ("Content-Range: bytes 100-199/200" is 100).
@@ -428,7 +433,7 @@ async fn once(method: &str, url: &str, headers: &[(String, String)], body_bytes:
     .await?;
     // Half an answer would pass for the whole one (a JSON cut short, a file missing its end).
     if !complete {
-        return Err(format!("{url}: the answer was cut short or is over 16 MB"));
+        return Err(format!("{}: the answer was cut short or is over 16 MB", site(url)));
     }
     Ok(Response {
         status: open.status,
@@ -485,7 +490,7 @@ async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
     io.write_all(body).await.map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     loop {
-        if let Some((status, headers, len)) = head(&raw).map_err(|e| format!("{url}: {e}"))? {
+        if let Some((status, headers, len)) = head(&raw).map_err(|e| format!("{}: {e}", site(url)))? {
             let rest = raw.split_off(len);
             // An interim answer (100 Continue, 103 Early Hints) comes before the real one.
             if (100..200).contains(&status) && status != 101 {
@@ -500,7 +505,7 @@ async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
             });
         }
         if read_more(&mut io, &mut raw).await? == 0 {
-            return Err(format!("{url}: connection closed"));
+            return Err(format!("{}: connection closed", site(url)));
         }
     }
 }
@@ -751,6 +756,16 @@ mod tests {
         assert_eq!(start("items 1-2/3"), None);
         assert_eq!(start("bytes -5/9"), None);
         assert_eq!(range_start(&[]), None);
+    }
+
+    #[test]
+    fn errors_never_show_the_path_or_query() {
+        assert_eq!(
+            site("https://discord.com/api/webhooks/1/secret?wait=true"),
+            "discord.com"
+        );
+        assert_eq!(site("http://[::1]:8080/key/abc"), "[::1]:8080");
+        assert_eq!(site("nonsense"), "HTTP");
     }
 
     #[test]
