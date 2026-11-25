@@ -547,10 +547,12 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
     };
     let at = category.replace('/', " > ");
     let fields = SUB_ACTION_INFO
-        .iter()
-        .find(|x| x.0 == code)
-        .map(|x| {
-            x.3.iter()
+        .binary_search_by_key(&code, |entry| entry.0)
+        .ok()
+        .map(|index| {
+            SUB_ACTION_INFO[index]
+                .3
+                .iter()
                 .filter(|f| **f != "?")
                 .copied()
                 .collect::<Vec<_>>()
