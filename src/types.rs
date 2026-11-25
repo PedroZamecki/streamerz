@@ -3319,6 +3319,79 @@ pub fn name(table: &[(u32, &'static str)], code: u32) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    fn no_dash(what: &str, text: &str) {
+        assert!(
+            !text.contains(['\u{2014}', '\u{2013}']),
+            "{what}: {text:?} has an em or en dash"
+        );
+    }
+
+    /// Names are the stored identifiers (`TwitchChatMessage`): one word, never empty.
+    #[test]
+    fn every_code_has_a_plain_name() {
+        for (table, rows) in [("SUB_ACTIONS", SUB_ACTIONS), ("TRIGGERS", TRIGGERS)] {
+            let mut names = std::collections::HashSet::new();
+            for &(code, name) in rows {
+                assert!(
+                    !name.is_empty() && !name.contains(char::is_whitespace),
+                    "{table} {code}: {name:?}"
+                );
+                no_dash(table, name);
+                assert!(names.insert(name), "{table}: {name} has two codes");
+            }
+        }
+    }
+
+    /// Every sub-action the editor lists has its title, its category and the stored fields.
+    #[test]
+    fn every_sub_action_info_row_is_complete() {
+        for &(code, title, category, fields) in SUB_ACTION_INFO {
+            assert!(name(SUB_ACTIONS, code).is_some(), "{code} {title} has no stored name");
+            assert!(!title.trim().is_empty(), "{code} has no title");
+            no_dash("title", title);
+            no_dash("category", category);
+            assert!(
+                category.is_empty() || category.split('/').all(|part| !part.trim().is_empty()),
+                "{code}: category {category:?}"
+            );
+            let mut seen = std::collections::HashSet::new();
+            for field in fields {
+                assert!(!field.is_empty(), "{code}: an empty field");
+                assert!(seen.insert(field), "{code}: {field} twice");
+            }
+        }
+    }
+
+    /// Streamerz's own codes live in ranges by platform (CLAUDE.md); a code in the wrong range
+    /// takes a number another platform will need.
+    #[test]
+    fn streamerz_codes_sit_in_their_platform_range() {
+        let range = |code: u32| match code {
+            99450..=99499 => Some(("TikTok", "TikTok")),
+            99500..=99599 => Some(("Twitch", "Twitch")),
+            99600..=99649 => Some(("Kick", "Kick")),
+            99650..=99699 => Some(("YouTube", "YouTube")),
+            99700..=99706 => Some(("CrossPlatform", "Core")),
+            99720..=99739 => Some(("All", "Every Platform")),
+            99740..=99749 => Some(("Discord", "Discord")),
+            99750..=99779 => Some(("Obs", "OBS")),
+            _ => None,
+        };
+        for &(code, name) in SUB_ACTIONS {
+            if let Some((prefix, _)) = range(code) {
+                assert!(name.starts_with(prefix), "{code} {name} should start with {prefix}");
+            }
+        }
+        for &(code, title, category, _) in SUB_ACTION_INFO {
+            if let Some((_, top)) = range(code) {
+                assert!(
+                    category.split('/').any(|part| part.starts_with(top)),
+                    "{code} {title}: {category} should be under {top}"
+                );
+            }
+        }
+    }
+
     /// The tables are searched by code (`binary_search`), so a new entry out of order is never found.
     #[test]
     fn the_tables_are_in_order_by_code() {
