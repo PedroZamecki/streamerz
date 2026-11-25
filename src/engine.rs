@@ -88,6 +88,9 @@ pub struct RunOutcome {
     pub warning: Option<String>,
     #[serde(skip)]
     step: u64,
+    /// How many Run Actions deep the run is inline (`MAX_NESTING`).
+    #[serde(skip)]
+    depth: u32,
 }
 
 impl RunOutcome {
@@ -103,6 +106,53 @@ impl RunOutcome {
 }
 
 tokio::task_local! { static RUN_OUTCOME: RefCell<RunOutcome>; }
+
+/// How deep Run Action runs actions inline: actions that run each other would never end (and hold
+/// the runtime, which only moves on at an await).
+const MAX_NESTING: u32 = 16;
+
+/// One Run Action deeper inline; false past `MAX_NESTING`.
+fn nest_in() -> bool {
+    RUN_OUTCOME
+        .try_with(|state| {
+            let mut state = state.borrow_mut();
+            if state.depth >= MAX_NESTING {
+                return false;
+            }
+            state.depth += 1;
+            true
+        })
+        .unwrap_or(true)
+}
+
+fn nest_out() {
+    let _ = RUN_OUTCOME.try_with(|state| {
+        let mut state = state.borrow_mut();
+        state.depth = state.depth.saturating_sub(1);
+    });
+}
+
+/// Signals sent with Queue Signal (or from a remote instance) that nothing waits for are kept up to
+/// this many per name, the oldest dropped first.
+const QUEUED_SIGNALS: usize = 100;
+
+fn queue_signal(queue: &mut VecDeque<Obj>, payload: Obj) {
+    if queue.len() >= QUEUED_SIGNALS {
+        queue.pop_front();
+    }
+    queue.push_back(payload);
+}
+
+/// Forget the waiters that stopped waiting (timed out or stopped), so a signal never sent leaves
+/// nothing behind.
+fn prune_waiters<K: Eq + std::hash::Hash>(waiters: &mut HashMap<K, Vec<oneshot::Sender<Obj>>>, key: &K) {
+    if let Some(list) = waiters.get_mut(key) {
+        list.retain(|w| !w.is_closed());
+        if list.is_empty() {
+            waiters.remove(key);
+        }
+    }
+}
 
 pub fn record_error(message: &str) {
     let _ = RUN_OUTCOME.try_with(|state| {
@@ -533,7 +583,7 @@ fn compare(a: &str, b2: &str, auto: bool) -> std::cmp::Ordering {
 
 /// .NET regexes are mostly this syntax; (?'name') becomes (?<name>).
 pub fn regex(p: &str) -> Option<regex_lite::Regex> {
-    let p = p.replace("(?'", "(?<").replace("'>", ">");
+    let p = p.replace("(?'", "(?<");
     let p = fix_named(&p);
     match regex_lite::Regex::new(&p) {
         Ok(r) => Some(r),
@@ -993,10 +1043,11 @@ impl Engine {
             }
         }
         if !delivered {
-            st.remote_signals
+            let queue = st
+                .remote_signals
                 .entry((instance_id.to_string(), signal_name.to_string()))
-                .or_default()
-                .push_back(args.clone());
+                .or_default();
+            queue_signal(queue, args.clone());
         }
         drop(st);
 
@@ -1041,6 +1092,7 @@ impl Engine {
                 (Some(p), None)
             } else {
                 let (tx, rx) = oneshot::channel();
+                prune_waiters(&mut st.remote_waiters, &key);
                 st.remote_waiters.entry(key).or_default().push(tx);
                 (None, Some(rx))
             }
@@ -1053,10 +1105,15 @@ impl Engine {
             0 => 30_000,
             t => t.min(60_000),
         };
-        tokio::time::timeout(std::time::Duration::from_millis(ms), rx)
+        let got = tokio::time::timeout(std::time::Duration::from_millis(ms), rx)
             .await
             .ok()
-            .and_then(Result::ok)
+            .and_then(Result::ok);
+        if got.is_none() {
+            let key = (instance_id.to_string(), signal_name.to_string());
+            prune_waiters(&mut self.st.borrow_mut().remote_waiters, &key);
+        }
+        got
     }
 
     pub fn stream_deck_add(&self, id: u64, tx: tokio::sync::mpsc::UnboundedSender<String>) {
@@ -1492,11 +1549,7 @@ impl Engine {
             if random {
                 let total: f64 = on.iter().map(|o| n(o, "weight").max(0.0)).sum();
                 let pick = if total > 0.0 {
-                    let mut r = crate::math::random() * total;
-                    on.iter().position(|o| {
-                        r -= n(o, "weight").max(0.0);
-                        r < 0.0
-                    })
+                    weighted(&on, crate::math::random() * total)
                 } else if on.is_empty() {
                     None
                 } else {
@@ -1544,10 +1597,18 @@ impl Engine {
                         if let Some((subs, random, group)) =
                             self.action(&id, |a| (a.sub_actions.clone(), a.random_action, a.group.clone()))
                         {
+                            if !nest_in() {
+                                let why =
+                                    format!("Run Action: actions run each other over {MAX_NESTING} deep, stopped");
+                                record_error(&why);
+                                crate::error(why);
+                                return Flow::BreakToRoot;
+                            }
                             let subs: Vec<Value> = subs.into_iter().map(Value::Object).collect();
                             let previous = std::mem::replace(&mut ctx.group, group);
                             let flow = self.list(ctx, &subs, random).await;
                             ctx.group = previous;
+                            nest_out();
                             if flow == Flow::BreakToRoot {
                                 return Flow::BreakToRoot;
                             }
@@ -1666,8 +1727,17 @@ impl Engine {
                 122 => self.global_set(ctx, o),
                 124 => return Flow::BreakToRoot,
                 // Clear Non-Persisted Globals / User Globals
-                125 => self.st.borrow_mut().temp.clear(),
-                126 => self.st.borrow_mut().user_temp.clear(),
+                125 => {
+                    let mut st = self.st.borrow_mut();
+                    st.temp.clear();
+                    st.temp_writes.clear();
+                    drop(st);
+                    crate::host::changed();
+                }
+                126 => {
+                    self.st.borrow_mut().user_temp.clear();
+                    crate::host::changed();
+                }
                 // Switch
                 127 => {
                     let input = self.expand(ctx, s(o, "input"));
@@ -1724,13 +1794,8 @@ impl Engine {
                 }
                 // Delay, in ms; Random: between value and maxValue.
                 1002 => {
-                    let number = |key| {
-                        o.get(key)
-                            .and_then(Value::as_str)
-                            .map(|text| self.expand(ctx, text).parse::<f64>().unwrap_or(0.0))
-                            .unwrap_or_else(|| n(o, key))
-                    };
-                    let (lo, hi) = (number("value").max(0.0), number("maxValue").max(0.0));
+                    let number = |key| self.duration_number(ctx, o, key).max(0.0);
+                    let (lo, hi) = (number("value"), number("maxValue"));
                     let ms = if b(o, "random", false) && hi > lo {
                         lo + crate::math::random() * (hi - lo)
                     } else {
@@ -1745,10 +1810,8 @@ impl Engine {
                         ctx.args.insert("randomFloat".into(), vars::number(f));
                         ctx.args.insert("randomPercent".into(), ((f * 100.0) as i64).into());
                     } else {
-                        let (lo, hi) = (n(o, "min") as i64, n(o, "max") as i64);
-                        let (lo, hi) = (lo.min(hi), lo.max(hi));
-                        let r = lo + (crate::math::random() * (hi - lo + 1) as f64) as i64;
-                        ctx.args.insert("randomNumber".into(), r.min(hi).into());
+                        let r = random_between(n(o, "min") as i64, n(o, "max") as i64, crate::math::random());
+                        ctx.args.insert("randomNumber".into(), r.into());
                     }
                 }
                 // Set Action State
@@ -1807,10 +1870,11 @@ impl Engine {
                 }
                 // Log
                 1020 => crate::say(self.expand(ctx, s(o, "message"))),
-                // Set Action Queue Blocking State: 0 blocking, 1 not.
+                // Set Action Queue Blocking State: 0 blocking, 1 not, 2 toggle.
                 1022 => {
                     let q = self.simple(ctx, s(o, "actionQueueId"));
-                    self.set_blocking(&q, n(o, "state") as i64 == 0);
+                    let blocking = new_state(n(o, "state"), self.blocking(&q));
+                    self.set_blocking(&q, blocking);
                 }
                 // Get Input: a dialog in the window.
                 1023 => {
@@ -1883,7 +1947,7 @@ impl Engine {
                         delivered |= w.send(payload.clone()).is_ok();
                     }
                     if !delivered && b(o, "queueSignal", false) {
-                        st.signals.entry(name).or_default().push_back(payload);
+                        queue_signal(st.signals.entry(name).or_default(), payload);
                     }
                 }
                 // Wait For Local Signal: up to `timeout` ms (blank or over 30 s: 30 s).
@@ -1903,11 +1967,19 @@ impl Engine {
                         Some(p) => Some(p),
                         None => {
                             let (tx, rx) = oneshot::channel();
-                            self.st.borrow_mut().waiters.entry(name.clone()).or_default().push(tx);
-                            tokio::time::timeout(Duration::from_millis(ms), rx)
+                            {
+                                let mut st = self.st.borrow_mut();
+                                prune_waiters(&mut st.waiters, &name);
+                                st.waiters.entry(name.clone()).or_default().push(tx);
+                            }
+                            let got = tokio::time::timeout(Duration::from_millis(ms), rx)
                                 .await
                                 .ok()
-                                .and_then(Result::ok)
+                                .and_then(Result::ok);
+                            if got.is_none() {
+                                prune_waiters(&mut self.st.borrow_mut().waiters, &name);
+                            }
+                            got
                         }
                     };
                     ctx.args.insert("signalName".into(), name.as_str().into());
@@ -2184,11 +2256,15 @@ impl Engine {
         crate::host::changed();
     }
 
-    /// Drop a queue's waiting runs.
+    /// Drop a queue's waiting runs (every queue's for "", Streamer.bot's All).
     pub fn clear_queue(&self, queue: &str) {
-        if let Some(q) = self.st.borrow_mut().queues.get_mut(queue) {
-            q.waiting.clear();
+        let mut st = self.st.borrow_mut();
+        for (id, q) in st.queues.iter_mut() {
+            if queue.is_empty() || id == queue {
+                q.waiting.clear();
+            }
         }
+        drop(st);
         crate::host::changed();
     }
 
@@ -2205,19 +2281,44 @@ impl Engine {
     }
 }
 
-/// Find a sub-action by id anywhere in a tree.
-fn with_sub(list: &mut [Obj], id: &str, f: &mut dyn FnMut(&mut Obj)) {
-    for x in list {
-        if s(x, "id") == id {
-            f(x);
-            return;
-        }
-        if let Some(children) = x.get_mut("subActions").and_then(Value::as_array_mut) {
-            let mut objs: Vec<Obj> = children.iter().filter_map(|c| c.as_object().cloned()).collect();
-            with_sub(&mut objs, id, f);
-            *children = objs.into_iter().map(Value::Object).collect();
-        }
+/// Find a sub-action by id anywhere in a tree, and change it; whether it was there.
+fn with_sub(list: &mut [Obj], id: &str, f: &mut dyn FnMut(&mut Obj)) -> bool {
+    list.iter_mut().any(|x| with_sub_in(x, id, f))
+}
+
+fn with_sub_in(x: &mut Obj, id: &str, f: &mut dyn FnMut(&mut Obj)) -> bool {
+    if s(x, "id") == id {
+        f(x);
+        return true;
     }
+    x.get_mut("subActions")
+        .and_then(Value::as_array_mut)
+        .is_some_and(|children| {
+            children
+                .iter_mut()
+                .filter_map(Value::as_object_mut)
+                .any(|c| with_sub_in(c, id, f))
+        })
+}
+
+/// The sub-action a weighted pick `r` (0 up to the weights' sum) lands on. Rounding can leave `r`
+/// past the last weight: that is the last one with a weight.
+fn weighted(on: &[&Obj], mut r: f64) -> Option<usize> {
+    on.iter()
+        .position(|o| {
+            r -= n(o, "weight").max(0.0);
+            r < 0.0
+        })
+        .or_else(|| on.iter().rposition(|o| n(o, "weight") > 0.0))
+}
+
+/// Get Random Number's Between: a whole number from `min` to `max`, both in (either order); `r` is
+/// a random number from 0 up to 1.
+fn random_between(min: i64, max: i64, r: f64) -> i64 {
+    let (lo, hi) = (i128::from(min.min(max)), i128::from(min.max(max)));
+    let span = (hi - lo + 1) as f64;
+    let at = lo + (r * span) as i128;
+    at.clamp(lo, hi) as i64
 }
 
 /// Background self-healing while saved keyring logins are locked: checks silently without popping
@@ -3031,6 +3132,389 @@ rust
         assert!(out.contains(&"T pstop obs64.exe 1".to_string()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn obj(v: Value) -> Obj {
+        v.as_object().cloned().unwrap_or_default()
+    }
+
+    fn ctx() -> Ctx {
+        Ctx {
+            args: Obj::new(),
+            group: String::new(),
+        }
+    }
+
+    /// An action that runs itself inline would never end, and the runtime only moves on at an
+    /// await: it stops at MAX_NESTING, as a failed run, and the rest keep running.
+    #[test]
+    fn actions_running_each_other_inline_stop_instead_of_holding_everything() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let me = action(
+            "loop",
+            "loop",
+            json!([{"type": 123, "variableName": "n", "value": "$math(%n% + 1)$", "autoType": true},
+                {"type": 4, "actionId": "loop", "runImmedately": true}, log("T after %n%")]),
+        );
+        let other = action("other", "other", json!([log("T other")]));
+        let e = engine(json!({"actions": [me, other]}));
+        let out = run(async {
+            e.queue("loop", obj(json!({"n": 0})));
+            e.queue("other", Obj::new());
+            settle().await;
+            let h = e.history();
+            let looped = h.iter().find(|r| r.action_id == "loop").expect("the loop ended");
+            assert_eq!(looped.outcome.status(), "failed");
+            assert_eq!(looped.outcome.failed_step, Some(4));
+            assert!(looped.outcome.error.as_deref().unwrap_or("").contains("deep"));
+            assert_eq!(looped.after["n"], MAX_NESTING + 1);
+        });
+        assert_eq!(out, ["T other"]);
+    }
+
+    /// Nesting counts how deep a run is, not how many Run Actions it ran: many in a row all run,
+    /// and the child's arguments are the parent's.
+    #[test]
+    fn many_run_actions_in_a_row_all_run_and_share_arguments() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subs = vec![json!({"type": 123, "variableName": "count", "value": "0", "autoType": true})];
+        subs.extend((0..MAX_NESTING + 10).map(|_| json!({"type": 4, "actionId": "child", "runImmedately": true})));
+        subs.push(log("T count %count% %fromChild%"));
+        let parent = action("parent", "parent", Value::Array(subs));
+        let child = action(
+            "child",
+            "child",
+            json!([{"type": 123, "variableName": "count", "value": "$math(%count% + 1)$", "autoType": true},
+                {"type": 123, "variableName": "fromChild", "value": "yes"}]),
+        );
+        let e = engine(json!({"actions": [parent, child]}));
+        let out = run(async {
+            e.queue("parent", Obj::new());
+            settle().await;
+            assert_eq!(e.history()[0].outcome.status(), "completed");
+        });
+        assert_eq!(out, [format!("T count {} yes", MAX_NESTING + 10)]);
+    }
+
+    /// A wait that timed out leaves no waiter behind (it would stay until a signal of that name came).
+    #[test]
+    fn a_signal_wait_that_times_out_leaves_nothing_behind() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let wait = obj(json!({"type": 1032, "signalName": "nobody", "timeout": 5}));
+            for _ in 0..3 {
+                let mut c = ctx();
+                e.one(&mut c, &wait).await;
+                assert_eq!(c.args["signalTimeout"], true);
+            }
+            assert!(e.st.borrow().waiters.is_empty());
+            assert_eq!(e.wait_remote_signal("inst", "nobody", 5).await, None);
+            assert!(e.st.borrow().remote_waiters.is_empty());
+        });
+    }
+
+    /// Signals nothing waits for are kept, but only so many: a remote instance that keeps sending
+    /// them doesn't grow the memory for ever.
+    #[test]
+    fn queued_signals_keep_the_newest_hundred() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            for i in 0..QUEUED_SIGNALS + 50 {
+                let send = obj(
+                    json!({"type": 1031, "signalName": "s", "queueSignal": true, "customArgs": {"i": i.to_string()}}),
+                );
+                e.one(&mut ctx(), &send).await;
+                e.deliver_remote_signal("inst", "r", obj(json!({"i": i})));
+            }
+            assert_eq!(e.st.borrow().signals["s"].len(), QUEUED_SIGNALS);
+            let key = ("inst".to_string(), "r".to_string());
+            assert_eq!(e.st.borrow().remote_signals[&key].len(), QUEUED_SIGNALS);
+            let mut c = ctx();
+            e.one(&mut c, &obj(json!({"type": 1032, "signalName": "s", "timeout": 5})))
+                .await;
+            assert_eq!(c.args["i"], 50, "the oldest were dropped");
+            let first = e.wait_remote_signal("inst", "r", 5).await.unwrap();
+            assert_eq!(first["i"], 50);
+        });
+    }
+
+    /// Set Action Queue Blocking State's Toggle (2) flips it; Enabled (0) and Disabled (1) set it.
+    #[test]
+    fn a_queue_s_blocking_can_be_toggled() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let q = "22222222-0000-0000-0000-000000000000";
+        run(async {
+            let e =
+                engine(json!({"blocking": false, "queues": [{"id": q, "name": "Q", "blocking": true}], "actions": []}));
+            let set = |queue: &str, state: i64| obj(json!({"type": 1022, "actionQueueId": queue, "state": state}));
+            e.one(&mut ctx(), &set(DEFAULT_QUEUE, 2)).await;
+            assert!(e.blocking(DEFAULT_QUEUE));
+            e.one(&mut ctx(), &set(DEFAULT_QUEUE, 2)).await;
+            assert!(!e.blocking(DEFAULT_QUEUE));
+            e.one(&mut ctx(), &set(q, 2)).await;
+            assert!(!e.blocking(q));
+            e.one(&mut ctx(), &set(q, 0)).await;
+            assert!(e.blocking(q));
+            e.one(&mut ctx(), &set(q, 1)).await;
+            assert!(!e.blocking(q));
+        });
+    }
+
+    /// Clear Action Queue with no queue is Streamer.bot's All (its default): every queue's waiting
+    /// runs go, the running ones stay.
+    #[test]
+    fn clearing_no_queue_clears_them_all() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let q = "33333333-0000-0000-0000-000000000000";
+        let mut other = action("o", "other", json!([log("T other")]));
+        other["queue"] = json!(q);
+        let main = action("m", "main", json!([log("T main")]));
+        let e = engine(json!({"queues": [{"id": q, "name": "Q", "blocking": false}], "actions": [main, other]}));
+        let out = run(async {
+            e.pause("", true, false);
+            e.queue("m", Obj::new());
+            e.queue("o", Obj::new());
+            assert_eq!(e.pending().len(), 2);
+            e.one(&mut ctx(), &obj(json!({"type": 1005, "actionQueueId": ""})))
+                .await;
+            assert!(e.pending().is_empty());
+            // One queue named: only that one.
+            e.queue("m", Obj::new());
+            e.queue("o", Obj::new());
+            e.clear_queue(q);
+            assert_eq!(e.pending(), [(DEFAULT_QUEUE.to_string(), "main".to_string(), false)]);
+            e.pause("", false, false);
+            settle().await;
+        });
+        assert_eq!(out, ["T main"]);
+    }
+
+    /// A blocking queue runs one at a time, in order; a non-blocking one runs them all at once.
+    #[test]
+    fn blocking_queues_run_in_order_and_others_at_once() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let slow = |id: &str, queue: &str| {
+            let mut a = action(
+                id,
+                id,
+                json!([log("T start %which%"), {"type": 1002, "value": 20}, log("T end %which%")]),
+            );
+            a["queue"] = json!(queue);
+            a
+        };
+        let q = "44444444-0000-0000-0000-000000000000";
+        let e = engine(
+            json!({"blocking": false, "queues": [{"id": q, "name": "Q", "blocking": true}],
+            "actions": [slow("b", q), slow("f", DEFAULT_QUEUE)]}),
+        );
+        let out = run(async {
+            for which in ["1", "2", "3"] {
+                e.queue("b", obj(json!({"which": format!("b{which}")})));
+                e.queue("f", obj(json!({"which": format!("f{which}")})));
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert!(e.pending().is_empty());
+        });
+        let blocking: Vec<&str> = out.iter().map(String::as_str).filter(|l| l.contains(" b")).collect();
+        assert_eq!(
+            blocking,
+            [
+                "T start b1",
+                "T end b1",
+                "T start b2",
+                "T end b2",
+                "T start b3",
+                "T end b3"
+            ]
+        );
+        let free: Vec<&str> = out.iter().map(String::as_str).filter(|l| l.contains(" f")).collect();
+        assert_eq!(&free[..3], ["T start f1", "T start f2", "T start f3"], "{out:?}");
+    }
+
+    /// Clear Non-Persisted Globals forgets their last writes too (GetGlobals listed none, yet kept them).
+    #[test]
+    fn clearing_temporary_globals_forgets_when_they_were_written() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.put_global("a", json!(1), false);
+            e.put_global("b", json!(2), true);
+            assert_eq!(e.globals_list(false).len(), 1);
+            e.one(&mut ctx(), &obj(json!({"type": 125}))).await;
+            assert!(e.globals_list(false).is_empty());
+            assert!(e.st.borrow().temp_writes.is_empty());
+            assert_eq!(e.globals_list(true)["b"]["value"], 2, "the persisted ones stay");
+        });
+    }
+
+    /// Global (Set)'s Increment and Decrement add or take 1 when left empty, start from 0 when the
+    /// global is new, and work on a number kept as text.
+    #[test]
+    fn global_increments_follow_streamer_bot() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let set = |source: i64, value: &str| {
+                obj(
+                    json!({"type": 122, "destination": 0, "variableName": "g", "persisted": false, "source": source, "value": value}),
+                )
+            };
+            e.one(&mut ctx(), &set(1, "")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 1);
+            e.one(&mut ctx(), &set(1, "")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 2);
+            e.one(&mut ctx(), &set(2, " ")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 1);
+            // Set without Auto Type: "5" is kept as text, and still counts as 5.
+            e.one(&mut ctx(), &set(0, "5")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], "5");
+            e.one(&mut ctx(), &set(1, "2")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 7);
+            let mut by = Ctx {
+                args: obj(json!({"by": ""})),
+                group: String::new(),
+            };
+            e.one(&mut by, &set(2, "%by%")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 6, "%by% is empty: it takes 1");
+            // Not a number to add: nothing changes.
+            e.one(&mut ctx(), &set(1, "lots")).await;
+            assert_eq!(e.globals_list(false)["g"]["value"], 6);
+            e.one(&mut ctx(), &set(3, "")).await;
+            assert!(e.globals_list(false).is_empty());
+        });
+    }
+
+    /// Global (Get) and user globals: each user has their own, by platform and id, and a default
+    /// creates the global.
+    #[test]
+    fn user_globals_are_per_user_and_defaults_create_them() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let user = |id: &str, name: &str| obj(json!({"userId": id, "user": name, "userType": "kick"}));
+            let set = obj(
+                json!({"type": 122, "destination": 1, "variableName": "points", "persisted": true, "source": 1, "value": "10"}),
+            );
+            let get = obj(
+                json!({"type": 121, "source": 1, "variableName": "points", "persisted": true, "destinationVariable": "p", "defaultValue": "0"}),
+            );
+            let mut ana = Ctx {
+                args: user("1", "Ana"),
+                group: String::new(),
+            };
+            e.one(&mut ana, &set).await;
+            e.one(&mut ana, &set).await;
+            e.one(&mut ana, &get).await;
+            assert_eq!(ana.args["p"], 20);
+            let mut bo = Ctx {
+                args: user("2", "Bo"),
+                group: String::new(),
+            };
+            e.one(&mut bo, &get).await;
+            assert_eq!(bo.args["p"], 0);
+            let list = e.user_globals_list("kick", Some("points"), None, true);
+            assert_eq!(list.len(), 2, "Bo's default created theirs: {list:?}");
+            assert_eq!(e.user_globals_list("twitch", None, None, true), Vec::<Value>::new());
+            let mine = e.user_globals_list("kick", None, Some("1"), true);
+            assert_eq!(mine[0]["value"], 20);
+            // No user in the arguments: nothing read, nothing written.
+            let mut nobody = ctx();
+            e.one(&mut nobody, &get).await;
+            assert_eq!(nobody.args["p"], Value::Null);
+            e.one(&mut ctx(), &obj(json!({"type": 126}))).await;
+            assert_eq!(
+                e.user_globals_list("kick", None, None, true).len(),
+                2,
+                "persisted ones stay"
+            );
+        });
+    }
+
+    #[test]
+    fn a_weighted_pick_always_lands_on_a_weighted_sub_action() {
+        let subs: Vec<Obj> = [1.0, 0.0, 2.0, 0.0].iter().map(|w| obj(json!({"weight": w}))).collect();
+        let on: Vec<&Obj> = subs.iter().collect();
+        assert_eq!(weighted(&on, 0.0), Some(0));
+        assert_eq!(weighted(&on, 0.999), Some(0));
+        assert_eq!(weighted(&on, 1.0), Some(2));
+        assert_eq!(weighted(&on, 2.999), Some(2));
+        // Rounding can leave the pick on the sum itself: the last weighted one, not nothing.
+        assert_eq!(weighted(&on, 3.0), Some(2));
+        let weights_as_text = [obj(json!({"weight": "3"}))];
+        assert_eq!(weighted(&weights_as_text.iter().collect::<Vec<_>>(), 2.0), Some(0));
+    }
+
+    #[test]
+    fn a_random_number_is_between_both_ends_in_any_order() {
+        assert_eq!(random_between(1, 5, 0.0), 1);
+        assert_eq!(random_between(1, 5, 0.999_999), 5);
+        assert_eq!(random_between(5, 1, 0.0), 1);
+        assert_eq!(random_between(3, 3, 0.7), 3);
+        assert_eq!(random_between(-2, 2, 0.5), 0);
+        // The widest range doesn't overflow.
+        assert_eq!(random_between(i64::MIN, i64::MAX, 0.0), i64::MIN);
+        assert!(random_between(i64::MIN, i64::MAX, 0.999_999_999) > 0);
+        let mut seen = [false; 3];
+        for i in 0..300 {
+            let r = random_between(0, 2, f64::from(i) / 300.0);
+            seen[r as usize] = true;
+        }
+        assert_eq!(seen, [true; 3]);
+    }
+
+    /// A pattern with `'>` in it (an HTML attribute) is matched as written; .NET's `(?'name')`
+    /// still names a group.
+    #[test]
+    fn regex_keeps_quotes_and_reads_dotnet_group_names() {
+        let r = regex("value='>(\\d+)").unwrap();
+        assert!(r.is_match("<b value='>42"));
+        let r = regex("(?'word'\\w+) (?<rest>.+)").unwrap();
+        let mut args = Obj::new();
+        assert!(match_args(&r, "hi there", &mut args));
+        assert_eq!(args["word"], "hi");
+        assert_eq!(args["rest"], "there");
+        assert_eq!(args["match[0]"], "hi there");
+        assert_eq!(args["match.count"], 3);
+        assert_eq!(fix_named("(?<=a)b(?<!c)"), "(?<=a)b(?<!c)");
+        assert_eq!(fix_named("(?<name'x)"), "(?<name>x)");
+    }
+
+    /// Set Sub-Action State finds a sub-action inside branches, and changes only it.
+    #[test]
+    fn a_nested_sub_action_is_found_and_changed() {
+        let mut list = vec![
+            obj(json!({"id": "top", "type": 1020})),
+            obj(json!({"id": "if", "type": 120, "subActions": [
+                {"type": 99901, "subActions": [{"id": "deep", "type": 1020, "enabled": true}]},
+                {"type": 99902, "subActions": [{"id": "other", "type": 1020}]}]})),
+        ];
+        let mut hits = 0;
+        assert!(with_sub(&mut list, "deep", &mut |x| {
+            hits += 1;
+            x.insert("enabled".into(), false.into());
+        }));
+        assert_eq!(hits, 1);
+        assert_eq!(list[1]["subActions"][0]["subActions"][0]["enabled"], false);
+        assert_eq!(list[1]["subActions"][1]["subActions"][0].get("enabled"), None);
+        assert!(!with_sub(&mut list, "missing", &mut |_| panic!("not there")));
+    }
+
+    /// Delay reads its time from variables, with spaces around it.
+    #[test]
+    fn a_delay_waits_for_the_time_given_as_text() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let mut c = Ctx {
+                args: obj(json!({"wait": " 30 "})),
+                group: String::new(),
+            };
+            let started = std::time::Instant::now();
+            e.one(&mut c, &obj(json!({"type": 1002, "value": "%wait%"}))).await;
+            assert!(started.elapsed() >= Duration::from_millis(30));
+        });
     }
 
     #[test]
