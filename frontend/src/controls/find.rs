@@ -7,7 +7,7 @@ use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_LG, SPACE_M
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    ActiveTheme, Disableable, Icon, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, Sizable,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -32,6 +32,9 @@ pub struct Finder {
     images: HashMap<String, PathBuf>,
     /// How many times the pictures were asked for since the last search.
     tries: u32,
+    confirmed: bool,
+    search_task: Option<Task<()>>,
+    image_task: Option<Task<()>>,
     buttons_view: Entity<FinderButtons>,
     _subscriptions: Vec<Subscription>,
 }
@@ -56,8 +59,15 @@ impl Finder {
         )];
         let status = model["labels"]["empty"].as_str().unwrap_or_default().to_owned();
         let buttons_view = {
-            let weak = cx.entity().downgrade();
-            cx.new(|_| FinderButtons(weak))
+            let entity = cx.entity();
+            let weak = entity.downgrade();
+            cx.new(|cx| {
+                let sub = cx.observe(&entity, |_, _, cx| cx.notify());
+                FinderButtons {
+                    finder: weak,
+                    _subscription: sub,
+                }
+            })
         };
         let mut finder = Self {
             model,
@@ -69,6 +79,9 @@ impl Finder {
             asked: 0,
             images: HashMap::new(),
             tries: 0,
+            confirmed: false,
+            search_task: None,
+            image_task: None,
             buttons_view,
             _subscriptions: subscriptions,
         };
@@ -92,19 +105,23 @@ impl Finder {
     /// The box changed: search what it holds once typing rests.
     fn typed(&mut self, cx: &mut Context<Self>) {
         self.asked += 1;
+        self.search_task = None;
         let number = self.asked;
         let query = self.input.read(cx).value().trim().to_owned();
         if self.model["searchable"] != true {
+            cx.notify();
             return;
         }
+        self.selected = None;
         if query.is_empty() {
             self.rows.clear();
-            self.selected = None;
+            self.image_task = None;
             self.status = self.label("empty");
             cx.notify();
             return;
         }
-        cx.spawn(async move |this, cx| {
+        cx.notify();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REST).await;
             let _ = this.update(cx, |finder, cx| {
                 if finder.asked != number {
@@ -117,8 +134,7 @@ impl Finder {
                 );
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     /// The channels a search found (`number` is the search's; an older one's answer is dropped).
@@ -126,6 +142,7 @@ impl Finder {
         if number != self.asked {
             return;
         }
+        self.image_task = None;
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             self.rows.clear();
             self.selected = None;
@@ -159,13 +176,14 @@ impl Finder {
         // The core is still downloading the rest: ask again in a moment (a few times at most).
         if !self.missing().is_empty() && self.tries < 8 {
             self.tries += 1;
-            cx.spawn(async move |this, cx| {
+            self.image_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(600))
                     .await;
                 let _ = this.update(cx, |finder, _| finder.ask_images());
-            })
-            .detach();
+            }));
+        } else {
+            self.image_task = None;
         }
         cx.notify();
     }
@@ -188,24 +206,35 @@ impl Finder {
         }
     }
 
-    /// OK: the channel picked, else what was typed (a link or an @name); nothing to read, nothing done.
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = self
-            .selected
+    /// The handle that OK would submit right now (selected row, else typed handle/link).
+    fn picked_handle(&self, cx: &App) -> Option<String> {
+        self.selected
             .and_then(|at| self.rows.get(at))
             .and_then(|row| row["handle"].as_str())
             .map(str::to_owned)
-            .or_else(|| Some(self.input.read(cx).value().trim().to_owned()).filter(|typed| !typed.is_empty()));
-        let Some(picked) = picked else { return };
+            .or_else(|| Some(self.input.read(cx).value().trim().to_owned()).filter(|typed| !typed.is_empty()))
+    }
+
+    /// OK: the channel picked, else what was typed (a link or an @name); nothing to read, nothing done.
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirmed {
+            return;
+        }
+        let Some(picked) = self.picked_handle(cx) else { return };
+        self.confirmed = true;
         send(json!({"request": "StreamerzCoreAction", "domain": "accounts",
             "action": format!("{}.set_channel", self.platform()), "itemId": picked, "id": format!("{}:act", self.route)}));
-        window.close_dialog(cx);
+        crate::controls::dialog::dismiss(window, cx);
     }
 
     fn own(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirmed {
+            return;
+        }
+        self.confirmed = true;
         send(json!({"request": "StreamerzCoreAction", "domain": "accounts",
             "action": format!("{}.own_channel", self.platform()), "id": format!("{}:act", self.route)}));
-        window.close_dialog(cx);
+        crate::controls::dialog::dismiss(window, cx);
     }
 
     /// The finder's buttons, for its dialog's footer: "Use my own channel" apart, OK and Cancel at the right.
@@ -385,10 +414,13 @@ impl Render for Finder {
 }
 
 /// The finder's buttons, drawn in its dialog's footer.
-pub struct FinderButtons(WeakEntity<Finder>);
+pub struct FinderButtons {
+    finder: WeakEntity<Finder>,
+    _subscription: Subscription,
+}
 impl Render for FinderButtons {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.0.upgrade() {
+        match self.finder.upgrade() {
             Some(finder) => finder.update(cx, |finder, cx| finder.buttons(cx)).into_any_element(),
             None => div().into_any_element(),
         }
@@ -502,6 +534,145 @@ mod tests {
             assert!(finder.read(cx).rows.is_empty());
             assert_eq!(finder.read(cx).selected, None);
             assert_eq!(finder.read(cx).status, "Type to search.");
+        })
+        .unwrap();
+    }
+
+    struct FinderWithButtons(Entity<Finder>);
+    impl Render for FinderWithButtons {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .p_4()
+                .flex()
+                .flex_col()
+                .child(self.0.clone())
+                .child(self.0.read(cx).buttons_view())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn typing_new_query_clears_stale_selection_and_non_searchable_enables_ok(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let make_model = |searchable: bool| {
+            json!({
+                "platform": "youtube",
+                "searchable": searchable,
+                "placeholder": "Handle or link",
+                "typed": "",
+                "labels": {
+                    "empty": "Type to search.",
+                    "searching": "Searching...",
+                    "none": "Nothing found.",
+                    "channel": "Channel",
+                    "followers": "Followers",
+                    "live": "LIVE",
+                    "own": "Use my own channel",
+                    "ok": "OK",
+                    "cancel": "Cancel"
+                }
+            })
+        };
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Finder>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let searchable_model = make_model(true);
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(640.), px(520.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let finder = cx.new(|cx| Finder::new(searchable_model, "accounts".into(), window, cx));
+                    *s.borrow_mut() = Some(finder.clone());
+                    cx.new(|_| FinderWithButtons(finder))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let finder = slot.borrow().clone().expect("finder created");
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            finder.update(cx, |finder, cx| finder.focus(window, cx));
+            window.input("first", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            let asked = finder.read(cx).asked;
+            finder.update(cx, |finder, cx| {
+                finder.found(
+                    asked,
+                    json!({"channels": [{"handle": "first_handle", "name": "First"}]}),
+                    cx,
+                );
+            });
+            assert_eq!(finder.read(cx).picked_handle(cx).as_deref(), Some("first_handle"));
+
+            // Typing a new handle clears stale row selection so Enter picks what was typed.
+            window.key_down("ctrl-a", false, cx);
+            window.key_up("ctrl-a", cx);
+            window.input("@second", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, _, cx| {
+            assert_eq!(finder.read(cx).selected, None);
+            assert_eq!(finder.read(cx).picked_handle(cx).as_deref(), Some("@second"));
+        })
+        .unwrap();
+
+        // Non-searchable finder: typing enables OK immediately via FinderButtons observer.
+        let slot2: std::rc::Rc<std::cell::RefCell<Option<Entity<Finder>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s2 = slot2.clone();
+        let non_searchable = make_model(false);
+        let window2 = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(640.), px(520.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let finder = cx.new(|cx| Finder::new(non_searchable, "accounts".into(), window, cx));
+                    *s2.borrow_mut() = Some(finder.clone());
+                    cx.new(|_| FinderWithButtons(finder))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let finder2 = slot2.borrow().clone().expect("finder2 created");
+        cx.update_window(window2.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(finder2.read(cx).picked_handle(cx), None);
+            finder2.update(cx, |finder, cx| finder.focus(window, cx));
+            window.input("@manual", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window2.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(finder2.read(cx).picked_handle(cx).as_deref(), Some("@manual"));
+            assert!(!finder2.read(cx).confirmed);
+            window.click("find-ok", cx);
+            assert!(finder2.read(cx).confirmed);
         })
         .unwrap();
     }
