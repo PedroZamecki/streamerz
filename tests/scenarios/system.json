@@ -66,7 +66,7 @@
       {"type": 8002, "eventName": "stream_live", "args": {"value1": "%user%"}},
       {"type": 8001, "eventName": "", "text": "x"}]}],
     "steps": [{"run": "ifttt", "args": {"user": "ana"}}],
-    "expect": {"log": ["IFTTT: event 'stream_live' dispatched", "IFTTT: event 'stream_live' dispatched", "IFTTT: missing event name"]}
+    "expect": {"log": ["IFTTT: no IFTTT webhook key set", "IFTTT: no IFTTT webhook key set", "IFTTT: missing event name"]}
   },
   {
     "name": "pronouns: no user, no pronouns (only userFound is set)",

@@ -322,19 +322,24 @@ pub fn build_ifttt_advanced_payload(args: &Obj) -> Value {
     obj
 }
 
-pub async fn execute_ifttt_notification(event_name: &str, payload: &Value, key: Option<&str>) -> Result<(), String> {
-    if event_name.is_empty() {
+/// The Maker webhook address for an event. Without a key nothing can be sent, so that's an error the
+/// user sees, not a quiet success.
+fn ifttt_address(event: &str, key: Option<&str>) -> Result<String, String> {
+    if event.is_empty() {
         return Err("missing event name".into());
     }
-    let key = key.unwrap_or_default();
-    if key.is_empty() {
-        // When no maker key is provided, Streamer.bot relies on website integration or logs note.
-        crate::say(format!(
-            "IFTTT: event '{event_name}' dispatched (no IFTTT key configured for direct maker webhook)"
-        ));
-        return Ok(());
-    }
-    let url = format!("https://maker.ifttt.com/trigger/{event_name}/with/key/{key}");
+    let key = key.filter(|k| !k.is_empty()).ok_or("no IFTTT webhook key set")?;
+    // Each is one path segment: a "/" or "?" in an event name can't change the address.
+    let segment = |s: &str| crate::commands::url_encode(s).replace('+', "%20");
+    Ok(format!(
+        "https://maker.ifttt.com/trigger/{}/with/key/{}",
+        segment(event),
+        segment(key)
+    ))
+}
+
+pub async fn execute_ifttt_notification(event_name: &str, payload: &Value, key: Option<&str>) -> Result<(), String> {
+    let url = ifttt_address(event_name, key)?;
     let body = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
     let headers = vec![("Content-Type".into(), "application/json".into())];
     let resp = crate::http::request("POST", &url, &headers, &body).await?;
@@ -864,6 +869,17 @@ pub mod tests {
             Some(Some((lookup_pronoun("hehim").unwrap(), "then".into())))
         );
         assert_eq!(cached_entry(&cache, "u1"), None);
+    }
+
+    #[test]
+    fn ifttt_needs_a_key_and_keeps_each_part_in_its_segment() {
+        assert_eq!(
+            ifttt_address("stream up/down?", Some("k+1")).unwrap(),
+            "https://maker.ifttt.com/trigger/stream%20up%2Fdown%3F/with/key/k%2B1"
+        );
+        assert!(ifttt_address("live", None).is_err());
+        assert!(ifttt_address("live", Some("")).is_err());
+        assert!(ifttt_address("", Some("k")).is_err());
     }
 
     #[test]
