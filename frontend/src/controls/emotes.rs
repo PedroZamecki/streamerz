@@ -185,6 +185,7 @@ impl EmotePicker {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscriptions = vec![cx.subscribe_in(&input, window, |view, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
+                view.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 view.request(cx);
             }
         })];
@@ -235,10 +236,21 @@ impl EmotePicker {
         self.error = None;
         let data = value["emotes"].clone();
         // A search that is no longer what is typed is an old answer.
-        if data["query"].as_str().unwrap_or_default() != self.input.read(cx).value().trim().to_lowercase() {
+        let typed = self.input.read(cx).value().trim().to_lowercase();
+        if data["query"].as_str().unwrap_or_default() != typed {
             return;
         }
-        self.provider = data["active"].as_str().unwrap_or_default().to_owned();
+        // A reply for a previously open tab must not snap the user back after a tab switch.
+        let active = data["active"].as_str().unwrap_or_default();
+        let has_current_provider = !self.provider.is_empty()
+            && data["tabs"].as_array().is_some_and(|tabs| {
+                tabs.iter()
+                    .any(|tab| tab["id"].as_str() == Some(self.provider.as_str()))
+            });
+        if typed.is_empty() && has_current_provider && active != self.provider {
+            return;
+        }
+        self.provider = active.to_owned();
         self.favorites = data["favorites"]
             .as_array()
             .into_iter()
@@ -275,8 +287,13 @@ impl EmotePicker {
 
     /// Pictures the page asked for arrived (or the core has more of them now).
     pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
-        // A catalog still loading fills the tab when it lands.
-        if self.rows.iter().all(|row| matches!(row, Row::Head { .. })) {
+        // A catalog still loading fills the tab when it lands; skip empty searches, empty favorites, or folded tabs.
+        let waiting_catalog = self.data.is_null()
+            || (self.input.read(cx).value().trim().is_empty()
+                && self.provider != "favorites"
+                && self.folded.is_empty()
+                && self.rows.iter().all(|row| matches!(row, Row::Head { .. })));
+        if waiting_catalog {
             self.request(cx);
         }
         self.images.mark_arrived();
@@ -457,10 +474,13 @@ impl Render for EmotePicker {
                     .on_click(cx.listener(move |view, index: &usize, window, cx| {
                         if let Some(id) = ids.get(*index) {
                             view.provider = id.clone();
+                            view.scroll.scroll_to_item(0, ScrollStrategy::Top);
                             if !view.input.read(cx).value().is_empty() {
+                                // Clearing the input triggers InputEvent::Change, which sends the request.
                                 view.input.update(cx, |input, cx| input.set_value("", window, cx));
+                            } else {
+                                view.request(cx);
                             }
-                            view.request(cx);
                         }
                     })),
             );
@@ -834,6 +854,57 @@ mod tests {
         cx.update_window(window.into(), |_, _, cx| {
             assert_eq!(picker.read(cx).provider, "7tv");
             assert_eq!(picker.read(cx).input.read(cx).value(), "");
+
+            // Stale reply for the old "platform" tab must be ignored after switching to "7tv".
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "platform",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "Stale Platform", "emotes": [["Kappa", "https://example.com/kappa.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            assert_eq!(picker.read(cx).provider, "7tv");
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "Matches");
+
+            // Matching reply for "7tv" applies cleanly.
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "7tv",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "7TV Global", "emotes": [["KEKW", "https://example.com/kekw.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "7TV Global");
         })
         .unwrap();
     }
