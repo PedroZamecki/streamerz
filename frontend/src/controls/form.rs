@@ -149,8 +149,60 @@ fn color_of(text: &str) -> Option<Hsla> {
 
 /// A slider's number without the noise of its 32 bits (0.85, not 0.8500000238).
 fn tidy(value: f32) -> f64 {
-    (f64::from(value) * 1e4).round() / 1e4
+    let v = (f64::from(value) * 1e4).round() / 1e4;
+    if v == 0.0 {
+        0.0
+    } else {
+        v
+    }
 }
+
+/// Parses a finite number with either `.` or locale `,` as the decimal separator.
+fn parse_decimal(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let parsed = if text.contains(',') {
+        if text.contains('.') {
+            return None;
+        }
+        text.replace(',', ".").parse::<f64>().ok()?
+    } else {
+        text.parse::<f64>().ok()?
+    };
+    parsed.is_finite().then_some(parsed)
+}
+
+/// Structural equality treating integer and float representations of the same number as equal.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(na), Value::Number(nb)) => {
+            if let (Some(ia), Some(ib)) = (na.as_i64(), nb.as_i64()) {
+                return ia == ib;
+            }
+            if let (Some(ua), Some(ub)) = (na.as_u64(), nb.as_u64()) {
+                return ua == ub;
+            }
+            match (na.as_f64(), nb.as_f64()) {
+                (Some(fa), Some(fb)) => (fa - fb).abs() <= 1e-6,
+                _ => false,
+            }
+        }
+        (Value::Array(aa), Value::Array(ab)) => {
+            aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| values_equal(x, y))
+        }
+        (Value::Object(oa), Value::Object(ob)) => {
+            oa.len() == ob.len()
+                && oa
+                    .iter()
+                    .all(|(k, va)| ob.get(k).is_some_and(|vb| values_equal(va, vb)))
+        }
+        _ => a == b,
+    }
+}
+
+fn sub_route(route: &str, suffix: &str) -> String {
+    format!("{}:{suffix}", route.strip_suffix(":save").unwrap_or(route))
+}
+
 pub struct Form {
     pub model: Value,
     fields: Vec<Field>,
@@ -168,13 +220,24 @@ pub struct Form {
     section_toggles: std::collections::HashSet<usize>,
     /// A size's height over its width while Keep ratio is ticked (parts only).
     ratio: Option<f64>,
-    /// Set while a part is changed by the form itself (Keep ratio), so it doesn't answer itself.
-    syncing: bool,
+    /// Width and height field indices for Keep ratio (parts only).
+    ratio_fields: Option<[usize; 2]>,
+    /// Expected programmatic text updates whose Change event should not count as a user edit.
+    suppressed_text: std::collections::HashMap<usize, String>,
     _subscriptions: Vec<Subscription>,
 }
 impl Form {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
+        let ratio_fields = model["ratio"]
+            .as_array()
+            .and_then(|r| {
+                r.iter()
+                    .map(|i| i.as_u64().map(|i| i as usize))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .and_then(|r| <[usize; 3]>::try_from(r).ok())
+            .map(|[w, h, _]| [w, h]);
         let fields: Vec<Field> = model["fields"]
             .as_array()
             .into_iter()
@@ -184,7 +247,7 @@ impl Form {
                 let value = &field["value"];
                 let kind = field["widget"]["kind"].as_str().unwrap_or_default();
                 if field["gallery"].is_object() {
-                    let route = route.replace(":save", &format!(":gallery:{index}"));
+                    let route = sub_route(&route, &format!("gallery:{index}"));
                     let gallery = cx.new(|cx| Gallery::new(field, route, window, cx));
                     subscriptions.push(cx.observe(&gallery, |_, _, cx| cx.notify()));
                     return Field::Gallery(gallery);
@@ -239,29 +302,28 @@ impl Form {
                                 .placeholder(hint)
                         })
                     });
-                    if let Some(input) = input.clone() {
-                        // A typed id picks its name in the list (or none when the list doesn't have it).
-                        let (chosen, list) = (ids.clone(), select.clone());
-                        subscriptions.push(cx.subscribe_in(
-                            &input,
-                            window,
-                            move |_, input, event: &InputEvent, window, cx| {
-                                if !matches!(event, InputEvent::Change) {
-                                    return;
-                                }
-                                let typed = input.read(cx).value().trim().to_owned();
-                                let at = chosen
-                                    .iter()
-                                    .position(|id| *id == typed && !(other && id.is_empty()))
-                                    .or_else(|| (other && !chosen.is_empty()).then(|| chosen.len() - 1));
-                                if list.read(cx).selected_value().copied() != at {
-                                    list.update(cx, |list, cx| match at {
-                                        Some(at) => list.set_selected_value(&at, window, cx),
-                                        None => list.set_selected_index(None, window, cx),
-                                    });
-                                }
-                            },
-                        ));
+                    if !other {
+                        if let Some(input) = input.clone() {
+                            // A typed id picks its name in the list (or none when the list doesn't have it).
+                            let (chosen, list) = (ids.clone(), select.clone());
+                            subscriptions.push(cx.subscribe_in(
+                                &input,
+                                window,
+                                move |_, input, event: &InputEvent, window, cx| {
+                                    if !matches!(event, InputEvent::Change) {
+                                        return;
+                                    }
+                                    let typed = input.read(cx).value().trim().to_owned();
+                                    let at = chosen.iter().position(|id| *id == typed);
+                                    if list.read(cx).selected_value().copied() != at {
+                                        list.update(cx, |list, cx| match at {
+                                            Some(at) => list.set_selected_value(&at, window, cx),
+                                            None => list.set_selected_index(None, window, cx),
+                                        });
+                                    }
+                                },
+                            ));
+                        }
                     }
                     if let Some(input) = input.clone() {
                         let chosen = ids.clone();
@@ -480,16 +542,56 @@ impl Form {
                                 .placeholder(hint)
                         });
                         let browse_image = field["browse"] == "image";
-                        subscriptions.push(cx.subscribe(&input, move |form, _, event: &InputEvent, cx| {
-                            match event {
-                                // A picked image shows as it's typed.
-                                InputEvent::Change if browse_image => cx.notify(),
+                        subscriptions.push(cx.subscribe_in(
+                            &input,
+                            window,
+                            move |form, input, event: &InputEvent, window, cx| match event {
+                                InputEvent::Change => {
+                                    let current = input.read(cx).value().to_string();
+                                    if form.suppressed_text.get(&index).is_some_and(|exp| exp == &current) {
+                                        form.suppressed_text.remove(&index);
+                                        if browse_image {
+                                            cx.notify();
+                                        }
+                                        return;
+                                    }
+                                    form.suppressed_text.remove(&index);
+                                    if browse_image {
+                                        cx.notify();
+                                    }
+                                    cx.emit(Edited);
+                                    // Keep ratio (a size): while it is ticked, one side follows the other.
+                                    if let Some([width, height]) = form.ratio_fields {
+                                        if index == width || index == height {
+                                            let other_index = if index == width { height } else { width };
+                                            if let (Some(ratio), Some(n)) = (form.ratio, parse_decimal(&current)) {
+                                                let other =
+                                                    if index == width { n * ratio } else { n / ratio.max(1e-9) };
+                                                if other.is_finite() {
+                                                    if let Some(Field::Text(target)) = form.fields.get(other_index) {
+                                                        let target = target.clone();
+                                                        let rounded =
+                                                            other.round().clamp(i64::MIN as f64, i64::MAX as f64)
+                                                                as i64;
+                                                        let next = format!("{rounded}");
+                                                        if target.read(cx).value().as_ref() != next {
+                                                            form.suppressed_text.insert(other_index, next.clone());
+                                                            target.update(cx, |target, cx| {
+                                                                target.set_value(next, window, cx)
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 InputEvent::PressEnter { .. } if !form.pending && form.model["inline"] != true => {
                                     form.submit(false, cx)
                                 }
                                 _ => {}
-                            }
-                        }));
+                            },
+                        ));
                         Field::Text(input)
                     }
                 }
@@ -497,15 +599,7 @@ impl Form {
             .collect();
         // Every value the person changes says so (Edited), for pages that follow the form as it is filled.
         for field in &fields {
-            let text = |input: &Entity<InputState>, subs: &mut Vec<Subscription>, cx: &mut Context<Self>| {
-                subs.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        cx.emit(Edited);
-                    }
-                }));
-            };
             match field {
-                Field::Text(input) => text(input, &mut subscriptions, cx),
                 Field::Multi(area) | Field::Lines { area, .. } => {
                     subscriptions.push(cx.subscribe(area, |_, _, event: &InputEvent, cx| {
                         if matches!(event, InputEvent::Change) {
@@ -523,7 +617,11 @@ impl Form {
                         }),
                     );
                     if let Some(input) = input {
-                        text(input, &mut subscriptions, cx);
+                        subscriptions.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                cx.emit(Edited);
+                            }
+                        }));
                     }
                 }
                 Field::Font { select, .. } => subscriptions.push(
@@ -538,43 +636,12 @@ impl Form {
                     subscriptions.push(cx.subscribe(state, |_, _, _: &SliderEvent, cx| cx.emit(Edited)))
                 }
                 Field::Gallery(gallery) => subscriptions.push(cx.observe(gallery, |_, _, cx| cx.emit(Edited))),
-                Field::Bool(_) | Field::Checks { .. } | Field::Parts(_) | Field::Anchor { .. } | Field::Button(_) => {}
-            }
-        }
-        // Keep ratio (a size): while it is ticked, one side follows the other.
-        if let Some([width, height, _]) = model["ratio"]
-            .as_array()
-            .and_then(|r| {
-                r.iter()
-                    .map(|i| i.as_u64().map(|i| i as usize))
-                    .collect::<Option<Vec<_>>>()
-            })
-            .and_then(|r| <[usize; 3]>::try_from(r).ok())
-        {
-            for (from, to) in [(width, height), (height, width)] {
-                let (Some(Field::Text(source)), Some(Field::Text(target))) = (fields.get(from), fields.get(to)) else {
-                    continue;
-                };
-                let target = target.clone();
-                subscriptions.push(cx.subscribe_in(
-                    source,
-                    window,
-                    move |form, source, event: &InputEvent, window, cx| {
-                        if !matches!(event, InputEvent::Change) || form.syncing {
-                            return;
-                        }
-                        let (Some(ratio), Some(n)) = (form.ratio, source.read(cx).value().trim().parse::<f64>().ok())
-                        else {
-                            return;
-                        };
-                        let other = if from == width { n * ratio } else { n / ratio.max(1e-9) };
-                        form.syncing = true;
-                        target.update(cx, |target, cx| {
-                            target.set_value(format!("{}", other.round() as i64), window, cx)
-                        });
-                        form.syncing = false;
-                    },
-                ));
+                Field::Text(_)
+                | Field::Bool(_)
+                | Field::Checks { .. }
+                | Field::Parts(_)
+                | Field::Anchor { .. }
+                | Field::Button(_) => {}
             }
         }
         // A type that has no form opens as JSON.
@@ -593,14 +660,22 @@ impl Form {
             pending: false,
             busy_button: None,
             buttons_view: {
-                let weak = cx.entity().downgrade();
-                cx.new(|_| FormButtons(weak))
+                let entity = cx.entity();
+                let weak = entity.downgrade();
+                cx.new(|cx| {
+                    let sub = cx.observe(&entity, |_, _, cx| cx.notify());
+                    FormButtons {
+                        form: weak,
+                        _subscription: sub,
+                    }
+                })
             },
             picked: None,
             autofocus: !inline,
             section_toggles: std::collections::HashSet::new(),
             ratio: None,
-            syncing: false,
+            ratio_fields,
+            suppressed_text: std::collections::HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -621,7 +696,10 @@ impl Form {
     }
 
     fn submit_action(&mut self, preview: bool, overrides: &Value, cx: &mut Context<Self>) {
-        let mut request = json!({"request": if preview { "StreamerzEntityDraft" } else { "StreamerzEditEntity" }, "kind": self.model["kind"], "itemId": self.model["item"]["id"].as_str().unwrap_or_default(), "id": if preview { self.route.replace(":save", ":json") } else { self.route.clone() }});
+        if self.pending {
+            return;
+        }
+        let mut request = json!({"request": if preview { "StreamerzEntityDraft" } else { "StreamerzEditEntity" }, "kind": self.model["kind"], "itemId": self.model["item"]["id"].as_str().unwrap_or_default(), "id": if preview { sub_route(&self.route, "json") } else { self.route.clone() }});
         if let Some(editor) = &self.json_editor {
             request["json"] = editor.read(cx).value().to_string().into();
         } else {
@@ -693,6 +771,21 @@ impl Form {
         }
     }
 
+    fn section_collapsed(&self, heading: usize) -> bool {
+        (self.model["fields"][heading]["collapsed"] == true) ^ self.section_toggles.contains(&heading)
+    }
+
+    fn in_collapsed_section(&self, index: usize) -> bool {
+        (0..=index)
+            .rev()
+            .find(|&at| self.model["fields"][at]["section"].is_string())
+            .is_some_and(|heading| self.section_collapsed(heading))
+    }
+
+    fn visible(&self, index: usize, cx: &App) -> bool {
+        !self.in_collapsed_section(index) && self.shown(index, cx)
+    }
+
     /// Every field's value by its key: what a field made of parts holds.
     fn by_key(&self, cx: &App) -> serde_json::Map<String, Value> {
         (0..self.fields.len())
@@ -706,12 +799,15 @@ impl Form {
     /// Sends a button's request; one that wants the form's value (Play a sound) gets it, and one
     /// that fills a field from its async reply (`fillField`) locks the form until the reply returns.
     fn press(&mut self, index: usize, press: &Value, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
         let mut request = press["request"].clone();
         if press["withValue"] == true {
             request["value"] = Value::Object(self.by_key(cx));
         }
         if press["fillField"].is_string() {
-            request["id"] = format!("{}:press:{index}", self.route.replace(":save", "")).into();
+            request["id"] = sub_route(&self.route, &format!("press:{index}")).into();
             self.pending = true;
             self.busy_button = Some(index);
             self.error = None;
@@ -749,9 +845,11 @@ impl Form {
     /// Puts the text the core read a box as back in it, without counting it as an edit.
     pub fn set_text(&mut self, index: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Field::Text(input)) = self.fields.get(index) {
-            self.syncing = true;
+            if input.read(cx).value().as_ref() == text {
+                return;
+            }
+            self.suppressed_text.insert(index, text.to_owned());
             input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
-            self.syncing = false;
         }
     }
 
@@ -759,7 +857,6 @@ impl Form {
     fn preset(&mut self, index: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Field::Text(input)) = self.fields.get(index) {
             input.update(cx, |input, cx| input.set_value(value.to_owned(), window, cx));
-            cx.emit(Edited);
             cx.notify();
         }
     }
@@ -769,11 +866,7 @@ impl Form {
     pub(crate) fn differs_from(&self, fields: &Value, cx: &App) -> bool {
         (0..self.fields.len()).any(|index| {
             let Some(now) = self.value(index, cx) else { return false };
-            let given = &fields[index]["value"];
-            match (now.as_f64(), given.as_f64()) {
-                (Some(a), Some(b)) => (a - b).abs() > 1e-6,
-                _ => now != *given,
-            }
+            !values_equal(&now, &fields[index]["value"])
         })
     }
 
@@ -781,7 +874,8 @@ impl Form {
         (0..self.fields.len())
             .filter_map(|index| {
                 let value = self.value(index, cx)?;
-                (value != self.model["fields"][index]["value"]).then(|| json!({"field": index, "value": value}))
+                (!values_equal(&value, &self.model["fields"][index]["value"]))
+                    .then(|| json!({"field": index, "value": value}))
             })
             .collect()
     }
@@ -863,16 +957,17 @@ impl Render for Form {
                 let index = self.model["focusField"]
                     .as_u64()
                     .map(|index| index as usize)
+                    .filter(|&index| self.visible(index, cx))
                     .or_else(|| {
                         self.fields.iter().enumerate().position(|(index, field)| {
-                            self.shown(index, cx)
+                            self.visible(index, cx)
                                 && self.model["fields"][index]["value"].as_str().is_some_and(str::is_empty)
                                 && matches!(field, Field::Text(_) | Field::Multi(_))
                         })
                     })
                     .or_else(|| {
                         self.fields.iter().enumerate().position(|(index, field)| {
-                            self.shown(index, cx) && matches!(field, Field::Text(_) | Field::Multi(_))
+                            self.visible(index, cx) && matches!(field, Field::Text(_) | Field::Multi(_))
                         })
                     });
                 match index.and_then(|index| self.fields.get(index)) {
@@ -885,15 +980,17 @@ impl Render for Form {
         if let Some((index, path)) = self.picked.take() {
             match self.fields.get(index) {
                 Some(Field::Text(input)) => input.update(cx, |input, cx| input.set_value(path, window, cx)),
-                // A list that also takes typed text: the file picked is typed, under "Other".
+                // A list that also takes typed text: the file picked is typed, under "Other" when present.
                 Some(Field::Choice {
                     select,
                     input: Some(input),
                     ids,
-                    ..
+                    other,
                 }) => {
-                    if let Some(last) = ids.len().checked_sub(1) {
-                        select.update(cx, |select, cx| select.set_selected_value(&last, window, cx));
+                    if *other {
+                        if let Some(last) = ids.len().checked_sub(1) {
+                            select.update(cx, |select, cx| select.set_selected_value(&last, window, cx));
+                        }
                     }
                     input.update(cx, |input, cx| input.set_value(path, window, cx));
                 }
@@ -976,8 +1073,7 @@ impl Render for Form {
             while index < self.fields.len() {
                 // A heading above the field that starts a part of the form.
                 if let Some(title) = self.model["fields"][index]["section"].as_str() {
-                    let collapsed =
-                        (self.model["fields"][index]["collapsed"] == true) ^ self.section_toggles.contains(&index);
+                    let collapsed = self.section_collapsed(index);
                     let heading = index;
                     body = body.child(
                         Button::new(("form-section", index))
@@ -1102,9 +1198,13 @@ impl Render for Form {
                 let (editor, height) = self.editor(index, label.clone(), window, cx);
                 // What the field is for, when its maker said: shown over its label.
                 let about = self.model["fields"][index]["tip"].as_str().map(str::to_owned);
-                let variables = self.model["variables"].as_array().cloned().unwrap_or_default();
-                let insertable =
-                    !variables.is_empty() && matches!(self.fields[index], Field::Text(_) | Field::Multi(_));
+                let has_variables = self.model["variables"].as_array().is_some_and(|v| !v.is_empty());
+                let insertable = has_variables && matches!(self.fields[index], Field::Text(_) | Field::Multi(_));
+                let variables = if insertable {
+                    self.model["variables"].as_array().cloned().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let height = if insertable { height.max(54.0_f32) } else { height };
                 let owner = cx.entity().downgrade();
                 body = body.child(
@@ -1665,20 +1765,6 @@ impl Form {
 
     /// A field's parts side by side, a caption over each (see `inline_height`).
     fn inline(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some((index, path)) = self.picked.take() {
-            if let Some(Field::Choice {
-                select,
-                input: Some(input),
-                ids,
-                ..
-            }) = self.fields.get(index)
-            {
-                if let Some(last) = ids.len().checked_sub(1) {
-                    select.update(cx, |select, cx| select.set_selected_value(&last, window, cx));
-                }
-                input.update(cx, |input, cx| input.set_value(path, window, cx));
-            }
-        }
         let mut out = div().w_full().flex().flex_col().gap(px(SPACE_SM));
         for line in self.part_lines() {
             let mut row = div().w_full().flex().items_start().gap(px(SPACE_SM));
@@ -1706,7 +1792,7 @@ impl Form {
                                     .small()
                                     .label(label)
                                     .checked(*checked)
-                                    .disabled(self.pending)
+                                    .disabled(self.pending || self.model["fields"][index]["disabled"] == true)
                                     .on_click(cx.listener(move |form, checked: &bool, _, cx| {
                                         form.fields[index] = Field::Bool(*checked);
                                         // Keep ratio: the sides as they are now.
@@ -1715,13 +1801,11 @@ impl Form {
                                                 .as_u64()
                                                 .and_then(|i| form.fields.get(i as usize))
                                             {
-                                                Some(Field::Text(input)) => {
-                                                    input.read(cx).value().trim().parse::<f64>().ok()
-                                                }
+                                                Some(Field::Text(input)) => parse_decimal(&input.read(cx).value()),
                                                 _ => None,
                                             };
                                             form.ratio = match (side(&ratio[0], cx), side(&ratio[1], cx)) {
-                                                (Some(w), Some(h)) if *checked && w > 0. => Some(h / w),
+                                                (Some(w), Some(h)) if *checked && w > 0. && h > 0. => Some(h / w),
                                                 _ => None,
                                             };
                                         }
@@ -1874,10 +1958,13 @@ impl Form {
 }
 
 /// A form's buttons, drawn where its dialog puts them (the footer).
-pub struct FormButtons(WeakEntity<Form>);
+pub struct FormButtons {
+    form: WeakEntity<Form>,
+    _subscription: Subscription,
+}
 impl Render for FormButtons {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.0.upgrade() {
+        match self.form.upgrade() {
             Some(form) => form.update(cx, |form, cx| form.buttons(cx)).into_any_element(),
             None => div().into_any_element(),
         }
@@ -1899,8 +1986,57 @@ fn boxed(field: impl IntoElement, height: f32, cx: &App) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_slider;
+    use super::{color_of, hex, parse_decimal, sanitize_slider, sub_route, tidy, values_equal, wrapped};
     use gpui_kit::component::slider::SliderState;
+    use serde_json::json;
+
+    #[test]
+    fn parse_decimal_handles_locale_commas_and_rejects_non_finite() {
+        assert_eq!(parse_decimal("2,5"), Some(2.5));
+        assert_eq!(parse_decimal(" -1920,25 "), Some(-1920.25));
+        assert_eq!(parse_decimal("1080.5"), Some(1080.5));
+        assert_eq!(parse_decimal("1.2,5"), None);
+        assert_eq!(parse_decimal("NaN"), None);
+        assert_eq!(parse_decimal("inf"), None);
+        assert_eq!(parse_decimal("-infinity"), None);
+        assert_eq!(parse_decimal(""), None);
+    }
+
+    #[test]
+    fn tidy_normalizes_negative_zero_and_rounds_float_noise() {
+        assert_eq!(tidy(-0.00001_f32).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(tidy(0.85_f32), 0.85);
+        assert_eq!(tidy(-12.34567_f32), -12.3457);
+    }
+
+    #[test]
+    fn values_equal_matches_int_and_float_recursively() {
+        assert!(values_equal(&json!(100), &json!(100.0)));
+        assert!(values_equal(&json!([10, 20]), &json!([10.0, 20.0])));
+        assert!(values_equal(
+            &json!({"angle": 90, "from": "#ff0000"}),
+            &json!({"angle": 90.0, "from": "#ff0000"})
+        ));
+        assert!(!values_equal(&json!(100), &json!(100.1)));
+        assert!(!values_equal(&json!([10, 20]), &json!([10.0, 21.0])));
+        assert!(!values_equal(&json!({"a": 1}), &json!({"a": 1, "b": 2})));
+    }
+
+    #[test]
+    fn color_round_trip_and_sub_route_only_strip_trailing_save() {
+        let opaque = color_of("#7c3aed").expect("valid rgb");
+        assert_eq!(hex(opaque), "#7c3aed");
+        let alpha = color_of("#7c3aed80").expect("valid rgba");
+        assert_eq!(hex(alpha), "#7c3aed80");
+        assert!(color_of("#zzz000").is_none());
+        assert!(color_of("#12345").is_none());
+        assert!(color_of("7c3aed").is_none());
+
+        assert_eq!(sub_route("actions:1:save", "json"), "actions:1:json");
+        assert_eq!(sub_route("list:1:save:save", "json"), "list:1:save:json");
+        assert_eq!(sub_route("test:form", "json"), "test:form:json");
+        assert!(wrapped("hello\nworld", 16., 140.) >= 32.);
+    }
 
     #[test]
     fn slider_sanitization_prevents_min_above_hundred_or_inverted_range_panics() {
@@ -1929,8 +2065,8 @@ mod tests {
         use super::super::{Field, Form};
         use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
         use gpui_kit::{
-            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
-            Window, WindowBounds, WindowOptions,
+            div, px, size, AppContext, Bounds, Entity, Focusable, IntoElement, ParentElement, Render, Styled,
+            TestAppContext, Window, WindowBounds, WindowOptions,
         };
         use serde_json::json;
 
@@ -2385,6 +2521,149 @@ mod tests {
                 window.render_frame(cx);
                 assert!(!form.read(cx).pending);
                 assert!(form.read(cx).error.is_some());
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn other_choice_keeps_custom_input_visible_when_typing_existing_choice(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Edit stream",
+                "fields": [
+                    {
+                        "key": "category",
+                        "label": "Category",
+                        "value": "Custom",
+                        "other": true,
+                        "choices": [
+                            {"id": "Art", "label": "Art"},
+                            {"id": "Music", "label": "Music"}
+                        ]
+                    }
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find_all_by_role(gpui_kit::Role::TextInput).len(), 1);
+                let input = match &form.read(cx).fields[0] {
+                    Field::Choice { input: Some(input), .. } => input.clone(),
+                    _ => unreachable!(),
+                };
+                input.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                window.input("Art", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                // Input must stay visible so the user can keep typing "Art History".
+                assert_eq!(window.find_all_by_role(gpui_kit::Role::TextInput).len(), 1);
+                window.input(" History", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("Art History")));
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn untouched_int_slider_and_range_slider_do_not_report_changes_or_differ(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Sliders",
+                "fields": [
+                    {"key": "vol", "label": "Volume", "value": 100, "widget": {"kind": "slider", "min": 0, "max": 100, "step": 1}},
+                    {"key": "band", "label": "Band", "value": [10, 40], "widget": {"kind": "slider", "min": 0, "max": 100, "step": 1, "range": true}}
+                ]
+            });
+            let fields = model["fields"].clone();
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(form.read(cx).changes(cx).is_empty());
+                assert!(!form.read(cx).differs_from(&fields, cx));
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn autofocus_skips_empty_text_inside_collapsed_section(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Timer",
+                "fields": [
+                    {"key": "name", "label": "Name", "value": "Existing", "widget": {"kind": "text"}},
+                    {"key": "note", "label": "Note", "value": "", "section": "Advanced", "collapsed": true, "widget": {"kind": "text"}}
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let (name_focused, note_focused) = match (&form.read(cx).fields[0], &form.read(cx).fields[1]) {
+                    (Field::Text(name), Field::Text(note)) => (
+                        name.read(cx).focus_handle(cx).is_focused(window),
+                        note.read(cx).focus_handle(cx).is_focused(window),
+                    ),
+                    _ => unreachable!(),
+                };
+                assert!(name_focused, "first visible text field should receive focus");
+                assert!(!note_focused, "collapsed section field must not steal focus");
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn set_text_does_not_emit_edited_and_ratio_accepts_decimal_comma(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Size",
+                "inline": true,
+                "ratio": [0, 1, 2],
+                "fields": [
+                    {"key": "width", "label": "Width", "value": "100", "widget": {"kind": "text"}, "line": 0},
+                    {"key": "height", "label": "Height", "value": "50", "widget": {"kind": "text"}, "line": 0},
+                    {"key": "lock", "label": "Keep ratio", "value": false, "widget": {"kind": "bool"}, "line": 0}
+                ]
+            });
+            let (window, form) = open_form(model, cx);
+            let edits = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let edits_cb = edits.clone();
+            cx.update_window(window.into(), |_, window, cx| {
+                cx.subscribe(&form, move |_, _: &super::super::Edited, _| {
+                    edits_cb.set(edits_cb.get() + 1);
+                })
+                .detach();
+                window.render_frame(cx);
+
+                // Programmatic set_text should update the box without emitting Edited.
+                form.update(cx, |form, cx| form.set_text(0, "200", window, cx));
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("200")));
+                assert_eq!(edits.get(), 0, "set_text must not emit Edited");
+
+                // Lock ratio at 50 / 200 = 0.25 and type a locale comma number into width.
+                form.update(cx, |form, _| form.ratio = Some(0.25));
+                let width = match &form.read(cx).fields[0] {
+                    Field::Text(input) => input.clone(),
+                    _ => unreachable!(),
+                };
+                width.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                window.input("400,5", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, _, cx| {
+                assert_eq!(form.read(cx).value(0, cx), Some(json!("400,5")));
+                assert_eq!(form.read(cx).value(1, cx), Some(json!("100")));
+                assert_eq!(edits.get(), 5, "one Edited per typed character, none from ratio sync");
             })
             .unwrap();
         }
