@@ -21,6 +21,9 @@
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub const S_WRITE_TO_FILE: u32 = 3;
 pub const S_READ_RANDOM_LINE: u32 = 5;
@@ -42,11 +45,36 @@ pub const T_PROCESS_STOPPED: u32 = 704;
 const NEWLINE: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 /// Write or append text to a file. Append starts a new line when the file is already there (even
-/// empty), as Streamer.bot does; a file it makes starts with the text.
+/// empty), as Streamer.bot does; a file it makes starts with the text. Overwrites go through a
+/// temporary file and rename when replacing a normal file, so readers never see a half-written file.
 pub fn write_to_file(path: &Path, text: &str, append: bool) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    if !append {
+        let atomic = match std::fs::symlink_metadata(path) {
+            Ok(meta) => meta.is_file(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => true,
+            Err(e) => return Err(e),
+        };
+        if atomic {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+                let tmp = path.with_file_name(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+                let res = (|| {
+                    let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+                    file.write_all(text.as_bytes())?;
+                    file.flush()?;
+                    drop(file);
+                    std::fs::rename(&tmp, path)
+                })();
+                if res.is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                return res;
+            }
         }
     }
     let text = if append && path.exists() {
@@ -64,9 +92,32 @@ pub fn write_to_file(path: &Path, text: &str, append: bool) -> io::Result<()> {
     file.flush()
 }
 
-/// Read all lines from a file.
+fn decode_text(bytes: &[u8]) -> io::Result<String> {
+    if let Some(rest) = bytes.strip_prefix(b"\xef\xbb\xbf") {
+        String::from_utf8(rest.to_vec()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    } else if let Some(rest) = bytes.strip_prefix(b"\xff\xfe") {
+        let (pairs, rem) = rest.as_chunks::<2>();
+        if !rem.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated UTF-16 LE text"));
+        }
+        let units: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
+        String::from_utf16(&units).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    } else if let Some(rest) = bytes.strip_prefix(b"\xfe\xff") {
+        let (pairs, rem) = rest.as_chunks::<2>();
+        if !rem.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated UTF-16 BE text"));
+        }
+        let units: Vec<u16> = pairs.iter().copied().map(u16::from_be_bytes).collect();
+        String::from_utf16(&units).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    } else {
+        String::from_utf8(bytes.to_vec()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+/// Read all lines from a file (UTF-8, UTF-8 with BOM, or UTF-16 with BOM).
 pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
-    let content = std::fs::read_to_string(path)?;
+    let bytes = std::fs::read(path)?;
+    let content = decode_text(&bytes)?;
     Ok(content.lines().map(|s| s.to_string()).collect())
 }
 
@@ -151,6 +202,51 @@ mod tests {
         let lines2 = read_lines(&file).unwrap();
         assert_eq!(lines2.len(), 4);
         assert_eq!(lines2[3], "line4");
+
+        // Overwrite replaces atomically without leaving temp files behind.
+        write_to_file(&file, "fresh", false).unwrap();
+        assert_eq!(read_lines(&file).unwrap(), vec!["fresh"]);
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftover.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_lines_strips_utf8_and_utf16_boms_and_handles_empty() {
+        let dir = std::env::temp_dir().join(format!("streamerz_fileio_bom_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let utf8 = dir.join("utf8.txt");
+        std::fs::write(&utf8, b"\xef\xbb\xbf42\r\nsecond").unwrap();
+        assert_eq!(read_lines(&utf8).unwrap(), vec!["42", "second"]);
+
+        let utf16le = dir.join("utf16le.txt");
+        let mut le = vec![0xff, 0xfe];
+        for u in "hello\r\nworld".encode_utf16() {
+            le.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&utf16le, le).unwrap();
+        assert_eq!(read_lines(&utf16le).unwrap(), vec!["hello", "world"]);
+
+        let utf16be = dir.join("utf16be.txt");
+        let mut be = vec![0xfe, 0xff];
+        for u in "one\ntwo".encode_utf16() {
+            be.extend_from_slice(&u.to_be_bytes());
+        }
+        std::fs::write(&utf16be, be).unwrap();
+        assert_eq!(read_lines(&utf16be).unwrap(), vec!["one", "two"]);
+
+        let empty = dir.join("empty.txt");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(read_lines(&empty).unwrap().is_empty());
+        assert_eq!(read_random_line(&empty).unwrap(), None);
+        assert_eq!(read_specific_line(&empty, 0).unwrap(), None);
+        assert_eq!(read_specific_line(&empty, 1).unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
