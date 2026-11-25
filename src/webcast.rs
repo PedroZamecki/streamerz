@@ -43,6 +43,9 @@ fn varint(b: &mut &[u8]) -> Option<u64> {
     for shift in (0..64).step_by(7) {
         let (&x, rest) = b.split_first()?;
         *b = rest;
+        if shift == 63 && x > 1 {
+            return None;
+        }
         v |= u64::from(x & 0x7f) << shift;
         if x < 0x80 {
             return Some(v);
@@ -60,33 +63,42 @@ impl<'a> Msg<'a> {
         let mut b = self.0;
         std::iter::from_fn(move || {
             let key = varint(&mut b)?;
-            let v = match key & 7 {
+            let tag = u32::try_from(key).ok()?;
+            let field = tag >> 3;
+            if field == 0 {
+                return None;
+            }
+            let v = match tag & 7 {
                 0 => V::I(varint(&mut b)?),
-                1 => V::I(u64::from_le_bytes(b.get(..8)?.try_into().ok()?)),
-                5 => V::I(u64::from(u32::from_le_bytes(b.get(..4)?.try_into().ok()?))),
+                1 => {
+                    let val = u64::from_le_bytes(b.get(..8)?.try_into().ok()?);
+                    b = &b[8..];
+                    V::I(val)
+                }
+                5 => {
+                    let val = u64::from(u32::from_le_bytes(b.get(..4)?.try_into().ok()?));
+                    b = &b[4..];
+                    V::I(val)
+                }
                 2 => {
                     let n = usize::try_from(varint(&mut b)?).ok()?;
-                    V::B(b.get(..n)?)
+                    let slice = b.get(..n)?;
+                    b = &b[n..];
+                    V::B(slice)
                 }
                 _ => return None, // groups: unused by TikTok
             };
-            match v {
-                V::B(x) => b = &b[x.len()..],
-                V::I(_) if key & 7 == 1 => b = &b[8..],
-                V::I(_) if key & 7 == 5 => b = &b[4..],
-                V::I(_) => {}
-            }
-            Some(((key >> 3) as u32, v))
+            Some((field, v))
+        })
+    }
+    pub fn opt_int(self, n: u32) -> Option<u64> {
+        self.fields().find_map(|(k, v)| match v {
+            V::I(i) if k == n => Some(i),
+            _ => None,
         })
     }
     pub fn int(self, n: u32) -> u64 {
-        self.fields()
-            .filter(|f| f.0 == n)
-            .find_map(|f| match f.1 {
-                V::I(i) => Some(i),
-                V::B(_) => None,
-            })
-            .unwrap_or(0)
+        self.opt_int(n).unwrap_or(0)
     }
 
     /// Repeated integers may arrive packed or as individual varints.
@@ -165,6 +177,9 @@ pub fn enter_room(room: u64) -> Vec<u8> {
     frame(0, "im_enter_room", &p)
 }
 
+/// Upper bound for one decompressed webcast push frame payload.
+const MAX_DECOMPRESSED: usize = 16 << 20;
+
 /// One binary frame from TikTok: its events, and the ack to send back when it asks for one.
 pub fn read(data: &[u8]) -> (Vec<(&'static str, Value)>, Option<Vec<u8>>) {
     let f = Msg(data);
@@ -174,22 +189,36 @@ pub fn read(data: &[u8]) -> (Vec<(&'static str, Value)>, Option<Vec<u8>>) {
     let raw = f.bytes(8);
     let mut unzipped = Vec::new();
     let payload = if raw.starts_with(&[0x1f, 0x8b]) {
-        if flate2::read::GzDecoder::new(raw).read_to_end(&mut unzipped).is_err() {
+        let limit = (MAX_DECOMPRESSED + 1) as u64;
+        if flate2::read::GzDecoder::new(raw)
+            .take(limit)
+            .read_to_end(&mut unzipped)
+            .is_err()
+            || unzipped.len() > MAX_DECOMPRESSED
+        {
             return (Vec::new(), None);
         }
         &unzipped[..]
     } else {
         raw
     };
-    let r = Msg(payload);
-    let ack = (r.int(9) != 0 && !r.bytes(5).is_empty()).then(|| frame(f.int(2), "ack", r.bytes(5)));
-    let events = r
-        .all(1)
-        .filter_map(|m| {
-            let m = Msg(m);
-            event(&m.str(1), m.msg(2))
-        })
-        .collect();
+    let mut need_ack = false;
+    let mut internal_ext: &[u8] = &[];
+    let mut events = Vec::new();
+    for (k, v) in Msg(payload).fields() {
+        match (k, v) {
+            (1, V::B(m)) => {
+                let m = Msg(m);
+                if let Some(ev) = event(&m.str(1), m.msg(2)) {
+                    events.push(ev);
+                }
+            }
+            (5, V::B(ext)) if internal_ext.is_empty() => internal_ext = ext,
+            (9, V::I(flag)) if flag != 0 => need_ack = true,
+            _ => {}
+        }
+    }
+    let ack = (need_ack && !internal_ext.is_empty()).then(|| frame(f.int(2), "ack", internal_ext));
     (events, ack)
 }
 
@@ -247,7 +276,7 @@ fn chat_comment_and_emotes(raw_comment: String, m: Msg) -> (String, Vec<Value>) 
         .all(13)
         .filter_map(|raw| {
             let ew = Msg(raw);
-            let idx = ew.int(1) as usize;
+            let idx = usize::try_from(ew.int(1)).unwrap_or(usize::MAX);
             let em = ew.msg(2);
             let id = em.str(1);
             let url = em.msg(2).str(1);
@@ -265,12 +294,12 @@ fn chat_comment_and_emotes(raw_comment: String, m: Msg) -> (String, Vec<Value>) 
         .map(|(_, tok, url)| json!({ "token": tok, "url": url }))
         .collect();
     if raw_comment.contains('\u{FFFC}') {
-        let mut out = String::new();
+        let mut out = String::with_capacity(raw_comment.len() + indexed.len() * 16);
         let mut it = indexed.iter();
         for ch in raw_comment.chars() {
             if ch == '\u{FFFC}' {
                 if let Some((_, tok, _)) = it.next() {
-                    if !out.is_empty() && !out.ends_with(' ') {
+                    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
                         out.push(' ');
                     }
                     out.push_str(tok);
@@ -281,30 +310,38 @@ fn chat_comment_and_emotes(raw_comment: String, m: Msg) -> (String, Vec<Value>) 
             out.push(ch);
         }
         for (_, tok, _) in it {
-            if !out.is_empty() && !out.ends_with(' ') {
+            if !out.is_empty() && !out.ends_with(char::is_whitespace) {
                 out.push(' ');
             }
             out.push_str(tok);
         }
         return (out.trim().to_string(), emotes_json);
     }
-    let mut chars: Vec<char> = raw_comment.chars().collect();
-    indexed.sort_by_key(|a| std::cmp::Reverse(a.0));
-    for (idx, tok, _) in &indexed {
-        let pos = (*idx).min(chars.len());
-        let need_leading = pos > 0 && !chars[pos - 1].is_whitespace();
-        let need_trailing = pos < chars.len() && !chars[pos].is_whitespace();
-        let mut insert = String::new();
-        if need_leading {
-            insert.push(' ');
+    indexed.sort_by_key(|a| a.0);
+    let mut out = String::with_capacity(raw_comment.len() + indexed.len() * 16);
+    let mut emotes = indexed.iter().peekable();
+    let mut after_emote = false;
+    for (pos, ch) in raw_comment.chars().enumerate() {
+        while let Some((_, tok, _)) = emotes.next_if(|(idx, _, _)| *idx <= pos) {
+            if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                out.push(' ');
+            }
+            out.push_str(tok);
+            after_emote = true;
         }
-        insert.push_str(tok);
-        if need_trailing {
-            insert.push(' ');
+        if after_emote && !ch.is_whitespace() && !out.ends_with(char::is_whitespace) {
+            out.push(' ');
         }
-        chars.splice(pos..pos, insert.chars());
+        after_emote = false;
+        out.push(ch);
     }
-    (chars.into_iter().collect::<String>().trim().to_string(), emotes_json)
+    for (_, tok, _) in emotes {
+        if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+            out.push(' ');
+        }
+        out.push_str(tok);
+    }
+    (out.trim().to_string(), emotes_json)
 }
 
 /// A Webcast message as Streamerz's TikTok event name and data.
@@ -386,7 +423,6 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
         }
         "WebcastGiftMessage" => {
             let g = m.msg(15);
-            let number = |key| g.fields().any(|(field, _)| field == key).then(|| g.int(key));
             (
                 "gift",
                 with(
@@ -394,9 +430,9 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
                     json!({
                         "giftId": m.int(2),
                         "giftName": g.str(16),
-                        "giftType": number(11),
+                        "giftType": g.opt_int(11),
                         "giftPictureUrl": g.msg(1).str(1),
-                        "diamondCount": number(12),
+                        "diamondCount": g.opt_int(12),
                         "repeatCount": m.int(5),
                         "repeatEnd": m.int(9) == 1,
                     }),
@@ -461,16 +497,9 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>, Option<String>)
         match crate::http::request("GET", &url, &[("User-Agent".into(), UA.into())], b"").await {
             Ok(r) if r.status == 200 => {
                 let page = r.text();
-                if let Some(raw) = page
-                    .split("\"avatarThumbUrl\":\"")
-                    .nth(1)
-                    .and_then(|s| s.split('"').next())
-                {
-                    let avatar = raw.replace("\\u0026", "&").replace("\\/", "/");
-                    if avatar.starts_with("https://") {
-                        remember_existing_user(user);
-                        return (EmbedProbe::Exists, Some(avatar), json_string(&page, "nickname"));
-                    }
+                if let Some(avatar) = json_string(&page, "avatarThumbUrl").filter(|a| a.starts_with("https://")) {
+                    remember_existing_user(user);
+                    return (EmbedProbe::Exists, Some(avatar), json_string(&page, "nickname"));
                 }
                 if page.contains("\"uniqueId\":\"") {
                     remember_existing_user(user);
@@ -846,5 +875,186 @@ mod tests {
             }
         }
         assert!(n > 0, "no chat in the captured frames");
+    }
+
+    #[test]
+    fn protobuf_varint_rejects_truncation_and_overflow() {
+        let mut empty: &[u8] = &[];
+        assert_eq!(varint(&mut empty), None);
+
+        let mut truncated: &[u8] = &[0x80];
+        assert_eq!(varint(&mut truncated), None);
+
+        // Max valid 64-bit varint: 9 bytes of 0xff followed by 0x01.
+        let mut max_ok: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+        assert_eq!(varint(&mut max_ok), Some(u64::MAX));
+        assert!(max_ok.is_empty());
+
+        // 10th byte > 1 overflows 64 bits (bits 64..69 set).
+        let mut tenth_overflow: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02];
+        assert_eq!(varint(&mut tenth_overflow), None);
+
+        let mut tenth_high: &[u8] = &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7f];
+        assert_eq!(varint(&mut tenth_high), None);
+
+        // 11-byte varint must be rejected.
+        let mut eleven: &[u8] = &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01];
+        assert_eq!(varint(&mut eleven), None);
+    }
+
+    #[test]
+    fn protobuf_msg_rejects_invalid_tags_lengths_and_wire_types() {
+        // Field number 0 (tag 0x00) is illegal and must stop iteration cleanly.
+        assert_eq!(Msg(&[0x00, 0x01, 0x08, 0x07]).fields().count(), 0);
+
+        // Tag > u32::MAX whose low 32 bits would spoof field 1 (wire type 0).
+        let mut spoof = Vec::new();
+        put_varint(&mut spoof, (1u64 << 32) | (1u64 << 3));
+        put_varint(&mut spoof, 99);
+        assert_eq!(Msg(&spoof).int(1), 0);
+        assert_eq!(Msg(&spoof).fields().count(), 0);
+
+        // Length-delimited field claiming more bytes than remain in the buffer.
+        assert_eq!(Msg(&[0x0a, 0x10, b'a', b'b']).fields().count(), 0);
+
+        // Length-delimited field claiming u64::MAX bytes.
+        let mut huge_len = vec![0x0a];
+        put_varint(&mut huge_len, u64::MAX);
+        assert_eq!(Msg(&huge_len).fields().count(), 0);
+
+        // Truncated fixed64 (wire type 1) and fixed32 (wire type 5).
+        assert_eq!(Msg(&[0x09, 1, 2, 3, 4, 5, 6, 7]).fields().count(), 0);
+        assert_eq!(Msg(&[0x0d, 1, 2, 3]).fields().count(), 0);
+
+        // Unsupported wire types (3, 4, 6, 7) stop cleanly without panicking.
+        for wt in [3u8, 4, 6, 7] {
+            let tag = (1u8 << 3) | wt;
+            assert_eq!(Msg(&[tag, 0x01]).fields().count(), 0);
+        }
+
+        // Valid fixed64, fixed32, varint, and length-delimited fields in sequence.
+        let mut mixed = Vec::new();
+        mixed.push((1 << 3) | 1);
+        mixed.extend_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+        mixed.push((2 << 3) | 5);
+        mixed.extend_from_slice(&0x1122_3344u32.to_le_bytes());
+        put_int(&mut mixed, 3, 42);
+        put_bytes(&mut mixed, 4, b"ok");
+        let m = Msg(&mixed);
+        assert_eq!(m.opt_int(1), Some(0x0102_0304_0506_0708));
+        assert_eq!(m.opt_int(2), Some(0x1122_3344));
+        assert_eq!(m.opt_int(3), Some(42));
+        assert_eq!(m.opt_int(4), None);
+        assert_eq!(m.str(4), "ok");
+    }
+
+    #[test]
+    fn gzip_bomb_and_corrupt_gzip_frames_are_rejected_without_panic() {
+        // Corrupt gzip payload.
+        let bad = frame(1, "msg", &[0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff]);
+        assert!(read(&bad).0.is_empty());
+
+        // Small compressed payload that expands past MAX_DECOMPRESSED.
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 64 << 10];
+        let chunks = (MAX_DECOMPRESSED / zeros.len()) + 2;
+        for _ in 0..chunks {
+            std::io::Write::write_all(&mut enc, &zeros).unwrap();
+        }
+        let bomb = enc.finish().unwrap();
+        assert!(bomb.len() < 64 << 10, "gzip bomb should be compact");
+        let framed = frame(1, "msg", &bomb);
+        let (events, ack) = read(&framed);
+        assert!(events.is_empty());
+        assert!(ack.is_none());
+    }
+
+    #[test]
+    fn gift_message_ignores_wrong_wire_type_for_optional_numbers() {
+        // Field 11 (giftType) and 12 (diamondCount) encoded as bytes instead of varint.
+        let mut g = Vec::new();
+        put_bytes(&mut g, 11, b"bad");
+        put_bytes(&mut g, 12, b"bad");
+        put_bytes(&mut g, 16, b"Rose");
+        let mut msg = Vec::new();
+        put_int(&mut msg, 2, 5655);
+        put_bytes(&mut msg, 15, &g);
+        let (kind, v) = event("WebcastGiftMessage", Msg(&msg)).unwrap();
+        assert_eq!(kind, "gift");
+        assert!(v["giftType"].is_null());
+        assert!(v["diamondCount"].is_null());
+        assert_eq!(v["giftName"], "Rose");
+    }
+
+    #[test]
+    fn chat_emotes_handle_placeholders_same_index_and_bounds() {
+        let make_ewi = |idx: u64, id: &str, url: &str| {
+            let mut img = Vec::new();
+            put_bytes(&mut img, 1, url.as_bytes());
+            let mut em = Vec::new();
+            put_bytes(&mut em, 1, id.as_bytes());
+            put_bytes(&mut em, 2, &img);
+            let mut ewi = Vec::new();
+            put_int(&mut ewi, 1, idx);
+            put_bytes(&mut ewi, 2, &em);
+            ewi
+        };
+        // Two emotes at the same index keep their wire order; non-https emote is dropped.
+        let mut chat = Vec::new();
+        put_bytes(&mut chat, 3, b"hiworld");
+        put_bytes(&mut chat, 13, &make_ewi(2, "e1", "https://cdn.example/1.png"));
+        put_bytes(&mut chat, 13, &make_ewi(2, "e2", "https://cdn.example/2.png"));
+        put_bytes(&mut chat, 13, &make_ewi(2, "bad", "http://insecure.example/3.png"));
+        put_bytes(&mut chat, 13, &make_ewi(u64::MAX, "end", "https://cdn.example/4.png"));
+        let (_, d) = event("WebcastChatMessage", Msg(&chat)).unwrap();
+        assert_eq!(d["comment"], "hi [tiktok:e1] [tiktok:e2] world [tiktok:end]");
+        assert_eq!(d["emotes"].as_array().unwrap().len(), 3);
+
+        // Object replacement character placeholders with extra trailing emote.
+        let mut fffc = Vec::new();
+        put_bytes(&mut fffc, 3, "a\u{FFFC}b".as_bytes());
+        put_bytes(&mut fffc, 13, &make_ewi(0, "x", "https://cdn.example/x.png"));
+        put_bytes(&mut fffc, 13, &make_ewi(1, "y", "https://cdn.example/y.png"));
+        let (_, d2) = event("WebcastChatMessage", Msg(&fffc)).unwrap();
+        assert_eq!(d2["comment"], "a [tiktok:x] b [tiktok:y]");
+    }
+
+    #[test]
+    fn decodes_emote_chat_like_social_member_and_subscribe_events() {
+        let mut img = Vec::new();
+        put_bytes(&mut img, 1, b"https://cdn.example/em.png");
+        let mut em = Vec::new();
+        put_bytes(&mut em, 1, b"sub1");
+        put_bytes(&mut em, 2, &img);
+        let mut ec = Vec::new();
+        put_bytes(&mut ec, 3, &em);
+        let (kind, data) = event("WebcastEmoteChatMessage", Msg(&ec)).unwrap();
+        assert_eq!(kind, "chat");
+        assert_eq!(data["comment"], "[tiktok:sub1]");
+        assert!(event("WebcastEmoteChatMessage", Msg(&[])).is_none());
+
+        let mut like = Vec::new();
+        put_int(&mut like, 2, 15);
+        put_int(&mut like, 3, 900);
+        let (kind, data) = event("WebcastLikeMessage", Msg(&like)).unwrap();
+        assert_eq!(kind, "like");
+        assert_eq!((&data["likeCount"], &data["totalLikeCount"]), (&json!(15), &json!(900)));
+
+        let mut share = Vec::new();
+        put_int(&mut share, 4, 3);
+        assert_eq!(event("WebcastSocialMessage", Msg(&share)).unwrap().0, "share");
+        let mut unknown_social = Vec::new();
+        put_int(&mut unknown_social, 4, 99);
+        assert!(event("WebcastSocialMessage", Msg(&unknown_social)).is_none());
+
+        let mut join = Vec::new();
+        put_int(&mut join, 10, 1);
+        assert_eq!(event("WebcastMemberMessage", Msg(&join)).unwrap().0, "member");
+
+        let mut sub = Vec::new();
+        put_int(&mut sub, 4, 6);
+        let (kind, data) = event("WebcastSubNotifyMessage", Msg(&sub)).unwrap();
+        assert_eq!(kind, "subscribe");
+        assert_eq!(data["subMonth"], 6);
     }
 }
