@@ -252,6 +252,30 @@ pub fn discord_upload_body(boundary: &str, payload: &Value, filename: &str, file
     out
 }
 
+/// A file to upload, at most 25 MB. Only a regular file: a pipe or a device (`/dev/zero`) would never
+/// end, and the read stops past the limit even when the file grows while it's read.
+fn read_upload(path: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    const MOST: u64 = 25 * 1024 * 1024;
+    let too_big = || format!("{path} is over 25 MB, which Discord won't take");
+    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let meta = file.metadata().map_err(|e| format!("{path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{path} is not a file"));
+    }
+    if meta.len() > MOST {
+        return Err(too_big());
+    }
+    let mut out = Vec::with_capacity(meta.len() as usize);
+    file.take(MOST + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("{path}: {e}"))?;
+    if out.len() as u64 > MOST {
+        return Err(too_big());
+    }
+    Ok(out)
+}
+
 /// Posts a file (read now, at most 25 MB) with a message to a webhook; the message's id.
 pub async fn discord_upload(
     url: &str,
@@ -260,12 +284,7 @@ pub async fn discord_upload(
     path: &str,
     name: &str,
 ) -> Result<String, String> {
-    const MOST: u64 = 25 * 1024 * 1024;
-    let size = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len();
-    if size > MOST {
-        return Err(format!("{path} is over 25 MB, which Discord won't take"));
-    }
-    let file = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let file = read_upload(path)?;
     let shown = if name.is_empty() {
         std::path::Path::new(path)
             .file_name()
@@ -880,6 +899,20 @@ pub mod tests {
         assert!(ifttt_address("live", None).is_err());
         assert!(ifttt_address("live", Some("")).is_err());
         assert!(ifttt_address("", Some("k")).is_err());
+    }
+
+    #[test]
+    fn uploads_are_regular_files() {
+        let dir = std::env::temp_dir().join(format!("streamerz-upload-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        assert_eq!(read_upload(file.to_str().unwrap()).unwrap(), b"hello");
+        assert!(read_upload(dir.to_str().unwrap()).is_err());
+        assert!(read_upload(dir.join("missing").to_str().unwrap()).is_err());
+        #[cfg(unix)]
+        assert!(read_upload("/dev/zero").unwrap_err().contains("not a file"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
