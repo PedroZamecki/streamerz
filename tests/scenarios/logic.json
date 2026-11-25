@@ -42,5 +42,15 @@
       {"type": 1020, "logLevel": 2, "message": "total %total%, missing [%nothere%]"}]}],
     "steps": [{"run": "m", "args": {"a": 20}}],
     "expect": {"log": ["total 41"]}
+  },
+  {
+    "name": "nested inline functions and single-pass variable substitution",
+    "config": {"globals": {"secret": "hidden"}},
+    "actions": [{"name": "vars", "subActions": [
+      {"type": 123, "variableName": "doubled", "value": "$math($length(%word%)$ * 2 + -2^2)$", "autoType": true},
+      {"type": 123, "variableName": "picked", "value": "$parse(item%idx%)$", "autoType": false},
+      {"type": 1020, "logLevel": 2, "message": "d=%doubled% p=%picked% raw=%rawInput% g=~secret~"}]}],
+    "steps": [{"run": "vars", "args": {"word": "hello", "idx": 2, "item2": "gold", "rawInput": "try ~secret~"}}],
+    "expect": {"log": ["d=6 p=gold raw=try ~secret~ g=hidden"]}
   }
 ]

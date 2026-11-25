@@ -36,5 +36,47 @@
     "actions": [{"name": "both", "subActions": [{"type": 35001, "text": "kick %who%"}, {"type": 43001, "text": "tiktok %who%"}]}],
     "steps": [{"run": "both", "args": {"who": "ana"}}],
     "expect": {"chat": [{"platform": "kick", "text": "kick ana"}, {"platform": "tiktok", "text": "tiktok ana"}]}
+  },
+  {
+    "name": "command locations, case sensitivity, regex and deny permissions",
+    "config": {
+      "groups": [{"id": "g-reg", "name": "Regulars", "userIds": ["kick-u1"]}],
+      "commands": [
+        {"id": "c-exact", "name": "exact", "command": "!ping", "mode": 0, "location": 1},
+        {"id": "c-any", "name": "any", "command": "banana", "mode": 0, "location": 2},
+        {"id": "c-cs", "name": "cs", "command": "!Cap", "mode": 0, "location": 0, "caseSensitive": true},
+        {"id": "c-re", "name": "re", "command": "^!roll (?<n>\\d+)d(?<s>\\d+)$", "mode": 1},
+        {"id": "c-deny", "name": "deny", "command": "!gift", "mode": 0, "location": 0, "grantType": 1, "permittedUsers": ["troll"]},
+        {"id": "c-group", "name": "grp", "command": "!vip", "mode": 0, "location": 0, "grantType": 0, "permittedGroups": ["Regulars"]},
+        {"id": "c-ucd", "name": "ucd", "command": "!cool", "mode": 0, "location": 0, "userCooldown": 60}
+      ]
+    },
+    "actions": [
+      {"name": "exact", "triggers": [{"type": 401, "commandId": "c-exact"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "exact"}]},
+      {"name": "any", "triggers": [{"type": 401, "commandId": "c-any"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "any:%rawInput%"}]},
+      {"name": "cs", "triggers": [{"type": 401, "commandId": "c-cs"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "cs:%rawInput%"}]},
+      {"name": "re", "triggers": [{"type": 401, "commandId": "c-re"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "re:%n%x%s%"}]},
+      {"name": "deny", "triggers": [{"type": 401, "commandId": "c-deny"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "gift:%user%"}]},
+      {"name": "grp", "triggers": [{"type": 401, "commandId": "c-group"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "grp:%user%"}]},
+      {"name": "ucd", "triggers": [{"type": 401, "commandId": "c-ucd"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "ucd:%user%"}]}
+    ],
+    "steps": [
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!ping extra"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!PING"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "hot BANANA pie"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!cap nope"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!Cap yes"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!ROLL 2d6"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "troll", "userId": "u9", "text": "!gift"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!gift"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "stranger", "userId": "u2", "text": "!vip"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!vip"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!cool"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "ana", "userId": "u1", "text": "!cool"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "bo", "userId": "u2", "text": "!cool"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "owner", "userId": "u0", "role": "broadcaster", "text": "!cool"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "owner", "userId": "u0", "role": "broadcaster", "text": "!cool"}, "ran": 1}
+    ],
+    "expect": {"log": ["exact", "any:hot BANANA pie", "cs:yes", "re:2x6", "gift:ana", "grp:ana", "ucd:ana", "ucd:bo", "ucd:owner", "ucd:owner"]}
   }
 ]
