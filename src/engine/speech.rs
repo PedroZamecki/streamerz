@@ -80,7 +80,7 @@ pub fn clean(text: &str, f: &Filters, emotes: &[String]) -> Option<String> {
     let mut said = if f.max_length > 0 && said.chars().count() > f.max_length {
         let cut: String = said.chars().take(f.max_length).collect();
         match cut.rfind(' ') {
-            Some(at) if at > f.max_length / 2 => cut[..at].to_string(),
+            Some(at) if cut[..at].chars().count() > f.max_length / 2 => cut[..at].to_string(),
             _ => cut,
         }
     } else {
@@ -97,24 +97,52 @@ pub fn clean(text: &str, f: &Filters, emotes: &[String]) -> Option<String> {
 
 /// `text` without `word` wherever it stands as a word (any case).
 fn remove_word(text: &str, word: &str) -> String {
-    let lower = text.to_lowercase();
     let wanted = word.to_lowercase();
-    let mut out = String::new();
-    let mut at = 0;
-    while let Some(found) = lower[at..].find(&wanted).map(|f| f + at) {
+    if wanted.is_empty() {
+        return text.to_string();
+    }
+    // Map each byte boundary in `lower` back to its byte offset in `text`, so Unicode case-folding
+    // length changes (such as 'İ' -> "i\u{307}" or 'ẞ' -> "ß") never shift slices.
+    let mut lower = String::with_capacity(text.len());
+    let mut map: Vec<Option<usize>> = Vec::with_capacity(text.len() + 1);
+    for (orig_at, ch) in text.char_indices() {
+        let mut first = true;
+        for lc in ch.to_lowercase() {
+            let start = lower.len();
+            lower.push(lc);
+            let added = lower.len() - start;
+            map.push(first.then_some(orig_at));
+            for _ in 1..added {
+                map.push(None);
+            }
+            first = false;
+        }
+    }
+    map.push(Some(text.len()));
+
+    let mut out = String::with_capacity(text.len());
+    let mut orig_cursor = 0;
+    let mut lower_cursor = 0;
+    while let Some(rel) = lower[lower_cursor..].find(&wanted) {
+        let found = lower_cursor + rel;
         let end = found + wanted.len();
         let before = lower[..found].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
         let after = lower[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
-        if before && after && text.is_char_boundary(found) && text.is_char_boundary(end) {
-            out.push_str(&text[at..found]);
-        } else if text.is_char_boundary(end) {
-            out.push_str(&text[at..end]);
-        } else {
-            break;
+        if before && after {
+            if let (Some(orig_start), Some(orig_end)) = (map[found], map[end]) {
+                if orig_start >= orig_cursor {
+                    out.push_str(&text[orig_cursor..orig_start]);
+                    orig_cursor = orig_end;
+                    lower_cursor = end;
+                    continue;
+                }
+            }
         }
-        at = end;
+        // Step past one character so overlapping phrases after a non-word match are still checked.
+        let step = lower[found..].chars().next().map_or(1, char::len_utf8);
+        lower_cursor = found + step;
     }
-    out.push_str(text.get(at..).unwrap_or_default());
+    out.push_str(&text[orig_cursor..]);
     out
 }
 
@@ -143,12 +171,34 @@ struct Queue {
     running: bool,
 }
 
+struct ActiveSpeech {
+    id: u64,
+    overlay: Option<String>,
+    local_playing: bool,
+    stop: Option<oneshot::Sender<()>>,
+}
+
+struct ActiveGuard(u64);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE.with_borrow_mut(|active| active.retain(|entry| entry.id != self.0));
+        crate::host::changed();
+    }
+}
+
 thread_local! {
     static QUEUES: RefCell<HashMap<String, Queue>> = RefCell::new(HashMap::new());
+    static ACTIVE: RefCell<Vec<ActiveSpeech>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_NEXT: Cell<u64> = const { Cell::new(0) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
     static DISABLED: Cell<bool> = const { Cell::new(false) };
     /// Wakes the queues when speech is resumed.
     static RESUMED: Rc<tokio::sync::Notify> = Rc::new(tokio::sync::Notify::new());
+}
+
+fn is_speaking() -> bool {
+    ACTIVE.with_borrow(|active| !active.is_empty()) || sound::playing().iter().any(|p| p.name == SPEECH)
 }
 
 /// The player's name for speeches, so Stop Speaking finds them.
@@ -226,7 +276,7 @@ impl Engine {
                 next
             });
             let Some(mut item) = next else {
-                if waiting() == 0 {
+                if QUEUES.with_borrow(HashMap::is_empty) && !is_speaking() {
                     crate::voice::neural::maybe_unload_idle(self.config().voices.keep_loaded).await;
                 }
                 return;
@@ -251,16 +301,55 @@ impl Engine {
     }
 
     async fn say_item(self: &Rc<Self>, item: &Item) -> (Option<u64>, &'static str) {
+        let active_id = ACTIVE_NEXT.with(|n| {
+            let next = n.get().wrapping_add(1);
+            n.set(next);
+            next
+        });
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        ACTIVE.with_borrow_mut(|active| {
+            active.push(ActiveSpeech {
+                id: active_id,
+                overlay: (!item.overlay.is_empty()).then(|| item.overlay.clone()),
+                local_playing: false,
+                stop: Some(stop_tx),
+            });
+        });
+        let _active_guard = ActiveGuard(active_id);
+        crate::host::changed();
+
         let voices_cfg = self.config().voices.clone();
-        let wav = match crate::voice::speak_with(&item.text, &item.voice, item.speed, item.pitch, &voices_cfg).await {
-            Ok(wav) => wav,
-            Err(e) => {
-                crate::warn(format!("Speak: {e}"));
-                self.speech_ended(item, None, "failed");
-                return (None, "failed");
+        let wav = tokio::select! {
+            biased;
+            _ = &mut stop_rx => {
+                self.speech_ended(item, None, "stopped");
+                return (None, "stopped");
+            }
+            res = crate::voice::speak_with(&item.text, &item.voice, item.speed, item.pitch, &voices_cfg) => match res {
+                Ok(wav) => wav,
+                Err(e) => {
+                    crate::warn(format!("Speak: {e}"));
+                    self.speech_ended(item, None, "failed");
+                    return (None, "failed");
+                }
             }
         };
         let length = wav_length_ms(&wav);
+        while PAUSED.get() {
+            let resumed = RESUMED.with(|r| r.clone());
+            tokio::select! {
+                biased;
+                _ = &mut stop_rx => {
+                    self.speech_ended(item, length, "stopped");
+                    return (length, "stopped");
+                }
+                _ = resumed.notified() => {}
+            }
+        }
+        if DISABLED.get() || stop_rx.try_recv().is_ok() {
+            self.speech_ended(item, length, "stopped");
+            return (length, "stopped");
+        }
         if !item.quiet {
             let args = Self::speech_args(item, length);
             self.fire(
@@ -276,9 +365,13 @@ impl Engine {
             let url = crate::overlays::keep_speech(&self.config(), wav);
             let data = json!({"url": url, "volume": sound::volume(item.volume), "name": SPEECH});
             self.emit("Sound", &item.overlay, || data.clone());
-            tokio::time::sleep(std::time::Duration::from_millis(length.unwrap_or(0))).await;
-            self.speech_ended(item, length, "finished");
-            return (length, "finished");
+            let why = tokio::select! {
+                biased;
+                _ = &mut stop_rx => "stopped",
+                _ = tokio::time::sleep(std::time::Duration::from_millis(length.unwrap_or(0))) => "finished",
+            };
+            self.speech_ended(item, length, why);
+            return (length, why);
         }
         let file = match crate::voice::to_file(&wav) {
             Ok(file) => file,
@@ -289,14 +382,21 @@ impl Engine {
             }
         };
         let why = match sound::play(&file, SPEECH, &item.device, sound::volume(item.volume)) {
-            Ok(started) => match started.ended.await {
-                Ok(ended) => match ended.why {
-                    sound::End::Finished => "finished",
-                    sound::End::Stopped => "stopped",
-                    sound::End::Failed => "failed",
-                },
-                Err(_) => "failed",
-            },
+            Ok(started) => {
+                ACTIVE.with_borrow_mut(|active| {
+                    if let Some(entry) = active.iter_mut().find(|entry| entry.id == active_id) {
+                        entry.local_playing = true;
+                    }
+                });
+                match started.ended.await {
+                    Ok(ended) => match ended.why {
+                        sound::End::Finished => "finished",
+                        sound::End::Stopped => "stopped",
+                        sound::End::Failed => "failed",
+                    },
+                    Err(_) => "failed",
+                }
+            }
             Err(e) => {
                 crate::warn(format!("Speak: {e}"));
                 "failed"
@@ -318,7 +418,28 @@ impl Engine {
 
     /// Stop Speaking: the speeches being said now (each queue goes on to its next).
     pub fn speech_stop(&self) -> usize {
-        sound::stop(Some(SPEECH), 0)
+        let mut stopped = sound::stop(Some(SPEECH), 0);
+        let mut overlays = Vec::new();
+        ACTIVE.with_borrow_mut(|active| {
+            for entry in active.iter_mut() {
+                if let Some(tx) = entry.stop.take() {
+                    let _ = tx.send(());
+                    if !entry.local_playing {
+                        stopped += 1;
+                    }
+                }
+                if let Some(overlay) = &entry.overlay {
+                    if !overlays.contains(overlay) {
+                        overlays.push(overlay.clone());
+                    }
+                }
+            }
+        });
+        for overlay in overlays {
+            self.emit("SoundStop", &overlay, || json!({"name": SPEECH}));
+        }
+        crate::host::changed();
+        stopped
     }
 
     /// Clear Speech Queue: what waits is dropped (its Speak sub-actions go on, `skipped`).
@@ -352,6 +473,7 @@ impl Engine {
             self.speech_clear();
             self.speech_stop();
         }
+        crate::host::changed();
     }
 
     /// The request `StreamerzSpeech` (and the MCP tool `speak`): `op` is `speak` (text, voice, device,
@@ -487,7 +609,10 @@ impl Engine {
                 for p in parts_raw {
                     let Some(pair) = p.as_array() else { continue };
                     let sid = if let Some(n) = pair.first().and_then(Value::as_i64) {
-                        n as i32
+                        i32::try_from(n)
+                            .ok()
+                            .filter(|&id| id >= 0)
+                            .ok_or_else(|| format!("invalid Kokoro speaker id {n}"))?
                     } else if let Some(sp_name) = pair.first().and_then(Value::as_str) {
                         let key = sp_name.strip_prefix("kokoro:").unwrap_or(sp_name);
                         crate::voice::neural::kokoro_speakers()
@@ -629,9 +754,9 @@ impl Engine {
                 Ok(json!({"saved": id, "voice": custom}))
             }
             "record_mic" => {
-                let secs = req["seconds"].as_u64().unwrap_or(6) as u32;
+                let secs = req["seconds"].as_u64().unwrap_or(6).clamp(3, 12) as u32;
                 let path = crate::voice::neural::record_mic(secs).await?;
-                Ok(json!({"file": path.display().to_string(), "seconds": secs.clamp(3, 12)}))
+                Ok(json!({"file": path.display().to_string(), "seconds": secs}))
             }
             other => Err(format!(
                 "unknown op {other}: list, state, install, cancel, remove, unload, sample, mix, clone, effect or record_mic"
@@ -661,15 +786,16 @@ impl Engine {
                 c.voices.voice.clear();
             }
         });
-        if !recording.is_empty() {
+        if !recording.is_empty()
+            && std::path::Path::new(&recording).file_name() == Some(std::ffi::OsStr::new(&recording))
+        {
             let _ = std::fs::remove_file(crate::voice::neural::recordings_dir().join(recording));
         }
         Ok(())
     }
 
     pub fn speech_state(&self) -> Value {
-        let speaking = sound::playing().iter().any(|p| p.name == SPEECH);
-        json!({"paused": PAUSED.get(), "enabled": !DISABLED.get(), "waiting": waiting(), "speaking": speaking})
+        json!({"paused": PAUSED.get(), "enabled": !DISABLED.get(), "waiting": waiting(), "speaking": is_speaking()})
     }
 
     /// The Speak sub-actions.
@@ -758,9 +884,17 @@ impl Engine {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let user_login = ctx.args.get("userName").and_then(Value::as_str).unwrap_or_default();
         // Bots and the users named are never read.
         let skip_users = words("skipUsers");
-        if !user.is_empty() && skip_users.iter().any(|u| u.eq_ignore_ascii_case(&user)) {
+        let matches_skip = |candidate: &str| {
+            let candidate = candidate.trim_start_matches('@');
+            !candidate.is_empty()
+                && skip_users
+                    .iter()
+                    .any(|u| u.trim_start_matches('@').eq_ignore_ascii_case(candidate))
+        };
+        if matches_skip(&user) || matches_skip(user_login) {
             return None;
         }
         // A switch or a number may be a variable (`%group.skipLinks%`): filled in first.
@@ -922,24 +1056,25 @@ fn emote_names(args: &Obj) -> Vec<String> {
 
 /// A WAV's length from its header (16-bit or any PCM: data bytes over bytes a second).
 pub fn wav_length_ms(wav: &[u8]) -> Option<u64> {
-    if wav.len() < 44 || &wav[0..4] != b"RIFF" {
+    if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return None;
     }
-    let mut at = 12;
+    let mut at = 12usize;
     let mut rate = None;
     while at + 8 <= wav.len() {
         let size = u32::from_le_bytes(wav[at + 4..at + 8].try_into().ok()?) as usize;
         match &wav[at..at + 4] {
-            b"fmt " if at + 16 <= wav.len() => {
+            b"fmt " if size >= 12 && at + 20 <= wav.len() => {
                 rate = Some(u32::from_le_bytes(wav[at + 16..at + 20].try_into().ok()?) as u64);
             }
             b"data" => {
                 let bytes = size.min(wav.len() - at - 8) as u64;
-                return rate.filter(|r| *r > 0).map(|r| bytes * 1000 / r);
+                return rate.filter(|r| *r > 0).map(|r| bytes.saturating_mul(1000) / r);
             }
             _ => {}
         }
-        at += 8 + size + (size & 1);
+        let step = 8usize.checked_add(size)?.checked_add(size & 1)?;
+        at = at.checked_add(step)?;
     }
     None
 }
@@ -1010,6 +1145,188 @@ mod tests {
         wav.extend(vec![0u8; 44100]);
         assert_eq!(wav_length_ms(&wav), Some(1000));
         assert_eq!(wav_length_ms(b"nope"), None);
+    }
+
+    #[test]
+    fn wav_length_ms_rejects_malformed_and_truncated_headers_without_panicking() {
+        // Non-WAVE RIFF container.
+        let mut avi = vec![0u8; 64];
+        avi[0..4].copy_from_slice(b"RIFF");
+        avi[8..12].copy_from_slice(b"AVI ");
+        assert_eq!(wav_length_ms(&avi), None);
+
+        // Truncated fmt chunk near EOF: at + 16 <= len < at + 20 previously panicked.
+        let mut trunc_fmt = Vec::new();
+        trunc_fmt.extend(b"RIFF\0\0\0\0WAVEJUNK");
+        trunc_fmt.extend(20u32.to_le_bytes());
+        trunc_fmt.extend([0u8; 20]);
+        trunc_fmt.extend(b"fmt ");
+        trunc_fmt.extend(16u32.to_le_bytes());
+        trunc_fmt.extend([0u8; 10]); // total 40 + 18 = 58 bytes; fmt starts at 40, at+16=56<=58 but at+20=60>58
+        assert_eq!(wav_length_ms(&trunc_fmt), None);
+
+        // Chunk size u32::MAX must not overflow or loop forever.
+        let mut huge = Vec::new();
+        huge.extend(b"RIFF\0\0\0\0WAVEJUNK");
+        huge.extend(u32::MAX.to_le_bytes());
+        huge.extend([0u8; 40]);
+        assert_eq!(wav_length_ms(&huge), None);
+    }
+
+    #[test]
+    fn clean_handles_unicode_case_folding_overlaps_and_multibyte_max_length() {
+        // Turkish 'İ' expands from 2 bytes to 3 bytes on to_lowercase().
+        let blocked = Filters {
+            blocked: vec!["bad".into(), "ab ab".into()],
+            ..f()
+        };
+        assert_eq!(clean("İstanbul bad word", &blocked, &[]).unwrap(), "İstanbul word");
+        assert_eq!(clean("İ bad!", &blocked, &[]).unwrap(), "İ !");
+        // Overlapping phrase after a rejected partial match is still removed.
+        assert_eq!(clean("xab ab ab ok", &blocked, &[]).unwrap(), "xab ok");
+        // Multi-byte UTF-8 max_length counts characters, not bytes.
+        let short = Filters { max_length: 8, ..f() };
+        // "あいう えおかきくけ" has 3 chars before space (<= 8/2 = 4), so it must keep all 8 chars.
+        assert_eq!(clean("あいう えおかきくけ", &short, &[]).unwrap(), "あいう えおかき");
+    }
+
+    #[test]
+    fn overlay_speech_can_be_stopped_and_reports_speaking() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Run on a dedicated thread so thread-local voice::offline() does not affect other tests.
+        std::thread::spawn(|| {
+            crate::engine::tests::run(async {
+                crate::voice::offline();
+                let e = crate::engine::tests::engine(json!({"actions": []}));
+                e.speech_enable(true);
+                e.speech_pause(false);
+
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut subs = crate::engine::events::Subs::new();
+                crate::engine::events::update(&mut subs, &json!({"Sound": ["ov1"], "SoundStop": ["ov1"]}), true);
+                e.listen(99, &subs, &tx);
+
+                let (done_tx, done_rx) = oneshot::channel();
+                e.enqueue(Item {
+                    text: "word ".repeat(20),
+                    voice: "en".into(),
+                    speed: 1.0,
+                    pitch: 1.0,
+                    volume: 100.0,
+                    device: String::new(),
+                    overlay: "ov1".into(),
+                    user: "Ana".into(),
+                    action: String::new(),
+                    quiet: true,
+                    done: Some(done_tx),
+                });
+
+                // Let the queue start and emit the overlay Sound event.
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                assert_eq!(e.speech_state()["speaking"], true);
+
+                let stopped = e.speech_stop();
+                assert_eq!(stopped, 1);
+                let (_, why) = tokio::time::timeout(std::time::Duration::from_secs(1), done_rx)
+                    .await
+                    .expect("overlay speech stopped promptly")
+                    .unwrap();
+                assert_eq!(why, "stopped");
+
+                let events: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+                    .map(|m| {
+                        let v: Value = serde_json::from_str(&m).unwrap();
+                        v["event"]["source"].as_str().unwrap().to_string()
+                    })
+                    .collect();
+                assert!(events.contains(&"Sound".to_string()), "{events:?}");
+                assert!(events.contains(&"SoundStop".to_string()), "{events:?}");
+                assert_eq!(e.speech_state()["speaking"], false);
+            });
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn speech_queue_pause_clear_disable_and_skip_users_by_login() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            e.speech_enable(true);
+            e.speech_pause(true);
+
+            let (done_tx, done_rx) = oneshot::channel();
+            e.enqueue(Item {
+                text: "queued".into(),
+                voice: "en".into(),
+                speed: 1.0,
+                pitch: 1.0,
+                volume: 100.0,
+                device: String::new(),
+                overlay: String::new(),
+                user: String::new(),
+                action: String::new(),
+                quiet: true,
+                done: Some(done_tx),
+            });
+            assert_eq!(waiting(), 1);
+            assert_eq!(e.speech_clear(), 1);
+            assert_eq!(waiting(), 0);
+            assert_eq!(done_rx.await.unwrap(), (None, "skipped"));
+
+            // Disabled speech immediately skips newly enqueued items.
+            e.speech_enable(false);
+            let (d2_tx, d2_rx) = oneshot::channel();
+            e.enqueue(Item {
+                text: "blocked".into(),
+                voice: "en".into(),
+                speed: 1.0,
+                pitch: 1.0,
+                volume: 100.0,
+                device: String::new(),
+                overlay: String::new(),
+                user: String::new(),
+                action: String::new(),
+                quiet: true,
+                done: Some(d2_tx),
+            });
+            assert_eq!(d2_rx.await.unwrap(), (None, "skipped"));
+            e.speech_enable(true);
+            e.speech_pause(false);
+
+            // skipUsers matches both login (userName) and @-prefixed names.
+            let mut ctx = Ctx {
+                args: json!({"user": "Bot Display", "userName": "nightbot"})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                group: String::new(),
+            };
+            let o = json!({"text": "hello", "skipUsers": "@Nightbot\nstreamlabs"})
+                .as_object()
+                .cloned()
+                .unwrap();
+            assert!(e.speech_item(&mut ctx, &o).is_none());
+        });
+    }
+
+    #[test]
+    fn helper_functions_cover_languages_effects_ids_and_emotes() {
+        assert_eq!(kokoro_lang_for("PT-BR"), "pt-br");
+        assert_eq!(kokoro_lang_for("es-MX"), "es");
+        assert_eq!(kokoro_lang_for("ja-JP"), "ja");
+        assert_eq!(kokoro_lang_for("unknown"), "en-us");
+        assert_eq!(validate_effect("none").unwrap(), "");
+        assert_eq!(validate_effect(" Radio ").unwrap(), "radio");
+        assert!(validate_effect("reverb").is_err());
+        assert_eq!(custom_voice_id("Test", "custom:keep-me"), "custom:keep-me");
+        assert!(custom_voice_id("My Voice!", "").starts_with("custom:my-voice-"));
+        let args = json!({"emotes": [{"name": "Kappa"}, {"text": "PogChamp"}]})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert_eq!(emote_names(&args), vec!["Kappa", "PogChamp"]);
     }
 
     #[test]
