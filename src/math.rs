@@ -3,9 +3,16 @@
 //! 1 or 0), `& && | || ~` (not), parentheses, constants `pi` and `e`, and the functions below.
 //! Anything else is NaN, as in Streamer.bot.
 
+/// Maximum nesting depth for parentheses, unary chains, exponents and function calls.
+const MAX_DEPTH: usize = 64;
+
 /// The value of an expression; NaN when it can't be read.
 pub fn eval(s: &str) -> f64 {
-    let mut p = Parser { s: s.as_bytes(), i: 0 };
+    let mut p = Parser {
+        s: s.as_bytes(),
+        i: 0,
+        depth: 0,
+    };
     match p.or() {
         Some(v) if p.at_end() => v,
         _ => f64::NAN,
@@ -15,6 +22,7 @@ pub fn eval(s: &str) -> f64 {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 fn truth(b: bool) -> f64 {
@@ -26,6 +34,14 @@ fn truth(b: bool) -> f64 {
 }
 
 impl Parser<'_> {
+    fn enter(&mut self) -> Option<()> {
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        Some(())
+    }
+
     fn skip(&mut self) {
         while self.s.get(self.i).is_some_and(|c| c.is_ascii_whitespace()) {
             self.i += 1;
@@ -52,7 +68,11 @@ impl Parser<'_> {
         let mut v = self.and()?;
         while self.eat("||") || self.eat("|") {
             let r = self.and()?;
-            v = truth(v != 0.0 || r != 0.0);
+            v = if v.is_nan() || r.is_nan() {
+                f64::NAN
+            } else {
+                truth(v != 0.0 || r != 0.0)
+            };
         }
         Some(v)
     }
@@ -61,7 +81,11 @@ impl Parser<'_> {
         let mut v = self.cmp()?;
         while self.eat("&&") || self.eat("&") {
             let r = self.cmp()?;
-            v = truth(v != 0.0 && r != 0.0);
+            v = if v.is_nan() || r.is_nan() {
+                f64::NAN
+            } else {
+                truth(v != 0.0 && r != 0.0)
+            };
         }
         Some(v)
     }
@@ -75,14 +99,18 @@ impl Parser<'_> {
                 .find(|op| self.eat(op));
             let Some(op) = op else { return Some(v) };
             let r = self.sum()?;
-            v = truth(match op {
-                "=" | "==" => v == r,
-                "<>" | "!=" | "~=" => v != r,
-                "<" => v < r,
-                ">" => v > r,
-                "<=" => v <= r,
-                _ => v >= r,
-            });
+            v = if v.is_nan() || r.is_nan() {
+                f64::NAN
+            } else {
+                truth(match op {
+                    "=" | "==" => v == r,
+                    "<>" | "!=" | "~=" => v != r,
+                    "<" => v < r,
+                    ">" => v > r,
+                    "<=" => v <= r,
+                    _ => v >= r,
+                })
+            };
         }
     }
 
@@ -117,13 +145,23 @@ impl Parser<'_> {
     /// Unary minus/plus/not bind looser than ^: -2^2 is -4.
     fn unary(&mut self) -> Option<f64> {
         if self.eat("-") {
-            return Some(-self.unary()?);
+            self.enter()?;
+            let v = self.unary();
+            self.depth -= 1;
+            return Some(-v?);
         }
         if self.eat("+") {
-            return self.unary();
+            self.enter()?;
+            let v = self.unary();
+            self.depth -= 1;
+            return v;
         }
         if self.eat("~") {
-            return Some(truth(self.unary()? == 0.0));
+            self.enter()?;
+            let v = self.unary();
+            self.depth -= 1;
+            let v = v?;
+            return Some(if v.is_nan() { f64::NAN } else { truth(v == 0.0) });
         }
         self.power()
     }
@@ -132,7 +170,10 @@ impl Parser<'_> {
         let base = self.postfix()?;
         if self.eat("^") {
             // Right-associative, and the exponent may be negative: 2^-1.
-            return Some(base.powf(self.unary()?));
+            self.enter()?;
+            let exp = self.unary();
+            self.depth -= 1;
+            return Some(base.powf(exp?));
         }
         Some(base)
     }
@@ -162,7 +203,10 @@ impl Parser<'_> {
     fn atom(&mut self) -> Option<f64> {
         self.skip();
         if self.eat("(") {
-            let v = self.or()?;
+            self.enter()?;
+            let v = self.or();
+            self.depth -= 1;
+            let v = v?;
             return self.eat(")").then_some(v);
         }
         let start = self.i;
@@ -208,17 +252,25 @@ impl Parser<'_> {
         if !self.eat("(") {
             return None;
         }
+        self.enter()?;
         let mut args = Vec::new();
-        if !self.eat(")") {
+        let ok = if self.eat(")") {
+            true
+        } else {
             loop {
-                args.push(self.or()?);
+                let Some(arg) = self.or() else { break false };
+                args.push(arg);
                 if self.eat(")") {
-                    break;
+                    break true;
                 }
                 if !self.eat(",") {
-                    return None;
+                    break false;
                 }
             }
+        };
+        self.depth -= 1;
+        if !ok {
+            return None;
         }
         call(&name, &args)
     }
@@ -282,18 +334,51 @@ fn call(name: &str, a: &[f64]) -> Option<f64> {
         "round" => match a {
             [x] => Some(x.round()),
             [x, n] => {
+                if x.is_nan() || !n.is_finite() {
+                    return Some(f64::NAN);
+                }
+                if !x.is_finite() || *n > 324.0 {
+                    return Some(*x);
+                }
+                if *n < -308.0 {
+                    return Some(0.0);
+                }
                 let p = 10f64.powi(*n as i32);
-                Some((x * p).round() / p)
+                if p == 0.0 {
+                    Some(0.0)
+                } else if !p.is_finite() || !(x * p).is_finite() {
+                    Some(*x)
+                } else {
+                    Some((x * p).round() / p)
+                }
             }
             _ => None,
         },
-        "min" => (!a.is_empty()).then(|| a.iter().copied().fold(f64::INFINITY, f64::min)),
-        "max" => (!a.is_empty()).then(|| a.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+        "min" => (!a.is_empty()).then(|| {
+            if a.iter().any(|x| x.is_nan()) {
+                f64::NAN
+            } else {
+                a.iter().copied().fold(f64::INFINITY, f64::min)
+            }
+        }),
+        "max" => (!a.is_empty()).then(|| {
+            if a.iter().any(|x| x.is_nan()) {
+                f64::NAN
+            } else {
+                a.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            }
+        }),
         "mod" => (a.len() == 2).then(|| a[0] % a[1]),
         "rand" | "rnd" => match a {
             [] => Some(random()),
             // rand(a, b): an integer between a and b, inclusive.
-            [lo, hi] => Some((lo + (random() * (hi - lo + 1.0)).floor()).min(*hi)),
+            [lo, hi] => {
+                if !lo.is_finite() || !hi.is_finite() || lo > hi {
+                    Some(f64::NAN)
+                } else {
+                    Some((lo + (random() * (hi - lo + 1.0)).floor()).min(*hi))
+                }
+            }
             _ => None,
         },
         _ => None,
@@ -331,5 +416,74 @@ mod tests {
         assert!(eval("1 +").is_nan());
         let r = eval("rand(1, 6)");
         assert!((1.0..=6.0).contains(&r) && r.fract() == 0.0);
+    }
+
+    #[test]
+    fn deep_nesting_returns_nan_without_overflowing_stack() {
+        let parens = format!("{}{}", "(".repeat(2_000), ")".repeat(2_000));
+        assert!(eval(&parens).is_nan());
+        assert!(eval(&format!("{}1", "-".repeat(2_000))).is_nan());
+        assert!(eval(&format!("{}1", "2^".repeat(2_000))).is_nan());
+        let nested_fn = format!("{}1{}", "abs(".repeat(2_000), ")".repeat(2_000));
+        assert!(eval(&nested_fn).is_nan());
+    }
+
+    #[test]
+    fn nan_and_infinity_propagate_cleanly() {
+        assert!(eval("sqrt(-1) || 0").is_nan());
+        assert!(eval("sqrt(-1) && 1").is_nan());
+        assert!(eval("~sqrt(-1)").is_nan());
+        assert!(eval("sqrt(-1) != 1").is_nan());
+        assert!(eval("sqrt(-1) == sqrt(-1)").is_nan());
+        assert!(eval("min(sqrt(-1))").is_nan());
+        assert!(eval("max(sqrt(-1))").is_nan());
+        assert!(eval("min(1, sqrt(-1), 2)").is_nan());
+        assert!(eval("max(1, sqrt(-1), 2)").is_nan());
+        assert_eq!(eval("1 / 0"), f64::INFINITY);
+        assert_eq!(eval("-1 / 0"), f64::NEG_INFINITY);
+        assert!(eval("0 / 0").is_nan());
+        assert!(eval("10 # 0").is_nan());
+        assert_eq!(eval("2^10000"), f64::INFINITY);
+        assert_eq!(eval("round(1.5, 400)"), 1.5);
+        assert_eq!(eval("round(1.5, -400)"), 0.0);
+        assert_eq!(eval("round(1e300, 20)"), 1e300);
+        assert!(eval("round(1.5, sqrt(-1))").is_nan());
+        assert!(eval("rand(6, 1)").is_nan());
+        assert!(eval("rand(1, 1/0)").is_nan());
+    }
+
+    #[test]
+    fn precedence_functions_and_edge_cases() {
+        assert_eq!(eval("2^3^2"), 512.0);
+        assert_eq!(eval("(-2)^2"), 4.0);
+        assert_eq!(eval("2^-2^2"), 0.0625);
+        assert_eq!(eval("0!"), 1.0);
+        assert!(eval("170!").is_finite());
+        assert!(eval("171!").is_nan());
+        assert!(eval("(-1)!").is_nan());
+        assert!(eval("1.5!").is_nan());
+        assert_eq!(eval("2^3!"), 64.0);
+        assert_eq!(eval("3!^2"), 36.0);
+        assert_eq!(eval("2.5e-3"), 0.0025);
+        assert_eq!(eval(".5 + .5"), 1.0);
+        assert!(eval(".").is_nan());
+        assert!(eval("1.2.3").is_nan());
+        assert!(eval("1e+").is_nan());
+        assert_eq!(eval("abs(-5) + ceil(1.2) + sqrt(9) + mod(10, 3)"), 11.0);
+        assert_eq!(eval("sgn(-4)"), -1.0);
+        assert_eq!(eval("sgn(0)"), 0.0);
+        assert_eq!(eval("sgn(7)"), 1.0);
+        assert!(eval("sgn(sqrt(-1))").is_nan());
+        assert_eq!(eval("log10(1000) + log2(8)"), 6.0);
+        assert_eq!(eval("exp(0) + ln(1)"), 1.0);
+        assert!((eval("sin(0) + cos(0) + tan(0)") - 1.0).abs() < 1e-12);
+        assert_eq!(eval("2 <= 2 && 3 >= 2 && 1 ~= 2"), 1.0);
+        assert_eq!(eval("0 || 0"), 0.0);
+        assert_eq!(eval("0 || 2"), 1.0);
+        assert!((0.0..1.0).contains(&eval("rand")));
+        assert!((0.0..1.0).contains(&eval("rnd()")));
+        assert!(eval("").is_nan());
+        assert!(eval("abs()").is_nan());
+        assert!(eval("round(1, 2, 3)").is_nan());
     }
 }
