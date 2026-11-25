@@ -613,11 +613,15 @@ pub async fn fetch_user(client_id: &str, access_token: &str, login: Option<&str>
 /// Helper to parse hex colors like `#e5e5e5` into RGB.
 pub fn parse_hex_color(hex: &str) -> (i64, i64, i64) {
     let s = hex.trim_start_matches('#');
+    // Two hex digits, nothing else (from_str_radix alone takes a sign: "+F").
+    let part = |at: usize| {
+        s.get(at..at + 2)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|h| i64::from_str_radix(h, 16).ok())
+            .unwrap_or(255)
+    };
     if s.len() >= 6 && s.is_ascii() {
-        let r = i64::from_str_radix(&s[0..2], 16).unwrap_or(255);
-        let g = i64::from_str_radix(&s[2..4], 16).unwrap_or(255);
-        let b = i64::from_str_radix(&s[4..6], 16).unwrap_or(255);
-        (r, g, b)
+        (part(0), part(2), part(4))
     } else {
         (255, 255, 255)
     }
@@ -5455,6 +5459,9 @@ pub(crate) mod tests {
     #[test]
     fn parse_colors() {
         assert_eq!(parse_hex_color("#FF8000"), (255, 128, 0));
+        // A sign isn't a digit, and one bad pair spoils only itself.
+        assert_eq!(parse_hex_color("+F+F+F"), (255, 255, 255));
+        assert_eq!(parse_hex_color("#GG0011"), (255, 0, 17));
         assert_eq!(parse_hex_color("1E90FF"), (30, 144, 255));
         assert_eq!(parse_hex_color(""), (255, 255, 255));
     }
