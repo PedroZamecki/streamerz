@@ -5727,6 +5727,92 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn watch_streaks_and_bans_carry_streamer_bot_names() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "names", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": T_WATCH_STREAK, "enabled": true}, {"type": T_USER_BANNED, "enabled": true},
+                    {"type": T_USER_UNBANNED, "enabled": true}],
+                "subActions": [crate::engine::tests::log(
+                    "T %watchStreak% %streak% %channelPointsAwarded% %watchStreakId% %createdAt%"
+                )]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let b = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            let raw = "@display-name=Vlad;id=n1;login=vlad;msg-id=viewermilestone;msg-param-category=watch-streak;msg-param-copoReward=350;msg-param-value=3;user-id=69 :tmi.twitch.tv USERNOTICE #chan :ty";
+            let (kind, e) = crate::irc::event(&crate::irc::parse(raw).unwrap(), "7").unwrap();
+            handle_notification(&engine, &b, &cfg, kind, &e);
+            let ban = json!({"user_id": "4", "is_permanent": true, "banned_at": "2026-01-02T03:04:05Z"});
+            handle_notification(&engine, &b, &cfg, "channel.ban", &ban);
+            handle_notification(&engine, &b, &cfg, "channel.unban", &json!({"user_id": "4"}));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("T 3 3 350 n1 %createdAt%"), "{lines:?}");
+        assert!(lines[1].ends_with("%watchStreakId% 2026-01-02T03:04:05Z"), "{lines:?}");
+        let unban = lines[2].rsplit(' ').next().unwrap();
+        assert!(
+            crate::engine::rest_parse_iso(unban).is_some(),
+            "an unban says when: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_dropped_chat_message_is_an_error() {
+        assert_eq!(chat_sent(br#"{"data":[{"message_id":"m1","is_sent":true}]}"#), Ok(()));
+        let dropped = br#"{"data":[{"message_id":"","is_sent":false,"drop_reason":{"code":"msg_duplicate","message":"Your message is identical to the one you sent within the last 30 seconds."}}]}"#;
+        let err = chat_sent(dropped).unwrap_err();
+        assert!(err.contains("identical to the one you sent"), "{err}");
+        let code_only = br#"{"data":[{"is_sent":false,"drop_reason":{"code":"automod_held","message":""}}]}"#;
+        assert!(chat_sent(code_only).unwrap_err().ends_with("automod_held"));
+        // Nothing to say it wasn't sent: it was.
+        assert_eq!(chat_sent(b""), Ok(()));
+    }
+
+    #[test]
+    fn the_bot_session_waits_longer_after_each_short_one() {
+        let secs: Vec<u64> = (0..12).map(|n| bot_retry(n).as_secs()).collect();
+        assert_eq!(secs, [2, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300]);
+        assert_eq!(bot_retry(u32::MAX).as_secs(), 300);
+    }
+
+    #[test]
+    fn present_viewers_use_streamer_bot_names() {
+        let u = present_viewer(&json!({"user_id": "5", "user_login": "ann", "user_name": "Ann"}));
+        assert_eq!(
+            u,
+            json!({"id": "5", "userName": "ann", "login": "ann", "display": "Ann"})
+        );
+    }
+
+    #[test]
+    fn recent_messages_keep_actions_replies_and_escapes() {
+        let me =
+            "@display-name=Ana\\sB;user-id=7;id=x1 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro :\x01ACTION waves\x01";
+        let l = parse_irc_recent_message(me, "1").unwrap();
+        assert_eq!((l.user.as_str(), l.text.as_str(), l.action), ("Ana B", "waves", true));
+        assert_eq!(l.msg_id, "x1");
+        let reply = "@display-name=Bo;reply-parent-display-name=Ana;reply-parent-msg-body=hi\\sthere;user-id=8 :bo!bo@bo.tmi.twitch.tv PRIVMSG #pedro :@Ana yes";
+        let l = parse_irc_recent_message(reply, "1").unwrap();
+        let r = l.reply.as_ref().unwrap();
+        assert_eq!((r.user.as_str(), r.text.as_str()), ("Ana", "hi there"));
+        // The owner, from the id, and the badges.
+        let own = "@badges=broadcaster/1,subscriber/12;user-id=1 :pedro!pedro@pedro.tmi.twitch.tv PRIVMSG #pedro :hey";
+        let l = parse_irc_recent_message(own, "1").unwrap();
+        assert!(l.broadcaster && l.subscriber && !l.moderator);
+        assert_eq!(l.badges.len(), 2);
+        // Only messages: notices and joins aren't.
+        assert!(parse_irc_recent_message(":tmi.twitch.tv USERNOTICE #pedro :hi", "1").is_none());
+        assert!(parse_irc_recent_message(":a!a@a JOIN #pedro", "1").is_none());
+        assert!(parse_irc_recent_message("@id=1 :a!a@a PRIVMSG #pedro :", "1").is_none());
+    }
+
+    #[test]
     fn moderation_and_chat_modes_notifications() {
         let (tx, _rx) = watch::channel(Config::default());
         let cfg = Arc::new(tx);
