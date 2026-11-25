@@ -33,22 +33,37 @@ impl Chatters {
         let reader = BufReader::new(&file);
         for line in reader.lines() {
             let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
             let (saved, _): (String, String) = serde_json::from_str(&line).map_err(std::io::Error::other)?;
             if saved == id {
                 return Ok(());
             }
         }
-        serde_json::to_writer(&mut file, &(id, name)).map_err(std::io::Error::other)?;
-        file.write_all(b"\n")
+        let mut line = serde_json::to_string(&(id, name)).map_err(std::io::Error::other)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())
     }
 
     pub fn sample(&self, count: usize) -> std::io::Result<Vec<(String, String)>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
         let mut picked = Vec::new();
         let mut seen = 0u64;
         for entry in std::fs::read_dir(&self.root)? {
-            let file = std::fs::File::open(entry?.path())?;
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file = std::fs::File::open(path)?;
             for line in BufReader::new(file).lines() {
-                let (id, name): (String, String) = serde_json::from_str(&line?).map_err(std::io::Error::other)?;
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let (id, name): (String, String) = serde_json::from_str(&line).map_err(std::io::Error::other)?;
                 seen += 1;
                 let candidate = (name, id);
                 if picked.len() < count {
@@ -91,6 +106,27 @@ mod tests {
         assert_eq!(all.len(), 2000);
         assert!(all.contains(&("name1".into(), "id1".into())));
         assert_eq!(index.sample(3).unwrap().len(), 3);
+        drop(index);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn sample_zero_and_blank_lines_and_subdirs_are_handled() {
+        let root = std::env::temp_dir().join(format!("streamerz-chatters-edge-{}", crate::engine::uuid()));
+        std::fs::create_dir(&root).unwrap();
+        let index = Chatters { root: root.clone() };
+        assert!(index.sample(0).unwrap().is_empty());
+        assert!(index.sample(5).unwrap().is_empty());
+        index.insert("42", "Ana").unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        let hash = Sha256::digest(b"42");
+        let bucket = root.join(format!("{:02x}{:x}", hash[0], hash[1] >> 4));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&bucket).unwrap();
+        f.write_all(b"\n   \n").unwrap();
+        drop(f);
+        index.insert("42", "Ana").unwrap();
+        assert_eq!(index.sample(0).unwrap(), Vec::<(String, String)>::new());
+        assert_eq!(index.sample(5).unwrap(), vec![("Ana".into(), "42".into())]);
         drop(index);
         assert!(!root.exists());
     }
