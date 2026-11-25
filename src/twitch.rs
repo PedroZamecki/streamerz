@@ -4576,6 +4576,12 @@ fn gift_bomb(engine: &Rc<Engine>, id: &str) {
     go(engine, code, "Gift Bomb", "Twitch/Subscriptions", "GiftBomb", &args);
 }
 
+/// A Helix chatter as one of Present Viewers' `users`: Streamer.bot's `id`, `userName` and `display`
+/// (`login` too, as Streamerz said before). The chatters list doesn't say their roles.
+fn present_viewer(u: &Value) -> Value {
+    json!({"id": u["user_id"], "userName": u["user_login"], "login": u["user_login"], "display": u["user_name"]})
+}
+
 /// A Helix user as the raid triggers' raidUser* arguments.
 fn raid_target(u: &Value) -> Obj {
     let pic = u["profile_image_url"].as_str().unwrap_or("");
@@ -5086,14 +5092,14 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             }
         }
         if want[1] && live && n % 5 == 1 {
-            let q = vec![("broadcaster_id", id), ("moderator_id", id), ("first", "1000")];
+            // Asked as who's logged in: on someone else's channel, its moderator, not its owner.
+            let q = vec![
+                ("broadcaster_id", id),
+                ("moderator_id", "{moderator_id}"),
+                ("first", "1000"),
+            ];
             if let Ok(c) = tw.helix("GET", "chat/chatters", q, None, false, false).await {
-                let users: Vec<Value> = c["data"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|u| json!({"id": u["user_id"], "login": u["user_login"], "display": u["user_name"]}))
-                    .collect();
+                let users: Vec<Value> = c["data"].as_array().into_iter().flatten().map(present_viewer).collect();
                 let mut a = args.clone();
                 a.insert("users".into(), users.into());
                 a.insert("isLive".into(), live.into());
