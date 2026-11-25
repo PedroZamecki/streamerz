@@ -1162,7 +1162,8 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 .find(|provider| *provider == Provider::Platform)
         })
         .unwrap_or(providers[0]);
-    let as_broadcaster = sender(engine, &config, platform).0["role"] == "broadcaster";
+    let sender = sender(engine, &config, platform).0;
+    let as_broadcaster = sender["role"] == "broadcaster";
     let favorites = &config.window.favorite_emotes;
     let query = request["query"].as_str().unwrap_or_default().trim().to_lowercase();
     let found: Vec<EmoteSection> = if query.is_empty() {
@@ -1210,14 +1211,19 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         .iter()
         .map(|provider| json!({"id": id(*provider), "label": provider.label(platform)}))
         .collect();
-    let who = match sender(engine, &config, platform).0["name"].as_str() {
+    let who = match sender["name"].as_str() {
         Some(name) => trf("chat.as_sender_prefix", &[("name", name)]),
         None => String::new(),
     };
+    let frequent = most_used(&config, platform, |used| {
+        preview(engine, &used.platform, &used.name)
+            .iter()
+            .any(|part| part["e"] == used.name.as_str())
+    });
     Ok(json!({"emotes": {
         "platform": platform, "tabs": tabs, "active": id(active), "sections": found, "query": query,
         "favorites": favorites.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-        "frequent": most_used(engine, &config, platform), "frequentEmpty": tr("emotes.most_used_empty"),
+        "frequent": frequent, "frequentEmpty": tr("emotes.most_used_empty"),
         "help": format!("{who}{}", tr("chat.emote_picker_help")), "empty": tr("picker.no_matches"),
         "search": tr("chat.search_emotes"), "title": tr("chat.emote_btn_tooltip"),
     }}))
@@ -1225,7 +1231,7 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 
 /// The emotes counted for `platform` ("all": every platform's) that can still be sent there, most used
 /// first: a row's worth.
-fn most_used(engine: &Rc<Engine>, config: &crate::Config, platform: &str) -> Vec<Value> {
+fn most_used(config: &crate::Config, platform: &str, can_send: impl Fn(&crate::EmoteUse) -> bool) -> Vec<Value> {
     let mut used: Vec<&crate::EmoteUse> = config
         .window
         .emote_use
@@ -1235,13 +1241,8 @@ fn most_used(engine: &Rc<Engine>, config: &crate::Config, platform: &str) -> Vec
     used.sort_by_key(|used| std::cmp::Reverse(used.count));
     let mut names = std::collections::HashSet::new();
     used.into_iter()
-        .filter(|used| names.insert(used.name.as_str()))
-        // An emote the user no longer has (a subscription ended) leaves the row.
-        .filter(|used| {
-            preview(engine, &used.platform, &used.name)
-                .iter()
-                .any(|part| part["e"] == used.name.as_str())
-        })
+        // An unavailable entry must not hide the same emote from a different platform.
+        .filter(|used| !names.contains(used.name.as_str()) && can_send(used) && names.insert(used.name.as_str()))
         .take(MOST_USED_SHOWN)
         .map(|used| json!([used.name, used.url]))
         .collect()
@@ -2655,6 +2656,30 @@ mod tests {
             assert_eq!(lines.len(), 1, "the copy took the pending line's place");
             assert!(lines[0]["pending"].is_null());
         });
+    }
+
+    #[test]
+    fn a_missing_frequent_emote_does_not_hide_a_sendable_copy() {
+        let mut config = crate::Config::default();
+        let name = "SharedEmote";
+        let url = "https://example.test/emote.png";
+        config.window.emote_use = vec![
+            crate::EmoteUse {
+                platform: "twitch".into(),
+                name: name.into(),
+                url: url.into(),
+                count: 10,
+            },
+            crate::EmoteUse {
+                platform: "kick".into(),
+                name: name.into(),
+                url: url.into(),
+                count: 5,
+            },
+        ];
+        let can_send = |used: &crate::EmoteUse| used.platform == "kick";
+        assert_eq!(most_used(&config, "all", can_send), [json!([name, url])]);
+        assert!(most_used(&config, "twitch", can_send).is_empty());
     }
 
     #[test]
