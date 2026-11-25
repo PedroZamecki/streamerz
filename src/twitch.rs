@@ -739,6 +739,22 @@ pub fn populate_chat_vars(args: &mut Obj, ctx: &ChatContext) {
     }
 }
 
+/// What Helix's Send Chat Message answered with a 200: an error when Twitch dropped the message anyway
+/// (AutoMod, a duplicate, too long...), with its reason.
+fn chat_sent(body: &[u8]) -> Result<(), String> {
+    let v: Value = serde_json::from_slice(body).unwrap_or_default();
+    let d = &v["data"][0];
+    if d["is_sent"] != false {
+        return Ok(());
+    }
+    let reason = &d["drop_reason"];
+    let why = [&reason["message"], &reason["code"]]
+        .into_iter()
+        .find_map(|r| r.as_str().filter(|r| !r.is_empty()))
+        .unwrap_or("no reason given");
+    Err(format!("Twitch didn't send the message: {why}"))
+}
+
 /// The message this one replies to, if it is a reply (`"reply": null` on a message that isn't one).
 fn reply_of(event: &Value) -> Option<ReplyInfo> {
     let r = event.get("reply").filter(|r| r.is_object())?;
@@ -1112,7 +1128,7 @@ impl Runner {
         if res.status != 200 {
             return Err(format!("Send chat message failed: HTTP {} {}", res.status, res.text()));
         }
-        Ok(())
+        chat_sent(&res.body)
     }
 
     async fn send_announcement(&self, text: &str, color: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
