@@ -127,12 +127,14 @@ impl P {
         self.account_note(c, bot) == Some(tr("accounts.note.login_expired"))
     }
 
-    /// Forget an account; its revoke URL (Kick and Google need the token in the URL).
+    /// Forget an account; its revoke URL (Kick and Google need the token in the URL). No token left (a
+    /// locked keyring, a login that ran out): nothing to revoke, so no request is made.
     fn logout(self, c: &mut crate::Config, bot: bool) -> Option<String> {
         let e = crate::commands::url_encode;
         let revoke = match self {
             P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
                 .as_ref()
+                .filter(|a| !a.token.access_token.is_empty())
                 .map(|a| {
                     format!(
                         "https://id.twitch.tv/oauth2/revoke?client_id={}&token={}",
@@ -142,21 +144,26 @@ impl P {
                 }),
             P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
                 .as_ref()
-                .map(|a| {
+                .and_then(|a| {
                     // Revoking the refresh token ends the whole grant.
                     let t = if a.token.refresh_token.is_empty() {
                         &a.token.access_token
                     } else {
                         &a.token.refresh_token
                     };
-                    format!("https://oauth2.googleapis.com/revoke?token={}", e(t))
+                    (!t.is_empty()).then(|| format!("https://oauth2.googleapis.com/revoke?token={}", e(t)))
                 }),
-            P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref().map(|a| {
-                format!(
-                    "https://id.kick.com/oauth/revoke?token={}&token_hint_type=access_token",
-                    e(&a.token.access_token)
-                )
-            }),
+            P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }
+                .as_ref()
+                .and_then(|a| {
+                    let (t, hint) = if a.token.access_token.is_empty() {
+                        (&a.token.refresh_token, "refresh_token")
+                    } else {
+                        (&a.token.access_token, "access_token")
+                    };
+                    (!t.is_empty())
+                        .then(|| format!("https://id.kick.com/oauth/revoke?token={}&token_hint_type={hint}", e(t)))
+                }),
             P::TikTok => None,
         };
         match (self, bot) {
@@ -2652,5 +2659,46 @@ mod tests {
                 .iter()
                 .all(|c| c["key"].is_string()));
         });
+    }
+
+    #[test]
+    fn logging_out_revokes_only_a_token_that_is_there() {
+        let mut c = crate::Config::default();
+        // A login that ran out (or a locked keyring): forgotten, with no revoke request.
+        c.twitch.broadcaster = Some(crate::twitch::TwitchAccount::default());
+        c.youtube.bot = Some(crate::youtube::YouTubeAccount::default());
+        c.kick.broadcaster = Some(crate::kick::KickAccount::default());
+        assert_eq!(P::Twitch.logout(&mut c, false), None);
+        assert_eq!(P::YouTube.logout(&mut c, true), None);
+        assert_eq!(P::Kick.logout(&mut c, false), None);
+        assert!(c.twitch.broadcaster.is_none() && c.youtube.bot.is_none() && c.kick.broadcaster.is_none());
+        // Twitch revokes the access token, Google the refresh token (the whole grant).
+        let mut twitch = crate::twitch::TwitchAccount::default();
+        twitch.token.access_token = "a b".into();
+        c.twitch.bot = Some(twitch);
+        let url = P::Twitch.logout(&mut c, true).unwrap();
+        assert!(
+            url.starts_with("https://id.twitch.tv/oauth2/revoke?client_id="),
+            "{url}"
+        );
+        assert!(url.ends_with("&token=a+b"), "{url}");
+        assert!(c.twitch.bot.is_none());
+        let mut youtube = crate::youtube::YouTubeAccount::default();
+        youtube.token.access_token = "access".into();
+        youtube.token.refresh_token = "refresh".into();
+        c.youtube.broadcaster = Some(youtube);
+        assert_eq!(
+            P::YouTube.logout(&mut c, false).as_deref(),
+            Some("https://oauth2.googleapis.com/revoke?token=refresh")
+        );
+        // Kick: the refresh token, said so, when the access token is gone.
+        let mut kick = crate::kick::KickAccount::default();
+        kick.token.refresh_token = "r".into();
+        c.kick.bot = Some(kick);
+        assert_eq!(
+            P::Kick.logout(&mut c, true).as_deref(),
+            Some("https://id.kick.com/oauth/revoke?token=r&token_hint_type=refresh_token")
+        );
+        assert_eq!(P::TikTok.logout(&mut c, false), None);
     }
 }
