@@ -202,6 +202,9 @@ fn save(engine: &Rc<Engine>, item: &Obj) -> Result<Value, String> {
             if current != baseline {
                 return Err(tr("moderation.settings_changed").into());
             }
+            if account(&engine) != key {
+                return Err(tr("moderation.account_changed").into());
+            }
             let response = twitch
                 .helix(
                     "PUT",

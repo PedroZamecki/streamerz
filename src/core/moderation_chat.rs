@@ -257,6 +257,9 @@ fn save(engine: &Rc<Engine>, item: &Obj) -> Result<Value, String> {
             if get(&twitch).await? != baseline {
                 return Err(tr("moderation.chat_changed").into());
             }
+            if account(&engine) != key {
+                return Err(tr("moderation.account_changed").into());
+            }
             normalize(
                 &twitch
                     .helix(

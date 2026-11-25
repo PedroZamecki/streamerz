@@ -689,11 +689,15 @@ fn save_direct(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Result<Valu
     }
     let duration = duration.unwrap_or_default();
     Some((|| {
+        let key = account(engine);
         let (generation, twitch) = begin(engine)?;
         let engine = engine.clone();
         tokio::task::spawn_local(async move {
             let result = async {
                 let user_id = twitch.resolve_user_id(&user).await?;
+                if account(&engine) != key {
+                    return Err(tr("moderation.account_changed").into());
+                }
                 let mut data = json!({"user_id": user_id});
                 if duration != 0 {
                     data["duration"] = duration.into();
@@ -2777,6 +2781,33 @@ mod tests {
             drop(calls);
             crate::scenario::fakes::uninstall();
             SNAPSHOT.with_borrow_mut(|s| *s = Snapshot::default());
+        });
+    }
+
+    #[test]
+    fn changing_channel_during_twitch_user_lookup_cancels_the_ban() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.twitch.channel_id = "first".into());
+            let (twitch, mut commands) = crate::twitch::TwitchHandle::detached();
+            engine.set_twitch(twitch);
+            save_direct(
+                &engine,
+                "moderation_twitch_ban",
+                json!({"user":"person","duration":0}).as_object().unwrap().clone(),
+            )
+            .unwrap()
+            .unwrap();
+            let Some(crate::twitch::TwitchCmd::ResolveUserId { resp, .. }) = commands.recv().await else {
+                panic!("expected a user lookup");
+            };
+            engine.change(|c| c.twitch.channel_id = "second".into());
+            resp.send(Ok("42".into())).unwrap();
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert!(commands.try_recv().is_err());
         });
     }
 
