@@ -9,6 +9,7 @@
 //!   Cancel Raid (501), Reply to Message (560).
 
 use crate::commands::{self, Chat};
+use crate::emote_events::Abort;
 use crate::engine::Engine;
 use crate::model::Obj;
 use crate::Config;
@@ -787,7 +788,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
         is_connected,
         wanted: Arc::new(AtomicBool::new(false)),
         read_task: None,
-        bot_read_task: None,
     };
     tokio::task::spawn_local(runner.run());
     handle
@@ -800,13 +800,11 @@ struct Runner {
     session_id: Option<String>,
     is_connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
-    /// The EventSub supervisor + read loop; aborted on Disconnect, which closes the socket.
+    /// The EventSub supervisor + read loop; aborted on Disconnect, which closes the socket and stops
+    /// the session's other tasks (they are `Abort` guards inside it).
     read_task: Option<tokio::task::JoinHandle<()>>,
-    /// Extra bot task slot (also managed inside supervisor).
-    bot_read_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
 /// How long an EventSub socket may say nothing: its keepalive time (10 s unless it says) and a margin.
 fn stale_after(welcome: &Value) -> Duration {
     let keep = welcome
@@ -1009,9 +1007,6 @@ impl Runner {
         if let Some(t) = self.read_task.take() {
             t.abort();
         }
-        if let Some(t) = self.bot_read_task.take() {
-            t.abort();
-        }
         self.session_id = None;
         self.engine.chat_polls_clear("twitch");
         self.engine.chat_unpinned("twitch", "");
@@ -1077,9 +1072,6 @@ impl Runner {
             let (is_conn, wanted) = (self.is_connected.clone(), self.wanted.clone());
             self.read_task = Some(tokio::task::spawn_local(crate::irc::read(engine, cfg, is_conn, wanted)));
             return;
-        }
-        if let Some(t) = self.bot_read_task.take() {
-            t.abort();
         }
         self.wanted.store(true, Ordering::Relaxed);
         let engine = self.engine.clone();
@@ -1468,21 +1460,14 @@ async fn supervise_eventsub(
         crate::core::status::clear_failure("twitch");
         crate::host::changed();
 
-        let bot_task = bot.map(|bot_acct| {
-            let bot_engine = engine.clone();
-            let bot_cfg = cfg.clone();
-            let bot_url = url.clone();
-            let b_acct = broadcaster.clone();
-            tokio::task::spawn_local(async move {
-                match crate::http::ws_connect(&bot_url).await {
-                    Ok((bot_ws, _)) => {
-                        run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
-                    }
-                    Err(e) => {
-                        crate::warn(format!("Twitch: bot EventSub connect failed ({e})"));
-                    }
-                }
-            })
+        // Stops with this session, and with this task when Disconnect aborts it.
+        let bot_task = bot.is_some().then(|| {
+            Abort(tokio::task::spawn_local(bot_eventsub(
+                engine.clone(),
+                cfg.clone(),
+                url.clone(),
+                broadcaster.clone(),
+            )))
         });
 
         let started = std::time::Instant::now();
@@ -1498,9 +1483,7 @@ async fn supervise_eventsub(
         )
         .await;
 
-        if let Some(t) = bot_task {
-            t.abort();
-        }
+        drop(bot_task);
 
         if !wanted.load(Ordering::Relaxed) {
             break;
@@ -1550,11 +1533,13 @@ async fn run_eventsub_loop(
 ) {
     use futures_util::StreamExt;
     let mut reconnecting = false;
-    let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
+    // The session's own tasks: each stops when dropped, so they end with the session, also when the
+    // task running it is aborted (Disconnect, a channel change).
+    let mut poll_task: Option<Abort> = None;
+    let mut emote_task: Option<Abort> = None;
+    let mut setup_task: Option<Abort> = None;
     // A viewer isn't told of timeouts and bans: the chat's own lines are listened to for them (irc.rs).
-    let bans_task: Rc<RefCell<Option<tokio::task::JoinHandle<()>>>> = Rc::default();
+    let bans_task: Rc<RefCell<Option<Abort>>> = Rc::default();
 
     // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
     // for a good while longer is dead, though nothing closed it, and is opened again.
@@ -1644,11 +1629,15 @@ async fn run_eventsub_loop(
                         let role = channel_role(&token, &bid, &me, &login).await;
                         // Those who moderate are told of timeouts and bans; the rest listen for them.
                         let watcher = (!role.moderates() && !custom_eventsub && !login.is_empty()).then(|| {
-                            tokio::task::spawn_local(crate::irc::watch_bans(e.clone(), cfg_c.clone(), channel))
+                            Abort(tokio::task::spawn_local(crate::irc::watch_bans(
+                                e.clone(),
+                                cfg_c.clone(),
+                                channel,
+                            )))
                         });
-                        if let Some(old) = std::mem::replace(&mut *bans.borrow_mut(), watcher) {
-                            old.abort();
-                        }
+                        // The one it replaces stops as it is dropped.
+                        let old = std::mem::replace(&mut *bans.borrow_mut(), watcher);
+                        drop(old);
                         create_all_subscriptions(&sid, &token, &bid, &me, role, &refused).await
                     };
                     let welcome = async {
@@ -1672,13 +1661,11 @@ async fn run_eventsub_loop(
                 });
                 // A channel change closes this session: its setup must not go on (nor its history land
                 // in the new channel's chat).
-                if let Some(t) = setup_task.replace(setup) {
-                    t.abort();
-                }
-                if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
-                {
-                    t.abort();
-                }
+                setup_task = Some(Abort(setup));
+                poll_task = Some(Abort(tokio::task::spawn_local(poll(
+                    engine.clone(),
+                    broadcaster.clone(),
+                ))));
                 let codes = crate::emote_events::Codes {
                     platform: "twitch",
                     source: "Twitch",
@@ -1687,7 +1674,7 @@ async fn run_eventsub_loop(
                 };
                 if codes.wanted(&engine) && emote_task.is_none() {
                     let watch = crate::emote_events::watch(engine.clone(), codes, broadcaster.user_id.clone());
-                    emote_task = Some(tokio::task::spawn_local(watch));
+                    emote_task = Some(Abort(tokio::task::spawn_local(watch)));
                 }
             }
             "notification" => {
@@ -1726,12 +1713,9 @@ async fn run_eventsub_loop(
         }
     }
 
-    for t in [poll_task, emote_task, setup_task, bans_task.borrow_mut().take()]
-        .into_iter()
-        .flatten()
-    {
-        t.abort();
-    }
+    drop((poll_task, emote_task, setup_task));
+    let bans = bans_task.borrow_mut().take();
+    drop(bans);
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
@@ -1769,6 +1753,41 @@ async fn run_eventsub_loop(
         engine.emit("Twitch", "BotChatDisconnected", || json!(args));
     }
     crate::host::changed();
+}
+
+/// The bot's EventSub session (its whispers) while the broadcaster's lasts: opened again when it drops on
+/// its own, waiting longer each time it fails soon. Ends when the bot has no login left.
+async fn bot_eventsub(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, url: String, broadcaster: TwitchAccount) {
+    let mut fails = 0u32;
+    loop {
+        refresh_accounts(&engine, &cfg, false).await;
+        let Some(bot) = cfg
+            .borrow()
+            .twitch
+            .bot
+            .clone()
+            .filter(|b| !b.token.access_token.is_empty())
+        else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        match crate::http::ws_connect(&url).await {
+            Ok((ws, _)) => run_bot_eventsub_loop(ws, engine.clone(), cfg.clone(), broadcaster.clone(), bot).await,
+            Err(e) => crate::warn(format!("Twitch: bot EventSub connect failed ({e})")),
+        }
+        fails = if started.elapsed() >= Duration::from_secs(60) {
+            1
+        } else {
+            fails.saturating_add(1)
+        };
+        tokio::time::sleep(bot_retry(fails)).await;
+    }
+}
+
+/// The wait before the bot's session is opened again after `fails` short ones: 2 s, doubling, 5 minutes at
+/// most (a session Twitch keeps closing isn't asked for every few seconds).
+fn bot_retry(fails: u32) -> Duration {
+    Duration::from_secs((1u64 << fails.clamp(1, 9)).min(300))
 }
 
 async fn run_bot_eventsub_loop(
