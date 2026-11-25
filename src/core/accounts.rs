@@ -1638,7 +1638,7 @@ pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
     tokio::task::spawn_local(async move {
         let cfg = engine.config_sender();
         // Each renewal says so itself when the platform refuses it.
-        for (p, bot) in present {
+        for (p, bot) in renewals(present) {
             match p {
                 P::Twitch => crate::twitch::renew_logins(&engine, &cfg).await,
                 P::YouTube => drop(crate::youtube::token(&engine, &cfg, bot, false).await),
@@ -1647,6 +1647,13 @@ pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
             }
         }
     });
+}
+
+/// The renewals for the logins found: Twitch renews its broadcaster and bot together, so once.
+fn renewals(mut present: Vec<(P, bool)>) -> Vec<(P, bool)> {
+    let mut twitch = false;
+    present.retain(|(p, _)| *p != P::Twitch || !std::mem::replace(&mut twitch, true));
+    present
 }
 
 /// A login ran out: ask, in a dialog, whether to log in again now. "Log in" runs the same
@@ -2702,6 +2709,7 @@ mod tests {
         );
         assert_eq!(kick_channel_url("é"), "https://kick.com/api/v2/channels/%C3%A9");
     }
+
     #[test]
     fn logging_out_revokes_only_a_token_that_is_there() {
         let mut c = crate::Config::default();
@@ -2741,5 +2749,13 @@ mod tests {
             Some("https://id.kick.com/oauth/revoke?token=r&token_hint_type=refresh_token")
         );
         assert_eq!(P::TikTok.logout(&mut c, false), None);
+    }
+
+    #[test]
+    fn twitch_renews_its_two_logins_once() {
+        let found = vec![(P::Twitch, false), (P::Kick, false), (P::Twitch, true), (P::Kick, true)];
+        assert_eq!(renewals(found), [(P::Twitch, false), (P::Kick, false), (P::Kick, true)]);
+        assert_eq!(renewals(vec![(P::Twitch, true)]), [(P::Twitch, true)]);
+        assert!(renewals(Vec::new()).is_empty());
     }
 }
