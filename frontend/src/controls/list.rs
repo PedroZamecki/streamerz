@@ -68,6 +68,7 @@ pub struct List {
     route: String,
     /// A list in a dialog (a group's members): its entity and the request that fills it.
     dialog_list: Option<Entity<List>>,
+    dialog_list_sub: Option<Subscription>,
     dialog_request: Value,
     /// A person's card open in a dialog.
     card: Option<Entity<Card>>,
@@ -240,6 +241,7 @@ impl List {
             error: None,
             route,
             dialog_list: None,
+            dialog_list_sub: None,
             dialog_request: Value::Null,
             card: None,
             inline,
@@ -558,6 +560,8 @@ impl List {
                     self.inline = Some(cx.new(|cx| Sections::new(inline, route, window, cx)));
                 }
             }
+        } else {
+            self.inline = None;
         }
         self.model = model;
         self.refresh(cx);
@@ -601,9 +605,10 @@ impl List {
             }
             model["empty"] = tr("lists.no_matches").into();
         }
-        let mut selection = model["rows"]
-            .as_array()
-            .and_then(|rows| rows.iter().position(|row| row["id"] == self.selected_id));
+        let mut selection = model["rows"].as_array().and_then(|rows| {
+            rows.iter()
+                .position(|row| !self.selected_id.is_empty() && row["id"] == self.selected_id)
+        });
         // A page that always has one thing open (the MCP agents) picks the first row.
         if selection.is_none() && model["selectFirst"] == true {
             if let Some(id) = model["rows"][0]["id"].as_str() {
@@ -633,15 +638,37 @@ impl List {
     }
     /// Resolves the explicit row (from a context menu or double-click) or the currently selected row
     /// (from a toolbar/bottom button) so per-row `confirm`, `kind` and `singleton` metadata apply to both.
+    /// An explicit out-of-bounds row index returns `None` instead of acting on a different selected row.
     fn row_record(shown: &Value, row: Option<usize>, selected_id: &str) -> Option<Value> {
-        row.and_then(|row| shown["rows"].get(row))
-            .or_else(|| {
-                shown["rows"].as_array().and_then(|rows| {
+        match row {
+            Some(row) => shown["rows"].get(row).cloned(),
+            None => shown["rows"]
+                .as_array()
+                .and_then(|rows| {
                     rows.iter()
                         .find(|row| !selected_id.is_empty() && row["id"] == selected_id)
                 })
-            })
-            .cloned()
+                .cloned(),
+        }
+    }
+    /// Whether `action` is valid for `shown` (checking exact index for custom actions).
+    fn action_allowed(shown: &Value, action: Action) -> bool {
+        Action::base_actions(shown).iter().any(|listed| match (listed, action) {
+            (Action::Custom(a), Action::Custom(b)) => *a == b,
+            _ => std::mem::discriminant(listed) == std::mem::discriminant(&action),
+        }) || (matches!(action, Action::Toggle) && shown["switchToggle"] == true)
+            || matches!(action, Action::Connect | Action::ConnectAll | Action::DisconnectAll)
+    }
+    /// Confirmation question and button label for a custom action, preferring per-row prompts.
+    fn confirm_prompt(spec: &Value, record: Option<&Value>) -> Option<(String, String)> {
+        let action_id = spec["id"].as_str().unwrap_or_default();
+        let own = record.and_then(|row| row["confirm"][action_id].as_str());
+        let question = own.or_else(|| spec["confirm"].as_str())?;
+        let label = spec["confirmLabel"]
+            .as_str()
+            .or_else(|| spec["label"].as_str())
+            .unwrap_or_default();
+        Some((question.to_owned(), label.to_owned()))
     }
     fn action(&mut self, action: Action, row: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let shown = match &self.table {
@@ -657,17 +684,12 @@ impl List {
         let id = record
             .as_ref()
             .and_then(|row| row["id"].as_str())
-            .unwrap_or(&self.selected_id)
+            .unwrap_or(if row.is_some() { "" } else { &self.selected_id })
             .to_owned();
         let selected = shown["rows"]
             .as_array()
             .and_then(|rows| rows.iter().position(|row| !id.is_empty() && row["id"] == id));
-        if !Action::base_actions(&shown)
-            .iter()
-            .any(|listed| std::mem::discriminant(listed) == std::mem::discriminant(&action))
-            && !(matches!(action, Action::Toggle) && shown["switchToggle"] == true)
-            && !matches!(action, Action::Connect | Action::ConnectAll | Action::DisconnectAll)
-        {
+        if !Self::action_allowed(&shown, action) {
             return;
         }
         if !action.enabled(&shown, selected) {
@@ -720,14 +742,9 @@ impl List {
                 let request = json!({"request": "StreamerzCoreAction", "domain": self.model["domain"], "table": kind,
                     "action": spec["id"], "itemId": id, "id": format!("{route}:act")});
                 // A row may ask its own question (the last page of an overlay, one with actions).
-                let own = record
-                    .as_ref()
-                    .and_then(|row| row["confirm"][spec["id"].as_str().unwrap_or_default()].as_str());
-                match own.or(spec["confirm"].as_str()).filter(|_| spec["confirm"].is_string()) {
+                match Self::confirm_prompt(&spec, record.as_ref()) {
                     None => send(request),
-                    Some(question) => {
-                        let question = question.to_owned();
-                        let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
+                    Some((question, label)) => {
                         let danger = spec["danger"] == true;
                         window.open_dialog(cx, move |dialog, window, cx| {
                             let request = request.clone();
@@ -808,6 +825,12 @@ impl List {
     }
     /// Returns whether the page should query the core again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some((index, what)) = operation.strip_prefix("gallery:").and_then(|rest| rest.split_once(':')) {
+            if let (Ok(index), Some(form)) = (index.parse::<usize>(), &self.form) {
+                form.update(cx, |form, cx| form.gallery_reply(index, what, &value, cx));
+            }
+            return false;
+        }
         if let Some(index) = operation.strip_prefix("press:").and_then(|s| s.parse::<usize>().ok()) {
             if let Some(form) = &self.form {
                 form.update(cx, |form, cx| form.press_reply(index, &value, window, cx));
@@ -851,10 +874,10 @@ impl List {
                 self.card = Some(card.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, window, _| {
-                    let owner = owner.clone();
+                    let owner_cancel = owner.clone();
+                    let owner_close = owner.clone();
                     dialog
                         .centered()
-                        .pt(px(12.))
                         .close_button(false)
                         .pt(px(0.))
                         .pb(px(0.))
@@ -863,8 +886,11 @@ impl List {
                         .width(px(crate::controls::dialog::fit_width(520., window)))
                         .child(card.clone())
                         .on_cancel(move |_, _, cx| {
-                            let _ = owner.update(cx, |list, _| list.card = None);
+                            let _ = owner_cancel.update(cx, |list, _| list.card = None);
                             true
+                        })
+                        .on_close(move |_, _, cx| {
+                            let _ = owner_close.update(cx, |list, _| list.card = None);
                         })
                 });
                 false
@@ -889,7 +915,9 @@ impl List {
                 false
             }
             "dialog-view" => {
-                let model = value["tables"][0].clone();
+                let Some(model) = value["tables"].get(0).filter(|table| table.is_object()).cloned() else {
+                    return false;
+                };
                 let title = model["title"].as_str().unwrap_or_default().to_owned();
                 let width = model["dialogWidth"].as_f64().unwrap_or(560.) as f32;
                 let nested = cx.new(|cx| {
@@ -898,7 +926,7 @@ impl List {
                     list.set_fit(fit, cx);
                     list
                 });
-                self._subscriptions.push(cx.subscribe_in(
+                self.dialog_list_sub = Some(cx.subscribe_in(
                     &nested,
                     window,
                     |_, _, event: &super::sections::Navigate, window, cx| {
@@ -909,7 +937,8 @@ impl List {
                 self.dialog_list = Some(nested.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
-                    let owner = owner.clone();
+                    let owner_cancel = owner.clone();
+                    let owner_close = owner.clone();
                     let max_body = crate::controls::dialog::fit_height(180., 180., 680., window);
                     crate::controls::dialog::shell(dialog, title.clone(), width, window, cx)
                         .child(crate::controls::dialog::body(
@@ -922,8 +951,17 @@ impl List {
                         ))
                         .footer(crate::controls::dialog::close_footer(cx))
                         .on_cancel(move |_, _, cx| {
-                            let _ = owner.update(cx, |list, _| list.dialog_list = None);
+                            let _ = owner_cancel.update(cx, |list, _| {
+                                list.dialog_list = None;
+                                list.dialog_list_sub = None;
+                            });
                             true
+                        })
+                        .on_close(move |_, _, cx| {
+                            let _ = owner_close.update(cx, |list, _| {
+                                list.dialog_list = None;
+                                list.dialog_list_sub = None;
+                            });
                         })
                 });
                 false
@@ -935,8 +973,11 @@ impl List {
                 false
             }
             "dialog-refresh" => {
-                if let Some(nested) = &self.dialog_list {
-                    nested.update(cx, |list, cx| list.update_model(value["tables"][0].clone(), window, cx));
+                if let (Some(nested), Some(model)) = (
+                    &self.dialog_list,
+                    value["tables"].get(0).filter(|table| table.is_object()).cloned(),
+                ) {
+                    nested.update(cx, |list, cx| list.update_model(model, window, cx));
                 }
                 false
             }
@@ -947,6 +988,7 @@ impl List {
                 self.form = Some(form.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
+                    let owner_close = owner.clone();
                     crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
                         .child(crate::controls::dialog::body(form.clone()))
                         .footer(form.read(cx).buttons_view())
@@ -963,6 +1005,9 @@ impl List {
                                 });
                                 true
                             }
+                        })
+                        .on_close(move |_, _, cx| {
+                            let _ = owner_close.update(cx, |list, _| list.form = None);
                         })
                 });
                 false
@@ -1001,6 +1046,15 @@ impl List {
     }
 }
 impl List {
+    /// Width available for this list's table, toolbar and button rows.
+    fn available_width(&self, window: &Window, cx: &App) -> f32 {
+        let fit = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
+        if fit > 0. {
+            fit
+        } else {
+            f32::from(window.viewport_size().width) - 200.
+        }
+    }
     /// Whether the core put this button on the line above the list (what starts or brings in
     /// something: New, Import), not among those for the selected row.
     fn on_top(&self, action: Action) -> bool {
@@ -1036,12 +1090,7 @@ impl List {
                 }
             })
             .sum();
-        let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-        let room = if room > 0. {
-            room
-        } else {
-            f32::from(window.viewport_size().width) - 200.
-        } - reserved;
+        let room = self.available_width(window, cx) - reserved;
         // The search keeps room to type in.
         let fold = wanted + 8. * actions.len() as f32 + 180. > room;
         actions
@@ -1164,12 +1213,7 @@ impl List {
             if self.model["rows"].as_array().is_none_or(Vec::is_empty) {
                 return None;
             }
-            let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-            let room = if room > 0. {
-                room
-            } else {
-                f32::from(window.viewport_size().width) - 200.
-            };
+            let room = self.available_width(window, cx);
             let fold = room < 360.;
             let mut line = div().flex().flex_wrap().items_center().gap(px(SPACE_SM)).w_full();
             for action in actions.iter().copied() {
@@ -1232,12 +1276,7 @@ impl List {
                 f32::from(window.viewport_size().width) - 200.
             }
         } else {
-            let fit = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-            if fit > 0. {
-                fit
-            } else {
-                f32::from(window.viewport_size().width) - 200.
-            }
+            self.available_width(window, cx)
         };
         let fold = actions.chunks(per_row).any(|chunk| {
             let wanted: f32 = chunk.iter().map(|action| label_width(&action.label(&self.model))).sum();
@@ -1382,12 +1421,7 @@ impl Render for List {
         let truly_empty = self.empty_state(cx);
         // The "Show" bar goes on the toolbar's line when it fits beside what else is there.
         let reserved = self.show.as_ref().map_or(0., |tabs| {
-            let table_width = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-            let room = if table_width > 0. {
-                table_width
-            } else {
-                f32::from(window.viewport_size().width) - 200.
-            };
+            let room = self.available_width(window, cx);
             let wanted = super::tabs::inline_width(tabs) + SPACE_SM;
             let buttons = if truly_empty { 0 } else { self.top_actions().len() };
             let others =
@@ -2101,7 +2135,7 @@ impl Render for List {
                         continue;
                     }
                     let mut tag = pill(
-                        ("card-badge", index * 16 + b_idx),
+                        ("card-badge", index.wrapping_mul(32).wrapping_add(b_idx)),
                         (!b_icon.is_empty()).then_some(b_icon.as_str()),
                         (!b_text.is_empty()).then_some(b_text),
                         cx,
@@ -2280,12 +2314,7 @@ impl Render for List {
                         .sum();
                     let top_w = top.len() as f32 * (34. + SPACE_SM);
                     let search_min = if self.search.is_some() { 160. } else { 0. };
-                    let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-                    let room = if room > 0. {
-                        room
-                    } else {
-                        f32::from(window.viewport_size().width) - 200.
-                    } - reserved;
+                    let room = self.available_width(window, cx) - reserved;
                     filter_w + 8. * options.len() as f32 + search_min + top_w > room
                 };
             for (index, option) in options.iter().enumerate() {
@@ -2693,12 +2722,7 @@ impl Render for List {
             }
         }
         if self.model["connection"].is_object() && self.model["headerAdd"] != true {
-            let room = self.table.as_ref().map_or(0., |table| table.read(cx).delegate().fit);
-            let room = if room > 0. {
-                room
-            } else {
-                f32::from(window.viewport_size().width) - 200.
-            };
+            let room = self.available_width(window, cx);
             let (icon, color) =
                 super::health::appearance(self.model["connection"]["health"].as_str().unwrap_or_default(), cx);
             stack.add(
@@ -2868,6 +2892,28 @@ mod tests {
         let from_button = List::row_record(&model, None, "b").unwrap();
         assert_eq!(from_button["confirm"]["download"], "Download B (Non-commercial)");
         assert!(List::row_record(&model, None, "").is_none());
+        // An out-of-bounds explicit row must not fall back to a different selected row.
+        assert!(List::row_record(&model, Some(9), "b").is_none());
+        assert!(List::row_record(&model, Some(usize::MAX), "b").is_none());
+    }
+
+    #[test]
+    fn custom_action_guard_rejects_out_of_bounds_and_per_row_confirm_works_without_spec_confirm() {
+        let model = json!({
+            "actions": [
+                {"id": "remove", "label": "Remove", "needs": "row"}
+            ],
+            "rows": [
+                {"id": "a", "confirm": {"remove": "Remove item A?"}}
+            ]
+        });
+        assert!(List::action_allowed(&model, Action::Custom(0)));
+        assert!(!List::action_allowed(&model, Action::Custom(1)));
+        assert!(!List::action_allowed(&model, Action::Custom(99)));
+
+        let prompt = List::confirm_prompt(&model["actions"][0], Some(&model["rows"][0]));
+        assert_eq!(prompt, Some(("Remove item A?".to_owned(), "Remove".to_owned())));
+        assert_eq!(List::confirm_prompt(&model["actions"][0], None), None);
     }
 
     #[test]
@@ -3232,6 +3278,46 @@ mod tests {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert_eq!(shown_ids(&list, cx), vec!["cmd-1", "cmd-2"]);
+
+                // Shrinking the list while the last row is selected clears selection without panicking.
+                let table = list.read(cx).table.clone().expect("table");
+                table.update(cx, |table, cx| table.set_selected_row(1, cx));
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                assert_eq!(list.read(cx).selected_id, "cmd-2");
+                let shrunk = json!({
+                    "kind": "command",
+                    "title": "Commands",
+                    "search": true,
+                    "columns": [
+                        {"key": "name", "label": "Name", "width": 200},
+                        {"key": "sources", "label": "Sources", "width": 160}
+                    ],
+                    "rows": [
+                        {"id": "", "cells": ["Blank ID", {"platforms": []}]},
+                        {"id": "cmd-1", "cells": ["Manage commands", {"platforms": ["twitch"]}]}
+                    ]
+                });
+                list.update(cx, |list, cx| list.update_model(shrunk, window, cx));
+                window.render_frame(cx);
+                // Selection cleared and does not phantom-select the empty-id row.
+                assert!(list.read(cx).selected_id.is_empty());
+                assert_eq!(list.read(cx).table.as_ref().unwrap().read(cx).selected_row(), None);
+
+                // Shrinking to zero rows also renders cleanly without panicking.
+                let empty = json!({
+                    "kind": "command",
+                    "title": "Commands",
+                    "search": true,
+                    "empty": "No commands yet.",
+                    "columns": [{"key": "name", "label": "Name", "width": 200}],
+                    "rows": []
+                });
+                list.update(cx, |list, cx| list.update_model(empty, window, cx));
+                window.render_frame(cx);
+                assert!(list.read(cx).selected_id.is_empty());
             })
             .unwrap();
         }
