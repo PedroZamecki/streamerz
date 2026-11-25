@@ -12,8 +12,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::Cell;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 // 1. Ko-fi Triggers (7001..=7005)
@@ -109,10 +110,20 @@ pub struct DonationsConfig {
 // Webhook & Event Dispatchers
 // ---------------------------------------------------------------------------
 
+/// Fire a donation/shop trigger and emit the matching WebSocket event.
+fn fire_event(engine: &Rc<Engine>, platform: &str, source: &str, (code, trigger, ev): (u32, &str, &str), args: &Obj) {
+    engine.fire(code, trigger, platform, source, args, |_| true);
+    engine.emit(platform, ev, || json!(args));
+}
+
 pub fn handle_kofi(engine: &Rc<Engine>, data: &Value) {
     let raw_type = data["type"].as_str().unwrap_or("Donation");
     let from_name = data["from_name"].as_str().unwrap_or("Anonymous");
-    let amount = data["amount"].as_str().unwrap_or("0");
+    let amount = match &data["amount"] {
+        Value::String(s) if !s.trim().is_empty() => s.clone(),
+        Value::Null => "0".into(),
+        v => text(v),
+    };
     let currency = data["currency"].as_str().unwrap_or("USD");
     let message = data["message"].as_str().unwrap_or("");
     let is_first = data["is_first_subscription_payment"].as_bool().unwrap_or(false);
@@ -125,36 +136,14 @@ pub fn handle_kofi(engine: &Rc<Engine>, data: &Value) {
     args.insert("message".into(), message.into());
     args.insert("type".into(), raw_type.into());
 
-    match raw_type {
-        "Subscription" => {
-            if is_first {
-                engine.fire(T_KOFI_SUBSCRIPTION, "KofiSubscription", "Kofi", "kofi", &args, |_| true);
-                engine.emit("Kofi", "Subscription", || json!(args));
-            } else {
-                engine.fire(
-                    T_KOFI_RESUBSCRIPTION,
-                    "KofiResubscription",
-                    "Kofi",
-                    "kofi",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("Kofi", "Resubscription", || json!(args));
-            }
-        }
-        "Shop Order" => {
-            engine.fire(T_KOFI_SHOP_ORDER, "KofiShopOrder", "Kofi", "kofi", &args, |_| true);
-            engine.emit("Kofi", "ShopOrder", || json!(args));
-        }
-        "Commission" => {
-            engine.fire(T_KOFI_COMMISSION, "KofiCommission", "Kofi", "kofi", &args, |_| true);
-            engine.emit("Kofi", "Commission", || json!(args));
-        }
-        _ => {
-            engine.fire(T_KOFI_DONATION, "KofiDonation", "Kofi", "kofi", &args, |_| true);
-            engine.emit("Kofi", "Donation", || json!(args));
-        }
-    }
+    let ev = match raw_type {
+        "Subscription" if is_first => (T_KOFI_SUBSCRIPTION, "KofiSubscription", "Subscription"),
+        "Subscription" => (T_KOFI_RESUBSCRIPTION, "KofiResubscription", "Resubscription"),
+        "Shop Order" => (T_KOFI_SHOP_ORDER, "KofiShopOrder", "ShopOrder"),
+        "Commission" => (T_KOFI_COMMISSION, "KofiCommission", "Commission"),
+        _ => (T_KOFI_DONATION, "KofiDonation", "Donation"),
+    };
+    fire_event(engine, "Kofi", "kofi", ev, &args);
 }
 
 fn text(v: &Value) -> String {
@@ -165,16 +154,72 @@ fn text(v: &Value) -> String {
     }
 }
 
-/// A number sent as a number or as text ("13.37").
+/// Parses a formatted donation amount with optional currency symbols/codes, decimals, and
+/// US/EU thousands separators (e.g. `"$13.37"`, `"€10,50"`, `"R$ 1.234,56"`, `"USD 25.00"`).
+pub(crate) fn parse_amount_str(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first_digit = trimmed.find(|c: char| c.is_ascii_digit())?;
+    let last_digit = trimmed.rfind(|c: char| c.is_ascii_digit())?;
+    let negative = trimmed[..first_digit].contains('-');
+    let body = &trimmed[first_digit..=last_digit];
+
+    let mut clean = String::with_capacity(body.len());
+    for c in body.chars() {
+        match c {
+            '0'..='9' | '.' | ',' => clean.push(c),
+            ' ' | '\u{00A0}' | '_' | '\'' => {}
+            _ => return None,
+        }
+    }
+    let normalized = match (clean.rfind('.'), clean.rfind(',')) {
+        (Some(dot), Some(comma)) => {
+            if dot > comma {
+                clean.replace(',', "")
+            } else {
+                clean.replace('.', "").replace(',', ".")
+            }
+        }
+        (None, Some(comma)) => {
+            let commas = clean.bytes().filter(|&b| b == b',').count();
+            let before = &clean[..comma];
+            let after = &clean[comma + 1..];
+            if commas > 1 || (after.len() == 3 && before != "0" && !before.is_empty()) {
+                clean.replace(',', "")
+            } else {
+                clean.replace(',', ".")
+            }
+        }
+        (Some(_), None) => {
+            let dots = clean.bytes().filter(|&b| b == b'.').count();
+            if dots > 1 {
+                clean.replace('.', "")
+            } else {
+                clean
+            }
+        }
+        (None, None) => clean,
+    };
+    let v: f64 = normalized.parse().ok()?;
+    if !v.is_finite() {
+        return None;
+    }
+    Some(if negative { -v } else { v })
+}
+
+/// A number sent as a JSON number or formatted text ("13.37", "$13.37", "10,50"); non-finite -> 0.0.
 fn number(v: &Value) -> f64 {
     v.as_f64()
-        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|x| x.is_finite())
+        .or_else(|| v.as_str().and_then(parse_amount_str))
         .unwrap_or(0.0)
 }
 
 /// A trigger's Range: none (any), only Max (exactly it), only Min (at least it), or both.
 fn in_range(t: &Obj, v: f64) -> bool {
-    let bound = |k: &str| t.get(k).and_then(Value::as_f64).filter(|x| *x > 0.0);
+    let bound = |k: &str| t.get(k).map(number).filter(|x| *x > 0.0);
     match (bound("min"), bound("max")) {
         (None, None) => true,
         (None, Some(max)) => v == max,
@@ -221,7 +266,7 @@ pub fn handle_streamelements(engine: &Rc<Engine>, event: &str, d: &Value) {
             }
             se_fire(engine, T_SE_MERCH, "Merch", &args, None);
         }
-        _ => {
+        "tip" | "donation" => {
             let amount = number(&d["amount"]);
             for (k, v) in [
                 ("tipUsername", text(&d["username"]).into()),
@@ -234,6 +279,8 @@ pub fn handle_streamelements(engine: &Rc<Engine>, event: &str, d: &Value) {
             }
             se_fire(engine, T_SE_TIP, "Tip", &args, Some(amount));
         }
+        // Ignore non-donation StreamElements events (follower, subscriber, cheer, raid, etc.).
+        _ => {}
     }
 }
 
@@ -296,7 +343,7 @@ pub fn handle_streamlabs(engine: &Rc<Engine>, event: &str, m: &Value) {
             }
             sl_fire(engine, T_SL_CHARITY_DONATION, "CharityDonation", &args, Some(amount));
         }
-        _ => {
+        "donation" => {
             let amount = number(&m["amount"]);
             for (k, v) in [
                 ("donationFrom", from.into()),
@@ -309,6 +356,7 @@ pub fn handle_streamlabs(engine: &Rc<Engine>, event: &str, m: &Value) {
             }
             sl_fire(engine, T_SL_DONATION, "Donation", &args, Some(amount));
         }
+        _ => {}
     }
 }
 
@@ -320,6 +368,8 @@ pub fn handle_patreon(engine: &Rc<Engine>, event: &str, data: &Value) {
         .unwrap_or("Anonymous");
     let amount = data["amountCents"]
         .as_i64()
+        .or_else(|| data["amount_cents"].as_i64())
+        .or_else(|| data["pledge_amount_cents"].as_i64())
         .or_else(|| data["amount"].as_i64())
         .unwrap_or(0);
     let tier = data["tier"].as_str().unwrap_or("");
@@ -329,63 +379,22 @@ pub fn handle_patreon(engine: &Rc<Engine>, event: &str, data: &Value) {
     args.insert("amountCents".into(), amount.into());
     args.insert("tier".into(), tier.into());
 
-    match event {
+    let ev = match event {
         "pledges:create" | "members:pledge:create" | "PledgeCreated" => {
-            engine.fire(
-                T_PATREON_PLEDGE_CREATED,
-                "PatreonPledgeCreated",
-                "Patreon",
-                "patreon",
-                &args,
-                |_| true,
-            );
-            engine.emit("Patreon", "PledgeCreated", || json!(args));
+            (T_PATREON_PLEDGE_CREATED, "PatreonPledgeCreated", "PledgeCreated")
         }
         "pledges:update" | "members:pledge:update" | "PledgeUpdated" => {
-            engine.fire(
-                T_PATREON_PLEDGE_UPDATED,
-                "PatreonPledgeUpdated",
-                "Patreon",
-                "patreon",
-                &args,
-                |_| true,
-            );
-            engine.emit("Patreon", "PledgeUpdated", || json!(args));
+            (T_PATREON_PLEDGE_UPDATED, "PatreonPledgeUpdated", "PledgeUpdated")
         }
         "pledges:delete" | "members:pledge:delete" | "PledgeDeleted" => {
-            engine.fire(
-                T_PATREON_PLEDGE_DELETED,
-                "PatreonPledgeDeleted",
-                "Patreon",
-                "patreon",
-                &args,
-                |_| true,
-            );
-            engine.emit("Patreon", "PledgeDeleted", || json!(args));
+            (T_PATREON_PLEDGE_DELETED, "PatreonPledgeDeleted", "PledgeDeleted")
         }
         "members:follow:delete" | "FollowDeleted" => {
-            engine.fire(
-                T_PATREON_FOLLOW_DELETED,
-                "PatreonFollowDeleted",
-                "Patreon",
-                "patreon",
-                &args,
-                |_| true,
-            );
-            engine.emit("Patreon", "FollowDeleted", || json!(args));
+            (T_PATREON_FOLLOW_DELETED, "PatreonFollowDeleted", "FollowDeleted")
         }
-        _ => {
-            engine.fire(
-                T_PATREON_FOLLOW_CREATED,
-                "PatreonFollowCreated",
-                "Patreon",
-                "patreon",
-                &args,
-                |_| true,
-            );
-            engine.emit("Patreon", "FollowCreated", || json!(args));
-        }
-    }
+        _ => (T_PATREON_FOLLOW_CREATED, "PatreonFollowCreated", "FollowCreated"),
+    };
+    fire_event(engine, "Patreon", "patreon", ev, &args);
 }
 
 /// `v` flattened into `args` under `prefix` (`fw.offer.name`, `shopify.line_items[0].title`), as
@@ -431,169 +440,78 @@ pub fn handle_fourthwall(engine: &Rc<Engine>, event: &str, data: &Value) {
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>()
         .to_lowercase();
-    let event = [
-        "ProductCreated",
-        "ProductUpdated",
-        "GiftPurchase",
-        "OrderPlaced",
-        "OrderUpdated",
-        "Donation",
-        "SubscriptionPurchased",
-        "SubscriptionExpired",
-        "SubscriptionChanged",
-        "ThankYouSent",
-        "NewsletterSubscribed",
-        "GiftDrawStarted",
-        "GiftDrawEnded",
-    ]
-    .into_iter()
-    .find(|c| c.to_lowercase() == key)
-    .unwrap_or(event);
-    match event {
-        "product:created" | "ProductCreated" => {
-            engine.fire(
-                T_FW_PRODUCT_CREATED,
-                "FourthwallProductCreated",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "ProductCreated", || json!(args));
-        }
-        "product:updated" | "ProductUpdated" => {
-            engine.fire(
-                T_FW_PRODUCT_UPDATED,
-                "FourthwallProductUpdated",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "ProductUpdated", || json!(args));
-        }
-        "gift:purchase" | "GiftPurchase" => {
-            engine.fire(
-                T_FW_GIFT_PURCHASE,
-                "FourthwallGiftPurchase",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "GiftPurchase", || json!(args));
-        }
-        "order:placed" | "OrderPlaced" => {
-            engine.fire(
-                T_FW_ORDER_PLACED,
-                "FourthwallOrderPlaced",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "OrderPlaced", || json!(args));
-        }
-        "order:updated" | "OrderUpdated" => {
-            engine.fire(
-                T_FW_ORDER_UPDATED,
-                "FourthwallOrderUpdated",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "OrderUpdated", || json!(args));
-        }
-        "donation" | "Donation" => {
-            engine.fire(
-                T_FW_DONATION,
-                "FourthwallDonation",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "Donation", || json!(args));
-        }
-        "subscription:purchased" | "SubscriptionPurchased" => {
-            engine.fire(
-                T_FW_SUBSCRIPTION_PURCHASED,
-                "FourthwallSubscriptionPurchased",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "SubscriptionPurchased", || json!(args));
-        }
-        "subscription:expired" | "SubscriptionExpired" => {
-            engine.fire(
-                T_FW_SUBSCRIPTION_EXPIRED,
-                "FourthwallSubscriptionExpired",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "SubscriptionExpired", || json!(args));
-        }
-        "subscription:changed" | "SubscriptionChanged" => {
-            engine.fire(
-                T_FW_SUBSCRIPTION_CHANGED,
-                "FourthwallSubscriptionChanged",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "SubscriptionChanged", || json!(args));
-        }
-        "thank_you:sent" | "ThankYouSent" => {
-            engine.fire(
-                T_FW_THANK_YOU_SENT,
-                "FourthwallThankYouSent",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "ThankYouSent", || json!(args));
-        }
-        "newsletter:subscribed" | "NewsletterSubscribed" => {
-            engine.fire(
-                T_FW_NEWSLETTER_SUBSCRIBED,
-                "FourthwallNewsletterSubscribed",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "NewsletterSubscribed", || json!(args));
-        }
-        "gift_draw:started" | "GiftDrawStarted" => {
-            engine.fire(
-                T_FW_GIFT_DRAW_STARTED,
-                "FourthwallGiftDrawStarted",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "GiftDrawStarted", || json!(args));
-        }
-        "gift_draw:ended" | "GiftDrawEnded" => {
-            engine.fire(
-                T_FW_GIFT_DRAW_ENDED,
-                "FourthwallGiftDrawEnded",
-                "Fourthwall",
-                "fourthwall",
-                &args,
-                |_| true,
-            );
-            engine.emit("Fourthwall", "GiftDrawEnded", || json!(args));
-        }
-        _ => {}
+    const FW_EVENTS: &[(&str, u32, &str, &str)] = &[
+        (
+            "productcreated",
+            T_FW_PRODUCT_CREATED,
+            "FourthwallProductCreated",
+            "ProductCreated",
+        ),
+        (
+            "productupdated",
+            T_FW_PRODUCT_UPDATED,
+            "FourthwallProductUpdated",
+            "ProductUpdated",
+        ),
+        (
+            "giftpurchase",
+            T_FW_GIFT_PURCHASE,
+            "FourthwallGiftPurchase",
+            "GiftPurchase",
+        ),
+        ("orderplaced", T_FW_ORDER_PLACED, "FourthwallOrderPlaced", "OrderPlaced"),
+        (
+            "orderupdated",
+            T_FW_ORDER_UPDATED,
+            "FourthwallOrderUpdated",
+            "OrderUpdated",
+        ),
+        ("donation", T_FW_DONATION, "FourthwallDonation", "Donation"),
+        (
+            "subscriptionpurchased",
+            T_FW_SUBSCRIPTION_PURCHASED,
+            "FourthwallSubscriptionPurchased",
+            "SubscriptionPurchased",
+        ),
+        (
+            "subscriptionexpired",
+            T_FW_SUBSCRIPTION_EXPIRED,
+            "FourthwallSubscriptionExpired",
+            "SubscriptionExpired",
+        ),
+        (
+            "subscriptionchanged",
+            T_FW_SUBSCRIPTION_CHANGED,
+            "FourthwallSubscriptionChanged",
+            "SubscriptionChanged",
+        ),
+        (
+            "thankyousent",
+            T_FW_THANK_YOU_SENT,
+            "FourthwallThankYouSent",
+            "ThankYouSent",
+        ),
+        (
+            "newslettersubscribed",
+            T_FW_NEWSLETTER_SUBSCRIBED,
+            "FourthwallNewsletterSubscribed",
+            "NewsletterSubscribed",
+        ),
+        (
+            "giftdrawstarted",
+            T_FW_GIFT_DRAW_STARTED,
+            "FourthwallGiftDrawStarted",
+            "GiftDrawStarted",
+        ),
+        (
+            "giftdrawended",
+            T_FW_GIFT_DRAW_ENDED,
+            "FourthwallGiftDrawEnded",
+            "GiftDrawEnded",
+        ),
+    ];
+    if let Some(&(_, code, trigger, ev)) = FW_EVENTS.iter().find(|(k, ..)| *k == key) {
+        fire_event(engine, "Fourthwall", "fourthwall", (code, trigger, ev), &args);
     }
 }
 
@@ -604,47 +522,24 @@ pub fn handle_throne(engine: &Rc<Engine>, event: &str, data: &Value) {
     }
     prefixed(&mut args, "throne", payload(data));
 
-    match event {
-        "contribution:purchased" | "ContributionPurchased" => {
-            engine.fire(
-                T_THRONE_CONTRIBUTION_PURCHASED,
-                "ThroneContributionPurchased",
-                "Throne",
-                "throne",
-                &args,
-                |_| true,
-            );
-            engine.emit("Throne", "ContributionPurchased", || json!(args));
-        }
+    let ev = match event {
+        "contribution:purchased" | "ContributionPurchased" => (
+            T_THRONE_CONTRIBUTION_PURCHASED,
+            "ThroneContributionPurchased",
+            "ContributionPurchased",
+        ),
         "gift:crowdfunded" | "GiftCrowdfunded" => {
-            engine.fire(
-                T_THRONE_GIFT_CROWDFUNDED,
-                "ThroneGiftCrowdfunded",
-                "Throne",
-                "throne",
-                &args,
-                |_| true,
-            );
-            engine.emit("Throne", "GiftCrowdfunded", || json!(args));
+            (T_THRONE_GIFT_CROWDFUNDED, "ThroneGiftCrowdfunded", "GiftCrowdfunded")
         }
-        _ => {
-            engine.fire(
-                T_THRONE_GIFT_PURCHASED,
-                "ThroneGiftPurchased",
-                "Throne",
-                "throne",
-                &args,
-                |_| true,
-            );
-            engine.emit("Throne", "GiftPurchased", || json!(args));
-        }
-    }
+        _ => (T_THRONE_GIFT_PURCHASED, "ThroneGiftPurchased", "GiftPurchased"),
+    };
+    fire_event(engine, "Throne", "throne", ev, &args);
 }
 
 pub fn handle_tipeeestream(engine: &Rc<Engine>, data: &Value) {
     let mut args = Obj::new();
     let username = data["username"].as_str().unwrap_or("Anonymous");
-    let amount = data["amount"].as_f64().unwrap_or(0.0);
+    let amount = number(&data["amount"]);
     let currency = data["currency"].as_str().unwrap_or("EUR");
     let message = data["message"].as_str().unwrap_or("");
 
@@ -653,15 +548,13 @@ pub fn handle_tipeeestream(engine: &Rc<Engine>, data: &Value) {
     args.insert("currency".into(), currency.into());
     args.insert("message".into(), message.into());
 
-    engine.fire(
-        T_TIPEEESTREAM_DONATION,
-        "TipeeeStreamDonation",
+    fire_event(
+        engine,
         "TipeeeStream",
         "tipeeestream",
+        (T_TIPEEESTREAM_DONATION, "TipeeeStreamDonation", "Donation"),
         &args,
-        |_| true,
     );
-    engine.emit("TipeeeStream", "Donation", || json!(args));
 }
 
 pub fn handle_treatstream(engine: &Rc<Engine>, data: &Value) {
@@ -675,15 +568,13 @@ pub fn handle_treatstream(engine: &Rc<Engine>, data: &Value) {
     args.insert("sender".into(), sender.into());
     args.insert("message".into(), message.into());
 
-    engine.fire(
-        T_TREATSTREAM_TREAT,
-        "TreatStreamTreat",
+    fire_event(
+        engine,
         "TreatStream",
         "treatstream",
+        (T_TREATSTREAM_TREAT, "TreatStreamTreat", "Treat"),
         &args,
-        |_| true,
     );
-    engine.emit("TreatStream", "Treat", || json!(args));
 }
 
 /// DonorDrive's profile variables, from a participant (or team) object and its recent donations.
@@ -795,41 +686,12 @@ pub fn handle_pallygg(engine: &Rc<Engine>, event: &str, data: &Value) {
         }
     }
 
-    match event.to_ascii_lowercase().as_str() {
-        "connected" => {
-            engine.fire(
-                T_PALLYGG_CONNECTED,
-                "PallyggConnected",
-                "Pallygg",
-                "pallygg",
-                &args,
-                |_| true,
-            );
-            engine.emit("Pallygg", "Connected", || json!(args));
-        }
-        "disconnected" => {
-            engine.fire(
-                T_PALLYGG_DISCONNECTED,
-                "PallyggDisconnected",
-                "Pallygg",
-                "pallygg",
-                &args,
-                |_| true,
-            );
-            engine.emit("Pallygg", "Disconnected", || json!(args));
-        }
-        _ => {
-            engine.fire(
-                T_PALLYGG_CAMPAIGN_TIP,
-                "PallyggCampaignTip",
-                "Pallygg",
-                "pallygg",
-                &args,
-                |_| true,
-            );
-            engine.emit("Pallygg", "CampaignTip", || json!(args));
-        }
-    }
+    let ev = match event.to_ascii_lowercase().as_str() {
+        "connected" => (T_PALLYGG_CONNECTED, "PallyggConnected", "Connected"),
+        "disconnected" => (T_PALLYGG_DISCONNECTED, "PallyggDisconnected", "Disconnected"),
+        _ => (T_PALLYGG_CAMPAIGN_TIP, "PallyggCampaignTip", "CampaignTip"),
+    };
+    fire_event(engine, "Pallygg", "pallygg", ev, &args);
 }
 
 pub fn handle_shopify(engine: &Rc<Engine>, topic: &str, data: &Value) {
@@ -840,30 +702,11 @@ pub fn handle_shopify(engine: &Rc<Engine>, topic: &str, data: &Value) {
     prefixed(&mut args, "shopify", data);
     args.insert("shopify.event".into(), topic.into());
 
-    match topic {
-        "orders/paid" | "OrderPaid" => {
-            engine.fire(
-                T_SHOPIFY_ORDER_PAID,
-                "ShopifyOrderPaid",
-                "Shopify",
-                "shopify",
-                &args,
-                |_| true,
-            );
-            engine.emit("Shopify", "OrderPaid", || json!(args));
-        }
-        _ => {
-            engine.fire(
-                T_SHOPIFY_ORDER_CREATED,
-                "ShopifyOrderCreated",
-                "Shopify",
-                "shopify",
-                &args,
-                |_| true,
-            );
-            engine.emit("Shopify", "OrderCreated", || json!(args));
-        }
-    }
+    let ev = match topic {
+        "orders/paid" | "OrderPaid" => (T_SHOPIFY_ORDER_PAID, "ShopifyOrderPaid", "OrderPaid"),
+        _ => (T_SHOPIFY_ORDER_CREATED, "ShopifyOrderCreated", "OrderCreated"),
+    };
+    fire_event(engine, "Shopify", "shopify", ev, &args);
 }
 
 pub fn handle_streamloots(engine: &Rc<Engine>, event: &str, data: &Value) {
@@ -872,52 +715,17 @@ pub fn handle_streamloots(engine: &Rc<Engine>, event: &str, data: &Value) {
         args.insert(k.clone(), v.clone());
     }
 
-    match event {
-        "pack:gifted" | "PackGifted" => {
-            engine.fire(
-                T_STREAMLOOTS_PACK_GIFTED,
-                "StreamLootsPackGifted",
-                "StreamLoots",
-                "streamloots",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamLoots", "PackGifted", || json!(args));
-        }
-        "card:redeemed" | "CardRedeemed" => {
-            engine.fire(
-                T_STREAMLOOTS_CARD_REDEEMED,
-                "StreamLootsCardRedeemed",
-                "StreamLoots",
-                "streamloots",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamLoots", "CardRedeemed", || json!(args));
-        }
-        "reaction" | "Reaction" => {
-            engine.fire(
-                T_STREAMLOOTS_REACTION,
-                "StreamLootsReaction",
-                "StreamLoots",
-                "streamloots",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamLoots", "Reaction", || json!(args));
-        }
-        _ => {
-            engine.fire(
-                T_STREAMLOOTS_PACK_PURCHASED,
-                "StreamLootsPackPurchased",
-                "StreamLoots",
-                "streamloots",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamLoots", "PackPurchased", || json!(args));
-        }
-    }
+    let ev = match event {
+        "pack:gifted" | "PackGifted" => (T_STREAMLOOTS_PACK_GIFTED, "StreamLootsPackGifted", "PackGifted"),
+        "card:redeemed" | "CardRedeemed" => (T_STREAMLOOTS_CARD_REDEEMED, "StreamLootsCardRedeemed", "CardRedeemed"),
+        "reaction" | "Reaction" => (T_STREAMLOOTS_REACTION, "StreamLootsReaction", "Reaction"),
+        _ => (
+            T_STREAMLOOTS_PACK_PURCHASED,
+            "StreamLootsPackPurchased",
+            "PackPurchased",
+        ),
+    };
+    fire_event(engine, "StreamLoots", "streamloots", ev, &args);
 }
 
 /// Unified entry point for incoming webhook requests from any donation / shop service.
@@ -971,9 +779,72 @@ fn md5(data: &[u8]) -> [u8; 16] {
         20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
         10, 15, 21,
     ];
-    let k: Vec<u32> = (0..64)
-        .map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32)
-        .collect();
+    const K: [u32; 64] = [
+        0xd76a_a478,
+        0xe8c7_b756,
+        0x2420_70db,
+        0xc1bd_ceee,
+        0xf57c_0faf,
+        0x4787_c62a,
+        0xa830_4613,
+        0xfd46_9501,
+        0x6980_98d8,
+        0x8b44_f7af,
+        0xffff_5bb1,
+        0x895c_d7be,
+        0x6b90_1122,
+        0xfd98_7193,
+        0xa679_438e,
+        0x49b4_0821,
+        0xf61e_2562,
+        0xc040_b340,
+        0x265e_5a51,
+        0xe9b6_c7aa,
+        0xd62f_105d,
+        0x0244_1453,
+        0xd8a1_e681,
+        0xe7d3_fbc8,
+        0x21e1_cde6,
+        0xc337_07d6,
+        0xf4d5_0d87,
+        0x455a_14ed,
+        0xa9e3_e905,
+        0xfcef_a3f8,
+        0x676f_02d9,
+        0x8d2a_4c8a,
+        0xfffa_3942,
+        0x8771_f681,
+        0x6d9d_6122,
+        0xfde5_380c,
+        0xa4be_ea44,
+        0x4bde_cfa9,
+        0xf6bb_4b60,
+        0xbebf_bc70,
+        0x289b_7ec6,
+        0xeaa1_27fa,
+        0xd4ef_3085,
+        0x0488_1d05,
+        0xd9d4_d039,
+        0xe6db_99e5,
+        0x1fa2_7cf8,
+        0xc4ac_5665,
+        0xf429_2244,
+        0x432a_ff97,
+        0xab94_23a7,
+        0xfc93_a039,
+        0x655b_59c3,
+        0x8f0c_cc92,
+        0xffef_f47d,
+        0x8584_5dd1,
+        0x6fa8_7e4f,
+        0xfe2c_e6e0,
+        0xa301_4314,
+        0x4e08_11a1,
+        0xf753_7e82,
+        0xbd3a_f235,
+        0x2ad7_d2bb,
+        0xeb86_d391,
+    ];
     let mut msg = data.to_vec();
     msg.push(0x80);
     while msg.len() % 64 != 56 {
@@ -981,11 +852,11 @@ fn md5(data: &[u8]) -> [u8; 16] {
     }
     msg.extend_from_slice(&((data.len() as u64).wrapping_mul(8)).to_le_bytes());
     let mut h: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    for chunk in msg.chunks(64) {
-        let m: Vec<u32> = chunk
-            .chunks(4)
-            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-            .collect();
+    for chunk in msg.as_chunks::<64>().0 {
+        let mut m = [0u32; 16];
+        for (slot, w) in m.iter_mut().zip(chunk.as_chunks::<4>().0) {
+            *slot = u32::from_le_bytes(*w);
+        }
         let [mut a, mut b, mut c, mut d] = h;
         for i in 0..64 {
             let (f, g) = match i / 16 {
@@ -994,7 +865,7 @@ fn md5(data: &[u8]) -> [u8; 16] {
                 2 => (b ^ c ^ d, (3 * i + 5) % 16),
                 _ => (c ^ (b | !d), (7 * i) % 16),
             };
-            let f = f.wrapping_add(a).wrapping_add(k[i]).wrapping_add(m[g]);
+            let f = f.wrapping_add(a).wrapping_add(K[i]).wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;
@@ -1027,9 +898,9 @@ fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; 16] {
 
 pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8], signature: Option<&str>) -> Result<(), String> {
     let data: Value = serde_json::from_slice(body).or_else(|_| {
-        // Try parsing as urlencoded form data (e.g. data={"amount":"10.00",...})
+        // Try parsing as urlencoded form data (e.g. data={"amount":"10.00",...}&other=1)
         let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
-        if let Some((_, json_str)) = s.split_once("data=") {
+        if let Some(json_str) = s.split('&').find_map(|pair| pair.strip_prefix("data=")) {
             let decoded = urlencoding_decode(json_str);
             serde_json::from_str(&decoded).map_err(|e| e.to_string())
         } else {
@@ -1043,11 +914,17 @@ pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8], signatur
         "kofi" | "ko-fi" => handle_kofi(engine, &data),
         "streamelements" => {
             let evt = data["type"].as_str().unwrap_or("tip");
-            handle_streamelements(engine, evt, &data);
+            handle_streamelements(engine, evt, payload(&data));
         }
         "streamlabs" => {
             let evt = data["type"].as_str().unwrap_or("donation");
-            handle_streamlabs(engine, evt, &data);
+            if let Some(list) = data["message"].as_array() {
+                for item in list {
+                    handle_streamlabs(engine, evt, item);
+                }
+            } else {
+                handle_streamlabs(engine, evt, &data);
+            }
         }
         "patreon" => {
             let evt = data["event"]
@@ -1109,19 +986,98 @@ pub struct Live {
     pub streamlabs: Rc<Cell<bool>>,
 }
 
+/// Bounded FIFO set of seen event IDs so reconnects never replay duplicate events or leak memory.
+struct SeenIds {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+    cap: usize,
+}
+
+impl SeenIds {
+    fn new(cap: usize) -> Self {
+        Self {
+            order: VecDeque::with_capacity(cap.min(64)),
+            set: HashSet::with_capacity(cap.min(64)),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Returns true if `id` is empty or unseen (recording non-empty IDs).
+    fn check_new(&mut self, id: &str) -> bool {
+        let id = id.trim();
+        if id.is_empty() {
+            return true;
+        }
+        if self.set.contains(id) {
+            return false;
+        }
+        if self.order.len() >= self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        self.order.push_back(id.to_string());
+        self.set.insert(id.to_string());
+        true
+    }
+}
+
+/// Strips tokens from query strings and replaces any raw or URL-encoded secret before logging.
+pub(crate) fn redact_secrets(msg: &str, secret: Option<&str>) -> String {
+    let mut out = msg.to_string();
+    if let Some(sec) = secret.map(str::trim).filter(|s| !s.is_empty()) {
+        let encoded = crate::commands::url_encode(sec);
+        out = out.replace(&encoded, "[redacted]").replace(sec, "[redacted]");
+    }
+    let lower = out.to_ascii_lowercase();
+    let mut redacted = String::with_capacity(out.len());
+    let mut pos = 0;
+    while pos < out.len() {
+        let rest_lower = &lower[pos..];
+        let found = ["token=", "jwt=", "access_token=", "secret=", "key="]
+            .iter()
+            .filter_map(|needle| rest_lower.find(needle).map(|i| (i, needle.len())))
+            .min_by_key(|&(i, _)| i);
+        let Some((rel, klen)) = found else {
+            redacted.push_str(&out[pos..]);
+            break;
+        };
+        let key_start = pos + rel;
+        let val_start = key_start + klen;
+        let boundary = key_start == 0 || matches!(out.as_bytes()[key_start - 1], b'?' | b'&');
+        redacted.push_str(&out[pos..val_start]);
+        if !boundary {
+            pos = val_start;
+            continue;
+        }
+        let val_end = out[val_start..]
+            .find(['&', ' ', '\t', '\r', '\n', '"', '\'', ')'])
+            .map_or(out.len(), |i| val_start + i);
+        redacted.push_str("[redacted]");
+        pos = val_end;
+    }
+    redacted
+}
+
 /// One socket.io session (Engine.IO 3, what both services speak): `hello` is sent once connected,
 /// `on` gets each event's name and first argument and returns Some(why) to stop. Returns why it ended.
 async fn socket_io(url: &str, hello: Option<String>, mut on: impl FnMut(&str, &Value) -> Option<String>) -> String {
-    let mut ws = match crate::http::ws_connect(url).await {
-        Ok((ws, _)) => ws,
-        Err(e) => return e.to_string(),
+    let mut ws = match tokio::time::timeout(Duration::from_secs(15), crate::http::ws_connect(url)).await {
+        Ok(Ok((ws, _))) => ws,
+        Ok(Err(e)) => return e.to_string(),
+        Err(_) => return "connection timed out".into(),
     };
     // The server's ping interval; the client pings (Engine.IO 3).
     let mut ping = tokio::time::interval(Duration::from_secs(25));
     ping.reset();
+    let mut ping_timeout = Duration::from_secs(60);
+    let mut last_rx = Instant::now();
     loop {
         let m = tokio::select! {
             _ = ping.tick() => {
+                if last_rx.elapsed() > ping_timeout {
+                    return "ping timeout".into();
+                }
                 if ws.send(Message::Text("2".into())).await.is_err() {
                     return "connection lost".into();
                 }
@@ -1130,17 +1086,32 @@ async fn socket_io(url: &str, hello: Option<String>, mut on: impl FnMut(&str, &V
             m = ws.next() => m,
         };
         let t = match m {
-            Some(Ok(Message::Text(t))) => t,
+            Some(Ok(Message::Text(t))) => {
+                last_rx = Instant::now();
+                t
+            }
+            Some(Ok(Message::Ping(data))) => {
+                last_rx = Instant::now();
+                let _ = ws.send(Message::Pong(data)).await;
+                continue;
+            }
+            Some(Ok(Message::Pong(_))) => {
+                last_rx = Instant::now();
+                continue;
+            }
             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return "connection closed".into(),
             Some(Ok(_)) => continue,
         };
         if let Some(open) = t.strip_prefix('0') {
             let v: Value = serde_json::from_str(open).unwrap_or_default();
             let every = Duration::from_millis(v["pingInterval"].as_u64().unwrap_or(25000).max(1000));
+            ping_timeout = Duration::from_millis(v["pingTimeout"].as_u64().unwrap_or(60000).max(5000)) + every;
             ping = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         } else if t.as_str() == "40" {
             if let Some(h) = &hello {
-                let _ = ws.send(Message::Text(h.clone().into())).await;
+                if ws.send(Message::Text(h.clone().into())).await.is_err() {
+                    return "connection lost".into();
+                }
             }
             if let Some(why) = on("connect", &Value::Null) {
                 return why;
@@ -1164,10 +1135,12 @@ async fn keep(
     e: Rc<Engine>,
     who: &'static str,
     url: String,
+    secret: Option<String>,
     hello: Option<String>,
     up: Rc<Cell<bool>>,
     handle: fn(&Rc<Engine>, &str, &Value),
 ) {
+    let mut seen = SeenIds::new(512);
     loop {
         let why = socket_io(&url, hello.clone(), |name, d| {
             match (who, name) {
@@ -1179,7 +1152,15 @@ async fn keep(
                     handle(&e, "authenticated", &Value::Null);
                 }
                 ("StreamElements", "unauthorized") => return Some("the JWT token was refused".into()),
-                ("StreamElements", "event") => handle(&e, d["type"].as_str().unwrap_or(""), &d["data"]),
+                ("StreamElements", "event") => {
+                    let id = d["_id"]
+                        .as_str()
+                        .or_else(|| d["data"]["_id"].as_str())
+                        .unwrap_or("");
+                    if seen.check_new(id) {
+                        handle(&e, d["type"].as_str().unwrap_or(""), &d["data"]);
+                    }
+                }
                 // The dashboard's Emulate buttons.
                 ("StreamElements", "event:test") => {
                     let ev = &d["event"];
@@ -1194,8 +1175,29 @@ async fn keep(
                 ("Streamlabs", "event") => {
                     let kind = d["type"].as_str().unwrap_or("");
                     if matches!(kind, "donation" | "merch" | "streamlabscharitydonation") {
-                        for m in d["message"].as_array().into_iter().flatten() {
-                            handle(&e, kind, m);
+                        let outer_id = d["event_id"].as_str().unwrap_or("");
+                        for (idx, m) in d["message"].as_array().into_iter().flatten().enumerate() {
+                            let is_test = m["isTest"].as_bool().unwrap_or(false);
+                            let item_id = if is_test {
+                                String::new()
+                            } else {
+                                let mid = m["_id"]
+                                    .as_str()
+                                    .or_else(|| m["id"].as_str())
+                                    .map(String::from)
+                                    .or_else(|| m["id"].as_u64().map(|n| n.to_string()))
+                                    .unwrap_or_default();
+                                if !mid.is_empty() {
+                                    mid
+                                } else if !outer_id.is_empty() {
+                                    format!("{outer_id}:{idx}")
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            if seen.check_new(&item_id) {
+                                handle(&e, kind, m);
+                            }
                         }
                     }
                 }
@@ -1204,7 +1206,8 @@ async fn keep(
             None
         })
         .await;
-        crate::warn(format!("{who}: {why}; trying again in a minute"));
+        let safe_why = redact_secrets(&why, secret.as_deref());
+        crate::warn(format!("{who}: {safe_why}; trying again in a minute"));
         if up.replace(false) {
             handle(&e, "disconnected", &Value::Null);
         }
@@ -1233,24 +1236,33 @@ async fn dd_get(url: &str, etag: &str) -> (u16, String, Value) {
 /// changed; on a change, its new donations.
 async fn donordrive(e: Rc<Engine>, base: String, id: String) {
     let api = format!("{}/api/participants/{id}", base.trim_end_matches('/'));
-    let (mut etag, mut seen, mut first) = (String::new(), std::collections::HashSet::new(), true);
+    let (mut etag, mut seen, mut first, mut logged_404) = (String::new(), SeenIds::new(512), true, false);
     loop {
         let (status, tag, mut profile) = dd_get(&api, &etag).await;
+        if status != 404 {
+            logged_404 = false;
+        }
         match status {
             200 => {
+                let (list_status, _, list) = dd_get(&format!("{api}/donations?limit=20"), "").await;
+                if list_status != 200 {
+                    // Don't advance etag or clear `first` if fetching donations failed, or the next poll would replay history.
+                    tokio::time::sleep(Duration::from_secs(15)).await;
+                    continue;
+                }
                 etag = tag;
-                let (_, _, list) = dd_get(&format!("{api}/donations?limit=20"), "").await;
                 let new: Vec<Value> = list
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(|d| seen.insert(text(&d["donationID"])))
+                    .filter(|d| seen.check_new(&text(&d["donationID"])))
                     .cloned()
                     .collect();
                 profile["donations"] = list;
                 if !first {
                     handle_donordrive(&e, "ProfileUpdated", &profile);
-                    let incentives = if new.iter().any(|d| !d["incentiveID"].is_null()) {
+                    let has_incentive = new.iter().any(|d| !text(&d["incentiveID"]).trim().is_empty());
+                    let incentives = if has_incentive {
                         dd_get(&format!("{api}/incentives"), "").await.2
                     } else {
                         Value::Null
@@ -1275,7 +1287,12 @@ async fn donordrive(e: Rc<Engine>, base: String, id: String) {
                 first = false;
             }
             304 => {}
-            404 => crate::error(format!("DonorDrive: no participant {id} at {base}")),
+            404 => {
+                if !logged_404 {
+                    crate::error(format!("DonorDrive: no participant {id} at {base}"));
+                    logged_404 = true;
+                }
+            }
             429 => tokio::time::sleep(Duration::from_secs(45)).await,
             _ => {}
         }
@@ -1322,6 +1339,7 @@ impl Engine {
                 self.clone(),
                 "StreamElements",
                 url,
+                Some(se.to_string()),
                 hello,
                 up,
                 handle_streamelements,
@@ -1338,6 +1356,7 @@ impl Engine {
                 self.clone(),
                 "Streamlabs",
                 url,
+                Some(sl.to_string()),
                 None,
                 up,
                 handle_streamlabs,
@@ -1358,22 +1377,40 @@ impl Engine {
 }
 
 pub(crate) fn urlencoding_decode(s: &str) -> String {
-    let mut res = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let h1 = chars.next().unwrap_or('0');
-            let h2 = chars.next().unwrap_or('0');
-            if let Ok(byte) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
-                res.push(byte as char);
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
             }
-        } else if c == '+' {
-            res.push(' ');
-        } else {
-            res.push(c);
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
-    res
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn capitalize_tip_key(k: &str) -> String {
@@ -1697,6 +1734,7 @@ mod tests {
                 e.clone(),
                 "StreamElements",
                 url,
+                None,
                 Some("42[\"authenticate\",{\"method\":\"jwt\",\"token\":\"t\"}]".into()),
                 up.clone(),
                 handle_streamelements,
@@ -1725,6 +1763,7 @@ mod tests {
                 e.clone(),
                 "Streamlabs",
                 url,
+                None,
                 None,
                 Rc::new(Cell::new(false)),
                 handle_streamlabs,
@@ -1761,5 +1800,169 @@ mod tests {
             !out.iter().any(|x| x.contains("small")),
             "the range let a 1 tip through: {out:?}"
         );
+    }
+
+    #[test]
+    fn parse_amounts_with_decimals_and_currencies() {
+        let cases: &[(&str, Option<f64>)] = &[
+            ("13.37", Some(13.37)),
+            ("$13.37", Some(13.37)),
+            ("€10,50", Some(10.5)),
+            ("£5", Some(5.0)),
+            ("R$ 1.234,56", Some(1234.56)),
+            ("USD 25.00", Some(25.0)),
+            ("25.00 EUR", Some(25.0)),
+            ("1,234.56", Some(1234.56)),
+            ("1.234,56", Some(1234.56)),
+            ("1 234,56", Some(1234.56)),
+            ("¥1,500", Some(1500.0)),
+            ("1,000,000", Some(1_000_000.0)),
+            ("1.000.000", Some(1_000_000.0)),
+            ("0,500", Some(0.5)),
+            ("-$5.00", Some(-5.0)),
+            ("$-5.00", Some(-5.0)),
+            ("NaN", None),
+            ("inf", None),
+            ("", None),
+            ("free", None),
+        ];
+        for (input, want) in cases {
+            let got = parse_amount_str(input);
+            match (got, *want) {
+                (Some(a), Some(b)) => assert!((a - b).abs() < 1e-9, "{input}: got {a}, want {b}"),
+                (a, b) => assert_eq!(a, b, "{input}"),
+            }
+        }
+        assert_eq!(number(&json!(12.5)), 12.5);
+        assert_eq!(number(&json!("$19.99")), 19.99);
+        assert_eq!(number(&json!("NaN")), 0.0);
+        assert_eq!(number(&Value::Null), 0.0);
+    }
+
+    #[test]
+    fn urlencoding_decode_handles_utf8_and_kofi_form_fields() {
+        assert_eq!(urlencoding_decode("Jos%C3%A9+%E2%9D%A4%EF%B8%8F"), "José ❤️");
+        assert_eq!(urlencoding_decode("100%"), "100%");
+        assert_eq!(urlencoding_decode("%ZZ%20ok"), "%ZZ ok");
+
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut a = action("k", "k", json!([log("T %fromName% %amount%")]));
+        a["triggers"] = json!([{"id": "t", "type": T_KOFI_DONATION, "enabled": true}]);
+        let e = engine(json!({"actions": [a]}));
+        let out = run(async move {
+            let body = b"metadata=ignore&data=%7B%22type%22%3A%22Donation%22%2C%22from_name%22%3A%22Jos%C3%A9%22%2C%22amount%22%3A7.5%7D&extra=1";
+            handle_webhook(&e, "kofi", body).unwrap();
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        });
+        assert_eq!(out, ["T José 7.5"]);
+    }
+
+    #[test]
+    fn redact_secrets_hides_url_tokens() {
+        let tok = "super-secret-jwt+token/123";
+        let url = format!(
+            "wss://sockets.streamlabs.com/socket.io/?token={}&EIO=3&transport=websocket",
+            crate::commands::url_encode(tok)
+        );
+        let msg = format!("failed to connect to {url}: 403 Forbidden");
+        let safe = redact_secrets(&msg, Some(tok));
+        assert!(!safe.contains("super-secret"), "token leaked: {safe}");
+        assert!(safe.contains("token=[redacted]&EIO=3"), "unexpected redaction: {safe}");
+
+        let generic = redact_secrets("error on https://x.test?JWT=abc123&ok=1", None);
+        assert!(!generic.contains("abc123"));
+        assert!(generic.contains("JWT=[redacted]&ok=1"));
+    }
+
+    #[test]
+    fn seen_ids_is_bounded_and_ignores_empty() {
+        let mut seen = SeenIds::new(2);
+        assert!(seen.check_new(""));
+        assert!(seen.check_new("   "));
+        assert!(seen.check_new("a"));
+        assert!(!seen.check_new("a"));
+        assert!(seen.check_new("b"));
+        assert!(seen.check_new("c"));
+        // "a" was evicted by capacity 2; "b" and "c" remain.
+        assert!(!seen.check_new("b"));
+        assert!(!seen.check_new("c"));
+        assert!(seen.check_new("a"));
+    }
+
+    #[test]
+    fn streamelements_ignores_non_tip_events_and_dedups_duplicates() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut a = action("se", "se", json!([log("T %tipUsername% %tipAmount%")]));
+        a["triggers"] = json!([{"id": "t", "type": T_SE_TIP, "enabled": true}]);
+        let mut b = action("sl", "sl", json!([log("T SL %donationFrom% %donationAmount%")]));
+        b["triggers"] = json!([{"id": "t2", "type": T_SL_DONATION, "enabled": true}]);
+        let e = engine(json!({"actions": [a, b]}));
+
+        let out = run(async move {
+            let ev = |name: &str, d: Value| format!("42{}", json!([name, d]));
+            // Non-tip events like follower/subscriber must NOT fire T_SE_TIP; duplicate _id fires once.
+            let (se_url, _) = fake_socket_io(
+                true,
+                vec![
+                    ev("authenticated", json!({"channelId": "c"})),
+                    ev(
+                        "event",
+                        json!({"_id": "f1", "type": "follower", "data": {"username": "Ghost"}}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"_id": "s1", "type": "subscriber", "data": {"username": "Sub"}}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"_id": "tip-1", "type": "tip", "data": {"username": "Ana", "amount": "$5.50"}}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"_id": "tip-1", "type": "tip", "data": {"username": "Ana", "amount": "$5.50"}}),
+                    ),
+                ],
+            )
+            .await;
+            let se = crate::emote_events::Abort(tokio::task::spawn_local(keep(
+                e.clone(),
+                "StreamElements",
+                se_url,
+                None,
+                Some("42[\"authenticate\",{\"method\":\"jwt\",\"token\":\"t\"}]".into()),
+                Rc::new(Cell::new(false)),
+                handle_streamelements,
+            )));
+            let (sl_url, _) = fake_socket_io(
+                false,
+                vec![
+                    ev(
+                        "event",
+                        json!({"type": "donation", "event_id": "e1", "message": [{"_id": "m1", "name": "Bo", "amount": "€12,50"}]}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"type": "donation", "event_id": "e1", "message": [{"_id": "m1", "name": "Bo", "amount": "€12,50"}]}),
+                    ),
+                ],
+            )
+            .await;
+            let sl = crate::emote_events::Abort(tokio::task::spawn_local(keep(
+                e.clone(),
+                "Streamlabs",
+                sl_url,
+                None,
+                None,
+                Rc::new(Cell::new(false)),
+                handle_streamlabs,
+            )));
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            drop((se, sl));
+        });
+        assert_eq!(out.iter().filter(|x| *x == "T Ana 5.5").count(), 1, "{out:?}");
+        assert_eq!(out.iter().filter(|x| *x == "T SL Bo 12.5").count(), 1, "{out:?}");
+        assert!(!out.iter().any(|x| x.contains("Ghost") || x.contains("Sub")), "{out:?}");
     }
 }
