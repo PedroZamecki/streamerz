@@ -513,12 +513,11 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
                 ("Client-Id".to_owned(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_owned()),
                 ("Content-Type".to_owned(), "application/json".to_owned()),
             ];
-            let query = json!({"query": format!("{{ user(login: \"{clean}\") {{ displayName profileImageURL(width: 150) }} }}")});
             if let Ok(reply) = crate::http::request(
                 "POST",
                 "https://gql.twitch.tv/gql",
                 &headers,
-                query.to_string().as_bytes(),
+                twitch_public_query(clean).as_bytes(),
             )
             .await
             {
@@ -537,7 +536,7 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
         }
         P::Kick => {
             let headers = [("Accept".to_owned(), "application/json".to_owned())];
-            let url = format!("https://kick.com/api/v2/channels/{clean}");
+            let url = kick_channel_url(clean);
             let Ok(reply) = crate::http::request("GET", &url, &headers, b"").await else {
                 return (None, None);
             };
@@ -551,6 +550,27 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
         }
         P::TikTok => (None, None),
     }
+}
+
+/// twitch.tv's public query for a channel's display name and picture. The name goes in as a quoted
+/// string, so a quote or brace typed in the channel box can't change the query.
+fn twitch_public_query(login: &str) -> String {
+    let name = serde_json::to_string(login).unwrap_or_else(|_| "\"\"".into());
+    json!({"query": format!("{{ user(login: {name}) {{ displayName profileImageURL(width: 150) }} }}")}).to_string()
+}
+
+/// Kick's public channel page for `channel`, the name encoded so it stays one path segment (a slug is
+/// letters, digits, - and _; anything else, a dot or a slash, is escaped).
+fn kick_channel_url(channel: &str) -> String {
+    let mut url = String::from("https://kick.com/api/v2/channels/");
+    for b in channel.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+            url.push(b as char);
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
 }
 
 /// What a channel's picture and name are kept by, however it was looked up.
@@ -2661,6 +2681,27 @@ mod tests {
         });
     }
 
+    #[test]
+    fn a_typed_channel_cannot_change_the_public_profile_lookups() {
+        let query: Value = serde_json::from_str(&twitch_public_query("ana")).unwrap();
+        assert_eq!(
+            query["query"],
+            "{ user(login: \"ana\") { displayName profileImageURL(width: 150) } }"
+        );
+        // A quote typed in the box stays inside the string the query asks for.
+        let query: Value = serde_json::from_str(&twitch_public_query("a\") { id } x(login: \"b")).unwrap();
+        let text = query["query"].as_str().unwrap();
+        assert!(
+            text.starts_with("{ user(login: \"a\\\") { id } x(login: \\\"b\") {"),
+            "{text}"
+        );
+        assert_eq!(kick_channel_url("ana_1-x"), "https://kick.com/api/v2/channels/ana_1-x");
+        assert_eq!(
+            kick_channel_url("../users/me?x=1"),
+            "https://kick.com/api/v2/channels/%2E%2E%2Fusers%2Fme%3Fx%3D1"
+        );
+        assert_eq!(kick_channel_url("é"), "https://kick.com/api/v2/channels/%C3%A9");
+    }
     #[test]
     fn logging_out_revokes_only_a_token_that_is_there() {
         let mut c = crate::Config::default();
