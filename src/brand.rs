@@ -51,7 +51,10 @@ mod tests {
 
     #[test]
     fn every_picture_is_a_whole_image_and_each_look_differs() {
-        assert!(TRAY.iter().all(|p| p.len() == (SIZE * SIZE * 4) as usize));
+        let expected = (SIZE * SIZE * 4) as usize;
+        assert!(TRAY.iter().all(|p| p.len() == expected));
+        assert_eq!(tray(true).len(), expected);
+        assert_eq!(tray(false).len(), expected);
         assert_ne!(TRAY[0], TRAY[1]);
         if !IS_DEV {
             assert_eq!(tray(true), TRAY[0]);
