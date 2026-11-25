@@ -250,4 +250,53 @@ mod tests {
         clear("youtube");
         assert_eq!(get("youtube").0, Role::Anonymous);
     }
+
+    #[test]
+    fn the_highest_badge_wins_and_ranks_order() {
+        assert_eq!(Role::from_flags(true, true, true, true), Role::Broadcaster);
+        assert_eq!(Role::from_flags(false, true, true, false), Role::LeadModerator);
+        assert_eq!(Role::from_flags(false, false, true, true), Role::Moderator);
+        assert_eq!(Role::from_flags(false, false, false, true), Role::Vip);
+        assert_eq!(Role::from_flags(false, false, false, false), Role::Viewer);
+        let moderate: Vec<bool> = [
+            Role::Anonymous,
+            Role::Viewer,
+            Role::Vip,
+            Role::Moderator,
+            Role::LeadModerator,
+            Role::Broadcaster,
+        ]
+        .map(Role::moderates)
+        .into();
+        assert_eq!(moderate, [false, false, false, true, true, true]);
+    }
+
+    #[test]
+    fn roles_are_kept_for_known_platforms_and_say_when_they_change() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!set("myspace", Role::Broadcaster, "me"), "not a platform");
+        assert_eq!(get("myspace"), (Role::Anonymous, String::new()));
+        clear("tiktok");
+        assert!(set("tiktok", Role::Viewer, "me"));
+        assert!(!set("tiktok", Role::Viewer, "me"), "the same again is no change");
+        assert!(set("tiktok", Role::Viewer, "other"), "another login is");
+        assert!(!seen_self("tiktok", "", Role::Moderator), "no id, no update");
+        clear("tiktok");
+        assert!(
+            !seen_self("tiktok", "other", Role::Moderator),
+            "not logged in: read only stays"
+        );
+        assert_eq!(get("tiktok").0, Role::Anonymous);
+    }
+
+    #[test]
+    fn a_lead_moderator_moderates_like_a_moderator() {
+        let a = allowed("twitch", Role::LeadModerator, "2", t("3", false, false));
+        assert!(a.ban && a.timeout && a.delete && a.pin && a.reply);
+        let a = allowed("twitch", Role::LeadModerator, "2", t("4", false, true));
+        assert!(!a.ban && !a.delete, "another moderator is the owner's");
+        // A message with no known author can be deleted, but nobody is punished for it.
+        let a = allowed("twitch", Role::Moderator, "2", t("", false, false));
+        assert!(a.delete && !a.ban && !a.timeout);
+    }
 }
