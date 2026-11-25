@@ -248,12 +248,11 @@ fn build_parts(text: &str, lookup: Lookup, big_word: Option<usize>) -> Vec<Value
 }
 
 /// What a line's words are made of (see `build_parts`).
-fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
+fn parts(line: &Line) -> Vec<Value> {
     let text = flat(&line.text);
     if line.deleted {
         return vec![json!({"t": text})];
     }
-    let _ = engine;
     crate::emotes::want_personal(&line.platform, &line.user_id);
     // A gigantified message draws its last emote big.
     let last = if line.huge {
@@ -332,17 +331,22 @@ pub fn preview(engine: &Rc<Engine>, platform: &str, text: &str) -> Vec<Value> {
 
 /// The badges a chatter wears: key, the name to show, the picture (empty: draw an icon instead).
 fn badges(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
-    let roles: Vec<(String, String)> = [
-        ("broadcaster", line.broadcaster),
-        ("moderator", line.moderator && !line.broadcaster),
-        ("vip", line.vip),
-        ("subscriber", line.subscriber),
-    ]
-    .into_iter()
-    .filter(|role| role.1)
-    .map(|role| (role.0.to_owned(), String::new()))
-    .collect();
-    let wearing = if line.badges.is_empty() { &roles } else { &line.badges };
+    let roles;
+    let wearing = if line.badges.is_empty() {
+        roles = [
+            ("broadcaster", line.broadcaster),
+            ("moderator", line.moderator && !line.broadcaster),
+            ("vip", line.vip),
+            ("subscriber", line.subscriber),
+        ]
+        .into_iter()
+        .filter(|role| role.1)
+        .map(|role| (role.0.to_owned(), String::new()))
+        .collect();
+        &roles
+    } else {
+        &line.badges
+    };
     wearing
         .iter()
         .take(6)
@@ -471,7 +475,7 @@ fn line_model(engine: &Rc<Engine>, line: &Line, youtube_tag: bool, can_reply: bo
             put("badges", list.into());
         }
     }
-    put("parts", parts(engine, line).into());
+    put("parts", parts(line).into());
     if !line.gif.is_empty() {
         put("gif", line.gif.clone().into());
     }
