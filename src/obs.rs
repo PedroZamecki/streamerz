@@ -943,14 +943,14 @@ pub(crate) fn handle_obs_message(
             crate::core::outputs::observe(&info.id, event_type, &d["eventData"]);
 
             let mut args = obs_args(info);
+            args.insert("eventType".into(), event_type.to_string().into());
             if let Some(data) = event_data {
                 for (k, val) in data {
                     args.insert(k.clone(), val.clone());
                     args.insert(format!("obsEvent.{k}"), val.clone());
                 }
             }
-            // Keep outer eventType intact even when eventData contains its own eventType (e.g. VendorEvent).
-            args.insert("eventType".into(), event_type.to_string().into());
+            // Keep obsEvent.eventType as the outer OBS event type even when eventData has its own eventType.
             args.insert("obsEvent.eventType".into(), event_type.to_string().into());
 
             // Always fire 14003: ObsEvent
