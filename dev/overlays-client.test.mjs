@@ -358,3 +358,32 @@ test("Test, Draft, Settings and Sound messages follow the overlay contract", () 
   ws3.onmessage({ data: JSON.stringify({ event: { source: "SoundStop", type: "Demo" }, data: { name: "alert" } }) });
   assert.equal(state.audios[0].paused, true);
 });
+
+test("streamerz.d.ts declares every client.js API member and matches runtime payload shapes", () => {
+  const types = readFileSync(new URL("../assets/overlays/streamerz.d.ts", import.meta.url), "utf8");
+  const guide = readFileSync(new URL("../docs/OVERLAYS.md", import.meta.url), "utf8");
+  const objectPart = CLIENT_SRC.split("const streamerz = {")[1];
+  const calls = [];
+  for (const line of objectPart.split("\n")) {
+    if (!line.startsWith("    ")) continue;
+    const rest = line.slice(4);
+    if (rest.startsWith(" ") || rest.startsWith("//") || rest.startsWith("}")) continue;
+    const m = /^([A-Za-z0-9]+)([:(,])/.exec(rest);
+    if (m) calls.push(m[1]);
+  }
+  assert.ok(calls.length >= 25, "extracted client API members: " + calls.join(", "));
+  for (const call of calls) {
+    assert.ok(
+      types.includes(`    ${call}(`) || types.includes(`    readonly ${call}:`),
+      `streamerz.d.ts missing declaration for ${call}`,
+    );
+    if (call !== "group" && call !== "state") {
+      assert.ok(guide.includes(`streamerz.${call}`), `docs/OVERLAYS.md missing streamerz.${call}`);
+    }
+  }
+  assert.match(types, /deadlineMs:\s*number \| null;/);
+  assert.match(types, /interface Ad \{/);
+  assert.match(types, /on\(topic: "ad"/);
+  assert.match(types, /badges\?: Badge\[\];/);
+  assert.match(types, /msgId\?: string;/);
+});
