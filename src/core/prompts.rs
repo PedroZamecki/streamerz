@@ -7,7 +7,7 @@ use std::sync::{
 };
 use tokio::sync::oneshot;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Content {
     Input {
@@ -44,12 +44,12 @@ pub enum Content {
         meta: Vec<NoticeMeta>,
     },
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct NoticeMeta {
     pub key: String,
     pub value: String,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct Choice {
     pub id: String,
     pub label: String,
@@ -91,6 +91,13 @@ impl Broker {
             },
             reply,
         ));
+    }
+    /// A notice to read, unless the same one is already waiting (a button pressed again, a login
+    /// that fails the same way twice): one OK closes it.
+    fn notice(&mut self, content: Content) {
+        if !self.entries.iter().any(|(prompt, _)| prompt.content == content) {
+            self.insert(content, Reply::Notice);
+        }
     }
     fn list(&mut self) -> Vec<Prompt> {
         self.entries.retain(|(_, reply)| !reply.closed());
@@ -214,30 +221,24 @@ pub fn choice(title: String, options: Vec<Choice>) -> oneshot::Receiver<Option<S
 /// Text to read, closed with OK.
 pub fn notice(title: String, text: String) {
     if let Ok(mut broker) = BROKER.lock() {
-        broker.insert(
-            Content::Notice {
-                title,
-                text,
-                markdown: false,
-                meta: Vec::new(),
-            },
-            Reply::Notice,
-        );
+        broker.notice(Content::Notice {
+            title,
+            text,
+            markdown: false,
+            meta: Vec::new(),
+        });
     }
     crate::host::prompts_changed();
 }
 /// Markdown text to read, with optional metadata tags, closed with OK.
 pub fn markdown_notice(title: String, meta: Vec<NoticeMeta>, text: String) {
     if let Ok(mut broker) = BROKER.lock() {
-        broker.insert(
-            Content::Notice {
-                title,
-                text,
-                markdown: true,
-                meta,
-            },
-            Reply::Notice,
-        );
+        broker.notice(Content::Notice {
+            title,
+            text,
+            markdown: true,
+            meta,
+        });
     }
     crate::host::prompts_changed();
 }
@@ -383,5 +384,31 @@ mod tests {
         assert_eq!(md["meta"][0]["value"], "trigger");
         assert_eq!(md["meta"][1]["key"], "Code");
         assert_eq!(md["meta"][1]["value"], "708");
+    }
+
+    fn plain(title: &str, text: &str) -> Content {
+        Content::Notice {
+            title: title.into(),
+            text: text.into(),
+            markdown: false,
+            meta: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_same_notice_twice_waits_once_and_closes_with_one_ok() {
+        let mut broker = Broker::default();
+        broker.notice(plain("Unlock logins", "The keyring stayed locked."));
+        broker.notice(plain("Unlock logins", "The keyring stayed locked."));
+        assert_eq!(broker.list().len(), 1);
+        // Another text is another notice.
+        broker.notice(plain("Unlock logins", "No keyring was found."));
+        let listed = broker.list();
+        assert_eq!(listed.len(), 2);
+        broker.answer(listed[0].id, Value::Null).unwrap();
+        assert_eq!(broker.list().len(), 1);
+        // Once read, it can be said again.
+        broker.notice(plain("Unlock logins", "The keyring stayed locked."));
+        assert_eq!(broker.list().len(), 2);
     }
 }
