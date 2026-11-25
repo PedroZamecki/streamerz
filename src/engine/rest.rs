@@ -5595,7 +5595,8 @@ impl Engine {
                 if (200..300).contains(&r.status) {
                     r
                 } else {
-                    crate::error(format!("Fetch URL {url}: HTTP {}", r.status));
+                    // Not the address: its path or query can hold a key.
+                    crate::error(format!("Fetch URL: HTTP {}", r.status));
                     // A GET that failed sets nothing, as before; a request with a body still gives its answer.
                     if method == "GET" {
                         return;
@@ -5605,36 +5606,10 @@ impl Engine {
             }
             Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
-        let body = r.text();
-        let auto = b(o, "autoType", false);
-        if !b(o, "parseAsJson", false) {
-            ctx.args.insert(var, if auto { auto_type(&body) } else { body.into() });
-            return;
+        let (json, auto) = (b(o, "parseAsJson", false), b(o, "autoType", false));
+        if let Err(e) = fetch_args(&mut ctx.args, &var, &r.text(), json, auto) {
+            crate::error(format!("Fetch URL: {e}"));
         }
-        let Ok(v) = serde_json::from_str::<Value>(&body) else {
-            return crate::error(format!("Fetch URL {url}: not JSON"));
-        };
-        fn flat(prefix: &str, v: &Value, out: &mut Obj) {
-            match v {
-                Value::Object(m) => {
-                    for (k, x) in m {
-                        flat(&format!("{prefix}.{k}"), x, out);
-                    }
-                }
-                Value::Array(a) => {
-                    for (i, x) in a.iter().enumerate() {
-                        flat(&format!("{prefix}[{i}]"), x, out);
-                    }
-                }
-                Value::Null => {
-                    out.insert(prefix.into(), "".into());
-                }
-                x => {
-                    out.insert(prefix.into(), x.clone());
-                }
-            }
-        }
-        flat(&var, &v, &mut ctx.args);
     }
 
     /// Run a Program, extended: the action's arguments go to its stdin as JSON; its output comes
@@ -5718,6 +5693,39 @@ impl Engine {
             }
         }
     }
+}
+
+/// Fetch URL's variables from an answer: its text, or with Parse as JSON every value (null as empty).
+/// A byte order mark isn't part of the text (.NET drops it too, and JSON can't start with one).
+fn fetch_args(args: &mut Obj, var: &str, body: &str, json: bool, auto: bool) -> Result<(), &'static str> {
+    fn flat(prefix: &str, v: &Value, out: &mut Obj) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    flat(&format!("{prefix}.{k}"), x, out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    flat(&format!("{prefix}[{i}]"), x, out);
+                }
+            }
+            Value::Null => {
+                out.insert(prefix.into(), "".into());
+            }
+            x => {
+                out.insert(prefix.into(), x.clone());
+            }
+        }
+    }
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    if !json {
+        args.insert(var.into(), if auto { auto_type(body) } else { body.into() });
+        return Ok(());
+    }
+    let v = serde_json::from_str::<Value>(body).map_err(|_| "the answer is not JSON")?;
+    flat(var, &v, args);
+    Ok(())
 }
 
 /// Split arguments like a shell: spaces separate, double quotes group, backslash escapes a quote.
@@ -5851,6 +5859,28 @@ mod tests {
         assert_eq!(next_cursor(&page(json!([]), "b"), "a"), None);
         assert_eq!(next_cursor(&page(json!([1]), ""), "a"), None);
         assert_eq!(next_cursor(&json!({"data": [1]}), ""), None);
+    }
+
+    #[test]
+    fn fetch_url_variables() {
+        let mut args = Obj::new();
+        fetch_args(
+            &mut args,
+            "r",
+            "\u{feff}{\"a\":{\"b\":[1,null]},\"c\":\"x\"}",
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(args["r.a.b[0]"], 1);
+        assert_eq!(args["r.a.b[1]"], "");
+        assert_eq!(args["r.c"], "x");
+        assert_eq!(args.len(), 3);
+        assert!(fetch_args(&mut args, "bad", "<html>", true, false).is_err());
+        assert_eq!(args.len(), 3);
+        fetch_args(&mut args, "typed", "\u{feff}42", false, true).unwrap();
+        fetch_args(&mut args, "raw", "42", false, false).unwrap();
+        assert_eq!((&args["typed"], &args["raw"]), (&json!(42), &json!("42")));
     }
 
     #[test]
