@@ -35,40 +35,51 @@ fn data_len(status: u8) -> usize {
 }
 
 impl Parser {
-    #[cfg_attr(windows, allow(dead_code))]
     pub fn feed(&mut self, b: u8) -> Option<Msg> {
         if b >= 0xF8 {
-            return None; // real-time (clock...): ignored
+            return None; // real-time (clock...): ignored without disturbing running status
         }
         if b == 0xF0 {
             self.sysex = true;
+            self.running = 0;
+            self.data.clear();
             return None;
         }
         if b == 0xF7 {
             self.sysex = false;
-            return None;
-        }
-        if self.sysex {
+            self.running = 0;
+            self.data.clear();
             return None;
         }
         if b & 0x80 != 0 {
-            self.running = b;
+            // Any non-realtime status byte terminates an unterminated SysEx per MIDI 1.0.
+            self.sysex = false;
             self.data.clear();
-            return (data_len(b) == 0).then_some(Msg {
-                status: b,
-                data1: 0,
-                data2: 0,
-            });
+            if data_len(b) == 0 {
+                self.running = 0;
+                return Some(Msg {
+                    status: b,
+                    data1: 0,
+                    data2: 0,
+                });
+            }
+            self.running = b;
+            return None;
         }
-        if self.running == 0 {
+        if self.sysex || self.running == 0 {
             return None;
         }
         self.data.push(b);
         if self.data.len() < data_len(self.running) {
             return None;
         }
+        let status = self.running;
+        // System Common messages (0xF1..=0xF6) never establish running status.
+        if status >= 0xF0 {
+            self.running = 0;
+        }
         let m = Msg {
-            status: self.running,
+            status,
             data1: self.data[0],
             data2: self.data.get(1).copied().unwrap_or(0),
         };
@@ -101,7 +112,7 @@ pub fn command_name(status: u8) -> &'static str {
         0xE0 => "PitchWheelChange",
         _ => match status {
             0xF0 => "Sysex",
-            0xF1 => "TimingClock",
+            0xF8 => "TimingClock",
             0xFA => "StartSequence",
             0xFB => "ContinueSequence",
             0xFC => "StopSequence",
@@ -115,10 +126,11 @@ pub fn command_name(status: u8) -> &'static str {
 pub fn command_code(name: &str) -> Option<u8> {
     let n = name.trim();
     if let Ok(v) = n.parse::<u8>() {
-        // A place in COMMANDS (what the trigger's form stores), or the status byte itself.
-        return match COMMANDS.get(v as usize) {
-            Some(c) if v < 0x80 => command_code(c),
-            _ => Some(v),
+        // A place in COMMANDS (what the trigger's form stores), or a valid status byte (>= 0x80).
+        return if v < 0x80 {
+            COMMANDS.get(v as usize).and_then(|c| command_code(c))
+        } else {
+            Some(v)
         };
     }
     (0x80u8..=0xE0)
@@ -189,7 +201,7 @@ pub fn args(name: &str, device: &str, m: &Msg, ms: u64) -> Obj {
             put(&mut a, "valueNormal", norm(m.data1));
         }
         0xE0 => {
-            let v = u16::from(m.data1) | u16::from(m.data2) << 7;
+            let v = u16::from(m.data1 & 0x7F) | u16::from(m.data2 & 0x7F) << 7;
             put(&mut a, "value", v.into());
             put(&mut a, "valueNormal", (f64::from(v) / 16383.0).into());
         }
@@ -235,7 +247,7 @@ mod imp {
             let name = if dev == "0" {
                 id
             } else {
-                format!("{id} {}", dev.parse::<u32>().unwrap_or(0) + 1)
+                format!("{id} {}", dev.parse::<u32>().unwrap_or(0).saturating_add(1))
             };
             out.push(Device {
                 name,
@@ -277,9 +289,9 @@ mod imp {
                 return Err(e);
             }
             if n == 0 {
-                // A FIFO with no writer (tests): wait for the next one.
+                // A FIFO with no writer (tests) or unplugged device: pause briefly instead of spinning.
                 g.clear_ready();
-                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 continue;
             }
             for b in &buf[..n as usize] {
@@ -295,13 +307,18 @@ mod imp {
     /// Sends `bytes` to the output named `name` (any case; empty: the first one).
     pub fn send(name: &str, bytes: &[u8]) -> Result<(), String> {
         use std::io::Write;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let want = name.trim();
         let all = outputs();
         let d = all
             .iter()
-            .find(|d| name.is_empty() || d.name.eq_ignore_ascii_case(name.trim()))
+            .find(|d| want.is_empty() || d.name.eq_ignore_ascii_case(want))
             .ok_or_else(|| format!("no MIDI output {name}"))?;
         std::fs::OpenOptions::new()
             .write(true)
+            .custom_flags(libc::O_NONBLOCK)
             .open(&d.id)
             .and_then(|mut f| f.write_all(bytes))
             .map_err(|e| format!("{}: {e}", d.name))
@@ -390,7 +407,9 @@ mod imp {
     }
 
     pub async fn read(d: Device, tx: UnboundedSender<Msg>) -> std::io::Result<()> {
-        let idx: usize = d.id.parse().unwrap_or(0);
+        let idx: usize = d.id.parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad MIDI device id {}", d.id))
+        })?;
         if let Ok(mut s) = SINKS.lock() {
             s.push((idx, tx));
         }
@@ -413,31 +432,54 @@ mod imp {
         }
         let _open = Open(h, idx);
         // SAFETY: the handle we just opened.
-        unsafe { midiInStart(h) };
+        let r = unsafe { midiInStart(h) };
+        if r != 0 {
+            return Err(std::io::Error::other(format!("{}: can't start ({r})", d.name)));
+        }
         std::future::pending::<()>().await;
         Ok(())
     }
 
     pub fn send(name: &str, bytes: &[u8]) -> Result<(), String> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let want = name.trim();
         let all = outputs();
         let d = all
             .iter()
-            .find(|d| name.is_empty() || d.name.eq_ignore_ascii_case(name.trim()))
+            .find(|d| want.is_empty() || d.name.eq_ignore_ascii_case(want))
             .ok_or_else(|| format!("no MIDI output {name}"))?;
+        let dev_id: u32 =
+            d.id.parse()
+                .map_err(|_| format!("{}: bad MIDI device id {}", d.name, d.id))?;
         let mut h: HMIDIOUT = std::ptr::null_mut();
+        let mut parser = super::Parser::default();
+        let mut msgs: Vec<u32> = Vec::new();
+        for &b in bytes {
+            if b >= 0xF8 {
+                msgs.push(u32::from(b));
+            } else if let Some(m) = parser.feed(b) {
+                let packed = u32::from(m.status) | (u32::from(m.data1) << 8) | (u32::from(m.data2) << 16);
+                msgs.push(packed);
+            }
+        }
         // SAFETY: open, short messages, close: all on our handle.
         unsafe {
-            if midiOutOpen(&mut h, d.id.parse().unwrap_or(0), 0, 0, 0) != 0 {
+            if midiOutOpen(&mut h, dev_id, 0, 0, 0) != 0 {
                 return Err(format!("{}: can't open", d.name));
             }
-            for m in bytes.chunks(3) {
-                let packed = m
-                    .iter()
-                    .enumerate()
-                    .fold(0u32, |a, (i, b)| a | u32::from(*b) << (8 * i));
-                midiOutShortMsg(h, packed);
+            let mut failed = None;
+            for packed in msgs {
+                let r = midiOutShortMsg(h, packed);
+                if r != 0 && failed.is_none() {
+                    failed = Some(r);
+                }
             }
             midiOutClose(h);
+            if let Some(r) = failed {
+                return Err(format!("{}: send failed ({r})", d.name));
+            }
         }
         Ok(())
     }
@@ -475,6 +517,93 @@ mod tests {
             data2: b,
         };
         assert_eq!(got, [m(0x90, 60, 100), m(0x90, 62, 90), m(0xB0, 7, 64), m(0xC1, 5, 0)]);
+    }
+
+    #[test]
+    fn parser_handles_sysex_and_system_common_per_midi_spec() {
+        let mut p = Parser::default();
+        let m = |s, a, b| Msg {
+            status: s,
+            data1: a,
+            data2: b,
+        };
+        // SysEx clears running status, so trailing data bytes after EOX are ignored.
+        let bytes = [0x90, 60, 100, 0xF0, 1, 2, 0xF7, 64, 80];
+        let got: Vec<Msg> = bytes.iter().filter_map(|b| p.feed(*b)).collect();
+        assert_eq!(got, [m(0x90, 60, 100)]);
+
+        // Unterminated SysEx recovers on the next non-realtime status byte.
+        let mut p = Parser::default();
+        let bytes = [0xF0, 0x7E, 0x01, 0x90, 60, 127];
+        let got: Vec<Msg> = bytes.iter().filter_map(|b| p.feed(*b)).collect();
+        assert_eq!(got, [m(0x90, 60, 127)]);
+
+        // System Common (0xF6, 0xF2) does not establish running status.
+        let mut p = Parser::default();
+        let bytes = [0xF6, 10, 20, 0xF2, 1, 2, 3, 4];
+        let got: Vec<Msg> = bytes.iter().filter_map(|b| p.feed(*b)).collect();
+        assert_eq!(got, [m(0xF6, 0, 0), m(0xF2, 1, 2)]);
+
+        // Real-time byte interleaved mid-message does not disrupt data collection.
+        let mut p = Parser::default();
+        let bytes = [0xB0, 7, 0xF8, 100];
+        let got: Vec<Msg> = bytes.iter().filter_map(|b| p.feed(*b)).collect();
+        assert_eq!(got, [m(0xB0, 7, 100)]);
+    }
+
+    #[test]
+    fn command_code_and_name_and_all_message_args() {
+        assert_eq!(command_name(0xF8), "TimingClock");
+        assert_eq!(command_code("0"), None);
+        assert_eq!(command_code("1"), Some(0x90));
+        assert_eq!(command_code("99"), None);
+        assert_eq!(command_code("144"), Some(0x90));
+        assert_eq!(command_code("ProgramChange"), Some(0xC0));
+        assert_eq!(note_name(0), "C0");
+        assert_eq!(note_name(60), "C5");
+        assert_eq!(note_name(127), "G10");
+        assert_eq!(controller_name(7), "MainVolume");
+        assert_eq!(controller_name(42), "42");
+
+        // Pitch wheel center (0x00, 0x40 -> 8192) and max (0x7F, 0x7F -> 16383).
+        let center = args(
+            "k",
+            "d",
+            &Msg {
+                status: 0xE0,
+                data1: 0,
+                data2: 0x40,
+            },
+            1,
+        );
+        assert_eq!(center["commandCode"], "PitchWheelChange");
+        assert_eq!(center["value"], 8192);
+        let max = args(
+            "k",
+            "d",
+            &Msg {
+                status: 0xE0,
+                data1: 0xFF,
+                data2: 0xFF,
+            },
+            1,
+        );
+        assert_eq!(max["value"], 16383);
+
+        // Patch change (1 data byte).
+        let pc = args(
+            "k",
+            "d",
+            &Msg {
+                status: 0xC2,
+                data1: 12,
+                data2: 0,
+            },
+            2,
+        );
+        assert_eq!(pc["commandCode"], "PatchChange");
+        assert_eq!(pc["channel"], 3);
+        assert_eq!(pc["value"], 12);
     }
 
     /// Streamer.bot's own example: note 48 is C4, velocity 80 is 0.6299..., raw 00503090.
