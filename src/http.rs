@@ -273,8 +273,8 @@ pub async fn download_resumable(
             url = next;
             continue;
         }
-        // Range past EOF: restart from 0 cleanly.
-        if open.status == 416 && have > 0 {
+        // Range past EOF, or a part that doesn't start where the file stops: restart from 0 cleanly.
+        if have > 0 && (open.status == 416 || open.status == 206 && range_start(&open.headers) != Some(have)) {
             let _ = std::fs::remove_file(to);
             have = 0;
             continue;
@@ -368,6 +368,15 @@ pub async fn download_resumable(
         });
     }
     Err(format!("{url}: too many redirects"))
+}
+
+/// Where a `206 Partial Content` part starts ("Content-Range: bytes 100-199/200" is 100).
+fn range_start(headers: &[(String, String)]) -> Option<u64> {
+    let (_, v) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-range"))?;
+    let (unit, range) = v.trim().split_once(' ')?;
+    unit.eq_ignore_ascii_case("bytes")
+        .then(|| range.split('-').next()?.trim().parse().ok())
+        .flatten()
 }
 
 /// The wait before retry `n` (1-based) of something that keeps failing: 1, 2, 4, 8, 15 seconds, then 15.
@@ -691,6 +700,17 @@ mod tests {
         );
         assert_eq!(hop("https://a.com/x", "https://a.com:8443/y").1, "Accept");
         assert_eq!(hop("https://a.com/x", "http://a.com/y").0, None);
+    }
+
+    #[test]
+    fn resumed_parts_must_start_where_the_file_stops() {
+        let start = |v: &str| range_start(&[("Content-Range".into(), v.into())]);
+        assert_eq!(start("bytes 100-199/200"), Some(100));
+        assert_eq!(start("Bytes 0-9/*"), Some(0));
+        assert_eq!(start("bytes */200"), None);
+        assert_eq!(start("items 1-2/3"), None);
+        assert_eq!(start("bytes -5/9"), None);
+        assert_eq!(range_start(&[]), None);
     }
 
     /// Text from chat often lands in a Fetch URL address: it must reach the server as one request.
