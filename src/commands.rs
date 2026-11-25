@@ -53,17 +53,24 @@ pub fn aliases(c: &Obj) -> Vec<&str> {
 /// arguments (Regex mode).
 pub fn matches(c: &Obj, text: &str) -> Option<(String, String, Obj)> {
     let text = text.trim();
+    let cs = c.get("caseSensitive").and_then(Value::as_bool).unwrap_or(false);
     if n(c, "mode") as i64 == 1 {
         let mut m = Obj::new();
         for pattern in aliases(c) {
-            let r = crate::engine::regex(pattern)?;
+            let compiled = if cs {
+                crate::engine::regex(pattern)
+            } else {
+                crate::engine::regex(&format!("(?i){pattern}"))
+            };
+            let Some(r) = compiled else {
+                continue;
+            };
             if crate::engine::match_args(&r, text, &mut m) {
-                return Some((s(c, "command").to_string(), text.to_string(), m));
+                return Some((pattern.to_string(), text.to_string(), m));
             }
         }
         return None;
     }
-    let cs = c.get("caseSensitive").and_then(Value::as_bool).unwrap_or(false);
     let fold = |x: &str| if cs { x.to_string() } else { x.to_lowercase() };
     let t = fold(text);
     for alias in aliases(c) {
@@ -77,21 +84,20 @@ pub fn matches(c: &Obj, text: &str) -> Option<(String, String, Obj)> {
         if hit {
             let raw = match n(c, "location") as i64 {
                 0 => {
-                    let mut folded_len = 0;
-                    let end = text
-                        .char_indices()
-                        .find_map(|(i, ch)| {
-                            if folded_len == a.len() {
-                                return Some(i);
-                            }
-                            folded_len += if cs {
-                                ch.len_utf8()
-                            } else {
-                                ch.to_lowercase().map(char::len_utf8).sum()
-                            };
-                            None
-                        })
-                        .unwrap_or(text.len());
+                    let end = if cs {
+                        a.len()
+                    } else {
+                        let mut folded_len = 0;
+                        text.char_indices()
+                            .find_map(|(i, ch)| {
+                                if folded_len >= a.len() {
+                                    return Some(i);
+                                }
+                                folded_len += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                                None
+                            })
+                            .unwrap_or(text.len())
+                    };
                     text[end..].trim().to_string()
                 }
                 1 => String::new(),
@@ -106,14 +112,19 @@ pub fn matches(c: &Obj, text: &str) -> Option<(String, String, Obj)> {
 /// .NET's WebUtility.UrlEncode: unreserved `A-Z a-z 0-9 - _ . ! * ( )` stay, space is `+`, the
 /// rest is %XX (uppercase) of the UTF-8 bytes.
 pub fn url_encode(s: &str) -> String {
-    let mut out = String::new();
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'*' | b'(' | b')' => {
                 out.push(b as char)
             }
             b' ' => out.push('+'),
-            _ => out += &format!("%{b:02X}"),
+            _ => {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0x0f) as usize] as char);
+            }
         }
     }
     out
@@ -137,6 +148,44 @@ pub fn input_args(raw: &str, words_from: &str, args: &mut Obj) {
     }
 }
 
+const USER_KEYS: [&str; 8] = [
+    "id",
+    "userId",
+    "login",
+    "user",
+    "userName",
+    "name",
+    "display",
+    "displayName",
+];
+
+fn matches_user(entry: &Value, chat: &Chat) -> bool {
+    let matches_str = |x: &str| {
+        !x.is_empty()
+            && ((!chat.user.is_empty() && x.eq_ignore_ascii_case(&chat.user))
+                || (!chat.user_id.is_empty() && x == chat.user_id))
+    };
+    match entry {
+        Value::String(x) => matches_str(x),
+        Value::Object(o) => {
+            if !chat.platform.is_empty() {
+                for key in ["type", "platform"] {
+                    if let Some(p) = o.get(key).and_then(Value::as_str).filter(|p| !p.is_empty()) {
+                        if !p.eq_ignore_ascii_case(&chat.platform) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            USER_KEYS
+                .iter()
+                .filter_map(|k| o.get(*k).and_then(Value::as_str))
+                .any(matches_str)
+        }
+        _ => false,
+    }
+}
+
 /// Grant type 0 Allow (only the listed users and groups; nobody listed: everyone), 1 Deny (all but
 /// the listed; nobody listed: no one). Users are listed by login or id; groups by name, the built-in
 /// ones being Moderators, VIPs and Subscribers. `in_group` answers for user groups.
@@ -144,18 +193,15 @@ pub fn permitted(c: &Obj, chat: &Chat, in_group: &dyn Fn(&str) -> bool) -> bool 
     if chat.broadcaster {
         return true;
     }
-    let list = |k: &str| c.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
-    let (users, groups) = (list("permittedUsers"), list("permittedGroups"));
-    let user_hit = users.iter().any(|u| {
-        let names: Vec<&str> = match u {
-            Value::String(x) => vec![x],
-            Value::Object(o) => o.values().filter_map(Value::as_str).collect(),
-            _ => vec![],
-        };
-        names
-            .iter()
-            .any(|x| x.eq_ignore_ascii_case(&chat.user) || *x == chat.user_id)
-    });
+    let users = c
+        .get("permittedUsers")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let groups = c
+        .get("permittedGroups")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let user_hit = users.iter().any(|u| matches_user(u, chat));
     let group_hit = groups
         .iter()
         .filter_map(Value::as_str)
@@ -187,6 +233,25 @@ mod tests {
     fn unicode_case_matching_keeps_raw_input() {
         let command = cmd(json!({"command": "!İ"}));
         assert_eq!(matches(&command, "!i\u{307} hello").unwrap().1, "hello");
+        let reverse = cmd(json!({"command": "!i\u{307}"}));
+        assert_eq!(matches(&reverse, "!İ hello").unwrap().1, "hello");
+        // Kelvin sign (3 UTF-8 bytes) lowercases to ASCII 'k' (1 byte).
+        let kelvin = cmd(json!({"command": "!k"}));
+        assert_eq!(matches(&kelvin, "!\u{212A} world").unwrap().1, "world");
+        assert_eq!(matches(&kelvin, "!\u{212A}").unwrap().1, "");
+    }
+
+    #[test]
+    fn regex_case_sensitivity_and_multiple_patterns() {
+        let ci = cmd(json!({"command": "[\n^!roll (?<dice>\\d+)d(\\d+)$", "mode": 1}));
+        let (pat, raw, m) = matches(&ci, "!ROLL 2d6").unwrap();
+        assert_eq!(pat, "^!roll (?<dice>\\d+)d(\\d+)$");
+        assert_eq!(raw, "!ROLL 2d6");
+        assert_eq!(m["dice"], json!("2"));
+
+        let cs = cmd(json!({"command": "^!roll (\\d+)$", "mode": 1, "caseSensitive": true}));
+        assert!(matches(&cs, "!ROLL 5").is_none());
+        assert!(matches(&cs, "!roll 5").is_some());
     }
 
     #[test]
@@ -253,5 +318,34 @@ mod tests {
         ));
         let group = cmd(json!({"grantType": 0, "permittedGroups": ["Regulars"]}));
         assert!(permitted(&group, &viewer, &|g| g == "Regulars"));
+
+        // Object entries in permittedUsers match identity fields, never metadata or empty strings.
+        let obj_user = cmd(json!({
+            "grantType": 0,
+            "permittedUsers": [{"id": "9", "name": "alice", "type": "twitch", "display": ""}]
+        }));
+        let spoof = Chat {
+            platform: "twitch".into(),
+            user: "twitch".into(),
+            user_id: String::new(),
+            ..Default::default()
+        };
+        assert!(!permitted(&obj_user, &spoof, &none));
+        let wrong_platform = Chat {
+            platform: "kick".into(),
+            user: "alice".into(),
+            user_id: "9".into(),
+            ..Default::default()
+        };
+        assert!(!permitted(&obj_user, &wrong_platform, &none));
+        let right = Chat {
+            platform: "twitch".into(),
+            user: "Alice".into(),
+            user_id: "9".into(),
+            ..Default::default()
+        };
+        assert!(permitted(&obj_user, &right, &none));
+        let empty_entry = cmd(json!({"grantType": 0, "permittedUsers": [""]}));
+        assert!(!permitted(&empty_entry, &spoof, &none));
     }
 }
