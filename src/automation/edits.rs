@@ -161,6 +161,7 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
             | W::FileTail
             | W::Command
             | W::UserGroup
+            | W::UserGroupId
             | W::Client
             | W::Server
             | W::ObsConnection

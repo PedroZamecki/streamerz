@@ -892,6 +892,7 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
         W::Command => strict(pairs(config.commands.iter())),
         W::Client => strict(pairs(config.websockets.connections.iter())),
         W::Server => strict(pairs(config.websockets.servers.iter())),
+        W::UserGroupId => strict(pairs(config.groups.iter())),
         W::ObsConnection => strict(pairs(config.obs.connections.iter())),
         W::SlobsConnection => strict(pairs(config.slobs.connections.iter())),
         W::UserGroup => typed(
@@ -2765,6 +2766,25 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_filters_and_clear_group_forms_save_the_selected_id() {
+        let config = crate::Config {
+            groups: vec![json!({"id": "group-1", "name": "Regulars"})
+                .as_object()
+                .unwrap()
+                .clone()],
+            ..Default::default()
+        };
+        for fields in [schema::trigger_fields(32003), schema::sub_fields(10001)] {
+            let fields = fields.unwrap();
+            let options = form_fields(&config, fields, &Obj::new());
+            assert_eq!(options[0]["choices"], json!([{"id": "group-1", "label": "Regulars"}]));
+            let edit = json!({"field": 0, "value": options[0]["choices"][0]["id"]});
+            let draft = crate::automation::edits::apply(fields, &Obj::new(), &[edit]).unwrap();
+            assert_eq!(draft["groupId"], "group-1");
+        }
+    }
     use crate::servers::answer;
 
     #[test]

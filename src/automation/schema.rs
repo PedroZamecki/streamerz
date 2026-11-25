@@ -29,7 +29,10 @@ pub enum W {
     FileWatcher,
     FileTail,
     Command,
+    /// A user group's name, typed or picked.
     UserGroup,
+    /// A user group's id, picked by name.
+    UserGroupId,
     Client,
     Server,
     ObsConnection,
@@ -98,6 +101,7 @@ impl W {
             FileTail => "file tail id".into(),
             Command => "command id".into(),
             UserGroup => "user group name".into(),
+            UserGroupId => "user group id".into(),
             Client => "WebSocket client id".into(),
             Server => "WebSocket server id".into(),
             ObsConnection => "OBS connection id".into(),
@@ -1297,7 +1301,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("subActionId", "field.sub_action", Sub),
             ("weight", "field.weight", Num),
         ],
-        10001 => &[("groupId", "field.group", UserGroup)],
+        10001 => &[("groupId", "field.group", UserGroupId)],
         401 => &[
             ("connectionId", "field.connection", SlobsConnection),
             ("sceneName", "field.scene_empty_active", Text),
@@ -2032,7 +2036,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         2001..=2003 => &[("serverId", "field.server", Server)],
         18001 => &[("eventName", "field.event_name", Text)],
         18002 => &[("triggerName", "field.trigger_name", Text)],
-        32001..=32005 => &[("groupId", "field.group_none_any", UserGroup)],
+        32001..=32005 => &[("groupId", "field.group_none_any", UserGroupId)],
         14001 | 14002 | 14005 | 14006 | 14007 | 14008 => {
             &[("connectionId", "field.connection_empty_any", ObsConnection)]
         }
