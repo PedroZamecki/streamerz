@@ -35,13 +35,7 @@ fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
     // The fragment stays in the browser: it is never sent.
     let rest = rest.split('#').next().unwrap_or_default();
     let (authority, path) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
-    let path = if path.starts_with('?') {
-        format!("/{path}")
-    } else if path.is_empty() {
-        "/".into()
-    } else {
-        path.into()
-    };
+    let path = request_target(path)?;
     // An IPv6 host is in brackets ("[::1]:8080"); the host kept is the address alone.
     let (host, port) = match authority.strip_prefix('[') {
         Some(v6) => match v6.split_once(']') {
@@ -65,6 +59,25 @@ fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
         return Err(format!("no host in {url}"));
     }
     Ok((tls, host.to_string(), port, path))
+}
+
+/// The path and query as sent: what a URL can't hold raw (spaces, quotes, non-ASCII) percent-encoded,
+/// as browsers and .NET do. A control character would end the request line early, so it is refused.
+fn request_target(path: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(path.len() + 1);
+    if !path.starts_with('/') {
+        out.push('/');
+    }
+    for b in path.bytes() {
+        match b {
+            0..=0x1f | 0x7f => return Err("control character in the URL".into()),
+            b' ' | b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}' | 0x80.. => {
+                out += &format!("%{b:02X}")
+            }
+            _ => out.push(char::from(b)),
+        }
+    }
+    Ok(out)
 }
 
 fn default_port(tls: bool) -> u16 {
@@ -368,7 +381,21 @@ async fn once(method: &str, url: &str, headers: &[(String, String)], body_bytes:
 }
 
 /// The request line and headers, up to the blank line before the body.
-fn request_head(method: &str, host: &str, path: &str, headers: &[(String, String)], len: usize) -> String {
+fn request_head(
+    method: &str,
+    host: &str,
+    path: &str,
+    headers: &[(String, String)],
+    len: usize,
+) -> Result<String, String> {
+    // A line break in a name or value would start another header (or another request).
+    let broken = |s: &str| s.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0));
+    if broken(method) || method.contains(' ') {
+        return Err(format!("bad HTTP method {method:?}"));
+    }
+    if let Some((k, _)) = headers.iter().find(|(k, v)| broken(k) || k.contains(':') || broken(v)) {
+        return Err(format!("bad HTTP header {k:?}"));
+    }
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
     if !has("user-agent") {
@@ -381,7 +408,7 @@ fn request_head(method: &str, host: &str, path: &str, headers: &[(String, String
         req += &format!("Content-Length: {len}\r\n");
     }
     req += "\r\n";
-    req
+    Ok(req)
 }
 
 /// Sends the request and reads the response's head.
@@ -396,7 +423,7 @@ async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
     } else {
         Box::new(tcp)
     };
-    let req = request_head(method, &authority(tls, &host, port), &path, headers, body.len());
+    let req = request_head(method, &authority(tls, &host, port), &path, headers, body.len())?;
     io.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
     io.write_all(body).await.map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
@@ -567,9 +594,35 @@ mod tests {
         assert_eq!(authority(true, "::1", 443), "[::1]");
         assert_eq!(authority(true, "a.com", 8443), "a.com:8443");
         assert_eq!(
-            request_head("GET", "[::1]:8080", "/a", &[], 0),
+            request_head("GET", "[::1]:8080", "/a", &[], 0).unwrap(),
             "GET /a HTTP/1.1\r\nHost: [::1]:8080\r\nConnection: close\r\nUser-Agent: Streamerz\r\n\r\n"
         );
+    }
+
+    /// Text from chat often lands in a Fetch URL address: it must reach the server as one request.
+    #[test]
+    fn request_targets_are_encoded_and_lines_cannot_be_injected() {
+        let path = |url: &str| parse(url).map(|p| p.3);
+        assert_eq!(
+            path("http://h/search?q=hello world").unwrap(),
+            "/search?q=hello%20world"
+        );
+        assert_eq!(
+            path("http://h/a b?q=café|\"x\"").unwrap(),
+            "/a%20b?q=caf%C3%A9%7C%22x%22"
+        );
+        assert_eq!(path("http://h/?q=a%2Bb&r=[1]").unwrap(), "/?q=a%2Bb&r=[1]");
+        assert!(path("http://h/x\r\nHost: evil").is_err());
+        assert!(path("http://h/x\ty").is_err());
+        let ok = |k: &str, v: &str| request_head("GET", "h", "/", &[(k.into(), v.into())], 0);
+        assert!(ok("X-Test", "a b").unwrap().contains("X-Test: a b\r\n"));
+        assert!(ok("X-Test", "a\r\nX-Evil: 1").is_err());
+        assert!(ok("X-Test\n", "a").is_err());
+        assert!(ok("X:Test", "a").is_err());
+        assert!(request_head("GET /x HTTP/1.1\r\n", "h", "/", &[], 0).is_err());
+        let post = request_head("POST", "h", "/", &[("User-Agent".into(), "Mine".into())], 0).unwrap();
+        assert!(post.ends_with("User-Agent: Mine\r\nContent-Length: 0\r\n\r\n"));
+        assert!(!post.contains("Streamerz"));
     }
 
     /// Against a one-shot local server: chunked body, then a redirect to a plain one.
