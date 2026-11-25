@@ -4,14 +4,40 @@ use crate::i18n::tr;
 use serde_json::Value;
 use std::fmt;
 
-fn tr_or(key: &'static str, fallback: &'static str) -> String {
+/// The translation of `key`, or the English `fallback` when the catalog has none.
+pub(crate) fn tr_or(key: &'static str, fallback: &'static str) -> &'static str {
     let translated = tr(key);
     if translated == key {
-        fallback.to_owned()
+        fallback
     } else {
-        translated.to_owned()
+        translated
     }
 }
+
+/// Whether `text` has one of `words` as a whole word ("read" is not in "already" or "thread").
+fn has_word(text: &str, words: &[&str]) -> bool {
+    text.split(|c: char| !c.is_alphanumeric())
+        .any(|word| words.contains(&word))
+}
+
+/// Words that say a file could not be read or written.
+const STORAGE_WORDS: [&str; 15] = [
+    "permission",
+    "permissions",
+    "disk",
+    "disks",
+    "write",
+    "writes",
+    "writing",
+    "written",
+    "writable",
+    "unwritable",
+    "read",
+    "reads",
+    "reading",
+    "readable",
+    "unreadable",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorAction {
@@ -91,12 +117,12 @@ impl StreamerzError {
         let raw_desc = description.into();
         let raw_rec = recommendation.into();
         let title = if raw_title.trim().is_empty() {
-            tr_or("error.unexpected.title", "Unexpected error")
+            tr_or("error.unexpected.title", "Unexpected error").to_owned()
         } else {
             raw_title.trim().to_owned()
         };
         let description = if raw_desc.trim().is_empty() {
-            tr_or("error.unexpected.description", "An unexpected error occurred.")
+            tr_or("error.unexpected.description", "An unexpected error occurred.").to_owned()
         } else {
             raw_desc.trim().to_owned()
         };
@@ -105,6 +131,7 @@ impl StreamerzError {
                 "error.unexpected.recommendation",
                 "Try again, and check the Log page for details.",
             )
+            .to_owned()
         } else {
             raw_rec.trim().to_owned()
         };
@@ -226,7 +253,7 @@ impl StreamerzError {
         {
             return Self::validation(trimmed);
         }
-        if lower.contains("permission") || lower.contains("disk") || lower.contains("write") || lower.contains("read") {
+        if has_word(&lower, &STORAGE_WORDS) {
             return Self::storage(trimmed);
         }
         Self::unexpected(trimmed)
@@ -393,6 +420,94 @@ mod tests {
         assert_eq!(unknown.code, "unexpected");
         assert_eq!(unknown.description, "weird xyz failure");
         assert!(!unknown.recommendation.is_empty());
+    }
+
+    #[test]
+    fn storage_words_count_only_as_whole_words() {
+        let code = |message: &str| StreamerzError::from_message(message).code;
+        assert_eq!(code("That name is already taken"), "unexpected");
+        assert_eq!(code("The worker thread stopped"), "unexpected");
+        assert_eq!(code("Overwrite refused for a spreadsheet"), "unexpected");
+        assert_eq!(code("Can't read overlays/alerts.html"), "storage");
+        assert_eq!(code("The folder is not writable"), "storage");
+        assert_eq!(code("Permission denied (os error 13)"), "storage");
+        assert_eq!(code("Disk full while writing the backup"), "storage");
+    }
+
+    #[test]
+    fn messages_go_to_the_kind_that_explains_them() {
+        let code = |message: &str| StreamerzError::from_message(message).code;
+        assert_eq!(code("Twitch says: Unauthorized"), "auth.required");
+        assert_eq!(code("OBS isn't connected"), "network");
+        assert_eq!(code("The request timed out"), "network");
+        assert_eq!(code("No action named Raid"), "not_found");
+        assert_eq!(code("Unknown trigger 9999"), "not_found");
+        assert_eq!(code("Enter a channel name"), "validation");
+        assert_eq!(code("   "), "unexpected");
+        assert!(StreamerzError::from_message("").unexpected);
+    }
+
+    #[test]
+    fn structured_errors_need_a_title_or_a_description() {
+        assert_eq!(StreamerzError::from_value(&json!({"code": "x"})), None);
+        assert_eq!(StreamerzError::from_value(&json!("text")), None);
+        let err = StreamerzError::from_value(&json!({"error": "  Port in use  ", "code": " ", "detail": "  "}))
+            .expect("description alone is enough");
+        assert_eq!(err.code, "unexpected");
+        assert_eq!(err.description, "Port in use");
+        assert_eq!(err.detail, None);
+        assert!(!err.title.is_empty() && !err.recommendation.is_empty());
+        // An action without a label or kind can't be drawn as a button.
+        let err = StreamerzError::from_value(&json!({"title": "T", "action": {"kind": "navigate", "label": " "}}))
+            .expect("title alone is enough");
+        assert_eq!(err.action, None);
+    }
+
+    #[test]
+    fn recommendations_are_listed_once_after_the_first() {
+        let err = StreamerzError::from_value(&json!({
+            "title": "HTTP server start error",
+            "description": "Port 7474 is in use",
+            "recommendation": "Pick another port.",
+            "recommendations": ["Pick another port.", " Close the other program. ", ""]
+        }))
+        .unwrap();
+        assert_eq!(
+            err.all_recommendations(),
+            ["Pick another port.", "Close the other program."]
+        );
+        assert_eq!(
+            err.full_label(),
+            "HTTP server start error: Port 7474 is in use\nRecommended: Pick another port.\n- Close the other program."
+        );
+        assert!(err
+            .to_string()
+            .starts_with("HTTP server start error: Port 7474 is in use ("));
+    }
+
+    #[test]
+    fn a_reply_without_an_error_is_not_one() {
+        assert_eq!(
+            StreamerzError::from_response(&json!({"status": "ok", "id": "page:1"})),
+            None
+        );
+        // Unusable error info falls back to the plain message.
+        let err =
+            StreamerzError::from_response(&json!({"status": "error", "error": "OBS isn't connected", "errorInfo": {}}))
+                .unwrap();
+        assert_eq!(err.code, "network");
+    }
+
+    #[test]
+    fn active_errors_without_a_key_are_dropped() {
+        let list = ActiveError::list_from_value(&json!([
+            {"key": " ", "title": "No key"},
+            {"title": "Missing key"},
+            {"key": "k", "timestamp": "soon", "title": "Kept"}
+        ]));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].timestamp, 0);
+        assert!(ActiveError::list_from_value(&json!({"key": "k"})).is_empty());
     }
 
     #[test]
