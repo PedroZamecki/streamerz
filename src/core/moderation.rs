@@ -1056,7 +1056,7 @@ pub fn kick_ban_event(engine: &Rc<Engine>, channel: &str, data: &Value) {
             s.rows.remove(0);
         }
         s.rows.push(
-            json!({"id": id, "name": data["user"]["username"], "permanent": data["permanent"],
+            json!({"id": id, "generation": s.generation, "name": data["user"]["username"], "permanent": data["permanent"],
             "reason": data["reason"], "moderator": data["banned_by"]["username"], "expires": data["expires_at"]}),
         );
     });
@@ -1071,7 +1071,14 @@ fn kick_unban_observed(engine: &Rc<Engine>, id: &str) -> Result<Value, String> {
         .ok_or_else(|| tr("moderation.kick_select").to_string())?;
     let key = kick_account(engine);
     let observed_generation = KICK_OBSERVED.with_borrow(|s| {
-        (s.account == key && s.rows.iter().any(|row| row["id"].as_u64() == Some(user_id))).then_some(s.generation)
+        if s.account != key {
+            return None;
+        }
+        s.rows
+            .iter()
+            .find(|row| row["id"] == user_id)?
+            .get("generation")?
+            .as_u64()
     });
     let Some(observed_generation) = observed_generation else {
         return Err(tr("moderation.kick_select").into());
@@ -1113,8 +1120,9 @@ fn kick_unban_observed(engine: &Rc<Engine>, id: &str) -> Result<Value, String> {
         });
         if ok && KICK.with_borrow(|s| s.account == key && s.generation == generation) {
             KICK_OBSERVED.with_borrow_mut(|s| {
-                if s.account == key && s.generation == observed_generation {
-                    s.rows.retain(|row| row["id"].as_u64() != Some(user_id));
+                if s.account == key {
+                    s.rows
+                        .retain(|row| row["id"] != user_id || row["generation"] != observed_generation);
                 }
             });
         }
@@ -2268,6 +2276,31 @@ mod tests {
             crate::scenario::fakes::uninstall();
             KICK.with_borrow_mut(|s| *s = KickState::default());
             KICK_OBSERVED.with_borrow_mut(|s| *s = KickObserved::default());
+        });
+    }
+
+    #[test]
+    fn kick_observations_only_invalidate_an_unban_for_the_same_user() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|config| config.kick.channel = "owner".into());
+            crate::scenario::fakes::install(&engine, &json!({"kick":{}}), None);
+            let ban = |id, reason| kick_ban_event(&engine, "owner", &json!({"user":{"id":id},"reason":reason}));
+            ban(42, "original");
+            kick_unban_observed(&engine, "42").unwrap();
+            ban(43, "unrelated");
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!KICK_OBSERVED.with_borrow(|s| s.rows.iter().any(|row| row["id"] == 42)));
+            kick_unban_observed(&engine, "43").unwrap();
+            ban(43, "new ban");
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(KICK_OBSERVED.with_borrow(|s| s.rows[0]["reason"].clone()), "new ban");
+            crate::scenario::fakes::uninstall();
         });
     }
 
