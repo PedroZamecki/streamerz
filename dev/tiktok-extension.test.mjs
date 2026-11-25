@@ -26,10 +26,14 @@ function worker() {
   };
   state.settings = {};
   state.timers = new Map();
+  state.intervals = new Map();
   let nextTimer = 0;
+  let nextInterval = 0;
   state.sockets = [];
-  class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; state.sockets.push(this); } send() {} }
-  const context = vm.createContext({ chrome, URL, URLSearchParams, fetch: async () => ({ ok: true, json: async () => ({ ...(state.fileSettings || state.settings) }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
+  class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; this.sent = []; state.sockets.push(this); } send(d) { this.sent.push(d); } close() { this.closed = true; } }
+  const context = vm.createContext({ chrome, URL, URLSearchParams, fetch: async () => ({ ok: true, json: async () => ({ ...(state.fileSettings || state.settings) }) }), self: { STREAMERZ: {} }, importScripts() {},
+    setInterval(callback, ms) { const id = ++nextInterval; state.intervals.set(id, { callback, ms }); return id; },
+    clearInterval(id) { state.intervals.delete(id); },
     setTimeout(callback, ms) { const id = ++nextTimer; state.timers.set(id, { callback, ms }); return id; },
     clearTimeout(id) { state.timers.delete(id); }, WebSocket: Socket, console });
   vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), context);
@@ -212,4 +216,162 @@ test("activity replaces the idle timer and expiry releases the hidden context", 
   timer.callback();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.contexts.length, 0);
+});
+
+test("ping timer runs only while connected and malformed WS messages are ignored", async () => {
+  const { state, context } = worker();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.intervals.size, 0, "no ping interval while disconnected");
+
+  state.settings = { url: "ws://127.0.0.1:8090/streamerz/tiktok", token: "a".repeat(64) };
+  await vm.runInContext("connect()", context);
+  const sock = state.sockets.at(-1);
+  assert.equal(state.intervals.size, 0, "no ping interval before onopen");
+  sock.onopen();
+  assert.equal(state.intervals.size, 1);
+  [...state.intervals.values()][0].callback();
+  assert.equal(sock.sent.includes('{"op":"ping"}'), true);
+
+  // Primitive or malformed JSON messages must not throw.
+  await sock.onmessage({ data: "null" });
+  await sock.onmessage({ data: "42" });
+  await sock.onmessage({ data: "{bad" });
+
+  sock.onclose();
+  assert.equal(state.intervals.size, 0, "ping interval cleared on close");
+});
+
+test("re-pairing disconnects cleanly and closes active context", async () => {
+  const { state, context, call } = worker();
+  await new Promise(resolve => setImmediate(resolve));
+  state.settings = { url: "ws://127.0.0.1:8090/streamerz/tiktok", token: "a".repeat(64) };
+  await vm.runInContext("connect()", context);
+  state.sockets[0].onopen();
+  await call({ op: "page" });
+  assert.equal(state.contexts.length, 1);
+  assert.equal(state.intervals.size, 1);
+
+  const newToken = "b".repeat(64);
+  state.tabUpdated(5, { url: "file:///tmp/tiktok-setup.html#url=" + encodeURIComponent("ws://127.0.0.1:8091/streamerz/tiktok") + "&token=" + newToken });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.sockets[0].closed, true);
+  assert.equal(state.contexts.length, 0);
+  assert.equal(state.intervals.size, 0);
+});
+
+test("failed offscreen creation cleans up session rules", async () => {
+  const { state, context, call } = worker();
+  context.chrome.offscreen.createDocument = async () => { throw new Error("offscreen failed"); };
+  await assert.rejects(call({ op: "page" }), /offscreen failed/);
+  assert.deepEqual(structuredClone(state.rules.at(-1)), { removeRuleIds: [1, 2, 3, 4, 5, 6] });
+});
+
+test("Firefox bridge validates origin and settles pending requests on closeContext", async () => {
+  const listeners = [];
+  const posted = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  let removed = false;
+  const frameEl = {
+    style: {},
+    contentWindow: { postMessage(m, target) { posted.push({ m, target }); } },
+    remove() { removed = true; },
+  };
+  const browser = {
+    runtime: { id: "ff", getManifest: () => ({ version: "1.4.0" }), getURL: p => "moz-extension://ff/" + p, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+    declarativeNetRequest: { updateSessionRules: async () => {} },
+    tabs: { query: async () => [], onUpdated: { addListener() {} } },
+    windows: { update: async () => {} },
+    cookies: { getAll: async () => [{ name: "sessionid", value: "s" }], onChanged: { addListener() {} } },
+    alarms: { get: async () => null, create() {}, onAlarm: { addListener() {} } },
+    storage: { local: { get: async () => ({}), set: async () => {} } },
+  };
+  const win = { addEventListener(type, fn) { if (type === "message") listeners.push(fn); } };
+  const ctx = vm.createContext({
+    browser, window: win, location: { origin: "moz-extension://ff" },
+    document: { createElement: () => frameEl, body: { appendChild() {} } },
+    URL, URLSearchParams, fetch: async () => ({ ok: false }),
+    setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    setInterval() { return 1; }, clearInterval() {}, WebSocket: class {}, console,
+  });
+  vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), ctx);
+
+  const req = vm.runInContext('handle({ op: "page" })', ctx);
+  await new Promise(r => setImmediate(r));
+  // Wrong origin from the same contentWindow must be ignored.
+  listeners[0]({ source: frameEl.contentWindow, origin: "https://evil.example", data: { streamerz: true, ready: true } });
+  await new Promise(r => setImmediate(r));
+  assert.equal(posted.length, 0);
+
+  // Valid TikTok origin readies the frame and posts the request.
+  listeners[0]({ source: frameEl.contentWindow, origin: "https://www.tiktok.com", data: { streamerz: true, ready: true } });
+  await new Promise(r => setImmediate(r));
+  assert.equal(posted.length, 1);
+
+  // Closing the context while a request is in flight resolves it cleanly and clears its 30s timer.
+  await vm.runInContext("closeContext()", ctx);
+  const res = await req;
+  assert.equal(removed, true);
+  assert.equal(res.error, "Streamerz closed");
+  assert.equal(timers.size, 0);
+});
+
+test("offscreen.js ignores null runtime messages", () => {
+  let onMsg;
+  const frameEl = { contentWindow: null };
+  const ctx = vm.createContext({
+    document: { createElement: () => frameEl, body: { append() {} } },
+    window: { addEventListener() {} },
+    chrome: { runtime: { id: "ext", onMessage: { addListener(f) { onMsg = f; } } } },
+    setTimeout, clearTimeout,
+  });
+  vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/offscreen.js", import.meta.url), "utf8"), ctx);
+  assert.equal(onMsg(null, { id: "ext" }, () => {}), undefined);
+});
+
+test("frame.js survives malformed rehydration JSON on search and rejects non-extension origins", async () => {
+  const messages = [];
+  const listeners = [];
+  const fetched = [];
+  const parent = { postMessage(m, origin) { messages.push({ m, origin }); } };
+  const windowObj = {
+    parent,
+    byted_acrawler: {},
+    addEventListener(type, fn) { if (type === "message") listeners.push(fn); },
+    fetch: async url => { fetched.push(url); return { status: 200, text: async () => '{"status_code":0}' }; },
+  };
+  vm.runInNewContext(readFileSync(new URL("../assets/tiktok-extension/frame.js", import.meta.url), "utf8"), {
+    window: windowObj,
+    fetch: windowObj.fetch,
+    parent,
+    location: { pathname: "/live/history/center", hash: "", search: "" },
+    document: {
+      referrer: "",
+      cookie: "",
+      getElementById: () => ({ textContent: "{corrupt json" }),
+    },
+    sessionStorage: { getItem: () => null, setItem() {} },
+    history: { state: null, replaceState() {} },
+    URL, URLSearchParams,
+    performance: {
+      setResourceTimingBufferSize() {},
+      getEntriesByType: () => [{ name: "https://webcast.tiktok.com/webcast/room/?device_id=42&aid=1988" }],
+    },
+    setTimeout() {}, Function,
+  });
+
+  // Forged origin with chrome-extension:// prefix but invalid characters must be rejected.
+  await listeners[0]({ source: parent, origin: "chrome-extension://bad.origin/evil", data: { streamerz: true, id: 1, request: { op: "page" } } });
+  assert.equal(messages.some(m => m.m.id === 1), false);
+
+  // Search succeeds even when rehydration JSON is malformed.
+  await listeners[0]({
+    source: parent,
+    origin: "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc",
+    data: { streamerz: true, id: 2, request: { op: "search", query: "creator" } },
+  });
+  const reply = messages.find(m => m.m.id === 2);
+  assert.equal(reply.m.result.status, 200);
+  assert.match(fetched[0], /keyword=creator/);
 });

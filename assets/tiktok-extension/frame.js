@@ -47,6 +47,7 @@
     || performance.getEntriesByType("resource").some(e => /[?&]X-(Bogus|Gnarly)=/.test(e.name))
     || !/\[native code\]/.test(Function.prototype.toString.call(window.fetch));
   async function request(m) {
+    if (!m || typeof m !== "object") throw new Error("invalid request");
     if (m.op === "page") {
       const params = common();
       if (!params) throw new Error("TikTok hasn't finished loading. Try again.");
@@ -57,7 +58,10 @@
       const params = common();
       if (!params) throw new Error("TikTok hasn't finished loading. Try again.");
       for (const k of Object.keys(params)) if (k.startsWith("X-") || k === "msToken") delete params[k];
-      const ctx = JSON.parse(document.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__")?.textContent || "{}").__DEFAULT_SCOPE__?.["webapp.app-context"];
+      let ctx;
+      try {
+        ctx = JSON.parse(document.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__")?.textContent || "{}").__DEFAULT_SCOPE__?.["webapp.app-context"];
+      } catch {}
       Object.assign(params, { aid: "1988", app_name: "tiktok_web", channel: "tiktok_web", keyword: m.query,
         count: "12", cursor: "0", offset: "0", from_page: "search", is_non_personalized_search: "0", odinId: ctx?.user?.uid || "",
         web_search_code: JSON.stringify({ tiktok: { client_params_x: { search_engine: {
@@ -70,8 +74,9 @@
     return { status: res.status, body: await res.text() };
   }
   window.addEventListener("message", async e => {
-    if (e.source !== parent || (e.origin !== parentOrigin && !e.origin.startsWith("moz-extension://") && !e.origin.startsWith("chrome-extension://")) || e.data?.streamerz !== true) return;
-    if (e.origin.startsWith("moz-extension://") || e.origin.startsWith("chrome-extension://")) parentOrigin = e.origin;
+    const fromExt = extension(e.origin);
+    if (e.source !== parent || (e.origin !== parentOrigin && !fromExt) || e.data?.streamerz !== true) return;
+    if (fromExt) parentOrigin = fromExt;
     let result;
     try { result = await request(e.data.request); } catch (err) { result = { error: String(err.message || err) }; }
     send({ id: e.data.id, result });
