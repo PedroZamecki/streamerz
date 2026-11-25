@@ -49,6 +49,8 @@ pub struct ActionsPage {
     select_after: Option<String>,
     error: Option<crate::error::StreamerzError>,
     _subscriptions: Vec<Subscription>,
+    /// The open action's panes' subscriptions, dropped with the panes.
+    editor_subscriptions: Vec<Subscription>,
 }
 
 impl ActionsPage {
@@ -86,6 +88,7 @@ impl ActionsPage {
             select_after: None,
             error: None,
             _subscriptions: vec![subscription],
+            editor_subscriptions: Vec::new(),
         };
         page.sync_editor(window, cx);
         page
@@ -127,6 +130,7 @@ impl ActionsPage {
         if !editor.is_object() {
             self.triggers = None;
             self.subs = None;
+            self.editor_subscriptions.clear();
             return;
         }
         match &self.triggers {
@@ -142,11 +146,11 @@ impl ActionsPage {
                         cx,
                     )
                 });
-                self._subscriptions.push(
-                    cx.subscribe_in(&pane, window, |page, _, event: &PaneEvent, window, cx| {
-                        page.pane_event(Pane::Triggers, event, window, cx)
-                    }),
-                );
+                self.editor_subscriptions.push(cx.subscribe_in(
+                    &pane,
+                    window,
+                    |page, _, event: &PaneEvent, window, cx| page.pane_event(Pane::Triggers, event, window, cx),
+                ));
                 self.triggers = Some(pane);
             }
         }
@@ -155,11 +159,11 @@ impl ActionsPage {
             None => {
                 let pane =
                     cx.new(|cx| TreePane::new("subs", editor["subs"].clone(), true, Options::default(), window, cx));
-                self._subscriptions.push(
-                    cx.subscribe_in(&pane, window, |page, _, event: &PaneEvent, window, cx| {
-                        page.pane_event(Pane::Subs, event, window, cx)
-                    }),
-                );
+                self.editor_subscriptions.push(cx.subscribe_in(
+                    &pane,
+                    window,
+                    |page, _, event: &PaneEvent, window, cx| page.pane_event(Pane::Subs, event, window, cx),
+                ));
                 self.subs = Some(pane);
             }
         }
