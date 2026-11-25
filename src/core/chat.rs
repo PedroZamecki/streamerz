@@ -943,26 +943,38 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 /// The line a request is about: one in the chat (`seq`), or a person of the Community (`platform` and
 /// `userId`), who stands for their latest line, or for what the Community knows of them.
 fn line_of(engine: &Rc<Engine>, request: &Value) -> Result<Line, String> {
+    let platform = request["platform"].as_str().filter(|p| !p.is_empty());
+    if let Some(platform) = platform.filter(|p| !PLATFORMS.contains(p)) {
+        return Err(format!("unknown platform {platform}"));
+    }
     if let Some(seq) = request["seq"].as_u64() {
         return engine
             .chat_line(seq)
+            .filter(|line| platform.is_none_or(|p| p == line.platform))
             .ok_or_else(|| "that line has left the chat".to_owned());
     }
     if let Some(msg_id) = request["msgId"].as_str().filter(|m| !m.is_empty()) {
-        let platform = request["platform"].as_str().unwrap_or_default();
+        let platform = platform.ok_or("platform: the message's platform")?;
         return Ok(Line {
             platform: platform.to_owned(),
             msg_id: msg_id.to_owned(),
             ..Default::default()
         });
     }
-    if let Some(user) = request["user"].as_str().filter(|u| !u.is_empty()) {
-        let username = user.trim_start_matches('@');
-        let platform = request["platform"].as_str().filter(|p| !p.is_empty());
+    if let Some(user) = request["user"]
+        .as_str()
+        .filter(|u| !u.is_empty() && request["userId"].is_null())
+    {
+        let username = user.trim().trim_start_matches('@');
+        let folded = username.to_lowercase();
         let (_, _, lines) = engine.chat_sync(u64::MAX, 0);
         if let Some(l) = lines.into_iter().rev().find(|l| {
             (platform.is_none() || platform == Some(l.platform.as_str()))
-                && (l.user.eq_ignore_ascii_case(username) || l.user_id.eq_ignore_ascii_case(username))
+                && (l.user_id == username
+                    || l.handle
+                        .as_deref()
+                        .is_some_and(|handle| handle.trim_start_matches('@').to_lowercase() == folded)
+                    || l.user.trim_start_matches('@').to_lowercase() == folded)
         }) {
             return Ok(l);
         }
@@ -984,7 +996,7 @@ fn line_of(engine: &Rc<Engine>, request: &Value) -> Result<Line, String> {
                 }
             }
         }
-        let plat = platform.filter(|p| PLATFORMS.contains(p)).unwrap_or("twitch");
+        let plat = platform.unwrap_or("twitch");
         return Ok(Line {
             platform: plat.to_owned(),
             user_id: username.to_owned(),
@@ -1453,6 +1465,9 @@ fn card_extra(engine: &Rc<Engine>, line: &Line, act: &str) {
 /// A message's moderation. Banning asks first through a core prompt unless `confirmed`.
 fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let line = line_of(engine, request)?;
+    if request["user"].is_string() && request["seq"].is_null() && request["userId"].is_null() {
+        return Err("seq or platform and userId: the chatter to moderate".into());
+    }
     let act = request["act"].as_str().unwrap_or_default();
     if matches!(act, "unban" | "mod" | "unmod") {
         if !card_extras(engine, &line).contains(&act) {
@@ -1461,23 +1476,14 @@ fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         card_extra(engine, &line, act);
         return Ok(json!({"accepted": true}));
     }
-    if (act == "unpin" || act == "pin") && !line.msg_id.is_empty() {
-        let (me, _) = crate::roles::get(&line.platform);
-        if me.moderates() {
-            let moderation = if act == "unpin" {
-                Moderate::Unpin
-            } else {
-                let seconds = request["secs"].as_u64().unwrap_or(0);
-                if seconds != 0 && !(30..=1800).contains(&seconds) {
-                    return Err("secs: 30 to 1800, or 0 until the stream ends".into());
-                }
-                Moderate::Pin((seconds > 0).then_some(seconds))
-            };
-            engine.moderate(&line, moderation);
-            return Ok(json!({"accepted": true}));
-        }
-    }
-    if !actions(&line, true).contains(&act) {
+    // A Twitch pin can be managed from the pin banner, even after its line left the log.
+    let pin = matches!(act, "pin" | "unpin")
+        && line.platform == "twitch"
+        && !line.msg_id.is_empty()
+        && !line.deleted
+        && !line.local
+        && crate::roles::get("twitch").0.moderates();
+    if !pin && !actions(&line, true).contains(&act) {
         return Err(format!("{act} is not possible on that line"));
     }
     let moderation = match act {
@@ -1492,8 +1498,9 @@ fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }
         "timeout" => {
             let seconds = request["secs"].as_u64().unwrap_or(0);
-            if !(1..=1_209_600).contains(&seconds) {
-                return Err("secs: 1 to 1209600".into());
+            let max = if line.platform == "kick" { 604_800 } else { 1_209_600 };
+            if !(1..=max).contains(&seconds) {
+                return Err(format!("secs: 1 to {max}"));
             }
             Moderate::Timeout(seconds)
         }
@@ -1930,6 +1937,44 @@ mod tests {
             let restarted = &read_cursor(json!(u64::MAX))["chat"];
             assert_eq!(restarted["reset"], true);
             assert_eq!(restarted["seq"], current["seq"]);
+        });
+    }
+
+    #[test]
+    fn kick_chat_moderation_uses_the_selected_id_and_limits_timeout_duration() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.window.chat.save_history = true);
+            engine
+                .inject_chat("kick", "OldName", "42", "viewer", "hello", &json!({}))
+                .unwrap();
+            let seq = engine.chat_last_seq();
+            crate::roles::set("kick", crate::roles::Role::Broadcaster, "7");
+            let fakes = crate::scenario::fakes::install(&engine, &json!({"kick":{}}), None);
+            assert!(act(
+                &engine,
+                &json!({"seq":seq, "platform":"twitch", "act":"ban", "confirmed":true})
+            )
+            .is_err());
+            assert!(act(
+                &engine,
+                &json!({"platform":"kick", "user":"OldName", "act":"ban", "confirmed":true})
+            )
+            .is_err());
+            assert!(act(&engine, &json!({"seq":seq, "act":"pin"})).is_err());
+            assert!(act(&engine, &json!({"seq":seq, "act":"timeout", "secs":604801})).is_err());
+            act(&engine, &json!({"seq":seq, "act":"timeout", "secs":604800})).unwrap();
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            let calls = fakes.calls.borrow();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["call"], "banId");
+            assert_eq!(calls[0]["userId"], 42);
+            assert_eq!(calls[0]["duration"], 604800);
+            crate::roles::clear("kick");
+            crate::scenario::fakes::uninstall();
         });
     }
 
@@ -2759,6 +2804,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(card_at["card"]["user"], "PedroZamecki");
+            engine
+                .inject_chat("youtube", "@Ágata", "UCaBc", "viewer", "hello", &json!({}))
+                .unwrap();
+            let card = request_sync(&engine, json!({"op":"card", "platform":"youtube", "user":"@ágata"})).unwrap();
+            assert_eq!(card["card"]["userId"], "UCaBc");
         });
     }
 

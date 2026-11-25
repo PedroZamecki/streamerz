@@ -2312,8 +2312,18 @@ impl Engine {
                 },
                 ("twitch", Moderate::Unpin) => twitch("DELETE", "chat/pins", id(), None).await,
                 ("kick", Moderate::Delete) => crate::kick::delete_message(&e, &e.cfg, &l.msg_id).await,
-                ("kick", Moderate::Timeout(s)) => e.kick_start().timeout_user(&l.user, s, "").await,
-                ("kick", Moderate::Ban) => e.kick_start().ban_user(&l.user, "").await,
+                ("kick", Moderate::Timeout(_) | Moderate::Ban) => {
+                    let duration = match act {
+                        Moderate::Timeout(seconds) => Some(seconds),
+                        _ => None,
+                    };
+                    // By ID: the name may have changed since the line was sent.
+                    match (l.user_id.parse::<u64>().ok().filter(|id| *id != 0), duration) {
+                        (Some(id), _) => e.kick_start().ban_user_id(id, duration, "").await,
+                        (None, Some(seconds)) => e.kick_start().timeout_user(&l.user, seconds, "").await,
+                        (None, None) => e.kick_start().ban_user(&l.user, "").await,
+                    }
+                }
                 ("youtube", Moderate::Delete) => e
                     .youtube_start()
                     .data(
