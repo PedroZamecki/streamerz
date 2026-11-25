@@ -80,10 +80,11 @@ impl Engine {
         let mut out = Map::new();
         if let Some(Value::Object(map)) = o.get("settings") {
             for (k, v) in map {
-                out.insert(
-                    self.expand(ctx, k).trim().to_string(),
-                    typed(&self.expand(ctx, &crate::vars::text(v))),
-                );
+                let key = self.expand(ctx, k).trim().to_string();
+                if key.is_empty() {
+                    continue;
+                }
+                out.insert(key, typed(&self.expand(ctx, &crate::vars::text(v))));
             }
         }
         Value::Object(out)
@@ -117,7 +118,7 @@ impl Engine {
                     ("cropBottom", "cropBottom"),
                 ] {
                     if let Some(v) = self.obs_number(ctx, o, key, key)? {
-                        transform.insert(put.into(), json!(v.max(0.0) as i64));
+                        transform.insert(put.into(), json!(v.clamp(0.0, 100_000.0).round() as i64));
                     }
                 }
                 if transform.is_empty() {
@@ -135,21 +136,21 @@ impl Engine {
             99751 => {
                 let input = text(ctx, "inputName");
                 let level = self.obs_number(ctx, o, "level", "Level")?.ok_or("no level given")?;
-                let target = volume_mul(level, n(o, "unit") as u64 == 1);
-                let fade = self.duration_number(ctx, o, "fade").max(0.0) as u64;
+                let target = volume_mul(level, n(o, "unit") as i64 == 1).clamp(0.0, 20.0);
+                let fade = self.duration_number(ctx, o, "fade").clamp(0.0, 3_600_000.0) as u64;
                 if fade == 0 {
                     self.obs_do(
                         o,
                         ctx,
                         "SetInputVolume",
-                        json!({"inputName": input, "inputVolumeMul": target.min(20.0)}),
+                        json!({"inputName": input, "inputVolumeMul": target}),
                     )
                     .await?;
                 } else {
                     let now = self
                         .obs_do(o, ctx, "GetInputVolume", json!({"inputName": input}))
                         .await?;
-                    let from = now["inputVolumeMul"].as_f64().unwrap_or(0.0);
+                    let from = now["inputVolumeMul"].as_f64().unwrap_or(0.0).clamp(0.0, 20.0);
                     // Ten steps a second at most, and no more than a hundred.
                     let steps = (fade / 100).clamp(1, 100);
                     for i in 1..=steps {
@@ -161,7 +162,9 @@ impl Engine {
                             json!({"inputName": input, "inputVolumeMul": mul.clamp(0.0, 20.0)}),
                         )
                         .await?;
-                        tokio::time::sleep(Duration::from_millis(fade / steps)).await;
+                        if i < steps {
+                            tokio::time::sleep(Duration::from_millis(fade / steps)).await;
+                        }
                     }
                 }
             }
@@ -170,7 +173,7 @@ impl Engine {
                     "OBS_MONITORING_TYPE_NONE",
                     "OBS_MONITORING_TYPE_MONITOR_ONLY",
                     "OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT",
-                ][(n(o, "monitor") as usize).min(2)];
+                ][(n(o, "monitor").max(0.0) as usize).min(2)];
                 self.obs_do(
                     o,
                     ctx,
@@ -181,8 +184,15 @@ impl Engine {
             }
             // Studio Mode: on, off or toggle.
             99753 => {
-                let now = self.obs_do(o, ctx, "GetStudioModeEnabled", json!({})).await?;
-                let on = new_state(n(o, "state"), now["studioModeEnabled"].as_bool().unwrap_or(false));
+                let state = n(o, "state");
+                let cur = if state as i64 == 2 {
+                    self.obs_do(o, ctx, "GetStudioModeEnabled", json!({})).await?["studioModeEnabled"]
+                        .as_bool()
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let on = new_state(state, cur);
                 self.obs_do(o, ctx, "SetStudioModeEnabled", json!({"studioModeEnabled": on}))
                     .await?;
                 ctx.args.insert("obsStudioMode".into(), on.into());
@@ -211,16 +221,21 @@ impl Engine {
                         o,
                         ctx,
                         "SetCurrentSceneTransitionDuration",
-                        json!({"transitionDuration": ms.clamp(50.0, 20000.0) as i64}),
+                        json!({"transitionDuration": ms.clamp(50.0, 20000.0).round() as i64}),
                     )
                     .await?;
                 }
             }
             99757 => {
-                let request =
-                    ["StartVirtualCam", "StopVirtualCam", "ToggleVirtualCam"][(n(o, "state") as usize).min(2)];
+                let state = (n(o, "state").max(0.0) as usize).min(2);
+                let request = ["StartVirtualCam", "StopVirtualCam", "ToggleVirtualCam"][state];
                 let got = self.obs_do(o, ctx, request, json!({})).await?;
-                if let Some(on) = got["outputActive"].as_bool() {
+                let on = match state {
+                    0 => Some(true),
+                    1 => Some(false),
+                    _ => got["outputActive"].as_bool(),
+                };
+                if let Some(on) = on {
                     ctx.args.insert("obsVirtualCamera".into(), on.into());
                 }
             }
@@ -279,14 +294,13 @@ impl Engine {
                 )
                 .await?;
             }
-            // Shows a source for a while, then hides it: one step instead of show, wait, hide.
             // Output: start, stop or toggle one by name (a multistream or vertical canvas plugin's too).
             99766 => {
                 let output = text(ctx, "outputName");
                 if output.trim().is_empty() {
                     return Err("no output named".into());
                 }
-                let request = ["StartOutput", "StopOutput", "ToggleOutput"][(n(o, "state") as usize).min(2)];
+                let request = ["StartOutput", "StopOutput", "ToggleOutput"][(n(o, "state").max(0.0) as usize).min(2)];
                 let got = self
                     .obs_do(o, ctx, request, json!({"outputName": output.trim()}))
                     .await?;
@@ -341,6 +355,7 @@ impl Engine {
                 )
                 .await?;
             }
+            // Shows a source for a while, then hides it: one step instead of show, wait, hide.
             99765 => {
                 let (scene, id) = self.obs_item(ctx, o).await?;
                 let millis = self.duration_number(ctx, o, "duration").clamp(0.0, 3_600_000.0) as u64;
@@ -388,5 +403,146 @@ mod tests {
         assert!((volume_mul(0.0, true) - 1.0).abs() < 1e-9);
         assert!((volume_mul(-20.0, true) - 0.1).abs() < 1e-9);
         assert_eq!(volume_mul(-5.0, false), 0.0);
+    }
+
+    fn obj(v: Value) -> Obj {
+        v.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn obs_tools_dispatch_requests_and_clamp_values() {
+        use crate::engine::tests::{engine, run};
+        use crate::ports::fakes::FakeObs;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let e = engine(json!({}));
+        let obs = Rc::new(FakeObs::default());
+        obs.answer("GetSceneItemId", json!({"sceneItemId": 7}));
+        obs.answer("GetInputVolume", json!({"inputVolumeMul": 0.0}));
+        obs.answer("GetStudioModeEnabled", json!({"studioModeEnabled": true}));
+        obs.answer("ToggleVirtualCam", json!({"outputActive": true}));
+        obs.answer(
+            "GetLastReplayBufferReplay",
+            json!({"savedReplayPath": "/tmp/replay.mkv"}),
+        );
+        obs.answer("GetSceneItemLocked", json!({"sceneItemLocked": false}));
+        for req in [
+            "SetSceneItemTransform",
+            "SetInputVolume",
+            "SetStudioModeEnabled",
+            "StartVirtualCam",
+            "StopVirtualCam",
+            "SetInputSettings",
+            "SetSceneItemLocked",
+            "SetInputAudioSyncOffset",
+            "SetInputAudioBalance",
+        ] {
+            obs.answer(req, json!({}));
+        }
+        e.set_obs(obs.clone());
+
+        run(async move {
+            let mut ctx = Ctx {
+                args: Obj::new(),
+                group: String::new(),
+            };
+            // 99750: empty transform errors; filled transform rounds crop and scales percent.
+            assert!(e
+                .obs_tool(&mut ctx, &obj(json!({"sceneName": "S", "sourceName": "Cam"})), 99750)
+                .await
+                .is_err());
+            e.obs_tool(
+                &mut ctx,
+                &obj(json!({"sceneName": "S", "sourceName": "Cam", "x": "10.5", "scale": "50", "cropLeft": "4.7"})),
+                99750,
+            )
+            .await
+            .unwrap();
+
+            // 99751: extreme dB clamps to 20.0 before fade interpolation and skips trailing sleep.
+            e.obs_tool(
+                &mut ctx,
+                &obj(json!({"inputName": "Mic", "level": "10000", "unit": 1, "fade": 200})),
+                99751,
+            )
+            .await
+            .unwrap();
+
+            // 99753: explicit on avoids GetStudioModeEnabled; toggle queries it.
+            e.obs_tool(&mut ctx, &obj(json!({"state": 0})), 99753).await.unwrap();
+            assert_eq!(ctx.args["obsStudioMode"], json!(true));
+            e.obs_tool(&mut ctx, &obj(json!({"state": 2})), 99753).await.unwrap();
+            assert_eq!(ctx.args["obsStudioMode"], json!(false));
+
+            // 99757: start, stop, toggle all populate obsVirtualCamera.
+            e.obs_tool(&mut ctx, &obj(json!({"state": 0})), 99757).await.unwrap();
+            assert_eq!(ctx.args["obsVirtualCamera"], json!(true));
+            e.obs_tool(&mut ctx, &obj(json!({"state": 1})), 99757).await.unwrap();
+            assert_eq!(ctx.args["obsVirtualCamera"], json!(false));
+            e.obs_tool(&mut ctx, &obj(json!({"state": 2})), 99757).await.unwrap();
+            assert_eq!(ctx.args["obsVirtualCamera"], json!(true));
+
+            // 99762, 99764 (skips empty keys), 99767, 99768, 99769.
+            e.obs_tool(&mut ctx, &obj(json!({})), 99762).await.unwrap();
+            assert_eq!(ctx.args["obsReplayPath"], json!("/tmp/replay.mkv"));
+            e.obs_tool(
+                &mut ctx,
+                &obj(json!({"inputName": "Txt", "settings": {"": "skip", "size": "24", "bold": "true"}})),
+                99764,
+            )
+            .await
+            .unwrap();
+            e.obs_tool(
+                &mut ctx,
+                &obj(json!({"sceneName": "S", "sourceName": "Cam", "state": 2})),
+                99767,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ctx.args["obsSourceLocked"], json!(true));
+            e.obs_tool(&mut ctx, &obj(json!({"inputName": "Mic", "offset": "-2000"})), 99768)
+                .await
+                .unwrap();
+            e.obs_tool(&mut ctx, &obj(json!({"inputName": "Mic", "balance": "75"})), 99769)
+                .await
+                .unwrap();
+        });
+
+        let seen = obs.seen.borrow();
+        let tr = seen
+            .iter()
+            .find(|(_, r, _)| r == "SetSceneItemTransform")
+            .expect("transform sent");
+        assert_eq!(tr.2["sceneItemTransform"]["scaleX"], json!(0.5));
+        assert_eq!(tr.2["sceneItemTransform"]["cropLeft"], json!(5));
+
+        let vols: Vec<f64> = seen
+            .iter()
+            .filter(|(_, r, _)| r == "SetInputVolume")
+            .map(|(_, _, d)| d["inputVolumeMul"].as_f64().unwrap())
+            .collect();
+        assert_eq!(vols, vec![10.0, 20.0], "target clamped before fade interpolation");
+
+        let studio_gets = seen.iter().filter(|(_, r, _)| r == "GetStudioModeEnabled").count();
+        assert_eq!(studio_gets, 1, "only toggle queries studio mode");
+
+        let settings = seen
+            .iter()
+            .find(|(_, r, _)| r == "SetInputSettings")
+            .expect("input settings sent");
+        assert!(settings.2["inputSettings"].get("").is_none());
+        assert_eq!(settings.2["inputSettings"]["size"], json!(24));
+        assert_eq!(settings.2["inputSettings"]["bold"], json!(true));
+
+        let sync = seen
+            .iter()
+            .find(|(_, r, _)| r == "SetInputAudioSyncOffset")
+            .expect("sync offset sent");
+        assert_eq!(sync.2["inputAudioSyncOffset"], json!(-950));
+
+        let bal = seen
+            .iter()
+            .find(|(_, r, _)| r == "SetInputAudioBalance")
+            .expect("balance sent");
+        assert_eq!(bal.2["inputAudioBalance"], json!(0.75));
     }
 }
