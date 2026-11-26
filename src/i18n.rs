@@ -235,6 +235,22 @@ mod tests {
     }
 
     #[test]
+    fn a_value_with_braces_is_not_filled_again() {
+        // A chatter named "{total}" stays "{total}".
+        assert_eq!(
+            fill("{n} of {total}", &[("n", "{total}"), ("total", "5")]),
+            "{total} of 5"
+        );
+        assert_eq!(fill("{a}{a}", &[("a", "x")]), "xx");
+        assert_eq!(fill("{unknown} {a}", &[("a", "x")]), "{unknown} x");
+        assert_eq!(fill("open { and {a", &[("a", "x")]), "open { and {a");
+        assert_eq!(fill("{{a}}", &[("a", "x")]), "{x}");
+        assert_eq!(fill("ünï {a} 😀", &[("a", "çã")]), "ünï çã 😀");
+        assert_eq!(fill("", &[("a", "x")]), "");
+        assert_eq!(fill("{}", &[("", "empty")]), "empty");
+    }
+
+    #[test]
     fn unknown_things_fall_back() {
         set("pt_BR");
         assert_eq!(LOCALES[ACTIVE.load(Ordering::Relaxed)].0, "pt_BR");
