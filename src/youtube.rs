@@ -970,14 +970,7 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<YouTubeAccount, S
         ],
     )
     .await?;
-    let headers = [("Authorization".to_string(), format!("Bearer {}", t.access))];
-    let r = crate::http::request(
-        "GET",
-        &format!("{YOUTUBE_API_BASE}/channels?part=snippet&mine=true"),
-        &headers,
-        b"",
-    )
-    .await?;
+    let r = call(&t.access, "GET", "channels?part=snippet&mine=true", None).await?;
     let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
     let ch = &v["items"][0];
     let channel_id = ch["id"]
@@ -1086,12 +1079,11 @@ impl YouTubeRunner {
         if broadcast.is_empty() && !self.live.borrow().1.is_empty() {
             return Ok(self.live.borrow().1.clone());
         }
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let url = format!(
-            "{YOUTUBE_API_BASE}/videos?part=liveStreamingDetails&id={}",
+        let path = format!(
+            "videos?part=liveStreamingDetails&id={}",
             crate::commands::url_encode(&video)
         );
-        let r = crate::http::request("GET", &url, &headers, b"").await?;
+        let r = call(token, "GET", &path, None).await?;
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
         let id = v
             .pointer("/items/0/liveStreamingDetails/activeLiveChatId")
@@ -1113,7 +1105,7 @@ impl YouTubeRunner {
 
         let live_chat_id = self.live_chat_id(broadcast, &token).await?;
 
-        let url = format!("{YOUTUBE_API_BASE}/liveChat/messages?part=snippet");
+        let path = "liveChat/messages?part=snippet";
         let payload = json!({
             "snippet": {
                 "liveChatId": live_chat_id,
@@ -1124,12 +1116,8 @@ impl YouTubeRunner {
             }
         });
 
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        let resp = call(&token, "POST", path, Some(&body)).await?;
         if (200..300).contains(&resp.status) {
             // Read the chat again soon, so the message shows up where it was sent from.
             let engine = self.engine.clone();
@@ -1171,20 +1159,16 @@ impl YouTubeRunner {
     async fn update_snippet(&self, broadcast: &str, update: &VideoUpdate) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
         let video = self.target(broadcast).await?;
-        let auth = ("Authorization".to_string(), format!("Bearer {token}"));
         let part = if update.privacy.is_some() {
             "snippet,status"
         } else {
             "snippet"
         };
-        let r = crate::http::request(
+        let r = call(
+            &token,
             "GET",
-            &format!(
-                "{YOUTUBE_API_BASE}/videos?part={part}&id={}",
-                crate::commands::url_encode(&video)
-            ),
-            std::slice::from_ref(&auth),
-            b"",
+            &format!("videos?part={part}&id={}", crate::commands::url_encode(&video)),
+            None,
         )
         .await?;
         if !(200..300).contains(&r.status) {
@@ -1192,12 +1176,11 @@ impl YouTubeRunner {
         }
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
         let body = video_update_body(&video, &v["items"][0], update)?;
-        let headers = [auth, ("Content-Type".to_string(), "application/json".to_string())];
-        let r = crate::http::request(
+        let r = call(
+            &token,
             "PUT",
-            &format!("{YOUTUBE_API_BASE}/videos?part={part}"),
-            &headers,
-            &serde_json::to_vec(&body).unwrap_or_default(),
+            &format!("videos?part={part}"),
+            Some(&serde_json::to_vec(&body).unwrap_or_default()),
         )
         .await?;
         if (200..300).contains(&r.status) {
@@ -1267,12 +1250,8 @@ impl YouTubeRunner {
             path = path.replace("{chat}", &crate::commands::url_encode(&chat));
             body = body.replace("\"{chat}\"", &Value::from(chat).to_string());
         }
-        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-        if !body.is_empty() {
-            headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        }
-        let url = format!("{YOUTUBE_API_BASE}/{}", path.trim_start_matches('/'));
-        let r = crate::http::request(method, &url, &headers, body.as_bytes()).await?;
+        let body = (!body.is_empty()).then_some(body.as_bytes());
+        let r = call(&token, method, path.trim_start_matches('/'), body).await?;
         if !(200..300).contains(&r.status) {
             let said = serde_json::from_slice::<Value>(&r.body)
                 .ok()
@@ -1288,15 +1267,11 @@ impl YouTubeRunner {
 
         let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
-        let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
+        let path = "liveChat/bans?part=snippet";
         let payload = live_chat_ban_payload(live_chat_id, user_id, None);
 
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        let resp = call(&token, "POST", path, Some(&body)).await?;
         if (200..300).contains(&resp.status) {
             let id = ban_id(&resp.body)?;
             crate::core::moderation::remember_youtube(&self.engine, &id, user_id, live_chat_id, None);
@@ -1311,15 +1286,11 @@ impl YouTubeRunner {
 
         let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
-        let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
+        let path = "liveChat/bans?part=snippet";
         let payload = live_chat_ban_payload(live_chat_id, user_id, Some(duration));
 
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        let resp = call(&token, "POST", path, Some(&body)).await?;
         if (200..300).contains(&resp.status) {
             let id = ban_id(&resp.body)?;
             crate::core::moderation::remember_youtube(&self.engine, &id, user_id, live_chat_id, Some(duration));
@@ -1331,12 +1302,8 @@ impl YouTubeRunner {
 
     async fn remove_ban_api(&self, id: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let url = format!(
-            "{YOUTUBE_API_BASE}/liveChat/bans?id={}",
-            crate::commands::url_encode(id)
-        );
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        let path = format!("liveChat/bans?id={}", crate::commands::url_encode(id));
+        let resp = call(&token, "DELETE", &path, None).await?;
         // A 404: already lifted or run out, so it is forgotten all the same.
         if (200..300).contains(&resp.status) || resp.status == 404 {
             self.engine
@@ -1349,12 +1316,8 @@ impl YouTubeRunner {
 
     async fn delete_message_api(&self, message_id: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let url = format!(
-            "{YOUTUBE_API_BASE}/liveChat/messages?id={}",
-            crate::commands::url_encode(message_id)
-        );
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        let path = format!("liveChat/messages?id={}", crate::commands::url_encode(message_id));
+        let resp = call(&token, "DELETE", &path, None).await?;
         if (200..300).contains(&resp.status) {
             Ok(())
         } else {
@@ -1365,7 +1328,7 @@ impl YouTubeRunner {
     async fn add_moderator_api(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
         let live_chat_id = self.live_chat_id(broadcast, &token).await?;
-        let url = format!("{YOUTUBE_API_BASE}/liveChat/moderators?part=snippet");
+        let path = "liveChat/moderators?part=snippet";
         let payload = json!({
             "snippet": {
                 "liveChatId": live_chat_id,
@@ -1374,12 +1337,8 @@ impl YouTubeRunner {
                 }
             }
         });
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        let resp = call(&token, "POST", path, Some(&body)).await?;
         if (200..300).contains(&resp.status) {
             let value: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
             Ok(value["id"].as_str().unwrap_or_default().to_string())
@@ -1394,20 +1353,19 @@ impl YouTubeRunner {
             moderator_id.trim().to_string()
         } else {
             let live_chat_id = self.live_chat_id(broadcast, &token).await?;
-            let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
             let mut page_token = String::new();
             let mut pages = HashSet::new();
             let mut found = None;
             loop {
-                let mut url = format!(
-                    "{YOUTUBE_API_BASE}/liveChat/moderators?part=snippet&liveChatId={}&maxResults=50",
+                let mut path = format!(
+                    "liveChat/moderators?part=snippet&liveChatId={}&maxResults=50",
                     crate::commands::url_encode(&live_chat_id)
                 );
                 if !page_token.is_empty() {
-                    url.push_str("&pageToken=");
-                    url.push_str(&crate::commands::url_encode(&page_token));
+                    path.push_str("&pageToken=");
+                    path.push_str(&crate::commands::url_encode(&page_token));
                 }
-                let resp = crate::http::request("GET", &url, &headers, &[]).await?;
+                let resp = call(&token, "GET", &path, None).await?;
                 if !(200..300).contains(&resp.status) {
                     return Err(format!(
                         "YouTube list moderators error {}: {}",
@@ -1435,12 +1393,8 @@ impl YouTubeRunner {
             }
             found.ok_or_else(|| format!("YouTube: moderator {user_id} not found in live chat"))?
         };
-        let url = format!(
-            "{YOUTUBE_API_BASE}/liveChat/moderators?id={}",
-            crate::commands::url_encode(&target_id)
-        );
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        let path = format!("liveChat/moderators?id={}", crate::commands::url_encode(&target_id));
+        let resp = call(&token, "DELETE", &path, None).await?;
         if (200..300).contains(&resp.status) {
             Ok(())
         } else {
@@ -1463,15 +1417,11 @@ impl YouTubeRunner {
             .collect();
         let body = json!({"snippet": {"liveChatId": chat, "type": "pollEvent",
             "pollDetails": {"metadata": {"questionText": question, "options": opts}}}});
-        let headers = [
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let r = crate::http::request(
+        let r = call(
+            &token,
             "POST",
-            &format!("{YOUTUBE_API_BASE}/liveChat/messages?part=snippet"),
-            &headers,
-            &serde_json::to_vec(&body).unwrap_or_default(),
+            "liveChat/messages?part=snippet",
+            Some(&serde_json::to_vec(&body).unwrap_or_default()),
         )
         .await?;
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
@@ -1491,12 +1441,11 @@ impl YouTubeRunner {
             return Err("YouTube: no poll to end (only polls made here can be ended)".into());
         }
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let url = format!(
-            "{YOUTUBE_API_BASE}/liveChat/messages/transition?id={}&status=closed&part=snippet",
+        let path = format!(
+            "liveChat/messages/transition?id={}&status=closed&part=snippet",
             crate::commands::url_encode(&id)
         );
-        let r = crate::http::request("POST", &url, &headers, b"").await?;
+        let r = call(&token, "POST", &path, None).await?;
         if (200..300).contains(&r.status) {
             let mut poll = self.poll.borrow_mut();
             if *poll == id {
@@ -1542,18 +1491,11 @@ impl YouTubeRunner {
         let token = token(&self.engine, &self.cfg, false, false).await?;
         let video = self.video(broadcast)?;
         let duration = if duration_secs == 0 { 30 } else { duration_secs };
-        let url = format!(
-            "{YOUTUBE_API_BASE}/liveBroadcasts/cuepoint?id={}",
-            crate::commands::url_encode(&video)
-        );
+        let path = format!("liveBroadcasts/cuepoint?id={}", crate::commands::url_encode(&video));
         // A cuepoint resource, sent as is (no part, no snippet); it plays as soon as it can.
         let payload = json!({"cueType": "cueTypeAd", "durationSecs": duration});
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        let resp = call(&token, "POST", &path, Some(&body)).await?;
         if (200..300).contains(&resp.status) {
             Ok(())
         } else {
@@ -1753,9 +1695,8 @@ async fn find_next_broadcast(
     cfg: &Arc<watch::Sender<Config>>,
 ) -> Result<Option<(String, String)>, String> {
     let tok = token(engine, cfg, false, false).await?;
-    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
-    let url = format!("{YOUTUBE_API_BASE}/liveBroadcasts?part=snippet,status&mine=true&maxResults=10");
-    let res = crate::http::request("GET", &url, &headers, b"").await?;
+    let path = "liveBroadcasts?part=snippet,status&mine=true&maxResults=10";
+    let res = call(&tok, "GET", path, None).await?;
     if res.status != 200 {
         return Err(format!("YouTube broadcasts: HTTP {} {}", res.status, res.text()));
     }
@@ -1786,12 +1727,24 @@ fn remember_broadcasts(items: &[Value]) {
     crate::catalog::set("youtube.broadcasts", found);
 }
 
+/// Send a Data API request. Each endpoint handles its status and response body.
+async fn call(token: &str, method: &str, path: &str, body: Option<&[u8]>) -> Result<crate::http::Response, String> {
+    let url = format!("{YOUTUBE_API_BASE}/{path}");
+    let auth = ("Authorization".to_string(), format!("Bearer {token}"));
+    let mut headers = [auth, Default::default()];
+    let headers = if body.is_some() {
+        headers[1] = ("Content-Type".to_string(), "application/json".to_string());
+        &headers[..]
+    } else {
+        &headers[..1]
+    };
+    crate::http::request(method, &url, headers, body.unwrap_or_default()).await
+}
+
 /// One Data API GET as the broadcaster: the JSON answer, or YouTube's own error message.
 async fn api_get(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, path: &str) -> Result<Value, String> {
     let tok = token(engine, cfg, false, false).await?;
-    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
-    let url = format!("{YOUTUBE_API_BASE}/{}", path.trim_start_matches('/'));
-    let res = crate::http::request("GET", &url, &headers, b"").await?;
+    let res = call(&tok, "GET", path.trim_start_matches('/'), None).await?;
     let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
     if res.status == 200 {
         return Ok(v);
@@ -1840,9 +1793,7 @@ impl BackgroundApi {
         if self.cooling_down() {
             return None;
         }
-        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
-        let url = format!("{YOUTUBE_API_BASE}/{path}");
-        let r = crate::http::request("GET", &url, &headers, b"").await.ok()?;
+        let r = call(token, "GET", path, None).await.ok()?;
         let v: Value = serde_json::from_slice(&r.body).ok()?;
         if let Some(wait) = quota_cooldown(r.status, &v) {
             self.0.set(Some(Instant::now() + wait));
