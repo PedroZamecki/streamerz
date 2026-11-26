@@ -2199,9 +2199,10 @@ async fn create_all_subscriptions(
 
     // Twitch says what this account may have: nothing is assumed. What it refuses is told once, below.
     let mut refused = Vec::new();
+    MODERATE_ON.set(false);
     for (stype, ver, cond) in subs {
         match create_sub(sid, token, stype, ver, cond, auth_refused).await {
-            Sub::Made => {}
+            Sub::Made => MODERATE_ON.set(MODERATE_ON.get() || stype == "channel.moderate"),
             Sub::Refused => refused.push(stype),
             Sub::Stop => break,
         }
@@ -3488,28 +3489,12 @@ pub(crate) fn handle_notification(
             }
         }
         "channel.unban" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            event_user(&mut args, event, "user");
-            event_by(&mut args, event, "moderator", "createdBy");
-            args.insert("createdAt".into(), created_at("").into());
-            // EventSub has one unban for both; Streamer.bot has two triggers.
-            go(
-                engine,
-                T_USER_UNBANNED,
-                "User Unbanned",
-                "Twitch/Moderation",
-                "UserUnbanned",
-                &args,
-            );
-            go(
-                engine,
-                T_USER_UNTIMED_OUT,
-                "User Untimed Out",
-                "Twitch/Moderation",
-                "UserUntimedOut",
-                &args,
-            );
+            let args = unban_args(broadcaster, event, event);
+            // channel.unban is one event for both: channel.moderate says which it was. Without it, both.
+            if !MODERATE_ON.get() {
+                unbanned(engine, &args, true);
+                unbanned(engine, &args, false);
+            }
             crate::core::moderation::emit_linked_moderation_event(
                 engine,
                 "twitch",
@@ -3954,9 +3939,14 @@ pub(crate) fn handle_notification(
         }
         "channel.moderate" => {
             crate::core::moderation_activity::event(engine, event);
-            // Only shared chat's: this channel's own come as their own events.
+            // Only shared chat's and unbans: this channel's others come as their own events.
             let source = es(event, "/source_broadcaster_user_id");
             if source.is_empty() || source == broadcaster.user_id {
+                let action = es(event, "/action");
+                if matches!(action, "unban" | "untimeout") {
+                    let args = unban_args(broadcaster, event, &event[action]);
+                    unbanned(engine, &args, action == "unban");
+                }
                 return;
             }
             let action = es(event, "/action");
@@ -4332,6 +4322,31 @@ fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Ob
 }
 
 /// The event's `user_*` (or `{who}_user_*`) as the user arguments.
+/// The arguments of User Unbanned and User Untimed Out: who (from `user`) and by whom.
+fn unban_args(broadcaster: &TwitchAccount, event: &Value, user: &Value) -> Obj {
+    let mut args = Obj::new();
+    populate_broadcaster_vars(&mut args, broadcaster);
+    event_user(&mut args, user, "user");
+    event_by(&mut args, event, "moderator", "createdBy");
+    args.insert("createdAt".into(), created_at("").into());
+    args
+}
+
+/// User Unbanned (`ban`) or User Untimed Out.
+fn unbanned(engine: &Rc<Engine>, args: &Obj, ban: bool) {
+    let (kind, name, event) = if ban {
+        (T_USER_UNBANNED, "User Unbanned", "UserUnbanned")
+    } else {
+        (T_USER_UNTIMED_OUT, "User Untimed Out", "UserUntimedOut")
+    };
+    go(engine, kind, name, "Twitch/Moderation", event, args);
+}
+
+thread_local! {
+    /// Whether this session has channel.moderate, which tells an unban from a timeout's end.
+    static MODERATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn event_user(args: &mut Obj, e: &Value, who: &str) {
     // The user is `user_id`; the others are `target_user_id`, `moderator_user_id`...
     let pre = if who == "user" {
@@ -5735,6 +5750,39 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
         assert_eq!(lines, ["T bob False 600", "T eve True %duration%"], "{lines:?}");
+    }
+
+    #[test]
+    fn an_unban_and_a_timeout_s_end_fire_their_own_trigger() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "unbans", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": T_USER_UNBANNED, "enabled": true}, {"type": T_USER_UNTIMED_OUT, "enabled": true}],
+                "subActions": [crate::engine::tests::log("T %triggerName% %user% %createdByUsername%")]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let b = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            let moderate = |action: &str, login: &str| {
+                json!({"broadcaster_user_id": "7", "moderator_user_login": "mod", "action": action,
+                    action: {"user_id": "4", "user_login": login, "user_name": login}})
+            };
+            MODERATE_ON.set(true);
+            handle_notification(&engine, &b, &cfg, "channel.moderate", &moderate("untimeout", "ana"));
+            handle_notification(&engine, &b, &cfg, "channel.moderate", &moderate("unban", "bia"));
+            // With channel.moderate, channel.unban fires nothing more.
+            let unban = json!({"user_id": "4", "user_login": "bia", "moderator_user_login": "mod"});
+            handle_notification(&engine, &b, &cfg, "channel.unban", &unban);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            MODERATE_ON.set(false);
+        });
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.contains(&"T User Untimed Out ana mod".to_owned()), "{lines:?}");
+        assert!(lines.contains(&"T User Unbanned bia mod".to_owned()), "{lines:?}");
     }
 
     #[test]
