@@ -558,6 +558,17 @@ fn kick_slug(cfg: &Config) -> String {
 }
 
 impl LoadParams {
+    /// Whether a platform is set up (a login or a channel), so there are emotes to load.
+    fn wanted(&self) -> bool {
+        !self.tw_chan_id.is_empty()
+            || self.tw_broadcaster.is_some()
+            || self.tw_bot.is_some()
+            || !self.kick_slug.is_empty()
+            || !self.kick_uid.is_empty()
+            || self.kick_token.is_some()
+            || !self.yt_chan_id.is_empty()
+    }
+
     fn from_cfg(cfg: &Config) -> Self {
         let x = crate::host::image_scale();
         Self::with_scale(cfg, x)
@@ -660,6 +671,10 @@ fn stale_params(config: &Config) -> Option<LoadParams> {
         return None;
     }
     let p = LoadParams::from_cfg(config);
+    // No platform set up: nothing to ask anyone for.
+    if !p.wanted() {
+        return None;
+    }
     {
         let Ok(mut st) = store().lock() else { return None };
         if st.last_key == p.cache_key {
