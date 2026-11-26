@@ -2,7 +2,6 @@
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY: &str = "templateCountdowns";
 
@@ -26,13 +25,7 @@ pub struct Snapshot {
     pub deadline_ms: Option<u64>,
 }
 
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
-}
+pub use crate::fmt::now_ms;
 
 fn load(config: &Config, id: &str) -> Option<Countdown> {
     serde_json::from_value(config.rest.get(KEY)?.get(id)?.clone()).ok()

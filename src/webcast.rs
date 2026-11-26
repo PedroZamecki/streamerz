@@ -644,10 +644,7 @@ pub fn room_titled(title: &str) {
 }
 
 pub fn ws_url(room: u64) -> String {
-    let rtt = 100
-        + std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_millis() % 100);
+    let rtt = 100 + crate::fmt::unix_now().subsec_millis() % 100;
     format!(
         "wss://webcast-ws.tiktok.com/webcast/im/ws_proxy/ws_reuse_supplement/?version_code=180800\
          &device_platform=web&cookie_enabled=true&screen_width=1920&screen_height=1080\

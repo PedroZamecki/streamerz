@@ -83,7 +83,7 @@ fn files() -> [PathBuf; 2] {
 }
 
 fn now() -> i64 {
-    crate::fmt::unix_now().as_secs() as i64
+    crate::fmt::now_secs() as i64
 }
 
 /// Backs up the files now, into `root`.

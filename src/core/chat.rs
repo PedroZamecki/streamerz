@@ -860,7 +860,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let connected = list
         .iter()
         .any(|platform| platform["present"] == true && platform["connected"] == true);
-    let now_ms = crate::fmt::unix_now().as_millis() as u64;
+    let now_ms = crate::fmt::now_ms();
     let pins: Vec<Value> = engine
         .chat_pins()
         .iter()
@@ -2746,7 +2746,7 @@ mod tests {
                 title: "Best color?".into(),
                 prediction: false,
                 choices: vec![("Red".into(), 10), ("Blue".into(), 30)],
-                ends: Some(crate::fmt::unix_now().as_millis() as u64 + 60_000),
+                ends: Some(crate::fmt::now_ms() + 60_000),
                 over: None,
             };
             engine.chat_poll(poll);

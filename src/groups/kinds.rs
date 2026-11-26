@@ -101,9 +101,7 @@ pub fn time(text: &str) -> Option<(u32, u32)> {
     (h < 24 && m < 60).then_some((h, m))
 }
 
-fn now_ms() -> u64 {
-    crate::fmt::unix_now().as_millis() as u64
-}
+use crate::fmt::now_ms;
 
 /// A local day and time as milliseconds since 1970.
 fn local_ms(day: (i64, u32, u32), hour: u32, minute: u32) -> Option<u64> {

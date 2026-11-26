@@ -691,7 +691,7 @@ fn log(level: Level, line: String) {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
         }
-        s.log.push_back((level, fmt::unix_now().as_secs() as i64, line));
+        s.log.push_back((level, fmt::now_secs() as i64, line));
         s.logged += 1;
     });
     host::logged();

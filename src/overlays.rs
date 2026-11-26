@@ -248,9 +248,7 @@ thread_local! {
     static TRAILS: std::cell::RefCell<std::collections::HashMap<String, Trail>> = Default::default();
 }
 
-fn now_ms() -> u64 {
-    crate::fmt::unix_now().as_millis() as u64
-}
+use crate::fmt::now_ms;
 
 /// How many pages of the group are open now (the ones that listen to something).
 pub fn open_pages(group: &str) -> usize {

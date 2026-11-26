@@ -219,7 +219,7 @@ impl Engine {
                 args.insert("platformName".into(), platform_name(p).into());
                 match since {
                     Ok(Some(t)) => {
-                        let now = crate::fmt::unix_now().as_secs() as i64;
+                        let now = crate::fmt::now_secs() as i64;
                         args.insert("uptime".into(), duration(now - t).into());
                         Some(response.to_string())
                     }

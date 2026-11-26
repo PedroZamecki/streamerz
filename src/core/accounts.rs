@@ -402,7 +402,7 @@ async fn avatar(engine: &Rc<Engine>, p: P, bot: bool) -> Option<String> {
 /// and the page is told when either arrives.
 fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
     let key = format!("{}:{bot}:{name}", p.name());
-    let now = crate::fmt::unix_now().as_secs();
+    let now = crate::fmt::now_secs();
     let saved = kept(&key);
     let url = saved[0].as_str().unwrap_or_default().to_owned();
     // A new login looks again at once: the wait after a failed lookup was for the old one.
@@ -423,7 +423,7 @@ fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
             if !all.is_object() {
                 all = json!({});
             }
-            all[&key] = json!([url, crate::fmt::unix_now().as_secs()]);
+            all[&key] = json!([url, crate::fmt::now_secs()]);
             save_avatars(&all);
             crate::host::images_changed();
         });
@@ -607,7 +607,7 @@ fn channel_card(engine: &Rc<Engine>, p: P, name: &str) -> (Option<String>, Optio
         return (None, None);
     }
     let key = channel_key(p, &norm);
-    let now = crate::fmt::unix_now().as_secs();
+    let now = crate::fmt::now_secs();
     let entry = kept(&key);
     let (url, at, known) = (
         entry[0].as_str().unwrap_or_default().to_owned(),
@@ -635,7 +635,7 @@ fn channel_card(engine: &Rc<Engine>, p: P, name: &str) -> (Option<String>, Optio
                     new.to_owned()
                 }
             };
-            all[&key] = json!([keep(&url, 0), crate::fmt::unix_now().as_secs(), keep(&shown, 2)]);
+            all[&key] = json!([keep(&url, 0), crate::fmt::now_secs(), keep(&shown, 2)]);
             save_avatars(&all);
             crate::host::images_changed();
         });
@@ -702,7 +702,7 @@ fn browser_avatar(bridge: &crate::tiktok_bridge::Bridge) -> String {
             if !all.is_object() {
                 all = json!({});
             }
-            all[KEY] = json!([live, crate::fmt::unix_now().as_secs(), user]);
+            all[KEY] = json!([live, crate::fmt::now_secs(), user]);
             save_avatars(&all);
         }
         return live;
@@ -1840,10 +1840,7 @@ fn twitch_login(engine: &Rc<Engine>, bot: bool) {
                 {
                     let mut account =
                         crate::twitch::fetch_user(crate::twitch::CLIENT_ID, &token.access_token, None).await?;
-                    let expires_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs())
-                        + token.expires_in;
+                    let expires_at = crate::fmt::now_secs() + token.expires_in;
                     account.token = crate::twitch::TwitchToken {
                         access_token: token.access_token,
                         refresh_token: token.refresh_token,

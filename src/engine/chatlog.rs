@@ -441,9 +441,7 @@ impl Pin {
     }
 }
 
-fn now_ms() -> u64 {
-    crate::fmt::unix_now().as_millis() as u64
-}
+use crate::fmt::now_ms;
 
 /// Label and value rows about a chatter.
 type Facts = Vec<(String, String)>;
@@ -958,7 +956,7 @@ impl Engine {
                 platform: c.platform.clone(),
                 msg_id: c.msg_id.clone(),
                 time,
-                ts: crate::fmt::unix_now().as_millis() as i64,
+                ts: crate::fmt::now_ms() as i64,
                 user: c.user.clone(),
                 user_id: c.user_id.clone(),
                 handle,
@@ -2170,7 +2168,7 @@ impl Engine {
         log.push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
-            ts: crate::fmt::unix_now().as_millis() as i64,
+            ts: crate::fmt::now_ms() as i64,
             user: name,
             user_id: id,
             reply: reply_info,
@@ -2544,7 +2542,7 @@ pub fn event_line(kind: u32, a: &Obj) -> Option<Line> {
     let line = Line {
         platform: ev.platform.into(),
         time: crate::fmt::shown_time(&crate::fmt::now()),
-        ts: crate::fmt::unix_now().as_millis() as i64,
+        ts: crate::fmt::now_ms() as i64,
         user,
         user_id: get("userId"),
         text,

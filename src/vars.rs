@@ -62,7 +62,7 @@ fn generic(name: &str, format: Option<&str>) -> Option<String> {
         "time" => fmt::date(&t(), format.unwrap_or("hh:mm")),
         "longtime" => fmt::date(&t(), format.unwrap_or("hh:mm:ss")),
         "filedatetime" => fmt::date(&t(), format.unwrap_or("yyyyMMdd.hhmmss")),
-        "unixtime" => fmt::unix_now().as_secs().to_string(),
+        "unixtime" => fmt::now_secs().to_string(),
         "lf" => "\r\n".into(),
         _ => return None,
     })

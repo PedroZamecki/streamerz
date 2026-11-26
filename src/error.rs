@@ -647,7 +647,7 @@ pub fn record_active(key: impl Into<String>, error: StreamerzError) {
         return;
     }
     crate::report_error(&error);
-    let timestamp = crate::fmt::unix_now().as_secs() as i64;
+    let timestamp = crate::fmt::now_secs() as i64;
     if let Ok(mut list) = ACTIVE_ERRORS.lock() {
         list.retain(|entry| entry.key != key);
         if list.len() >= MAX_ACTIVE_ERRORS {

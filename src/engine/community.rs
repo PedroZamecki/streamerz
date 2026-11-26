@@ -129,9 +129,7 @@ fn file() -> std::path::PathBuf {
     crate::config_path().with_file_name("community.json")
 }
 
-fn unix() -> u64 {
-    crate::fmt::unix_now().as_secs()
-}
+use crate::fmt::now_secs as unix;
 
 /// Streamer.bot's never.
 const NEVER: &str = "0001-01-01T00:00:00";

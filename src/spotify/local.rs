@@ -180,7 +180,7 @@ async fn read_session(
                 .unwrap_or(0);
         }
         if at_ms == 0 {
-            at_ms = crate::fmt::unix_now().as_millis() as u64;
+            at_ms = crate::fmt::now_ms();
         }
         let cover = match thumbnail(&media).await {
             Some(bytes) => keep_cover(bytes),
@@ -430,7 +430,7 @@ async fn read(c: &zbus::Connection) -> Result<Option<LocalTrack>, String> {
             .unwrap_or_default(),
         duration_ms: length / 1000,
         position_ms: (position.max(0) / 1000) as u64,
-        at_ms: crate::fmt::unix_now().as_millis() as u64,
+        at_ms: crate::fmt::now_ms(),
     }))
 }
 

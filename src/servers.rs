@@ -1325,7 +1325,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                     user: get("user").into(),
                     text: get("text").into(),
                     by: get("by").into(),
-                    until: (secs > 0).then(|| crate::fmt::unix_now().as_millis() as u64 + secs * 1000),
+                    until: (secs > 0).then(|| crate::fmt::now_ms() + secs * 1000),
                 });
             }
             ok(&id, json!({}))
@@ -1334,7 +1334,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         // "seconds" left (0: none), "prediction" and "over" as booleans.
         "InjectPoll" if e.dev() => {
             let flag = |k: &str| req.get(k).and_then(Value::as_bool) == Some(true);
-            let now = crate::fmt::unix_now().as_millis() as u64;
+            let now = crate::fmt::now_ms();
             let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
             e.chat_poll(crate::engine::chatlog::Poll {
                 platform: get("platform").into(),

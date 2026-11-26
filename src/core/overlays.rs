@@ -239,7 +239,7 @@ fn sample(engine: &Rc<Engine>, group: &str) -> Value {
         *round - 1
     });
     let base = overlays::base(&engine.config());
-    let now = crate::fmt::unix_now().as_millis() as u64;
+    let now = crate::fmt::now_ms();
     let people = [
         ("twitch", "ana_plays", "#ff7ab8"),
         ("youtube", "Leo Martins", ""),
@@ -885,7 +885,7 @@ pub fn press(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     match op {
         "press" => {
             drop(config);
-            let at = crate::fmt::unix_now().as_millis() as u64;
+            let at = crate::fmt::now_ms();
             engine.overlay_publish(&format!("{group}.{name}"), json!({"pressedAt": at}));
             Ok(json!({"accepted": true, "message": trf("overlays.pressed", &[("name", &def.label)])}))
         }

@@ -340,10 +340,7 @@ fn form_fingerprint(engine: &Engine, kind: &str) -> String {
 
 pub fn youtube_ban_ids(engine: &Engine, user: &str) -> Vec<String> {
     let owner = youtube_account(engine);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let mut bans: Vec<String> = engine
         .config()
         .youtube_moderation_bans
@@ -389,10 +386,7 @@ pub fn remember_youtube(engine: &Rc<Engine>, id: &str, user_id: &str, live_chat_
         .broadcaster
         .as_ref()
         .map_or_else(String::new, |a| a.channel_id.clone());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let expires_at = duration.map(|seconds| now.saturating_add(seconds));
     engine.change(|config| {
         config
@@ -2047,10 +2041,7 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
             };
         }
     });
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let youtube_rows: Vec<Value> = engine.config().youtube_moderation_bans.iter().filter(|ban| !youtube_key.is_empty() && ban.channel_id == youtube_key && ban.expires_at.is_none_or(|end| end > now)).map(|ban| {
         json!({"id": ban.id, "name": ban.user_id, "enabled": true, "cells": [ban.user_id, ban.live_chat_id,
             ban.expires_at.map_or_else(|| tr("moderation.banned").to_string(), |expires| crate::fmt::shown_when(expires.min(i64::MAX as u64) as i64))]})

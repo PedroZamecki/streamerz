@@ -81,7 +81,7 @@ pub fn clock(secs: u64) -> String {
 
 /// How long since an ISO 8601 time, in seconds (0 when it can't be read or is ahead).
 fn since(iso: &str) -> u64 {
-    let now = crate::fmt::unix_now().as_secs() as i64;
+    let now = crate::fmt::now_secs() as i64;
     crate::fmt::parse_iso(iso).map_or(0, |t| (now - t).max(0) as u64)
 }
 
@@ -487,7 +487,7 @@ impl Engine {
             t => format!("Tier{}", t.trim_start_matches("tier").trim()),
         };
         let latest = json!({"userName": user, "userLogin": login, "userId": id, "tier": tier, "isGift": kind == 105,
-            "at": crate::fmt::iso_utc(crate::fmt::unix_now().as_secs() as i64)});
+            "at": crate::fmt::iso_utc(crate::fmt::now_secs() as i64)});
         self.change(|c| c.twitch.latest_subscriber = Some(latest));
     }
 
@@ -610,7 +610,7 @@ impl Engine {
                 let uid = self.twitch_id(&text("userLogin")).await?;
                 let days = (n(o, "days") as i64).clamp(0, 3650);
                 let started = (days > 0).then(|| {
-                    let at = crate::fmt::unix_now().as_secs() as i64 - days * 86_400;
+                    let at = crate::fmt::now_secs() as i64 - days * 86_400;
                     crate::fmt::iso_utc(at)
                 });
                 let mut q = vec![("broadcaster_id", uid.as_str()), ("first", "100")];
@@ -1890,7 +1890,7 @@ impl Engine {
             thumbnail: get("thumbnail"),
             fields,
             inline: b(o, "inlineFields", false),
-            timestamp: b(o, "timestamp", false).then(|| crate::fmt::iso_utc(crate::fmt::unix_now().as_secs() as i64)),
+            timestamp: b(o, "timestamp", false).then(|| crate::fmt::iso_utc(crate::fmt::now_secs() as i64)),
         }
     }
 

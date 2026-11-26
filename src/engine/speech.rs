@@ -965,7 +965,7 @@ impl Engine {
         let path = if given.is_empty() {
             let dir = crate::core::sounds::folder();
             let _ = std::fs::create_dir_all(&dir);
-            dir.join(format!("speech-{}.wav", crate::fmt::unix_now().as_millis()))
+            dir.join(format!("speech-{}.wav", crate::fmt::now_ms()))
         } else {
             sound::resolve(&given)
         };

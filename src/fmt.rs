@@ -405,6 +405,16 @@ pub fn unix_now() -> std::time::Duration {
         .unwrap_or_default()
 }
 
+/// Unix time now, in whole seconds.
+pub fn now_secs() -> u64 {
+    unix_now().as_secs()
+}
+
+/// Unix time now, in milliseconds.
+pub fn now_ms() -> u64 {
+    u64::try_from(unix_now().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// The C library's `struct tm` (64-bit glibc and macOS).
 #[cfg(unix)]
 #[repr(C)]
@@ -1192,6 +1202,12 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn now_in_seconds_and_milliseconds_agree() {
+        let (secs, ms) = (super::now_secs(), super::now_ms());
+        assert!(secs > 1_700_000_000 && ms / 1000 >= secs && ms / 1000 - secs <= 1);
+    }
+
     #[test]
     fn hex_writes_two_lowercase_digits_a_byte() {
         let all: Vec<u8> = (0..=255).collect();

@@ -127,7 +127,7 @@ impl Engine {
         };
         let value = control.check(value)?;
         let value = if control.kind == "button" && value.is_null() {
-            json!(crate::fmt::unix_now().as_millis() as u64)
+            json!(crate::fmt::now_ms())
         } else {
             value
         };

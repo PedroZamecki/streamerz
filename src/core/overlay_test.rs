@@ -277,7 +277,7 @@ pub fn run_set(engine: &Rc<Engine>, group: &str, id: &str) -> Result<Value, Stri
 
 /// A made-up song, playing or paused, for pages that show what plays.
 pub fn song(engine: &Rc<Engine>, group: &str, playing: bool) -> Value {
-    let now = crate::fmt::unix_now().as_millis() as u64;
+    let now = crate::fmt::now_ms();
     let song = json!({"title": tr("overlays.test.song"), "artist": "Streamerz", "album": tr("overlays.test.album"),
         "playing": playing, "durationMs": 215_000, "positionMs": 42_000, "at": now});
     engine.emit("Test", group, || json!({"events": [], "topics": {"song": song}}));
@@ -316,7 +316,7 @@ pub fn remember(code: u32, args: &Obj) {
             id,
             code,
             args: args.clone(),
-            at: crate::fmt::unix_now().as_secs(),
+            at: crate::fmt::now_secs(),
         });
     });
 }

@@ -100,7 +100,7 @@ fn list(v: Option<&Value>) -> Vec<String> {
 
 /// A Helix poll as Streamer.bot's poll.* arguments.
 pub(crate) fn poll_args(p: &Value, args: &mut Obj) {
-    let now = crate::fmt::unix_now().as_secs() as i64;
+    let now = crate::fmt::now_secs() as i64;
     let started = p["started_at"].as_str().and_then(parse_iso).unwrap_or(now);
     let duration = p["duration"].as_i64().unwrap_or(0);
     let choices = p["choices"].as_array().cloned().unwrap_or_default();
@@ -1938,7 +1938,7 @@ impl Engine {
                 put("targetIsPartner", (kind == "partner").into());
                 put("createdAt", u["created_at"].clone());
                 if let Some(t) = u["created_at"].as_str().and_then(parse_iso) {
-                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    let now = crate::fmt::now_secs() as i64;
                     put("accountAge", ((now - t) / 86_400).into());
                 }
                 let me = vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", uid.as_str())];
@@ -2014,7 +2014,7 @@ impl Engine {
                 let Some(t) = f["followed_at"].as_str().and_then(parse_iso) else {
                     return;
                 };
-                let now = crate::fmt::unix_now().as_secs() as i64;
+                let now = crate::fmt::now_secs() as i64;
                 let a = age(t, now);
                 let (long, short) = age_text(&a);
                 ctx.args.insert("isFollowing".into(), true.into());
