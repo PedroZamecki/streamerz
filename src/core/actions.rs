@@ -4175,20 +4175,14 @@ mod tree_tests {
     }
 
     #[test]
-    fn a_trigger_typed_as_json_without_an_id_is_the_one_picked() {
+    fn a_trigger_saved_without_an_id_is_the_one_picked() {
         crate::engine::tests::run(async {
             let engine = crate::engine::tests::engine(json!({"actions": [
                 {"id": "act", "name": "Act", "triggers": [{"id": "first", "type": 101, "enabled": true}]}]}));
-            let ask = |request: Value| crate::servers::answer(&engine, &request, true).unwrap();
-            let form = ask(
-                json!({"request": "StreamerzEntityForm", "kind": "act:trigger_add", "actionId": "act", "code": "101"}),
-            );
-            assert_eq!(form["status"], "ok", "{form}");
-            let saved = ask(
-                json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "",
-                "json": json!({"type": 101, "enabled": true}).to_string()}),
-            );
-            assert_eq!(saved["status"], "ok", "{saved}");
+            // An item with no id (the form always gives one; this keeps it right if one ever comes
+            // without).
+            let parts: Vec<String> = ["act", "trigger_add", "act", "101"].map(String::from).to_vec();
+            let saved = save_form(&engine, &parts, obj(json!({"type": 101, "enabled": true}))).unwrap();
             let config = engine.config();
             let triggers = &config.actions.actions[0].triggers;
             assert_eq!(triggers.len(), 2);
