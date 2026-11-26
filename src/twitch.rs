@@ -1386,7 +1386,7 @@ async fn supervise_eventsub(
     is_connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
 ) {
-    let mut backoff_secs = 2u64;
+    let mut retries = 0;
     let mut logged_locked = false;
     let mut first_connect_log = true;
 
@@ -1454,12 +1454,13 @@ async fn supervise_eventsub(
             Ok((ws, _)) => ws,
             Err(e) => {
                 crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
+                let delay = crate::http::reconnect_delay(&mut retries, 30);
                 crate::warn(format!(
-                    "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
-                    broadcaster.login
+                    "Twitch: EventSub connect failed for @{} ({e}); retrying in {}s",
+                    broadcaster.login,
+                    delay.as_secs()
                 ));
-                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                backoff_secs = (backoff_secs * 2).min(30);
+                tokio::time::sleep(delay).await;
                 continue;
             }
         };
@@ -1505,7 +1506,7 @@ async fn supervise_eventsub(
             },
         );
         if started.elapsed() >= Duration::from_secs(15) {
-            backoff_secs = 2;
+            retries = 0;
         }
         if auth_refused.load(Ordering::Relaxed) {
             refresh_accounts(&engine, &cfg, true).await;
@@ -1521,12 +1522,13 @@ async fn supervise_eventsub(
                 break;
             }
         }
+        let delay = crate::http::reconnect_delay(&mut retries, 30);
         crate::say(format!(
-            "Twitch: reconnecting @{} in {backoff_secs}s...",
-            broadcaster.login
+            "Twitch: reconnecting @{} in {}s...",
+            broadcaster.login,
+            delay.as_secs()
         ));
-        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-        backoff_secs = (backoff_secs * 2).min(30);
+        tokio::time::sleep(delay).await;
     }
 }
 

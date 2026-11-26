@@ -291,14 +291,13 @@ pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
 /// chat's own lines carry them, and anyone may read those. Only while `wanted`; no messages are taken from
 /// here (the login's own connection brings those).
 pub async fn watch_bans(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, channel: TwitchAccount) {
-    let mut backoff = 2u64;
+    let mut retries = 0;
     loop {
         match bans_session(&engine, &cfg, &channel).await {
-            Ok(()) => backoff = 2,
+            Ok(()) => retries = 0,
             Err(e) => crate::debug(format!("Twitch: timeouts and bans: {e}")),
         }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(300);
+        tokio::time::sleep(crate::http::reconnect_delay(&mut retries, 300)).await;
     }
 }
 
@@ -364,14 +363,14 @@ pub async fn read(
     connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
 ) {
-    let mut backoff = 2u64;
+    let mut retries = 0;
     while wanted.load(Ordering::Relaxed) {
         let channel = cfg.borrow().twitch.channel.trim().to_ascii_lowercase();
         if channel.is_empty() {
             break;
         }
         match session(&engine, &cfg, &connected, &channel).await {
-            Ok(()) => backoff = 2,
+            Ok(()) => retries = 0,
             Err(e) => {
                 crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
                 crate::warn(format!("Twitch: chat without login: {e}"));
@@ -384,8 +383,7 @@ pub async fn read(
         if !wanted.load(Ordering::Relaxed) {
             break;
         }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(60);
+        tokio::time::sleep(crate::http::reconnect_delay(&mut retries, 60)).await;
     }
 }
 

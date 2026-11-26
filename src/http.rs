@@ -388,7 +388,17 @@ fn range_start(headers: &[(String, String)]) -> Option<u64> {
 
 /// The wait before retry `n` (1-based) of something that keeps failing: 1, 2, 4, 8, 15 seconds, then 15.
 pub fn backoff(n: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((1u64 << n.saturating_sub(1).min(4)).min(15))
+    backoff_capped(n.saturating_sub(1), 15)
+}
+
+fn backoff_capped(doublings: u32, cap: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(1u64.checked_shl(doublings).unwrap_or(u64::MAX).min(cap))
+}
+
+/// The next reconnect delay after a link drops: start at two seconds, then double up to the cap.
+pub(crate) fn reconnect_delay(retries: &mut u32, cap: u64) -> std::time::Duration {
+    *retries = retries.saturating_add(1);
+    backoff_capped(*retries, cap)
 }
 
 /// One TLS setup for every connection: building one loads and parses the system's CA bundle
@@ -657,6 +667,21 @@ mod tests {
         let secs: Vec<u64> = (1..=7).map(|n| backoff(n).as_secs()).collect();
         assert_eq!(secs, [1, 2, 4, 8, 15, 15, 15]);
         assert_eq!(backoff(0).as_secs(), 1);
+    }
+
+    #[test]
+    fn reconnect_delays_keep_their_caps_and_restart_at_two_seconds() {
+        for cap in [30, 60, 300] {
+            let mut retries = 0;
+            assert_eq!(reconnect_delay(&mut retries, cap).as_secs(), 2);
+            assert_eq!(reconnect_delay(&mut retries, cap).as_secs(), 4);
+            for _ in 0..70 {
+                reconnect_delay(&mut retries, cap);
+            }
+            assert_eq!(reconnect_delay(&mut retries, cap).as_secs(), cap);
+            retries = 0;
+            assert_eq!(reconnect_delay(&mut retries, cap).as_secs(), 2);
+        }
     }
 
     #[test]
