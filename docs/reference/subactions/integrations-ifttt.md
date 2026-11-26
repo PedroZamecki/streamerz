@@ -26,7 +26,7 @@ None set.
 ### Notes
 
 - The key is not a setting. Streamerz reads it from the `iftttKey` argument, else from the `key` argument.
-- With no key, nothing is sent. Streamerz writes a log line that the event was dispatched and stops there.
+- With no key, nothing is sent. Streamerz logs an error and stops there.
 - An empty event name is an error, and nothing is sent.
 
 ## IFTTT Notification (Advanced)

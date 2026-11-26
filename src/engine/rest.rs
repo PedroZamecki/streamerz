@@ -806,10 +806,13 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if self.dev_out("twitch", &text, use_bot) {
-                } else if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw.send_message(text, None, use_bot, fallback).await {
-                        crate::error(e);
+                for chunk in crate::twitch::split_chat_message(&text) {
+                    if self.dev_out("twitch", &chunk, use_bot) {
+                    } else if let Some(tw) = self.twitch() {
+                        if let Err(e) = tw.send_message(chunk, None, use_bot, fallback).await {
+                            crate::error(e);
+                            break;
+                        }
                     }
                 }
             }
@@ -847,10 +850,14 @@ impl Engine {
                 let reply_id = self.expand(ctx, s(o, "replyId"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if self.dev_out("twitch", &text, use_bot) {
-                } else if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw.send_message(text, Some(reply_id), use_bot, fallback).await {
-                        crate::error(e);
+                for (i, chunk) in crate::twitch::split_chat_message(&text).into_iter().enumerate() {
+                    let parent = (i == 0).then(|| reply_id.clone());
+                    if self.dev_out("twitch", &chunk, use_bot) {
+                    } else if let Some(tw) = self.twitch() {
+                        if let Err(e) = tw.send_message(chunk, parent, use_bot, fallback).await {
+                            crate::error(e);
+                            break;
+                        }
                     }
                 }
             }
@@ -4887,11 +4894,7 @@ impl Engine {
             8001 => {
                 let event = self.expand(ctx, s(o, "eventName"));
                 let text_val = self.expand(ctx, s(o, "text"));
-                let key = ctx
-                    .args
-                    .get("iftttKey")
-                    .or_else(|| ctx.args.get("key"))
-                    .and_then(Value::as_str);
+                let key = ifttt_key(&ctx.args);
                 let payload = crate::remote::build_ifttt_basic_payload(&text_val);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
                     crate::error(format!("IFTTT: {e}"));
@@ -4907,11 +4910,7 @@ impl Engine {
                     let val_str = self.expand(ctx, &text(v));
                     expanded_args.insert(k.clone(), val_str.into());
                 }
-                let key = ctx
-                    .args
-                    .get("iftttKey")
-                    .or_else(|| ctx.args.get("key"))
-                    .and_then(Value::as_str);
+                let key = ifttt_key(&ctx.args);
                 let payload = crate::remote::build_ifttt_advanced_payload(&expanded_args);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
                     crate::error(format!("IFTTT: {e}"));
@@ -5720,6 +5719,13 @@ fn group_is(want: &str, g: &Obj, ids: &[String]) -> bool {
         && (s(g, "id") == want || (s(g, "name").eq_ignore_ascii_case(want) && !ids.iter().any(|i| i == want)))
 }
 
+fn ifttt_key(args: &Obj) -> Option<&str> {
+    args.get("iftttKey")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())
+        .or_else(|| args.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{action, engine, log, run};
@@ -6202,5 +6208,21 @@ mod tests {
                 "Sub-action {code} must be marked supported"
             );
         }
+    }
+
+    #[test]
+    fn ifttt_key_prefers_ifttt_key_and_falls_back_to_key_arg() {
+        let obj = |v: Value| v.as_object().cloned().unwrap();
+        let both = obj(json!({"iftttKey": "primary", "key": "fallback"}));
+        assert_eq!(ifttt_key(&both), Some("primary"));
+
+        let fallback = obj(json!({"key": "from-key-arg"}));
+        assert_eq!(ifttt_key(&fallback), Some("from-key-arg"));
+
+        let empty_primary = obj(json!({"iftttKey": "", "key": "from-key-arg"}));
+        assert_eq!(ifttt_key(&empty_primary), Some("from-key-arg"));
+
+        let neither = obj(json!({"iftttKey": "", "key": ""}));
+        assert_eq!(ifttt_key(&neither), None);
     }
 }

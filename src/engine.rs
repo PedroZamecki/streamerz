@@ -924,15 +924,25 @@ impl Engine {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        if self.dev_out("twitch", text, use_bot) {
+        let chunks = crate::twitch::split_chat_message(text);
+        if chunks
+            .first()
+            .is_some_and(|chunk| self.dev_out("twitch", chunk, use_bot))
+        {
+            for chunk in chunks.iter().skip(1) {
+                self.dev_out("twitch", chunk, use_bot);
+            }
             return Ok(());
         }
         let tw = self.twitch().ok_or("Twitch is not connected")?;
-        let text = text.to_string();
         let reply_id = reply_id.map(String::from);
         tokio::task::spawn_local(async move {
-            if let Err(e) = tw.send_message(text, reply_id, use_bot, fallback).await {
-                crate::error(e);
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                let parent = (i == 0).then(|| reply_id.clone()).flatten();
+                if let Err(e) = tw.send_message(chunk, parent, use_bot, fallback).await {
+                    crate::error(e);
+                    break;
+                }
             }
         });
         Ok(())

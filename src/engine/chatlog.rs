@@ -2412,6 +2412,12 @@ impl Engine {
                     continue;
                 }
             }
+            if p == "twitch" && !crate::slash::is_command(&text) {
+                if let Err(error) = crate::twitch::validate_chat_message(&text) {
+                    self.chat_note(p, error);
+                    continue;
+                }
+            }
             let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
             let reply_id = reply_id.map(|l| l.msg_id.clone());
             if self.dev_out(p, &text, bot) {

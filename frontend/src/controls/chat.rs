@@ -132,6 +132,13 @@ struct Pane {
     typed: String,
 }
 
+/// Draft held across a `"send"` round trip so a validation error restores what the user typed.
+struct PendingSend {
+    pane: Option<usize>,
+    text: String,
+    reply: Option<(u64, String, String)>,
+}
+
 pub struct ChatView {
     lines: Vec<Value>,
     /// The "all together" column first, then one for each platform.
@@ -148,6 +155,8 @@ pub struct ChatView {
     reading: bool,
     read_again: bool,
     error: Option<crate::error::StreamerzError>,
+    notice: Option<String>,
+    pending_send: Option<PendingSend>,
     /// A header or account picture is on its way: the page is read again when pictures land.
     wants_pictures: bool,
     /// The names of our own accounts (lower case): a tag of one is a mention of us.
@@ -224,6 +233,8 @@ impl ChatView {
             reading: false,
             read_again: false,
             error: None,
+            notice: None,
+            pending_send: None,
             wants_pictures: false,
             me: Vec::new(),
             suggest: None,
@@ -471,6 +482,11 @@ impl ChatView {
             request["replySeq"] = (*seq).into();
         }
         send(request);
+        self.pending_send = Some(PendingSend {
+            pane: Some(pane),
+            text,
+            reply: self.reply.clone(),
+        });
         input.update(cx, |input, cx| input.set_value("", window, cx));
         self.reply = None;
         self.suggest = None;
@@ -637,6 +653,11 @@ impl ChatView {
             request["replySeq"] = (*seq).into();
         }
         send(request);
+        self.pending_send = Some(PendingSend {
+            pane: None,
+            text,
+            reply: self.reply.clone(),
+        });
         self.all_input.update(cx, |input, cx| input.set_value("", window, cx));
         self.reply = None;
         window.close_dialog(cx);
@@ -932,8 +953,42 @@ impl ChatView {
                 self.refresh();
                 cx.notify();
             }
-            "send" | "act" | "show" | "view" | "held" | "favorite" | "clear" | "sender" | "card-open" | "prefetch"
-            | "reconnect" => {
+            "send" => {
+                if failed {
+                    self.error = err;
+                    self.notice = None;
+                    if let Some(pending) = self.pending_send.take() {
+                        let target = match pending.pane {
+                            Some(index) => self.panes.get(index).map(|p| p.input.clone()),
+                            None => Some(self.all_input.clone()),
+                        };
+                        if let Some(input) = target {
+                            if input.read(cx).value().is_empty() {
+                                input.update(cx, |input, cx| input.set_value(pending.text, window, cx));
+                            }
+                        }
+                        if self.reply.is_none() {
+                            self.reply = pending.reply;
+                        }
+                    }
+                } else {
+                    self.error = None;
+                    self.pending_send = None;
+                    self.notice = value["notice"]
+                        .as_str()
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned);
+                }
+                cx.notify();
+            }
+            "clear" => {
+                self.error = if failed { err } else { None };
+                if !failed {
+                    self.notice = None;
+                }
+                cx.notify();
+            }
+            "act" | "show" | "view" | "held" | "favorite" | "sender" | "card-open" | "prefetch" | "reconnect" => {
                 self.error = if failed { err } else { None };
                 cx.notify();
             }
@@ -2555,7 +2610,19 @@ impl ChatView {
         }
         let can_send = platform["send"] == true && chat["history"] != false;
         let input = self.panes[pane].input.clone();
-        let composer = div()
+        let typed = input.read(cx).value().to_string();
+        let char_count = typed.chars().count();
+        let limit = match id.as_str() {
+            "twitch"
+                if !typed.trim_start().starts_with('/')
+                    || typed.trim_start().to_ascii_lowercase().starts_with("/me ") =>
+            {
+                Some((500usize, 400usize))
+            }
+            "tiktok" => Some((150usize, 120usize)),
+            _ => None,
+        };
+        let mut composer = div()
             .flex()
             .items_center()
             .gap(px(SPACE_SM))
@@ -2579,7 +2646,22 @@ impl ChatView {
                                 move |token, _, cx| emote_token(token, &owner, cx)
                             }),
                     ),
-            )
+            );
+        if let Some((max_chars, _)) = limit.filter(|&(_, warn_at)| char_count >= warn_at) {
+            composer = composer.child(
+                div()
+                    .id(SharedString::from(format!("chat-count-{pane}")))
+                    .flex_shrink_0()
+                    .caption()
+                    .text_color(if char_count > max_chars {
+                        theme.danger
+                    } else {
+                        theme.muted_foreground
+                    })
+                    .child(format!("{char_count}/{max_chars}")),
+            );
+        }
+        let composer = composer
             .child({
                 let is_picker_open = self.picker.is_some() && self.asking == Some(pane);
                 let owner = cx.entity().downgrade();
@@ -2834,6 +2916,9 @@ impl Render for ChatView {
         let mut page = div().size_full().flex().flex_col().gap(px(SPACE_SM)).body().child(bar);
         if let Some(err) = &self.error {
             page = page.child(super::notice::error(err, cx));
+        }
+        if let Some(notice) = &self.notice {
+            page = page.child(super::notice::warn("chat-notice", notice, cx));
         }
         if history_off && chat["connected"] == true {
             page = page.child(
@@ -3440,6 +3525,41 @@ mod tests {
                     );
                 });
                 assert!(chat.read(cx).error.is_some());
+
+                // A failed send restores the user's draft and surfaces the validation error.
+                let long = "a".repeat(501);
+                chat.update(cx, |view, cx| {
+                    let input = view.panes[1].input.clone();
+                    input.update(cx, |input, cx| input.set_value(long.clone(), window, cx));
+                    view.submit(1, window, cx);
+                });
+                assert_eq!(chat.read(cx).panes[1].input.read(cx).value(), "");
+                chat.update(cx, |view, cx| {
+                    view.apply(
+                        "send",
+                        json!({"status": "error", "error": "Twitch messages can have up to 500 characters."}),
+                        window,
+                        cx,
+                    );
+                });
+                assert!(chat.read(cx).error.is_some());
+                assert_eq!(chat.read(cx).panes[1].input.read(cx).value(), long);
+
+                // A stale-reply fallback succeeds with a notice banner that clears on the next send.
+                chat.update(cx, |view, cx| {
+                    view.apply(
+                        "send",
+                        json!({"status": "ok", "sent": ["twitch"], "notice": "Sent as a regular message."}),
+                        window,
+                        cx,
+                    );
+                });
+                assert!(chat.read(cx).error.is_none());
+                assert_eq!(chat.read(cx).notice.as_deref(), Some("Sent as a regular message."));
+                chat.update(cx, |view, cx| {
+                    view.apply("send", json!({"status": "ok", "sent": ["twitch"]}), window, cx);
+                });
+                assert!(chat.read(cx).notice.is_none());
             })
             .unwrap();
         }

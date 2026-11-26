@@ -11,6 +11,19 @@
                "calls": [{"platform": "twitch", "call": "announce", "text": "big news", "color": "purple", "bot": false}]}
   },
   {
+    "name": "twitch: send message and reply split messages over 500 characters",
+    "fakes": {"twitch": {}},
+    "actions": [{"name": "longtalk", "subActions": [
+      {"type": 10, "text": "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega", "useBot": true},
+      {"type": 560, "text": "replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive", "replyId": "m-parent"}]}],
+    "steps": [{"run": "longtalk"}],
+    "expect": {"chat": [
+      {"platform": "twitch", "text": "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega", "bot": true},
+      {"platform": "twitch", "text": "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega", "bot": true},
+      {"platform": "twitch", "text": "replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten replyone replytwo replythree replyfour replyfive replysix replyseven replyeight replynine replyten"},
+      {"platform": "twitch", "text": "replyone replytwo replythree replyfour replyfive"}]}
+  },
+  {
     "name": "twitch: nothing is sent when Twitch isn't connected",
     "actions": [{"name": "act", "subActions": [
       {"type": 23, "text": "big news"}, {"type": 15, "title": "t"}, {"type": 20, "userLogin": "x", "duration": 5},

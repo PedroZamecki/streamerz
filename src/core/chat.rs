@@ -1310,7 +1310,15 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         return Err(tr("chat.sending_disabled").to_owned());
     }
     let target = request["platform"].as_str().unwrap_or("all");
-    let reply = request["replySeq"].as_u64().and_then(|seq| engine.chat_line(seq));
+    let reply_seq = request["replySeq"].as_u64();
+    let (reply, stale_reply_notice) = match reply_seq {
+        Some(seq) => match engine.chat_line(seq) {
+            Some(line) if !line.deleted && !line.note && !line.welcome => (Some(line), None),
+            Some(line) if line.deleted => (None, Some(tr("chat.reply_deleted").to_owned())),
+            _ => (None, Some(tr("chat.reply_left_log").to_owned())),
+        },
+        None => (None, None),
+    };
     let config = engine.config();
     let filter_targets: Option<Vec<String>> = request["targets"]
         .as_array()
@@ -1345,12 +1353,16 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     {
         return Err(unavailable(engine, target));
     }
+    if to.contains(&"twitch") && !crate::slash::is_command(&text) {
+        crate::twitch::validate_chat_message(&text)?;
+    }
     if to.contains(&"tiktok") {
         let outgoing = engine.chat_reply_text("tiktok", text.clone(), reply.as_ref());
         crate::tiktok_bridge::validate_message(&outgoing)?;
     }
     let use_bot_override = request["use_bot"].as_bool();
     let fallback = request["fallback"].as_bool().unwrap_or(true);
+    let note_platform = to[0];
     let mut sent = Vec::new();
     for platform in to {
         let bot = use_bot_override.unwrap_or_else(|| !engine.sends_as_broadcaster(platform));
@@ -1360,6 +1372,9 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }
     }
     drop(config);
+    if let Some(notice) = &stale_reply_notice {
+        engine.chat_note(note_platform, notice.clone());
+    }
     let counted: Vec<(&str, Vec<Value>)> = PLATFORMS
         .into_iter()
         .filter(|platform| sent.contains(platform))
@@ -1373,7 +1388,11 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             }
         });
     }
-    Ok(json!({"sent": sent}))
+    let mut out = json!({"sent": sent});
+    if let Some(notice) = stale_reply_notice {
+        out["notice"] = notice.into();
+    }
+    Ok(out)
 }
 
 /// Why nothing can be sent to `platform` now.
@@ -2823,6 +2842,108 @@ mod tests {
             // A kick emote token preview
             let kick_tag_preview = preview(&engine, "all", "[emote:4055795:GnomeDisco]");
             assert!(!kick_tag_preview.is_empty());
+        });
+    }
+
+    #[test]
+    fn chat_send_enforces_twitch_500_char_limit_and_allows_slash_commands() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                    display_name: "Owner".into(),
+                    ..Default::default()
+                });
+            });
+            engine.simulate_chat_connection("twitch", Some(true));
+
+            let ok_500 = "a".repeat(500);
+            assert!(request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": ok_500})).is_ok());
+
+            let too_long = "a".repeat(501);
+            let err = request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": too_long})).unwrap_err();
+            assert_eq!(err, tr("chat.twitch_too_long"));
+
+            let long_emoji = "😀".repeat(501);
+            assert_eq!(
+                request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_emoji})).unwrap_err(),
+                tr("chat.twitch_too_long")
+            );
+
+            // /me goes out as a chat message and stays subject to the 500-char limit.
+            let long_me = format!("/me {}", "a".repeat(500));
+            assert_eq!(
+                request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_me})).unwrap_err(),
+                tr("chat.twitch_too_long")
+            );
+
+            // Real slash commands bypass the plain chat length limit.
+            let long_cmd = format!("/announce {}", "a".repeat(505));
+            assert!(request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_cmd})).is_ok());
+        });
+    }
+
+    #[test]
+    fn stale_or_deleted_reply_falls_back_to_plain_send_and_notifies_user() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                    display_name: "Owner".into(),
+                    ..Default::default()
+                });
+            });
+            engine.simulate_chat_connection("twitch", Some(true));
+
+            // 1. Reply to a seq that is no longer in the chat log.
+            let res = request_sync(
+                &engine,
+                json!({"op": "send", "platform": "twitch", "text": "hello anyway", "replySeq": 999_999}),
+            )
+            .unwrap();
+            assert_eq!(res["sent"], json!(["twitch"]));
+            assert_eq!(res["notice"], tr("chat.reply_left_log"));
+            let out = engine.dev_take().unwrap();
+            assert!(out
+                .iter()
+                .any(|m| m["platform"] == "twitch" && m["text"] == "hello anyway"));
+            let lines = read(&engine, &json!({})).unwrap()["chat"]["lines"].clone();
+            assert!(lines
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["note"] == true && l["text"] == tr("chat.reply_left_log")));
+
+            // 2. Reply to a line that was deleted while replying.
+            engine
+                .inject_chat("twitch", "Ana", "ana", "viewer", "gone soon", &json!({}))
+                .unwrap();
+            let seq = engine.chat_last_seq();
+            let line = engine.chat_line(seq).unwrap();
+            engine.chat_remove("twitch", &line.msg_id, "");
+            let res = request_sync(
+                &engine,
+                json!({"op": "send", "platform": "twitch", "text": "after delete", "replySeq": seq}),
+            )
+            .unwrap();
+            assert_eq!(res["sent"], json!(["twitch"]));
+            assert_eq!(res["notice"], tr("chat.reply_deleted"));
+            let out = engine.dev_take().unwrap();
+            assert!(out
+                .iter()
+                .any(|m| m["platform"] == "twitch" && m["text"] == "after delete"));
+            let lines = read(&engine, &json!({})).unwrap()["chat"]["lines"].clone();
+            assert!(lines
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["note"] == true && l["text"] == tr("chat.reply_deleted")));
         });
     }
 }

@@ -30,6 +30,64 @@ pub const DEFAULT_EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 pub const HELIX_URL: &str = "https://api.twitch.tv/helix";
 pub const OAUTH_DEVICE_URL: &str = "https://id.twitch.tv/oauth2/device";
 pub const OAUTH_TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
+/// Twitch's per-message chat character limit (Unicode scalar values).
+pub const MAX_CHAT_CHARS: usize = 500;
+
+/// Checks a message being sent from the Chat page against Twitch's 500-character limit.
+pub fn validate_chat_message(text: &str) -> Result<(), String> {
+    if text.chars().count() > MAX_CHAT_CHARS {
+        Err(crate::i18n::tr("chat.twitch_too_long").to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// Splits a Twitch chat message for automation sub-actions into chunks of at most `MAX_CHAT_CHARS`
+/// characters, preferring whitespace boundaries so words stay whole when possible.
+pub fn split_chat_message(text: &str) -> Vec<String> {
+    split_chat_message_at(text, MAX_CHAT_CHARS)
+}
+
+fn split_chat_message_at(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 || text.chars().count() <= max_chars {
+        return vec![text.to_owned()];
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if rest.chars().count() <= max_chars {
+            out.push(rest.to_owned());
+            break;
+        }
+        let hard = rest.char_indices().nth(max_chars).map_or(rest.len(), |(idx, _)| idx);
+        if rest[hard..].chars().next().is_some_and(char::is_whitespace) {
+            let chunk = rest[..hard].trim_end();
+            if !chunk.is_empty() {
+                out.push(chunk.to_owned());
+            }
+            rest = rest[hard..].trim_start();
+            continue;
+        }
+        let window = &rest[..hard];
+        let split_at = window
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .filter(|&idx| !rest[..idx].trim_end().is_empty());
+        match split_at {
+            Some(idx) => {
+                out.push(rest[..idx].trim_end().to_owned());
+                rest = rest[idx..].trim_start();
+            }
+            None => {
+                out.push(window.to_owned());
+                rest = &rest[hard..];
+            }
+        }
+    }
+    out
+}
 
 pub const BROADCASTER_SCOPES: &[&str] = &[
     "user:read:chat",
@@ -6034,5 +6092,36 @@ mod gif_message_tests {
         assert_eq!(standalone_gif(&event, "other"), None);
         let raw = format!("@gifs=0-6|id|{url};id=msg :user!user@host PRIVMSG #channel :[a gif]");
         assert_eq!(parse_irc_recent_message(&raw, "").unwrap().gif, url);
+    }
+
+    #[test]
+    fn chat_message_validation_and_word_boundary_splitting() {
+        assert!(validate_chat_message(&"a".repeat(MAX_CHAT_CHARS)).is_ok());
+        assert!(validate_chat_message(&"a".repeat(MAX_CHAT_CHARS + 1)).is_err());
+        assert!(validate_chat_message(&"😀".repeat(MAX_CHAT_CHARS)).is_ok());
+        assert!(validate_chat_message(&"😀".repeat(MAX_CHAT_CHARS + 1)).is_err());
+
+        // Short and exact-length messages are returned verbatim.
+        assert_eq!(split_chat_message(""), vec![""]);
+        assert_eq!(split_chat_message("hello world"), vec!["hello world"]);
+        let exact = "x".repeat(MAX_CHAT_CHARS);
+        assert_eq!(split_chat_message(&exact), vec![exact]);
+
+        // Splits cleanly on word boundaries, including when a space falls right at the limit.
+        assert_eq!(split_chat_message_at("aaa bbb ccc", 7), vec!["aaa bbb", "ccc"]);
+        assert_eq!(split_chat_message_at("aaa bbbccc", 7), vec!["aaa", "bbbccc"]);
+
+        // Single overlong words and multi-byte emoji split on exact character boundaries.
+        assert_eq!(split_chat_message_at("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(split_chat_message_at("😀😁😂😃😄😅", 4), vec!["😀😁😂😃", "😄😅"]);
+
+        // Multi-chunk 500-char split keeps every chunk within Twitch's limit.
+        let long = vec!["hello"; 250].join(" ");
+        let chunks = split_chat_message(&long);
+        assert!(chunks.len() >= 3, "{chunks:?}");
+        assert!(chunks
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().count() <= MAX_CHAT_CHARS));
+        assert_eq!(chunks.join(" "), long);
     }
 }
