@@ -282,7 +282,12 @@ pub async fn speak_with(
         let eff_pitch = (pitch * custom.pitch).clamp(0.5, 1.5);
         let wav = match custom.kind {
             CustomKind::Mix => neural::speak_mix(text, &custom.mix, &custom.kokoro_lang, eff_speed, eff_pitch).await?,
-            CustomKind::Clone => neural::speak_clone(text, &custom.recording, eff_speed, eff_pitch).await?,
+            CustomKind::Clone => {
+                if !custom.consent {
+                    return Err(crate::i18n::tr("voices.needs_consent").into());
+                }
+                neural::speak_clone(text, &custom.recording, eff_speed, eff_pitch).await?
+            }
             CustomKind::Effect => {
                 if custom.base_voice.starts_with("custom:") {
                     return Err("An effect voice cannot wrap another custom voice.".into());
@@ -394,7 +399,7 @@ async fn windows_speak(text: &str, voice: &str, speed: f64, pitch: f64) -> Resul
         .map_err(err)?
         .await
         .map_err(err)?;
-    let size = stream.Size().map_err(err)? as u32;
+    let size = u32::try_from(stream.Size().map_err(err)?).map_err(|_| "speech audio is too large")?;
     let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0).map_err(err)?).map_err(err)?;
     reader.LoadAsync(size).map_err(err)?.await.map_err(err)?;
     let mut bytes = vec![0u8; size as usize];
@@ -409,17 +414,22 @@ fn true_sizes(wav: &mut [u8]) {
     if wav.len() < 12 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return;
     }
-    let riff = (wav.len() - 8) as u32;
+    let Ok(riff) = u32::try_from(wav.len() - 8) else { return };
     wav[4..8].copy_from_slice(&riff.to_le_bytes());
     let mut at = 12;
     while at + 8 <= wav.len() {
         let size = u32::from_le_bytes([wav[at + 4], wav[at + 5], wav[at + 6], wav[at + 7]]) as usize;
         if &wav[at..at + 4] == b"data" {
             let real = (wav.len() - at - 8) as u32;
-            wav[at + 4..at + 8].copy_from_slice(&real.to_le_bytes());
+            if size > real as usize {
+                wav[at + 4..at + 8].copy_from_slice(&real.to_le_bytes());
+            }
             return;
         }
-        at += 8 + size + (size & 1);
+        let Some(next) = (at + 8).checked_add(size).and_then(|end| end.checked_add(size & 1)) else {
+            return;
+        };
+        at = next;
     }
 }
 
@@ -481,6 +491,15 @@ mod tests {
         assert!(seen.starts_with("--stdout -s 350 -p 99 -v pt-BR"), "{seen}");
         assert!(seen.ends_with("-hi there"), "the text came on stdin: {seen}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_complete_wav_keeps_its_data_length_if_metadata_follows() {
+        let mut wav = crate::sound::sine_wav(24_000, 1, 440.0, 3);
+        wav.extend_from_slice(b"JUNK\x02\0\0\0\0\0");
+        true_sizes(&mut wav);
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 52);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 6);
     }
 
     #[test]

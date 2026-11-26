@@ -648,6 +648,9 @@ pub fn preview(engine: &Rc<Engine>, form_kind: &str, value: &Value) -> Result<Va
     let mut custom = match kind {
         "mix" => build_mix(&item, Some("custom:__preview__"))?,
         "clone" => {
+            if item.get("consent").and_then(Value::as_bool) != Some(true) {
+                return Err(tr("voices.needs_consent").into());
+            }
             let path = text_field(&item, "recording");
             if path.is_empty() {
                 return Err(tr("voices.needs_recording").into());
@@ -656,7 +659,8 @@ pub fn preview(engine: &Rc<Engine>, form_kind: &str, value: &Value) -> Result<Va
             let filename = if existing_file == Some(path.as_str()) && neural::recordings_dir().join(&path).is_file() {
                 path
             } else {
-                let (file, _) = neural::import_recording(std::path::Path::new(&path), "custom:__preview__")?;
+                let preview = crate::engine::uuid();
+                let (file, _) = neural::import_recording(std::path::Path::new(&path), &preview)?;
                 cleanup_preview_rec = Some(neural::recordings_dir().join(&file));
                 file
             };
@@ -1513,6 +1517,10 @@ mod tests {
             assert_eq!(updated.name, "Robot Bot");
             assert_eq!(updated.effect, "robot");
             assert_eq!(updated.base_voice, "en-US");
+            assert_eq!(
+                preview(&e, "voice_clone:", &json!({"recording": "a.wav"})).unwrap_err(),
+                tr("voices.needs_consent")
+            );
             // Unsaved preview validates inputs cleanly.
             assert!(preview(&e, "voice_effect:", &json!({"baseVoice": ""})).is_err());
             assert!(preview(&e, "voice_effect:", &json!({"baseVoice": "en-US", "effect": 3})).is_ok());
