@@ -34,7 +34,7 @@ pub fn token(c: &Config, group: &str) -> String {
     h.update(c.overlay_key.as_bytes());
     h.update([0]);
     h.update(group.as_bytes());
-    h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect()
+    crate::fmt::hex(&h.finalize()[..16])
 }
 
 /// The group a page's call is from, when it carries that group's token; else the answer refusing it.

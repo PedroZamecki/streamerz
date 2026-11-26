@@ -24,12 +24,7 @@ impl Speakers {
     }
 
     fn platform(&self, platform: &str) -> PathBuf {
-        self.root.join(
-            Sha256::digest(platform.as_bytes())
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>(),
-        )
+        self.root.join(crate::fmt::hex(&Sha256::digest(platform.as_bytes())))
     }
 
     pub fn insert(&self, platform: &str, key: &str) -> std::io::Result<bool> {

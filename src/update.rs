@@ -223,8 +223,9 @@ pub fn is_protected(path: &Path) -> bool {
 fn staging_dir(path: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
-    let id: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    crate::default_config_path().with_file_name("updates").join(id)
+    crate::default_config_path()
+        .with_file_name("updates")
+        .join(crate::fmt::hex(&digest))
 }
 
 fn private_dir(path: &Path) -> std::io::Result<()> {
@@ -338,7 +339,7 @@ impl Staged {
             hash.update(&buffer[..got]);
             remaining -= got as u64;
         }
-        let actual: String = hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+        let actual = crate::fmt::hex(&hash.finalize());
         Ok(actual.eq_ignore_ascii_case(&self.sha256))
     }
 }

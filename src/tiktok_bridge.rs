@@ -529,7 +529,7 @@ fn build() -> String {
         hash.update(bytes);
     }
     hash.update(FIREFOX_MANIFEST);
-    hash.finalize()[..6].iter().map(|b| format!("{b:02x}")).collect()
+    crate::fmt::hex(&hash.finalize()[..6])
 }
 
 /// Only the owner can read them: config.json holds the token. Written atomically via a temp file.

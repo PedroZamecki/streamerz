@@ -1183,8 +1183,7 @@ fn extension_folder_for(config: &Path, source: Option<&Path>, cache: Option<&Pat
         (Some(source), Some(cache)) => {
             use sha2::Digest;
             let id = sha2::Sha256::digest(source.to_string_lossy().as_bytes());
-            let id: String = id[..6].iter().map(|b| format!("{b:02x}")).collect();
-            cache.join(id).join("tiktok-extension")
+            cache.join(fmt::hex(&id[..6])).join("tiktok-extension")
         }
         _ => config.with_file_name("tiktok-extension"),
     }

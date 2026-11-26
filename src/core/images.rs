@@ -35,10 +35,7 @@ fn dir() -> PathBuf {
 }
 
 fn stem(url: &str) -> String {
-    Sha256::digest(url.as_bytes())[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::fmt::hex(&Sha256::digest(url.as_bytes())[..12])
 }
 
 /// The extension a picture's bytes call for (none: not a picture).

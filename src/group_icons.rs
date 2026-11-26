@@ -17,7 +17,7 @@ pub fn encode(bytes: &[u8]) -> Result<Value, &'static str> {
         return Err("Choose a PNG or JPEG image");
     };
     Ok(
-        json!({"sha256": Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>(), "format": kind,
+        json!({"sha256": crate::fmt::hex(&Sha256::digest(bytes)), "format": kind,
         "data": base64::engine::general_purpose::STANDARD.encode(bytes)}),
     )
 }

@@ -66,10 +66,7 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
 
 fn account_hash(account: &str) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(account.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::fmt::hex(&Sha256::digest(account.as_bytes()))
 }
 
 fn warn(engine: &Rc<Engine>, id: &str, item: &Obj) -> Result<Value, String> {

@@ -1210,10 +1210,7 @@ for line in sys.stdin:
             // Serve a tiny fake archive locally and verify SHA-256 + unpack + install + speak + unload.
             use sha2::Digest;
             let payload = b"fake-tar-bz2-payload".to_vec();
-            let sha: String = sha2::Sha256::digest(&payload)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
+            let sha = crate::fmt::hex(&sha2::Sha256::digest(&payload));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let served = payload.clone();

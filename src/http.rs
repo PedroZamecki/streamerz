@@ -243,7 +243,7 @@ pub async fn download(
             status: open.status,
             len: len as u64,
             complete,
-            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+            sha256: crate::fmt::hex(&hash.finalize()),
             magic,
         });
     }
@@ -370,7 +370,7 @@ pub async fn download_resumable(
             status: 200,
             len,
             complete: complete && total.is_none_or(|t| len == t),
-            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+            sha256: crate::fmt::hex(&hash.finalize()),
             magic,
         });
     }
@@ -1001,7 +1001,7 @@ mod tests {
             .build()
             .unwrap();
         let data: Vec<u8> = (0..(20usize << 20)).map(|i| (i % 251) as u8).collect();
-        let want: String = sha2::Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        let want = crate::fmt::hex(&sha2::Sha256::digest(&data));
         let dir = std::env::temp_dir().join(format!("streamerz-download-{}", crate::engine::uuid()));
         std::fs::create_dir_all(&dir).unwrap();
         rt.block_on(async {
@@ -1063,7 +1063,7 @@ mod tests {
             .build()
             .unwrap();
         let data: Vec<u8> = (0..128_000usize).map(|i| (i % 241) as u8).collect();
-        let want: String = sha2::Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        let want = crate::fmt::hex(&sha2::Sha256::digest(&data));
         let dir = std::env::temp_dir().join(format!("streamerz-resume-{}", crate::engine::uuid()));
         std::fs::create_dir_all(&dir).unwrap();
         rt.block_on(async {

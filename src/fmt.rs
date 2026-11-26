@@ -387,6 +387,18 @@ pub struct Time {
     pub offset: i32,
 }
 
+/// `bytes` as lowercase hex, two digits each (a digest's usual text).
+pub fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX_LOWER[usize::from(b >> 4)] as char);
+        out.push(HEX_LOWER[usize::from(b & 15)] as char);
+    }
+    out
+}
+
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+
 pub fn unix_now() -> std::time::Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1128,6 +1140,15 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hex_writes_two_lowercase_digits_a_byte() {
+        let all: Vec<u8> = (0..=255).collect();
+        let old: String = all.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(super::hex(&all), old);
+        assert_eq!(super::hex(&[]), "");
+        assert_eq!(super::hex(&[0, 0xab, 0xff]), "00abff");
+    }
+
     #[test]
     fn parses_locale_decimal_numbers() {
         assert_eq!(super::parse_number_with_decimal("2,5", ","), Some(2.5));

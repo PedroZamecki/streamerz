@@ -758,10 +758,7 @@ fn authentic(
                 crate::warn("Patreon: webhook taken without a check: set its secret in Donations".into());
                 return Ok(());
             }
-            let want: String = hmac_md5(secret.as_bytes(), body)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
+            let want = crate::fmt::hex(&hmac_md5(secret.as_bytes(), body));
             if signature.is_some_and(|s| s.trim().eq_ignore_ascii_case(&want)) {
                 Ok(())
             } else {
@@ -1403,7 +1400,7 @@ mod tests {
 
     #[test]
     fn md5_and_hmac_md5_match_the_rfcs() {
-        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let hex = crate::fmt::hex;
         assert_eq!(hex(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(
             hex(&md5(b"The quick brown fox jumps over the lazy dog")),

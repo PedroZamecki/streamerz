@@ -323,7 +323,7 @@ fn link_fingerprint(engine: &Engine, link: &LinkedPerson) -> String {
         bans,
     ))
     .unwrap_or_default();
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    crate::fmt::hex(&Sha256::digest(bytes))
 }
 
 fn form_fingerprint(engine: &Engine, kind: &str) -> String {
@@ -335,10 +335,7 @@ fn form_fingerprint(engine: &Engine, kind: &str) -> String {
     } else {
         account(engine)
     };
-    Sha256::digest(key.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::fmt::hex(&Sha256::digest(key.as_bytes()))
 }
 
 pub fn youtube_ban_ids(engine: &Engine, user: &str) -> Vec<String> {
