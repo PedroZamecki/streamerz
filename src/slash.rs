@@ -194,10 +194,12 @@ pub fn suggestions(typed: &str, platform: &str, commercials: bool) -> Vec<Sugges
 /// Whether `text` is a command this module handles (not a plain message, and not `/me`).
 pub fn is_command(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with('/') && !t.starts_with("/me ") && t != "/me" && !t.starts_with("//")
+    let name = t.get(1..).unwrap_or("").split(char::is_whitespace).next().unwrap_or("");
+    t.starts_with('/') && !name.eq_ignore_ascii_case("me") && !t.starts_with("//")
 }
 
-/// A length as seconds: `90`, `90s`, `10m`, `2h`, `1d`, `1w` (a bare number is `default_unit` seconds).
+/// A length as seconds: `90`, `90s`, `10m`, `2h`, `1d`, `1w` (a bare number is `bare` seconds). One
+/// too long to count is `u64::MAX`, for the caller's range check to refuse.
 fn seconds(word: &str, bare: u64) -> Option<u64> {
     let w = word.trim().to_lowercase();
     let (n, unit) = match w.find(|c: char| !c.is_ascii_digit()) {
