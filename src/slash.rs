@@ -501,7 +501,7 @@ pub fn parse_kick(text: &str) -> Result<KickCmd, String> {
         },
         "commercial" | "ad" => {
             let secs = match words.first().and_then(|w| seconds(w, 1)) {
-                Some(s) => (s as u32).clamp(7, 90),
+                Some(s) => s.clamp(7, 90) as u32,
                 None => 30,
             };
             KickCmd::Commercial(secs)
