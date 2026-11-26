@@ -737,3 +737,40 @@ Unavailable / not run locally: `cargo-audit`, `actionlint`, `dpkg-deb`, `rpmbuil
 `Streamerz-Voice.exe` execution; GPG / SignPath signing and store uploads; GitHub Actions artifact
 reuse and publication; live OBS alert box capture; and the connected Twitch + OBS hidden RSS/CPU
 measurement.
+
+## Version 1.10.1 bug-hunt and refactor audit (2026-11-26)
+
+Full-codebase bug hunt, test expansion, dependency trimming and shared-helper refactoring on
+`release/1.10.1`. No push, pull request, tag or release was created during local verification.
+
+Final pre-PR local checks on Linux (2026-11-26):
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `cargo fmt --check` (root and `voice/`) | Passed. |
+| `cargo clippy --profile ci-test --all-targets --locked -- -D warnings` (root, `streamerz-frontend --features test-support`, `--features dev-ui`, and `voice/`) | Passed, zero warnings. |
+| `cargo test --profile ci-test --locked -- --test-threads=4` | **1,193 passed, 0 failed, 14 ignored** (up from 817 on v1.10.0). |
+| `cargo test --profile ci-test -p streamerz-frontend --features test-support --locked` | **112 passed, 0 failed, 0 ignored** (up from 52 on v1.10.0). |
+| `cargo test --manifest-path voice/Cargo.toml --locked` | **5 passed, 0 failed, 0 ignored**. |
+| `STREAMERZ_VERSION=v1.10.1 cargo build --release --locked` and `./Streamerz --scenario tests/scenarios` | **191 of 191 scenarios passed**, exit 0 (2 Windows-only scenarios reported unavailable on Linux). |
+| `dev/ui-smoke.py` (`en_US` and `pt_BR`, `fast` profile with `dev-ui`, `xvfb-run` on `DISPLAY=:99`) | Passed in both locales (`en_US` hidden dev backend RSS 16,164 KiB, idle CPU 0.00% after Hide); narrow (`540px`) and wide (`1100px`) captures inspected. |
+| `dev/locale.py check` | Passed (`pt_BR`: 51 of 2,904 entries still match English). |
+| `node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs dev/overlays-client.test.mjs dev/overlays-examples.test.mjs` and `node dev/test-subathon-overlay.cjs` | **49 passed, 0 failed**; Subathon overlay check passed. |
+| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | **33 passed, 0 failed**. |
+| `dev/scan_secrets.py` (staged) and branch-history scan over `main..HEAD` | Passed, zero findings on `release/1.10.1` (full `--all` local scan also sees unpruned temporary worktree branches from earlier rounds). |
+| `dev/package-extensions.py` | Passed (3 extension zips created). |
+| `cargo xwin check --locked --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed (Windows type-check only). |
+| `dev/packages.sh v1.10.1` and `NO_STRIP=1 sh dev/appimage.sh v1.10.1` | Passed: standalone binary (`cmp` match), `.deb` (`ar`+`tar` contents checked), `.rpm`, `.pkg.tar.zst` (`tar --zstd` checked), Flatpak OSTree repo (`flatpak repo` checked), and AppImage + `.zsync` (`APPIMAGE_EXTRACT_AND_RUN=1` passed 191 of 191 scenarios). |
+
+Hidden RSS and idle CPU (Linux production release binaries, isolated empty config, `DISPLAY=:99`, 30 s sample at 100 Hz, without Twitch or OBS connected):
+
+| Build | Binary size | Hidden RSS (KiB / MiB) | Idle CPU ticks (30 s) | Child processes |
+| --- | --- | --- | --- | --- |
+| Published `v1.10.0` release | 51,876,744 B (49.47 MiB) | 14,808 KiB (14.46 MiB) | 0 | none |
+| `release/1.10.1` (this branch) | 51,492,728 B (49.11 MiB) | 15,108 KiB (14.75 MiB) | 0 | none |
+
+Unavailable / not run locally: `cargo-audit`, `actionlint`, `dpkg-deb` and `rpm` (not installed on this
+machine, so `.deb` was inspected with `ar`+`tar` and `.rpm` contents were not inspected with `rpm -qlp`);
+native Windows runtime and `Streamerz-Voice.exe` execution; GPG / SignPath signing and store uploads;
+GitHub Actions artifact reuse and publication; live service checks against real Twitch, Kick, YouTube,
+TikTok, Spotify and OBS accounts; and the connected Twitch + OBS hidden RSS/CPU measurement.
