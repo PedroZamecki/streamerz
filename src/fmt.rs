@@ -135,7 +135,7 @@ pub fn shown_iso(iso: &str, time: bool) -> String {
     let Some(secs) = crate::engine::rest_parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
         return String::new();
     };
-    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    let t = local_time(secs);
     if time {
         format!("{} {}", shown_date(&t), shown_time(&t))
     } else {
@@ -145,13 +145,23 @@ pub fn shown_iso(iso: &str, time: bool) -> String {
 
 /// Unix seconds as the user reads a date and a time.
 pub fn shown_when(secs: i64) -> String {
-    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    let t = local_time(secs);
     format!("{} {}", shown_date(&t), shown_time(&t))
 }
 
 /// Unix seconds as the user reads a time of day (chat lines).
 pub fn shown_clock(secs: i64) -> String {
-    shown_time(&crate::engine::civil_time(secs + i64::from(now().offset)))
+    shown_time(&local_time(secs))
+}
+
+/// Unix seconds as a local date and time, with the offset in effect then (not now's: a time from
+/// before a daylight saving change keeps its own hour).
+pub fn local_time(secs: i64) -> Time {
+    let offset = offset_at(secs);
+    Time {
+        offset,
+        ..crate::engine::civil_time(secs + i64::from(offset))
+    }
 }
 
 pub fn locale() -> &'static Locale {
@@ -329,31 +339,47 @@ pub fn unix_now() -> std::time::Duration {
         .unwrap_or_default()
 }
 
-/// Now, in the local time zone.
+/// The C library's `struct tm` (64-bit glibc and macOS).
 #[cfg(unix)]
-pub fn now() -> Time {
-    #[repr(C)]
-    struct Tm {
-        sec: i32,
-        min: i32,
-        hour: i32,
-        mday: i32,
-        mon: i32,
-        year: i32,
-        wday: i32,
-        yday: i32,
-        isdst: i32,
-        gmtoff: i64,
-        zone: *const u8,
-    }
+#[repr(C)]
+struct Tm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    mon: i32,
+    year: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+    gmtoff: i64,
+    zone: *const u8,
+}
+
+/// `secs` in the local time zone, by the C library.
+#[cfg(unix)]
+fn local_tm(secs: i64) -> Tm {
     extern "C" {
         fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
     }
-    let d = unix_now();
-    let secs = d.as_secs() as i64;
-    // SAFETY: Tm matches glibc's struct tm on 64-bit; zeroed is a valid value for it.
+    // SAFETY: Tm matches glibc's struct tm on 64-bit; zeroed is a valid value for it, and stays
+    // zeroed (UTC) when localtime_r fails.
     let mut tm: Tm = unsafe { std::mem::zeroed() };
     unsafe { localtime_r(&secs, &mut tm) };
+    tm
+}
+
+/// The local offset from UTC at Unix time `secs`, in seconds (daylight saving time included).
+#[cfg(unix)]
+pub fn offset_at(secs: i64) -> i32 {
+    local_tm(secs).gmtoff as i32
+}
+
+/// Now, in the local time zone.
+#[cfg(unix)]
+pub fn now() -> Time {
+    let d = unix_now();
+    let tm = local_tm(d.as_secs() as i64);
     Time {
         year: tm.year + 1900,
         month: tm.mon as u32 + 1,
@@ -365,6 +391,48 @@ pub fn now() -> Time {
         weekday: tm.wday as u32,
         offset: tm.gmtoff as i32,
     }
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let (m, d) = (i64::from(m), i64::from(d));
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// The local offset from UTC at Unix time `secs`, in seconds (daylight saving time included).
+#[cfg(windows)]
+pub fn offset_at(secs: i64) -> i32 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+    let u = crate::engine::civil_time(secs);
+    if !(1601..=30827).contains(&u.year) {
+        return now().offset;
+    }
+    let utc = SYSTEMTIME {
+        wYear: u.year as u16,
+        wMonth: u.month as u16,
+        wDayOfWeek: u.weekday as u16,
+        wDay: u.day as u16,
+        wHour: u.hour as u16,
+        wMinute: u.min as u16,
+        wSecond: u.sec as u16,
+        wMilliseconds: 0,
+    };
+    // SAFETY: plain in and out structs; null is the time zone in use.
+    let mut l: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut l) } == 0 {
+        return now().offset;
+    }
+    let local = days_from_civil(i64::from(l.wYear), u32::from(l.wMonth), u32::from(l.wDay)) * 86_400
+        + i64::from(l.wHour) * 3600
+        + i64::from(l.wMinute) * 60
+        + i64::from(l.wSecond);
+    (local - secs) as i32
 }
 
 #[cfg(windows)]
