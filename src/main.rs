@@ -48,6 +48,7 @@ mod overlay_preview;
 mod overlay_shot;
 mod overlays;
 mod package;
+mod platform_args;
 pub mod ports;
 pub mod remote;
 mod rewards;

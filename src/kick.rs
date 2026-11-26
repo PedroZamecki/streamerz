@@ -1628,25 +1628,23 @@ fn kick(engine: &Rc<Engine>, code: u32, name: &str, ev: &str, args: &Obj) {
 /// Streamer.bot's KickUser variables from a Kick user object (`id`, `username`, `slug`).
 fn kick_user(args: &mut Obj, u: &Value) {
     let name = u["username"].as_str().unwrap_or("");
-    args.insert("user".into(), name.into());
-    args.insert(
-        "userName".into(),
-        u["slug"].as_str().unwrap_or(&name.to_lowercase()).into(),
+    crate::platform_args::user(
+        args,
+        "kick",
+        u["id"].clone(),
+        u["slug"].as_str().unwrap_or(&name.to_lowercase()),
+        name,
     );
-    args.insert("userId".into(), u["id"].clone());
-    args.insert("userType".into(), "kick".into());
 }
 
 /// KickBroadcaster variables, from the account logged in (or the channel read).
 fn kick_broadcaster(engine: &Rc<Engine>, args: &mut Obj, channel: &str) {
     let c = engine.config();
     let (name, id) = match &c.kick.broadcaster {
-        Some(b) => (b.username.clone(), Value::from(b.user_id)),
-        None => (channel.to_string(), Value::Null),
+        Some(b) => (b.username.as_str(), Value::from(b.user_id)),
+        None => (channel, Value::Null),
     };
-    args.insert("broadcastUser".into(), name.clone().into());
-    args.insert("broadcastUsername".into(), name.to_lowercase().into());
-    args.insert("broadcastUserId".into(), id);
+    crate::platform_args::broadcaster(args, "broadcastUsername", id, name.to_lowercase(), Some(name));
 }
 
 /// The stream's category and timing as Streamer.bot's names.
@@ -2279,6 +2277,40 @@ mod tests {
         let off = json!({"emotes_mode": {"enabled": false}, "slow_mode": {"enabled": false}});
         handle_kick_event(&engine, "channel", "ChatroomUpdatedEvent", &off);
         assert_eq!(engine.chat_modes()[1], Some(crate::engine::ChatModes::default()));
+    }
+
+    #[test]
+    fn kick_user_and_broadcaster_argument_bytes() {
+        let mut config = Config::default();
+        config.kick.broadcaster = Some(KickAccount {
+            user_id: 123,
+            username: "Alice".into(),
+            ..Default::default()
+        });
+        let cfg = Arc::new(watch::channel(config).0);
+        let engine = Engine::new(cfg.clone(), |_| {});
+        let mut args = Obj::new();
+        kick_broadcaster(&engine, &mut args, "Ignored");
+        kick_user(&mut args, &json!({"username": "Bob", "id": 456, "slug": "bob-chat"}));
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUsername":"alice","broadcastUserId":123,"#,
+                r#""user":"Bob","userName":"bob-chat","userId":456,"userType":"kick"}"#,
+            )
+        );
+
+        cfg.send_modify(|config| config.kick.broadcaster = None);
+        args.clear();
+        kick_broadcaster(&engine, &mut args, "Alice");
+        kick_user(&mut args, &json!({"username": "Bob"}));
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUsername":"alice","broadcastUserId":null,"#,
+                r#""user":"Bob","userName":"bob","userId":null,"userType":"kick"}"#,
+            )
+        );
     }
 
     #[test]

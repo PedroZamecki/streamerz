@@ -606,18 +606,19 @@ pub fn parse_hex_color(hex: &str) -> (i64, i64, i64) {
 }
 
 pub fn populate_broadcaster_vars(args: &mut Obj, broadcaster: &TwitchAccount) {
-    args.insert("broadcastUser".into(), broadcaster.display_name.as_str().into());
-    args.insert("broadcastUserName".into(), broadcaster.login.as_str().into());
-    args.insert("broadcastUserId".into(), broadcaster.user_id.as_str().into());
+    crate::platform_args::broadcaster(
+        args,
+        "broadcastUserName",
+        broadcaster.user_id.as_str().into(),
+        broadcaster.login.as_str(),
+        Some(&broadcaster.display_name),
+    );
     args.insert("broadcastIsAffiliate".into(), false.into());
     args.insert("broadcastIsPartner".into(), false.into());
 }
 
 pub fn populate_user_vars(args: &mut Obj, user_id: &str, login: &str, display: &str, role: u8, sub: bool) {
-    args.insert("user".into(), display.into());
-    args.insert("userName".into(), login.into());
-    args.insert("userId".into(), user_id.into());
-    args.insert("userType".into(), "twitch".into());
+    crate::platform_args::user(args, "twitch", user_id.into(), login, display);
     args.insert("isSubscribed".into(), sub.into());
     args.insert("isModerator".into(), (role == 3 || role == 4).into());
     args.insert("isVip".into(), (role == 2).into());
@@ -5454,17 +5455,16 @@ pub(crate) mod tests {
         };
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &b);
-        assert_eq!(args["broadcastUser"], "Alice");
-        assert_eq!(args["broadcastUserName"], "alice");
-        assert_eq!(args["broadcastUserId"], "123");
-
         populate_user_vars(&mut args, "456", "bob", "Bob", 3, true);
-        assert_eq!(args["user"], "Bob");
-        assert_eq!(args["userName"], "bob");
-        assert_eq!(args["userId"], "456");
-        assert_eq!(args["userType"], "twitch");
-        assert_eq!(args["isModerator"], true);
-        assert_eq!(args["isSubscribed"], true);
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUserName":"alice","broadcastUserId":"123","#,
+                r#""broadcastIsAffiliate":false,"broadcastIsPartner":false,"user":"Bob","userName":"bob","#,
+                r#""userId":"456","userType":"twitch","isSubscribed":true,"isModerator":true,"isVip":false,"#,
+                r#""badges":[],"badgeCount":0}"#,
+            )
+        );
 
         populate_chat_vars(
             &mut args,

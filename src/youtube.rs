@@ -2440,11 +2440,14 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     let color = youtube_author_color(r, owner, moderator, member);
     let name = text_of(&r["authorName"]);
     let mut a = Obj::new();
+    crate::platform_args::user(
+        &mut a,
+        "youtube",
+        r["authorExternalChannelId"].clone(),
+        &name,
+        name.trim_start_matches('@'),
+    );
     let mut put = |k: &str, v: Value| drop(a.insert(k.into(), v));
-    put("user", name.trim_start_matches('@').into());
-    put("userName", name.clone().into());
-    put("userId", r["authorExternalChannelId"].clone());
-    put("userType", "youtube".into());
     put("userProfileUrl", thumb(&r["authorPhoto"]).into());
     put("color", color.into());
     put("badges", ui_badges.into());
@@ -2466,8 +2469,13 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     }
     let c = engine.config();
     if let Some(b) = &c.youtube.broadcaster {
-        put("broadcastUsername", b.name.clone().into());
-        put("broadcastUserId", b.channel_id.clone().into());
+        crate::platform_args::broadcaster(
+            &mut a,
+            "broadcastUsername",
+            b.channel_id.as_str().into(),
+            b.name.as_str(),
+            None,
+        );
     }
     drop(c);
     BROADCAST.with_borrow(|b| a.extend(b.clone()));
@@ -3207,6 +3215,37 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn youtube_user_and_broadcaster_argument_bytes() {
+        let mut config = Config::default();
+        config.youtube.broadcaster = Some(YouTubeAccount {
+            channel_id: "UC-alice".into(),
+            name: "Alice".into(),
+            ..Default::default()
+        });
+        let cfg = Arc::new(watch::channel(config).0);
+        let engine = Engine::new(cfg.clone(), |_| {});
+        let item = json!({
+            "authorName": {"simpleText": "@Bob"},
+            "authorExternalChannelId": "UC-bob",
+            "id": "message",
+        });
+        let common = concat!(
+            r#"{"user":"Bob","userName":"@Bob","userId":"UC-bob","userType":"youtube","userProfileUrl":"","#,
+            r##""color":"#AAAAAA","badges":[],"isSubscribed":false,"userIsSponsor":false,"isSponsor":false,"##,
+            r#""isModerator":false,"isOwner":false,"isVerified":false,"messageId":"message","id":"message""#,
+        );
+        let (args, _, _, _) = yt_base(&engine, &item);
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            format!(r#"{common},"broadcastUsername":"Alice","broadcastUserId":"UC-alice"}}"#)
+        );
+
+        cfg.send_modify(|config| config.youtube.broadcaster = None);
+        let (args, _, _, _) = yt_base(&engine, &item);
+        assert_eq!(serde_json::to_string(&args).unwrap(), format!("{common}}}"));
+    }
 
     #[test]
     fn broadcaster_logout_cancels_youtube_reader() {
