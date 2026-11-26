@@ -102,11 +102,7 @@ fn parse_when(text: &str) -> Option<i64> {
     }
     let zoned = t.get(19..).is_some_and(|z| z.contains(['Z', 'z', '+', '-']));
     let secs = super::rest_parse_iso(&t)?;
-    Some(if zoned {
-        secs
-    } else {
-        secs - i64::from(crate::fmt::now().offset)
-    })
+    Some(if zoned { secs } else { crate::fmt::from_local(secs) })
 }
 
 /// The computer's time zone by its IANA name (Twitch's schedule wants one), else UTC.
@@ -2306,6 +2302,14 @@ mod tests {
             crate::engine::rest_parse_iso("2026-11-15T20:00:00Z")
         );
         assert!(parse_when("tomorrow").is_none());
+        // A local time keeps the offset of its own day, winter or summer.
+        for (typed, iso) in [
+            ("2026-01-15 20:00", "2026-01-15T20:00:00Z"),
+            ("2026-07-15 20:00", "2026-07-15T20:00:00Z"),
+        ] {
+            let naive = crate::engine::rest_parse_iso(iso).unwrap();
+            assert_eq!(parse_when(typed), Some(crate::fmt::from_local(naive)));
+        }
         assert_eq!(twitch_extra_scope(592), Some("moderator:manage:automod_settings"));
         assert_eq!(twitch_extra_scope(10), None);
     }

@@ -111,25 +111,20 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
-/// The local offset from UTC now, in seconds.
-fn offset() -> i64 {
-    i64::from(crate::fmt::now().offset)
-}
-
 fn now_ms() -> u64 {
     crate::fmt::unix_now().as_millis() as u64
 }
 
 /// A local day and time as milliseconds since 1970.
 fn local_ms(day: (i64, u32, u32), hour: u32, minute: u32) -> Option<u64> {
-    let secs = days_from_civil(day.0, day.1, day.2) * 86_400 + i64::from(hour * 3600 + minute * 60) - offset();
+    let naive = days_from_civil(day.0, day.1, day.2) * 86_400 + i64::from(hour * 3600 + minute * 60);
+    let secs = crate::fmt::from_local(naive);
     u64::try_from(secs).ok().map(|s| s * 1000)
 }
 
 /// Today in the local time zone, `days` from now, as `YYYY-MM-DD`.
 pub fn day_from_today(days: i64) -> String {
-    let secs = (now_ms() / 1000) as i64 + offset() + days * 86_400;
-    let t = crate::engine::civil_time(secs);
+    let t = crate::fmt::local_time((now_ms() / 1000) as i64 + days * 86_400);
     format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)
 }
 
@@ -138,7 +133,7 @@ pub fn show_moment(ms: u64) -> String {
     if ms == 0 {
         return String::new();
     }
-    let t = crate::engine::civil_time((ms / 1000) as i64 + offset());
+    let t = crate::fmt::local_time((ms / 1000) as i64);
     let day = format!("{:04}-{:02}-{:02} {:02}:{:02}", t.year, t.month, t.day, t.hour, t.min);
     // The seconds only when it has some (a moment set as `+15m`), so it reads back the same.
     if t.sec == 0 {
@@ -399,6 +394,17 @@ mod tests {
         assert!(moment("00:00").unwrap() > now_ms());
         assert_eq!(moment(""), Some(0));
         assert!(Kind::DateTime.accepts(&json!(at)) && !Kind::DateTime.accepts(&json!("x")));
+    }
+
+    #[test]
+    fn moments_keep_the_offset_of_their_own_day() {
+        // Winter and summer: each uses its own offset, not today's.
+        for (typed, day) in [("2030-01-15 12:00", (2030, 1, 15)), ("2030-07-15 12:00", (2030, 7, 15))] {
+            let naive = days_from_civil(day.0, day.1, day.2) * 86_400 + 12 * 3600;
+            let at = moment(typed).unwrap();
+            assert_eq!(at as i64, crate::fmt::from_local(naive) * 1000);
+            assert_eq!(show_moment(at), typed);
+        }
     }
 
     #[test]

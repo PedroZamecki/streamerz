@@ -135,10 +135,7 @@ fn make_in_keeping(
     made: i64,
     protect: Option<&Path>,
 ) -> Result<Backup, String> {
-    let stamp = crate::fmt::date(
-        &crate::engine::civil_time(made + i64::from(crate::fmt::now().offset)),
-        "yyyyMMdd-HHmmss",
-    );
+    let stamp = crate::fmt::date(&crate::fmt::local_time(made), "yyyyMMdd-HHmmss");
     let base = format!("{stamp}-{}", safe_version(version));
     let mut highest = 0u64;
     if let Ok(rd) = std::fs::read_dir(root) {
@@ -475,6 +472,28 @@ mod tests {
         std::fs::write(&cfg, "{\"v\":2}").unwrap();
         restore_files(&kept.dir, &files).unwrap();
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "{\"v\":1}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_backup_is_named_by_the_local_time_it_was_made() {
+        let d = scratch("stamp");
+        let cfg = d.join("streamerz.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        // A summer moment keeps its own offset in the name, whatever today's is.
+        let made = 1_752_580_800;
+        let b = make_in(
+            &d.join("backups"),
+            std::slice::from_ref(&cfg),
+            Kind::Manual,
+            "1.0.0",
+            "",
+            made,
+        )
+        .unwrap();
+        let stamp = crate::fmt::date(&crate::fmt::local_time(made), "yyyyMMdd-HHmmss");
+        let name = b.dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(&stamp), "{name} {stamp}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

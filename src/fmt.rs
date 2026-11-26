@@ -182,6 +182,17 @@ pub fn local_time(secs: i64) -> Time {
     }
 }
 
+/// Unix seconds of a local date and time, given as seconds since 1970 read as if it were UTC, with the
+/// offset in effect at that moment (not now's).
+pub fn from_local(naive: i64) -> i64 {
+    from_local_with(naive, offset_at)
+}
+
+fn from_local_with(naive: i64, offset_at: impl Fn(i64) -> i32) -> i64 {
+    let guess = naive - i64::from(offset_at(naive));
+    naive - i64::from(offset_at(guess))
+}
+
 pub fn locale() -> &'static Locale {
     static L: OnceLock<Locale> = OnceLock::new();
     // Tests read the same everywhere: a machine with a decimal comma (pt-BR, de-DE) once failed them.
@@ -1392,6 +1403,20 @@ mod tests {
         for days in (-135_000..160_000).step_by(37) {
             let t = crate::engine::civil_time(days * 86_400);
             assert_eq!(days_from_civil(i64::from(t.year), t.month, t.day), days, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn a_local_time_turns_to_utc_with_the_offset_of_its_day() {
+        // UTC+0 until `jump`, UTC+1 after (a daylight saving start).
+        let jump = 1_000_000_000;
+        let dst = |s: i64| if s >= jump { 3600 } else { 0 };
+        assert_eq!(from_local_with(jump - 36_000, dst), jump - 36_000);
+        assert_eq!(from_local_with(jump + 36_000, dst), jump + 32_400);
+        for secs in [0, 1_700_000_000, 1_750_000_000] {
+            let t = local_time(secs);
+            let naive = secs + i64::from(t.offset);
+            assert_eq!(from_local(naive), secs);
         }
     }
 
