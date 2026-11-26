@@ -1191,6 +1191,222 @@ mod tests {
         assert_eq!(strftime_to_net("%m/%d/%Y"), "MM/dd/yyyy");
         assert_eq!(strftime_to_net("%r"), "hh:mm:ss tt");
     }
+
+    fn at(year: i32, month: u32, day: u32, hour: u32, min: u32) -> Time {
+        let days = days_from_civil(i64::from(year), month, day);
+        Time {
+            hour,
+            min,
+            ..crate::engine::civil_time(days * 86_400)
+        }
+    }
+
+    #[test]
+    fn zero_as_a_percent_is_one_zero() {
+        assert_eq!(number(Num::Int(0), "P").unwrap(), "0.00%");
+        assert_eq!(number(Num::Float(0.0), "P0").unwrap(), "0%");
+        assert_eq!(custom_number(Num::Int(0), "0.0%", en()), "0.0%");
+        assert_eq!(custom_number(Num::Float(0.0), "0‰", en()), "0‰");
+        assert_eq!(number(Num::Float(0.5), "P1").unwrap(), "50.0%");
+    }
+
+    #[test]
+    fn infinity_and_nan_are_written_not_zero() {
+        let f = |v: f64, s: &str| number(Num::Float(v), s);
+        assert_eq!(f(f64::NAN, "N2").as_deref(), Some("NaN"));
+        assert_eq!(f(f64::INFINITY, "C").as_deref(), Some("Infinity"));
+        assert_eq!(f(f64::NEG_INFINITY, "0.00").as_deref(), Some("-Infinity"));
+        assert_eq!(f(f64::NAN, "R").as_deref(), Some("NaN"));
+        assert_eq!(f(f64::NAN, "D"), None);
+        assert_eq!(f(f64::INFINITY, "X2"), None);
+    }
+
+    #[test]
+    fn integer_placeholders_take_one_digit_each() {
+        let c = |v: i64, s: &str| custom_number(Num::Int(v), s, en());
+        assert_eq!(c(5_551_234_567, "(###) ###-####"), "(555) 123-4567");
+        assert_eq!(c(12, "##-##"), "-12");
+        assert_eq!(c(12, "00-00"), "00-12");
+        assert_eq!(c(123_456, "##-##"), "1234-56");
+        assert_eq!(c(1_234_567, "#,##0"), "1,234,567");
+        assert_eq!(c(-1_234_567, "#,##0"), "-1,234,567");
+        assert_eq!(c(0, "#,##0"), "0");
+        assert_eq!(c(0, "#.##"), "");
+        assert_eq!(c(7, "abc"), "abc");
+        assert_eq!(custom_number(Num::Float(1234.5), "0,0.00", en()), "1,234.50");
+        assert_eq!(custom_number(Num::Float(12.5), ".00", en()), "12.50");
+        assert_eq!(custom_number(Num::Float(1234.5), "#,#.00", en()), "1,234.50");
+    }
+
+    #[test]
+    fn integers_round_trip_through_every_integer_format() {
+        let mut samples: Vec<i64> = (-1200..1200).collect();
+        samples.extend([i64::MIN, i64::MAX, 999_999, 1_000_000, -1_000_000, 123_456_789_012]);
+        for v in samples {
+            let n = Num::Int(v);
+            assert_eq!(number(n, "D").unwrap(), v.to_string(), "D {v}");
+            assert_eq!(number(n, "N0").unwrap().replace(',', ""), v.to_string(), "N0 {v}");
+            assert_eq!(number(n, "R").unwrap(), v.to_string(), "R {v}");
+            let grouped = custom_number(n, "#,##0", en());
+            assert_eq!(grouped.replace(',', ""), v.to_string(), "#,##0 {v}");
+            // Groups of three, the first of one to three digits.
+            let digits = grouped.trim_start_matches('-');
+            let parts: Vec<&str> = digits.split(',').collect();
+            assert!((1..=3).contains(&parts[0].len()), "{grouped}");
+            assert!(parts[1..].iter().all(|p| p.len() == 3), "{grouped}");
+        }
+    }
+
+    #[test]
+    fn exact_fractions_match_rusts_formatting() {
+        // Quarters are exact in binary, so no rounding question: the two must agree.
+        for i in -2000..2000 {
+            let v = f64::from(i) / 4.0;
+            assert_eq!(custom_number(Num::Float(v), "0.00", en()), format!("{v:.2}"), "{v}");
+            let fixed = number(Num::Float(v), "F2").unwrap();
+            assert_eq!(fixed, format!("{v:.2}"), "{v}");
+        }
+    }
+
+    #[test]
+    fn halves_round_away_from_zero() {
+        for (v, want) in [
+            (0.5, "1"),
+            (1.5, "2"),
+            (2.5, "3"),
+            (-0.5, "-1"),
+            (-2.5, "-3"),
+            (0.49, "0"),
+        ] {
+            assert_eq!(number(Num::Float(v), "F0").unwrap(), want, "{v}");
+        }
+        assert_eq!(number(Num::Float(9.995), "N2").unwrap(), "10.00");
+        assert_eq!(number(Num::Float(999_999.5), "N0").unwrap(), "1,000,000");
+    }
+
+    #[test]
+    fn a_percent_sign_makes_the_next_letter_a_field_alone() {
+        let t = at(2026, 3, 9, 16, 5);
+        let d = |f: &str| custom_date(&t, f, en(), false);
+        assert_eq!(d("%h"), "4");
+        assert_eq!(d("%Hmm"), "1605");
+        assert_eq!(d("%d/%M"), "9/3");
+        assert_eq!(d("%%"), "%%");
+        assert_eq!(d("50%"), "50%");
+    }
+
+    #[test]
+    fn an_empty_big_f_fraction_takes_its_point_away() {
+        let mut t = at(2026, 3, 9, 16, 5);
+        let d = |t: &Time, f: &str| custom_date(t, f, en(), false);
+        assert_eq!(d(&t, "HH:mm:ss.FFF"), "16:05:00");
+        t.nanos = 750_000_000;
+        assert_eq!(d(&t, "HH:mm:ss.FFF"), "16:05:00.75");
+        assert_eq!(d(&t, "ss.fff"), "00.750");
+    }
+
+    #[test]
+    fn quotes_and_escapes_are_literal() {
+        let t = at(2026, 3, 9, 16, 5);
+        let d = |f: &str| custom_date(&t, f, en(), false);
+        assert_eq!(d(r"'It\'s' h"), "It's 4");
+        assert_eq!(d(r"\h h"), "h 4");
+        assert_eq!(d("\"dd\" dd"), "dd 09");
+        assert_eq!(d("'unclosed"), "unclosed");
+        assert_eq!(d("dd\\"), "09");
+    }
+
+    #[test]
+    fn a_picked_slash_is_a_slash_and_quotes_are_kept() {
+        assert_eq!(literal_slashes("dd/MM/yyyy"), r"dd\/MM\/yyyy");
+        assert_eq!(literal_slashes("'a/b' d/M"), r"'a/b' d\/M");
+        assert_eq!(literal_slashes(r"d\/M"), r"d\/M");
+        let dotted = Locale {
+            date_sep: ".".into(),
+            ..Locale::en_us()
+        };
+        let t = at(2026, 3, 9, 16, 5);
+        assert_eq!(
+            custom_date(&t, &literal_slashes("dd/MM 'x/y'"), &dotted, false),
+            "09/03 x/y"
+        );
+        assert_eq!(custom_date(&t, "dd/MM", &dotted, false), "09.03");
+    }
+
+    #[test]
+    fn glibc_patterns_become_dotnet_ones() {
+        assert_eq!(strftime_to_net("%Hh%M"), r"HH\hmm");
+        assert_eq!(strftime_to_net("%l:%M %P"), "h:mm tt");
+        assert_eq!(strftime_to_net("%OH:%OM"), "HH:mm");
+        assert_eq!(strftime_to_net("%Ey"), "yy");
+        assert_eq!(strftime_to_net("%F %%"), r"yyyy-MM-dd \%");
+        assert_eq!(strftime_to_net("%d.%m.%Y"), "dd.MM.yyyy");
+        assert_eq!(strftime_to_net("%Y年%m月%d日"), "yyyy年MM月dd日");
+        assert_eq!(strftime_to_net("%k:%M"), "H:mm");
+        let t = at(2026, 3, 9, 16, 5);
+        assert_eq!(custom_date(&t, &strftime_to_net("%Hh%M"), en(), false), "16h05");
+        assert_eq!(custom_date(&t, &strftime_to_net("%F %%"), en(), false), "2026-03-09 %");
+        assert_eq!(date_separator("dd.MM.yyyy"), ".");
+        assert_eq!(date_separator(r"yyyy\-MM"), "-");
+        assert_eq!(date_separator("yyyy年MM月dd日"), "/");
+    }
+
+    #[test]
+    fn os_values_left_empty_keep_the_default() {
+        let mut f = "x".to_string();
+        keep(&mut f, String::new());
+        assert_eq!(f, "x");
+        keep(&mut f, ",".into());
+        assert_eq!(f, ",");
+    }
+
+    #[test]
+    fn twelve_hour_clock_and_offsets() {
+        let d = |t: &Time, f: &str| custom_date(t, f, en(), false);
+        let mut t = at(2024, 2, 29, 0, 7);
+        assert_eq!(d(&t, "h:mm tt dddd"), "12:07 AM Thursday");
+        t.hour = 12;
+        assert_eq!(d(&t, "hh t"), "12 P");
+        t.hour = 23;
+        assert_eq!(d(&t, "h tt"), "11 PM");
+        t.offset = -(3 * 3600 + 1800);
+        assert_eq!(
+            (d(&t, "z"), d(&t, "zz"), d(&t, "zzz"), d(&t, "K")),
+            ("-3".into(), "-03".into(), "-03:30".into(), "-03:30".into())
+        );
+        t.offset = 5 * 3600;
+        assert_eq!(d(&t, "zz zzz"), "+05 +05:00");
+        assert_eq!(d(&at(2000, 1, 1, 0, 0), "yy y yyy yyyyy"), "00 0 2000 02000");
+    }
+
+    #[test]
+    fn dates_before_1970_and_leap_days() {
+        let t = crate::engine::civil_time(-1);
+        assert_eq!(
+            custom_date(&t, "yyyy-MM-dd HH:mm:ss dddd", en(), false),
+            "1969-12-31 23:59:59 Wednesday"
+        );
+        assert_eq!(custom_date(&at(1900, 3, 1, 0, 0), "dddd", en(), false), "Thursday");
+        assert_eq!(custom_date(&at(2100, 2, 28, 0, 0), "ddd", en(), false), "Sun");
+        // Every day, from 1600 to 2400, comes back to its day number.
+        for days in (-135_000..160_000).step_by(37) {
+            let t = crate::engine::civil_time(days * 86_400);
+            assert_eq!(days_from_civil(i64::from(t.year), t.month, t.day), days, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn a_local_time_carries_its_own_offset() {
+        for secs in [-86_400 * 400, 0, 1_700_000_000, 1_720_000_000, 1_735_000_000] {
+            let t = local_time(secs);
+            assert_eq!(t.offset, offset_at(secs));
+            let back = days_from_civil(i64::from(t.year), t.month, t.day) * 86_400
+                + i64::from(t.hour * 3600 + t.min * 60 + t.sec)
+                - i64::from(t.offset);
+            assert_eq!(back, secs);
+        }
+        assert_eq!(offset_at(unix_now().as_secs() as i64), now().offset);
+    }
 }
 
 /// A Windows error as a person reads it: its message, or (when Windows has none, as for a missing
