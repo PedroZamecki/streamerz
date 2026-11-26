@@ -3960,7 +3960,11 @@ pub(crate) fn handle_notification(
                 return;
             }
             let action = es(event, "/action");
-            let d = &event[action];
+            // Twitch sends the details under `shared_chat_ban` and so on; the plain name is the fallback.
+            let d = match &event[action] {
+                Value::Object(_) => &event[action],
+                _ => &event[action.strip_prefix("shared_chat_").unwrap_or(action)],
+            };
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_by(&mut args, event, "moderator", "createdBy");

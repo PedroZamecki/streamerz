@@ -56,11 +56,14 @@ pub fn event(engine: &Rc<Engine>, event: &Value) {
         return;
     }
     let key = account(engine);
-    let detail = &event[match action {
-        "approve_unban_request" | "deny_unban_request" => "unban_request",
-        "add_blocked_term" | "add_permitted_term" | "remove_blocked_term" | "remove_permitted_term" => "automod_terms",
-        _ => action,
-    }];
+    let detail = match action {
+        "approve_unban_request" | "deny_unban_request" => &event["unban_request"],
+        "add_blocked_term" | "add_permitted_term" | "remove_blocked_term" | "remove_permitted_term" => {
+            &event["automod_terms"]
+        }
+        _ if event[action].is_object() => &event[action],
+        _ => &event[action.strip_prefix("shared_chat_").unwrap_or(action)],
+    };
     let reason = if let Some(terms) = detail["terms"].as_array() {
         terms.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
     } else {
