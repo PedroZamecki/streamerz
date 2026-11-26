@@ -282,16 +282,22 @@ fn os_locale() -> Locale {
     Locale::en_us()
 }
 
-/// A strftime pattern (glibc's D_FMT/T_FMT) as a .NET one.
+/// A strftime pattern (glibc's D_FMT/T_FMT) as a .NET one. Its other letters are quoted, as .NET
+/// would read them as fields ("%Hh%M" is "HH'h'mm").
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn strftime_to_net(f: &str) -> String {
     let mut out = String::new();
-    let mut it = f.chars();
+    let mut it = f.chars().peekable();
     while let Some(c) = it.next() {
         if c != '%' {
+            if c.is_ascii_alphabetic() || matches!(c, '\'' | '"' | '\\' | '%') {
+                out.push('\\');
+            }
             out.push(c);
             continue;
         }
+        // The E and O modifiers (other eras and digits) change nothing here.
+        while it.next_if(|&m| m == 'E' || m == 'O').is_some() {}
         out += match it.next() {
             Some('d') => "dd",
             Some('e') => "d",
@@ -299,18 +305,23 @@ fn strftime_to_net(f: &str) -> String {
             Some('Y') => "yyyy",
             Some('y') => "yy",
             Some('H') => "HH",
+            Some('k') => "H",
             Some('I') => "hh",
+            Some('l') => "h",
             Some('M') => "mm",
             Some('S') => "ss",
-            Some('p') => "tt",
+            Some('p') | Some('P') => "tt",
             Some('r') => "hh:mm:ss tt",
             Some('T') => "HH:mm:ss",
             Some('R') => "HH:mm",
             Some('D') => "MM/dd/yy",
+            Some('F') => "yyyy-MM-dd",
             Some('b') | Some('h') => "MMM",
             Some('B') => "MMMM",
             Some('a') => "ddd",
             Some('A') => "dddd",
+            Some('%') => "\\%",
+            Some('n') | Some('t') => " ",
             _ => "",
         };
     }
