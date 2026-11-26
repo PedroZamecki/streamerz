@@ -614,6 +614,93 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_duplicate_points_its_children_at_the_new_containers() {
+        let mut a = new_action("Original", "");
+        let mut group = new_sub(99900);
+        set_children(&mut group, vec![new_sub(1020)]);
+        a.sub_actions.push(group);
+        renumber(&mut a.sub_actions);
+        let dup = duplicate_action(&a, "Copy");
+        let (g, child) = (&dup.sub_actions[0], &dup.sub_actions[0]["subActions"][0]);
+        assert_eq!(child["parentId"], g["id"]);
+        assert_ne!(child["parentId"], a.sub_actions[0]["id"]);
+        assert_eq!(g["parentId"], Value::Null);
+    }
+
+    #[test]
+    fn an_import_with_empty_names_replaces_only_its_own() {
+        let mut c = Config::default();
+        for (id, name) in [("q1", ""), ("q2", ""), ("q3", "kept")] {
+            c.actions
+                .queues
+                .push(json!({"id": id, "name": name}).as_object().unwrap().clone());
+        }
+        let x = json!({"data": {"actions": [], "queues": [{"id": "q1", "name": ""}, {"id": "", "name": "new"}]}});
+        import(&mut c, x.as_object().unwrap()).unwrap();
+        let ids: Vec<&str> = c.actions.queues.iter().map(|q| s(q, "id")).collect();
+        assert_eq!(ids, ["q2", "q3", "q1", ""]);
+        assert!(same_item(("a", ""), ("a", "x")) && same_item(("", "n"), ("b", "n")));
+        assert!(!same_item(("", ""), ("", "")));
+    }
+
+    #[test]
+    fn moves_keep_every_sub_action_once_with_consistent_indexes() {
+        // Every move of every item to every place: nothing lost or doubled, indexes and parents right.
+        let count = |l: &[Obj]| {
+            let mut n = 0;
+            walk(l, &mut |_| n += 1);
+            n
+        };
+        let places: Vec<Path> = vec![vec![0], vec![1], vec![2], vec![1, 0], vec![1, 1]];
+        for from in &places {
+            for parent in [vec![], vec![1]] {
+                for at in 0..4 {
+                    let mut l = tree();
+                    let before = msgs(&l);
+                    let moved = move_to(&mut l, from, &parent, at);
+                    assert_eq!(count(&l), 5, "{from:?} to {parent:?} {at}");
+                    let mut sorted: Vec<char> = msgs(&l).chars().collect();
+                    sorted.sort_unstable();
+                    let mut want: Vec<char> = before.chars().collect();
+                    want.sort_unstable();
+                    assert_eq!(sorted, want);
+                    if !moved {
+                        assert_eq!(msgs(&l), before);
+                    }
+                    fn check(list: &[Obj], parent: &Value) {
+                        for (i, o) in list.iter().enumerate() {
+                            assert_eq!(o["index"], json!(i));
+                            assert_eq!(&o["parentId"], parent);
+                            check(&children(o), &o["id"]);
+                        }
+                    }
+                    check(&l, &Value::Null);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paths_out_of_range_change_nothing() {
+        let mut l = tree();
+        assert!(get(&l, &[]).is_none() && get(&l, &[9]).is_none() && get(&l, &[1, 9]).is_none());
+        assert!(get(&l, &[0, 0]).is_none());
+        assert!(remove(&mut l, &[9]).is_none());
+        assert!(remove(&mut l, &[]).is_none());
+        assert!(!update(&mut l, &[], |_| {}));
+        assert!(!update(&mut l, &[1, 7], |_| {}));
+        assert!(!move_to(&mut l, &[7], &[], 0));
+        assert!(!insert(&mut l, &[9], 0, new_sub(1020)));
+        assert_eq!(msgs(&l), "aGbcd");
+        // Inserting past the end lands at the end.
+        assert!(insert(&mut l, &[1], 99, new_sub(1020)));
+        assert_eq!(get(&l, &[1, 2]).unwrap()["index"], json!(2));
+        assert_eq!(drop_target(&l, &[1]), Some((vec![1], 3)));
+        assert_eq!(drop_target(&l, &[1, 0]), Some((vec![1], 0)));
+        assert_eq!(drop_target(&l, &[9]), None);
+    }
+
     fn tree() -> Vec<Obj> {
         // [log a, group [log b, log c], log d]
         let log = |m: &str| {
