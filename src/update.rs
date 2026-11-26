@@ -464,26 +464,41 @@ fn free_old_path(path: &Path) -> PathBuf {
 /// PowerShell receives paths only as literals inside an encoded script, never through cmd.exe.
 #[cfg(any(windows, test))]
 fn windows_elevation_command(path: &Path, new: &Path) -> String {
+    let script = elevation_script(path, new);
+    let encoded = powershell_utf16(&script);
+    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
+}
+
+#[cfg(any(windows, test))]
+fn powershell_utf16(text: &str) -> String {
     use base64::Engine;
-    let literal = |p: &Path| p.to_string_lossy().replace('\'', "''");
-    let script = format!(
+    let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn elevation_script(path: &Path, new: &Path) -> String {
+    let literal = |p: &Path| powershell_utf16(&p.to_string_lossy());
+    format!(
         r#"$ErrorActionPreference='Stop'
-$target='{}'
-$source='{}'
+$target=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))
+$source=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))
 $old=$target+'.old'
 $n=2
 while (Test-Path -LiteralPath $old) {{ $old=$target+'.old.'+$n; $n++ }}
-Move-Item -LiteralPath $target -Destination $old -Force
-try {{ Copy-Item -LiteralPath $source -Destination $target -Force }}
-catch {{ Move-Item -LiteralPath $old -Destination $target -Force; throw }}
-Remove-Item -LiteralPath $source -Force
+$temp=$target+'.update.'+[guid]::NewGuid().ToString('N')
+try {{
+    [IO.File]::Copy($source, $temp, $false)
+    [IO.File]::Move($target, $old)
+    try {{ [IO.File]::Move($temp, $target) }}
+    catch {{ [IO.File]::Move($old, $target); throw }}
+}}
+finally {{ Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }}
+Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
 "#,
         literal(path),
         literal(new)
-    );
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
+    )
 }
 
 #[cfg(windows)]
@@ -512,7 +527,8 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
         .map_err(|e| format!("powershell: {e}"))?;
     if status.code() == Some(122) {
         Err("cancelled".into())
-    } else if status.success() && !new.exists() && path.is_file() {
+    } else if status.success() && path.is_file() {
+        let _ = std::fs::remove_file(new);
         Ok(())
     } else {
         Err(format!("{}: elevation cancelled or update failed", path.display()))
@@ -836,7 +852,7 @@ pub fn restart() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, semver, unsound};
+    use super::{beside, elevation_script, semver, unsound};
     use std::path::Path;
 
     #[test]
@@ -1051,7 +1067,18 @@ mod tests {
     #[test]
     fn windows_elevation_paths_are_encoded_literals() {
         use base64::Engine;
-        let target = Path::new(r"C:\Program Files\App's %TEMP% & $(exit 9).exe");
+        fn decode(s: &str) -> String {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(s).unwrap();
+            let utf16: Vec<_> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
+                .collect();
+            String::from_utf16(&utf16).unwrap()
+        }
+        let target = Path::new("C:\\Program Files\\App's \u{2019}Tool %TEMP% & $(exit 9).exe");
         let source = Path::new(r"C:\private\new.exe");
         let command = super::windows_elevation_command(target, source);
         assert!(!command.contains("cmd.exe"));
@@ -1067,17 +1094,25 @@ mod tests {
             .split('\'')
             .next()
             .unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
-        let utf16: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            .collect();
-        let script = String::from_utf16(&utf16).unwrap();
-        assert!(script.contains("$target='C:\\Program Files\\App''s %TEMP% & $(exit 9).exe'"));
+        let script = decode(encoded);
+        assert!(!script.contains("$(exit 9)"));
+        for (name, path) in [("target", target), ("source", source)] {
+            let prefix = format!("${name}=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('");
+            let encoded = script.split(&prefix).nth(1).unwrap().split('\'').next().unwrap();
+            assert_eq!(decode(encoded), path.to_str().unwrap());
+        }
         assert!(script.contains("-LiteralPath $source"));
         assert!(script.contains("while (Test-Path -LiteralPath $old)"));
+    }
+
+    #[test]
+    fn elevated_windows_update_prepares_the_replacement_before_moving_the_exe() {
+        let script = elevation_script(Path::new("Streamerz.exe"), Path::new("update.new"));
+        let copy = script.find("[IO.File]::Copy($source, $temp, $false)").unwrap();
+        let backup = script.find("[IO.File]::Move($target, $old)").unwrap();
+        let replace = script.find("[IO.File]::Move($temp, $target)").unwrap();
+        let restore = script.find("catch { [IO.File]::Move($old, $target); throw }").unwrap();
+        assert!(copy < backup && backup < replace && replace < restore);
     }
 
     #[cfg(unix)]
