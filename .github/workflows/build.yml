@@ -296,6 +296,7 @@ jobs:
     if: always() && !cancelled() && needs.version.outputs.tag != '' && github.event_name == 'push' && needs.windows.result == 'success' && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
       pages: write
       id-token: write
@@ -330,6 +331,23 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: target/site
+      - name: Wait for Pages artifact to be listed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          for _ in $(seq 1 30); do
+            if gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
+                --paginate --jq '.artifacts[] | select(.name == "github-pages" and (.expired | not)) | .id' \
+                | grep -q .; then
+              sleep 2
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "github-pages artifact was not listed after 60s" >&2
+          exit 1
       - name: Publish the Linux repositories
         uses: actions/deploy-pages@v5
       # Notes list every commit since the last tag (GitHub's generator only lists pull requests).

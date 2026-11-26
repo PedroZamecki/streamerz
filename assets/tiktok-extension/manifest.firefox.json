@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Streamerz for TikTok",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Connects Streamerz to your TikTok account for search and LIVE chat, without a visible helper tab.",
   "browser_specific_settings": {
     "gecko": {

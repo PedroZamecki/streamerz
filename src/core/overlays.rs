@@ -2462,7 +2462,11 @@ mod tests {
             .unwrap();
             assert_eq!(drafted["draft"], 1);
             let text = drafted["shown"]["1"].as_str().unwrap().to_owned();
-            assert_eq!(text.len(), "2030-01-02 20:15:09".len(), "{text}");
+            // On second :00, show_moment omits the seconds and formats as YYYY-MM-DD HH:MM.
+            assert!(
+                text.len() == "2030-01-02 20:15".len() || text.len() == "2030-01-02 20:15:09".len(),
+                "{text}"
+            );
             // The day and time sent back reads as the same moment: no change, nothing to send back.
             let again = preview(
                 &e,
