@@ -1484,6 +1484,177 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_loaded_until_a_platform_is_set_up() {
+        assert!(!LoadParams::with_scale(&Config::default(), 1).wanted());
+        let mut cfg = Config::default();
+        cfg.youtube.channel_id = "UCabc".into();
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+        let mut cfg = Config::default();
+        cfg.kick.channel = "someone".into();
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+        let mut cfg = Config::default();
+        cfg.twitch.broadcaster = Some(Default::default());
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+    }
+
+    #[test]
+    fn a_catalog_of_any_platform_counts_as_loaded() {
+        let set = |name: &str| {
+            vec![EmoteSection {
+                title: "x".into(),
+                note: None,
+                emotes: vec![(name.into(), "https://e/1".into())],
+            }]
+        };
+        assert!(!Catalog::default().loaded());
+        // Sections with only a note (nothing loaded yet) don't count.
+        let noted = Catalog {
+            twitch_7tv: [
+                vec![EmoteSection {
+                    title: "x".into(),
+                    note: Some("none".into()),
+                    emotes: vec![],
+                }],
+                vec![],
+            ],
+            ..Default::default()
+        };
+        assert!(!noted.loaded());
+        // A Kick or YouTube only catalog is kept too (only Twitch's 7TV set counted before).
+        let kick = Catalog {
+            kick_native: set("KEKW"),
+            ..Default::default()
+        };
+        assert!(kick.loaded());
+        let youtube = Catalog {
+            youtube_bttv: set("catJAM"),
+            ..Default::default()
+        };
+        assert!(youtube.loaded());
+    }
+
+    #[test]
+    fn the_emoji_table_fits_the_split() {
+        let mut longest = 0;
+        for (_, es) in TABLE.lines().filter_map(|l| l.split_once('\t')) {
+            for e in es.split(' ').filter(|e| !e.is_empty()) {
+                longest = longest.max(e.replace('\u{FE0F}', "").chars().count());
+                // The ASCII fast path skips everything but keycaps.
+                let first = e.as_bytes()[0];
+                assert!(!first.is_ascii() || matches!(first, b'#' | b'*' | b'0'..=b'9'), "{e:?}");
+                // Every emoji of the table is found as one, alone and between words.
+                let line = format!("a {e} b");
+                let parts = split(&line);
+                assert!(
+                    parts.iter().any(|(t, u)| *t == e && u.is_some()),
+                    "{e:?}: {:?}",
+                    parts.iter().map(|p| p.0).collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(longest <= LONGEST, "{longest}");
+    }
+
+    #[test]
+    fn split_keeps_every_byte_of_any_text() {
+        let samples = [
+            "",
+            "plain",
+            "ação ünïcödé ñ",
+            "日本語のテキスト",
+            "#1 * 2 = 3",
+            "keycap 1\u{FE0F}\u{20E3} and #\u{20E3}",
+            "❤\u{FE0F}❤😀😀👍🏽👨‍👩‍👧",
+            "\u{FE0F}\u{200D}\u{20E3}",
+            "🏳️‍🌈🏴‍☠️ flags 🇧🇷🇺🇸",
+            "a\u{0301}e\u{0301} combining",
+        ];
+        for text in samples {
+            let parts = split(text);
+            assert_eq!(parts.iter().map(|p| p.0).collect::<String>(), text, "{text:?}");
+            assert!(parts.iter().all(|p| !p.0.is_empty()), "{text:?}");
+            // Plain pieces never sit next to each other.
+            assert!(
+                parts.windows(2).all(|w| w[0].1.is_some() || w[1].1.is_some()),
+                "{text:?}"
+            );
+        }
+        let keycap = split("x 1\u{FE0F}\u{20E3}");
+        assert_eq!(keycap.last().unwrap().0, "1\u{FE0F}\u{20E3}");
+        assert!(keycap.last().unwrap().1.is_some());
+        assert!(split("123 #hash *star").iter().all(|p| p.1.is_none()));
+    }
+
+    #[test]
+    fn third_party_emote_lists_are_read() {
+        let bttv = json!([{"code": "catJAM", "id": "5f1b"}, {"code": "noId"}, {"id": "noCode"}]);
+        assert_eq!(
+            parse_bttv_vec(&bttv, 2),
+            [(
+                "catJAM".to_string(),
+                "https://cdn.betterttv.net/emote/5f1b/2x.webp".to_string()
+            )]
+        );
+        let ffz = json!({"3": {"emoticons": [
+            {"name": "LilZ", "urls": {"1": "//cdn.frankerfacez.com/1", "2": "https://cdn.frankerfacez.com/2"}},
+            {"name": "Anim", "urls": {"1": "x"}, "animated": {"1": "https://a/1"}},
+            {"name": "NoUrl", "urls": {}}
+        ]}});
+        assert_eq!(
+            parse_ffz_vec(&ffz, 1),
+            [
+                ("LilZ".to_string(), "https://cdn.frankerfacez.com/1".to_string()),
+                ("Anim".to_string(), "https://a/1".to_string())
+            ]
+        );
+        // Asked for 4x where only 1x exists: the 1x picture.
+        assert_eq!(parse_ffz_vec(&ffz, 4)[0].1, "https://cdn.frankerfacez.com/1");
+        let seven = json!({"emotes": [
+            {"name": "EZ", "data": {"host": {"url": "//cdn.7tv.app/emote/1"}}},
+            {"name": "Abs", "data": {"host": {"url": "https://cdn.7tv.app/emote/2"}}},
+            {"name": "NoHost", "data": {}}
+        ]});
+        assert_eq!(
+            parse_7tv_vec(&seven, 2),
+            [
+                ("EZ".to_string(), "https://cdn.7tv.app/emote/1/2x.webp".to_string()),
+                ("Abs".to_string(), "https://cdn.7tv.app/emote/2/2x.webp".to_string())
+            ]
+        );
+        assert!(parse_bttv_vec(&Value::Null, 1).is_empty() && parse_ffz_vec(&Value::Null, 1).is_empty());
+        assert_eq!(
+            twitch_emote_url("25", 1),
+            "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0"
+        );
+        assert!(twitch_emote_url("25", 3).ends_with("/2.0"));
+    }
+
+    #[test]
+    fn channel_sets_win_over_global_ones_in_chat() {
+        let sec = |name: &str, url: &str| {
+            vec![EmoteSection {
+                title: String::new(),
+                note: None,
+                emotes: vec![(name.into(), url.into())],
+            }]
+        };
+        let cat = Catalog {
+            twitch_7tv: [sec("EZ", "https://7tv/channel"), vec![]],
+            twitch_bttv: sec("EZ", "https://bttv/global"),
+            kick_native: sec("KEKW", "https://kick/1"),
+            youtube_bttv: sec("yt", "https://bttv/yt"),
+            ..Default::default()
+        };
+        let [tw, kick, yt] = rebuild_lookups(&cat);
+        assert_eq!(tw["EZ"], "https://7tv/channel");
+        assert_eq!(kick["KEKW"], "https://kick/1");
+        assert_eq!(yt["yt"], "https://bttv/yt");
+        assert!(!tw.contains_key("KEKW") && !kick.contains_key("EZ"));
+        assert!(youtube_image("https://yt3.ggpht.com/a") && youtube_image("https://ggpht.com/a"));
+        assert!(!youtube_image("https://evilggpht.com/a") && !youtube_image("ggpht.com"));
+    }
+
+    #[test]
     fn splits_emoji_out_of_text() {
         let s = split("hi😀 ❤ ok👍🏽!");
         let shown: Vec<(&str, bool)> = s.iter().map(|(t, u)| (*t, u.is_some())).collect();
