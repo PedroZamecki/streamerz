@@ -819,33 +819,35 @@ fn custom_number(n: Num, fmt: &str, l: &Locale) -> String {
     if int.len() < need {
         int = format!("{int:0>need$}");
     }
-    if grouping {
-        int = group(&int, &l.group);
-    }
-    // Lay it out: the whole integer at the first integer placeholder, other integer placeholders
-    // print nothing; fraction digits one per placeholder.
+    // Lay it out: integer digits right to left into the integer placeholders (the first one takes
+    // all that are left, as "(###) ###-####" does), fraction digits one per placeholder.
+    let places = int_ph.len();
+    let digits: Vec<char> = int.chars().collect();
+    let lead = (digits.len() + 1).saturating_sub(places);
     let mut out = String::new();
-    let (mut int_done, mut fi) = (false, 0);
-    let mut fchars = frac.chars();
+    let push_digit = |out: &mut String, i: usize| {
+        out.push(digits[i]);
+        let right = digits.len() - 1 - i;
+        if grouping && right > 0 && right.is_multiple_of(3) {
+            *out += &l.group;
+        }
+    };
+    let (mut slot, mut fchars) = (0, frac.chars());
     for (k, t) in toks.iter().enumerate() {
         match t {
             T::Lit(s) => out += s,
             T::Digit(_) if k < dot => {
-                if !int_done {
-                    out += &int;
-                    int_done = true;
+                if slot == 0 {
+                    (0..lead).for_each(|i| push_digit(&mut out, i));
+                } else if let Some(i) = (slot + digits.len()).checked_sub(places) {
+                    push_digit(&mut out, i);
                 }
+                slot += 1;
             }
-            T::Digit(_) => {
-                if let Some(c) = fchars.next() {
-                    out.push(c);
-                }
-                fi += 1;
-            }
+            T::Digit(_) => out.extend(fchars.next()),
             T::Dot => {
-                if !int_done {
-                    out += &int;
-                    int_done = true;
+                if places == 0 {
+                    (0..digits.len()).for_each(|i| push_digit(&mut out, i));
                 }
                 if !frac.is_empty() {
                     out += &l.dec;
@@ -853,7 +855,6 @@ fn custom_number(n: Num, fmt: &str, l: &Locale) -> String {
             }
         }
     }
-    let _ = fi;
     let all_zero = int.chars().all(|c| !c.is_ascii_digit() || c == '0') && frac.chars().all(|c| c == '0');
     if neg_sign && !all_zero {
         format!("-{out}")
