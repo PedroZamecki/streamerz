@@ -264,18 +264,32 @@ pub fn duplicate_action(src: &Action, new_name: &str) -> Action {
         t.insert("id".into(), Value::from(uuid()));
     }
 
-    fn regenerate_sub_ids(subs: &mut [Obj]) {
-        for s in subs {
-            s.insert("id".into(), Value::from(uuid()));
+    /// New ids all the way down, the old ones mapped to them (`renamed`).
+    fn regenerate_sub_ids(subs: &mut [Value], renamed: &mut Vec<(Value, Value)>) {
+        for s in subs.iter_mut().filter_map(Value::as_object_mut) {
+            let id = Value::from(uuid());
+            if let Some(old) = s.insert("id".into(), id.clone()) {
+                renamed.push((old, id));
+            }
             if let Some(Value::Array(kids)) = s.get_mut("subActions") {
-                let mut kid_objs: Vec<Obj> = kids.iter().filter_map(|v| v.as_object().cloned()).collect();
-                regenerate_sub_ids(&mut kid_objs);
-                *kids = kid_objs.into_iter().map(Value::Object).collect();
+                regenerate_sub_ids(kids, renamed);
             }
         }
     }
 
-    regenerate_sub_ids(&mut dup.sub_actions);
+    let mut renamed = Vec::new();
+    let mut subs: Vec<Value> = std::mem::take(&mut dup.sub_actions)
+        .into_iter()
+        .map(Value::Object)
+        .collect();
+    regenerate_sub_ids(&mut subs, &mut renamed);
+    dup.sub_actions = subs.into_iter().filter_map(|v| v.as_object().cloned()).collect();
+    // The groups folded in the editor are named by id: the copy's stay folded.
+    for g in &mut dup.collapsed_groups {
+        if let Some((_, new)) = renamed.iter().find(|(old, _)| old == g) {
+            *g = new.clone();
+        }
+    }
     // The children's `parentId` still names the original's containers.
     renumber(&mut dup.sub_actions);
     dup
@@ -613,6 +627,27 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_duplicate_keeps_its_folded_groups_and_odd_entries() {
+        let mut a = new_action("Original", "");
+        let mut group = new_sub(99900);
+        let mut inner = new_sub(99900);
+        set_children(&mut inner, vec![new_sub(1020)]);
+        set_children(&mut group, vec![inner]);
+        a.sub_actions.push(group);
+        renumber(&mut a.sub_actions);
+        let inner_id = a.sub_actions[0]["subActions"][0]["id"].clone();
+        a.collapsed_groups = vec![inner_id.clone(), json!("gone")];
+        let dup = duplicate_action(&a, "Copy");
+        let new_inner = &dup.sub_actions[0]["subActions"][0]["id"];
+        assert_ne!(*new_inner, inner_id);
+        assert_eq!(dup.collapsed_groups, [new_inner.clone(), json!("gone")]);
+        assert_eq!(
+            dup.sub_actions[0]["subActions"][0]["subActions"][0]["parentId"],
+            *new_inner
+        );
+    }
 
     #[test]
     fn a_duplicate_points_its_children_at_the_new_containers() {
