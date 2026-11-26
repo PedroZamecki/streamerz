@@ -810,5 +810,60 @@ mod tests {
         assert_eq!(seconds("5", 60), Some(300));
         assert_eq!(seconds("abc", 1), None);
         assert_eq!(seconds("5x", 1), None);
+        assert_eq!(seconds("1W", 1), Some(604_800));
+        assert_eq!(seconds("", 1), None);
+        assert_eq!(seconds("é", 1), None);
+        assert_eq!(seconds("10mé", 1), None);
+        assert_eq!(seconds("m", 1), None);
+        // Too long to count is the longest, not an overflow.
+        assert_eq!(seconds("99999999999999999999", 1), Some(u64::MAX));
+        assert_eq!(seconds("30500000000000000w", 1), Some(u64::MAX));
+    }
+
+    #[test]
+    fn a_huge_length_is_refused_not_wrapped() {
+        // 2^64 / 604800 + 1 weeks wraps to a few seconds when multiplied without a check.
+        let weeks = u64::MAX / 604_800 + 1;
+        assert!(parse(&format!("/timeout troll {weeks}w")).is_err());
+        assert!(parse(&format!("/followers {weeks}w")).is_err());
+        assert!(parse("/slow 99999999999999999999").is_err());
+        assert!(parse_kick(&format!("/timeout troll {weeks}w")).is_err());
+        // A commercial of 2^32 seconds is the longest Kick has, not a 7 second one.
+        assert_eq!(parse_kick("/commercial 4294967296").unwrap(), KickCmd::Commercial(90));
+        assert_eq!(parse_kick("/ad 3").unwrap(), KickCmd::Commercial(7));
+    }
+
+    #[test]
+    fn me_in_any_case_is_a_message() {
+        for t in ["/me waves", "/ME waves", "/Me", "  /me\tdances"] {
+            assert!(!is_command(t), "{t}");
+            assert!(matches!(parse(t).unwrap(), Cmd::Say(_)), "{t}");
+        }
+        assert!(is_command("/meme"));
+        assert!(is_command("/mod x"));
+    }
+
+    #[test]
+    fn non_ascii_text_never_panics() {
+        for t in [
+            "/",
+            "/ ",
+            "/é",
+            "/timeout é é é",
+            "/ban 😀",
+            "/slow 😀",
+            "/followers 10é",
+            "/commercial ü",
+            "/delete ñ",
+        ] {
+            let _ = parse(t);
+            let _ = parse_kick(t);
+            let _ = suggestions(t, "twitch", true);
+            let _ = suggestions(t, "kick", true);
+        }
+        assert_eq!(
+            helix("/ban @Ünïcode").4,
+            [("ünïcode".to_string(), Put::Data("user_id"))]
+        );
     }
 }
