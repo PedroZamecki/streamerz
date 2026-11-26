@@ -204,7 +204,11 @@ fn seconds(word: &str, bare: u64) -> Option<u64> {
         Some(i) => w.split_at(i),
         None => (w.as_str(), ""),
     };
-    let n: u64 = n.parse().ok()?;
+    if n.is_empty() {
+        return None;
+    }
+    // Only digits are left in `n`: it fails to parse only when it's too big.
+    let n: u64 = n.parse().unwrap_or(u64::MAX);
     let k = match unit {
         "" => bare,
         "s" => 1,
@@ -214,7 +218,7 @@ fn seconds(word: &str, bare: u64) -> Option<u64> {
         "w" => 604_800,
         _ => return None,
     };
-    Some(n * k)
+    Some(n.saturating_mul(k))
 }
 
 fn login(word: &str) -> String {
