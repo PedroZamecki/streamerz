@@ -276,6 +276,8 @@ pub fn duplicate_action(src: &Action, new_name: &str) -> Action {
     }
 
     regenerate_sub_ids(&mut dup.sub_actions);
+    // The children's `parentId` still names the original's containers.
+    renumber(&mut dup.sub_actions);
     dup
 }
 
