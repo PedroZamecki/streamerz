@@ -848,7 +848,7 @@ pub fn set(kind: &Kind, places: &Places, server: &Server, on: bool) -> Result<()
     let file = (kind.file)(places);
     match kind.format {
         Format::Json(key, extra) => {
-            let mut v = read_json(&file)?;
+            let (mut v, commented) = read_json_text(&file)?;
             if !v.is_object() {
                 return Err(format!("{}: not a JSON object", file.display()));
             }
@@ -897,6 +897,14 @@ pub fn set(kind: &Kind, places: &Places, server: &Server, on: bool) -> Result<()
                 return Ok(());
             }
             let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+            if commented {
+                // Written back as plain JSON, its comments go: the file as it was stays beside it.
+                let backup = file.with_extension(format!(
+                    "{}.streamerz-backup",
+                    file.extension().and_then(|e| e.to_str()).unwrap_or("json")
+                ));
+                std::fs::copy(&file, &backup).map_err(|e| format!("{}: {e}", backup.display()))?;
+            }
             write(&file, &(text + "\n"))
         }
         Format::Toml => {
