@@ -20,7 +20,8 @@ enum Extra {
     None,
     /// `"type": "stdio"` (Claude Code, VS Code, Crush).
     Stdio,
-    /// OpenCode: `{"type": "local", "command": [exe, args...], "environment": {}, "enabled": true}`.
+    /// OpenCode: `{"type": "local", "command": [exe, args...], "environment": {}}` under `mcp.servers`
+    /// (it connects by default; OpenCode turns one off with `disabled`, it has no `enabled`).
     Opencode,
     /// GitHub Copilot CLI: `"type": "local"` and every tool.
     Copilot,
@@ -543,8 +544,7 @@ impl Server {
 
     fn entry(&self, extra: Extra) -> Value {
         if extra == Extra::Opencode {
-            return json!({"type": "local", "command": [self.command, "--mcp"], "environment": self.env(),
-                "enabled": true});
+            return json!({"type": "local", "command": [self.command, "--mcp"], "environment": self.env()});
         }
         let mut e = json!({"command": self.command, "args": ["--mcp"], "env": self.env()});
         match extra {
@@ -1376,12 +1376,13 @@ mod tests {
         assert!(v_after["mcp"]["servers"].get("streamerz").is_none());
         assert_eq!(state(kind("opencode").format, &f, &s), State::Ready);
 
-        // Also detects legacy v1 mcp -> streamerz format as Added
-        std::fs::write(
-            &f,
-            json!({ "mcp": { "streamerz": s.entry(Extra::Opencode) } }).to_string(),
-        )
-        .unwrap();
+        // The entry has no `enabled` (OpenCode's switch is `disabled`).
+        assert!(s.entry(Extra::Opencode).get("enabled").is_none());
+
+        // Also detects legacy v1 mcp -> streamerz format as Added, `enabled` and all
+        let mut legacy = s.entry(Extra::Opencode);
+        legacy["enabled"] = true.into();
+        std::fs::write(&f, json!({ "mcp": { "streamerz": legacy } }).to_string()).unwrap();
         assert_eq!(state(kind("opencode").format, &f, &s), State::Added);
 
         // Setting migrates legacy v1 to v2 servers table
@@ -1389,6 +1390,7 @@ mod tests {
         let v_migrated: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         assert!(v_migrated["mcp"]["servers"].get("streamerz").is_some());
         assert!(v_migrated["mcp"].get("streamerz").is_none());
+        assert!(v_migrated["mcp"]["servers"]["streamerz"].get("enabled").is_none());
 
         let _ = std::fs::remove_dir_all(&d);
     }
