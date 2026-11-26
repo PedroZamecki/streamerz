@@ -7,6 +7,7 @@
 
 use super::pages::{button, button_if, confirm, danger};
 use super::view::column;
+use crate::oauth::token_ready;
 use crate::{
     automation::schema::{F, W},
     engine::Engine,
@@ -121,10 +122,6 @@ fn num(o: &Obj, k: &str) -> String {
         Value::String(t) => t.clone(),
         v => v.to_string(),
     })
-}
-
-fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
-    !access.is_empty() && (!crate::oauth::stale(expires_at) || !refresh.is_empty())
 }
 
 /// Why Twitch can't run polls and predictions now.
@@ -932,14 +929,6 @@ mod tests {
         assert!(!seen.busy);
         let after = seen.begin(false).unwrap();
         assert!(seen.finish(after));
-    }
-
-    #[test]
-    fn expired_accounts_need_refresh_credentials_before_they_are_available() {
-        assert!(!token_ready("", "", 0));
-        assert!(!token_ready("expired", "", 1));
-        assert!(token_ready("expired", "refresh", 1));
-        assert!(token_ready("valid", "", u64::MAX));
     }
 
     #[test]

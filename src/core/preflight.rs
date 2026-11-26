@@ -6,6 +6,8 @@
 //! is connected, authenticated, and ready on the broadcaster's own channel. Credentials, stream
 //! keys, and raw RTMP URLs never enter the preflight report or the companion script.
 
+use super::accounts::same_account as same;
+use crate::oauth::token_ready;
 use crate::{
     core::outputs::{self, Inventory, ObsOutputPref, Output},
     engine::Engine,
@@ -163,15 +165,6 @@ pub fn option_labels(auto_platform: Option<&str>) -> Vec<String> {
         "TikTok".to_owned(),
         tr("preflight.platform_ignore").to_owned(),
     ]
-}
-
-fn same(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.trim().trim_start_matches('@').replace(' ', "").to_lowercase();
-    !a.trim().is_empty() && norm(a) == norm(b)
-}
-
-fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
-    !access.is_empty() && (!crate::oauth::stale(expires_at) || !refresh.is_empty())
 }
 
 /// Evaluate readiness of a single platform ("twitch", "kick", "youtube", "tiktok") in `engine`.
@@ -1976,6 +1969,5 @@ mod tests {
         for unknown in [None, Some(""), Some("orkut")] {
             assert_eq!(option_labels(unknown)[0], tr("preflight.platform_auto_unknown"));
         }
-        assert!(same("@Ana Bia", "anabia") && !same("", "") && !same("ana", "bia"));
     }
 }

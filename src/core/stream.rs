@@ -19,6 +19,8 @@
 //! and every minute while open (YouTube every 5: it costs quota). Only platforms already running are
 //! asked: this page opens no connection by itself. The study behind it is `docs/STREAM-PAGE.md`.
 
+use super::accounts::same_account as same;
+use crate::oauth::token_ready;
 use crate::{
     automation::schema::{F, W},
     engine::Engine,
@@ -374,10 +376,6 @@ fn platform_index(slug: &str) -> Option<usize> {
     PLATFORMS.iter().position(|(key, _)| *key == slug)
 }
 
-fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
-    !access.is_empty() && (!crate::oauth::stale(expires_at) || !refresh.is_empty())
-}
-
 fn oauth_ready(access: &str, refresh: &str, expires_at: u64, client_id: &str, client_secret: &str) -> bool {
     token_ready(access, refresh, expires_at)
         && (!crate::oauth::stale(expires_at) || (!client_id.is_empty() && !client_secret.is_empty()))
@@ -400,11 +398,6 @@ fn text_field(item: &Obj, key: &str) -> String {
 }
 
 /// A channel or account name, compared without case, spaces or a leading @.
-fn same(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.trim().trim_start_matches('@').replace(' ', "").to_lowercase();
-    !a.trim().is_empty() && norm(a) == norm(b)
-}
-
 /// Who may change what, from the settings and what is running.
 fn access(e: &Engine) -> Access {
     let c = e.config();

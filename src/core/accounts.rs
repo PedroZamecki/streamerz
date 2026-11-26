@@ -16,6 +16,12 @@ use std::sync::Mutex;
 
 pub const DOMAINS: &[&str] = &["accounts", "tiktok_sending"];
 
+/// Whether two account names are the same person: case, spaces and a leading @ aside (empty is no one).
+pub fn same_account(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim().trim_start_matches('@').replace(' ', "").to_lowercase();
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
 pub fn supports(domain: &str) -> bool {
     DOMAINS.contains(&domain)
 }
@@ -2161,6 +2167,12 @@ fn tiktok_login(engine: &Rc<Engine>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_names_match_without_case_spaces_or_at() {
+        assert!(same_account("@Ana Bia", "anabia") && same_account(" Ana ", "@ana"));
+        assert!(!same_account("", "") && !same_account("ana", "bia"));
+    }
 
     fn engine() -> Rc<Engine> {
         crate::engine::tests::engine(json!({"actions": []}))

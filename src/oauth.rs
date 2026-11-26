@@ -52,6 +52,12 @@ pub fn stale(expires_at: u64) -> bool {
     stale_at(expires_at, now())
 }
 
+/// Whether a saved token can be used: it has an access token that is still good, or a refresh
+/// token to get a new one.
+pub fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
+    !access.is_empty() && (!stale(expires_at) || !refresh.is_empty())
+}
+
 fn stale_at(expires_at: u64, current: u64) -> bool {
     expires_at != 0 && expires_at <= current.saturating_add(60)
 }
@@ -246,6 +252,10 @@ mod tests {
         let q = query("/callback?code=a%2Fb+c&state=x%");
         assert_eq!(q, [("code".into(), "a/b c".into()), ("state".into(), "x%".into())]);
         assert!(!stale(0));
+        assert!(!token_ready("", "", 0));
+        assert!(!token_ready("expired", "", 1));
+        assert!(token_ready("expired", "refresh", 1));
+        assert!(token_ready("valid", "", u64::MAX));
         assert!(stale(now() + 10));
         assert!(!stale(now() + 3600));
     }
