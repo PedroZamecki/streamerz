@@ -924,20 +924,22 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let chars: Vec<char> = f.chars().collect();
-    // A lone "%x" is the custom specifier x.
-    let chars = if chars.len() == 2 && chars[0] == '%' {
-        chars[1..].to_vec()
-    } else {
-        chars
-    };
     let mut out = String::new();
     let mut i = 0;
+    // After a "%", the next letter is a field on its own ("%d", or "%h" in "%hmm").
+    let mut single = false;
     while i < chars.len() {
         let c = chars[i];
+        if c == '%' && chars.get(i + 1).is_some_and(|&x| x != '%') {
+            single = true;
+            i += 1;
+            continue;
+        }
         let mut n = 1;
-        while i + n < chars.len() && chars[i + n] == c {
+        while !single && i + n < chars.len() && chars[i + n] == c {
             n += 1;
         }
+        single = false;
         let h12 = if t.hour.is_multiple_of(12) { 12 } else { t.hour % 12 };
         match c {
             'd' => {
@@ -992,11 +994,16 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
                 let n = n.min(7);
                 let s = format!("{:09}", t.nanos);
                 let s = &s[..n];
-                out += &if c == 'F' {
-                    s.trim_end_matches('0').to_string()
+                if c == 'F' {
+                    let s = s.trim_end_matches('0');
+                    // No fraction: no point before it either, as .NET writes it.
+                    if s.is_empty() && out.ends_with('.') {
+                        out.pop();
+                    }
+                    out += s;
                 } else {
-                    s.to_string()
-                };
+                    out += s;
+                }
             }
             't' => {
                 let s = if t.hour < 12 { &l.am } else { &l.pm };
@@ -1029,18 +1036,23 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
             ':' => out += &":".repeat(n),
             '/' => out += &l.date_sep.repeat(n),
             '\'' | '"' => {
-                let end = chars[i + 1..]
-                    .iter()
-                    .position(|&x| x == c)
-                    .map_or(chars.len(), |p| i + 1 + p);
-                out.extend(&chars[i + 1..end]);
-                i = end + 1;
+                // Up to the closing quote; a backslash in it escapes the next character.
+                i += 1;
+                while let Some(&x) = chars.get(i) {
+                    i += 1;
+                    match x {
+                        _ if x == c => break,
+                        '\\' => {
+                            out.extend(chars.get(i));
+                            i += 1;
+                        }
+                        _ => out.push(x),
+                    }
+                }
                 continue;
             }
             '\\' => {
-                if let Some(&x) = chars.get(i + 1) {
-                    out.push(x);
-                }
+                out.extend(chars.get(i + 1));
                 i += 2;
                 continue;
             }
