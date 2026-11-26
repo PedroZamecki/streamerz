@@ -108,9 +108,27 @@ pub fn shown_patterns() -> (String, String) {
     let d = if d.is_empty() {
         l.short_date.clone()
     } else {
-        d.replace('/', "'/'")
+        literal_slashes(&d)
     };
     (d, if t.is_empty() { l.short_time.clone() } else { t })
+}
+
+/// A pattern with each `/` outside quotes and escapes written as a plain slash (`\/`).
+fn literal_slashes(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 4);
+    let (mut quote, mut escaped) = (None, false);
+    for c in p.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quote.is_none() => escaped = true,
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            _ if Some(c) == quote => quote = None,
+            '/' if quote.is_none() => out.push('\\'),
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The system's short date and time patterns.
