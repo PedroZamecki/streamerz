@@ -342,6 +342,37 @@ mod tests {
     }
 
     #[test]
+    fn search_needs_every_word_and_ranks_title_matches_first() {
+        assert!(search("").is_empty() && search("   ").is_empty());
+        assert!(search("zzqqxx-not-a-word").is_empty());
+        let found = search("TikTok GIFT");
+        assert!(!found.is_empty());
+        for e in &found {
+            let text = e.text.to_lowercase();
+            assert!(text.contains("tiktok") && text.contains("gift"), "{}", e.title);
+        }
+        // Title matches first: the number of words missing from the title never goes down.
+        let missing = |e: &Entry| {
+            let t = e.title.to_lowercase();
+            ["tiktok", "gift"].iter().filter(|w| !t.contains(*w)).count()
+        };
+        assert!(found.windows(2).all(|p| missing(&p[0]) <= missing(&p[1])));
+        assert!(found.iter().any(|e| (e.kind, e.code) == ("trigger", 41002)));
+        // Non-ASCII queries are fine.
+        let _ = search("ünïcödé 😀 ação");
+    }
+
+    #[test]
+    fn a_guide_is_found_by_name_in_any_case() {
+        let names = guides();
+        assert!(!names.is_empty() && names.iter().all(|n| !n.starts_with("reference/")));
+        let first = names[0];
+        assert_eq!(guide(first), guide(&first.to_uppercase()));
+        assert_eq!(guide(first.trim_end_matches(".md")), guide(first));
+        assert!(guide("no such guide").is_none());
+    }
+
+    #[test]
     fn the_reference_summarizes_and_knows_what_is_available() {
         assert!(summary("trigger", 41002).unwrap().contains("gift"));
         assert!(!available("subaction", 99999));
