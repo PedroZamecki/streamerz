@@ -746,33 +746,8 @@ impl List {
                     None => send(request),
                     Some((question, label)) => {
                         let danger = spec["danger"] == true;
-                        window.open_dialog(cx, move |dialog, window, cx| {
-                            let request = request.clone();
-                            let confirm =
-                                Button::new("confirm-action")
-                                    .label(label.clone())
-                                    .on_click(move |_, window, cx| {
-                                        send(request.clone());
-                                        window.close_dialog(cx);
-                                    });
-                            let buttons = div()
-                                .id("action-confirmation")
-                                .test_support()
-                                .role(Role::Group)
-                                .aria_label(label.clone())
-                                .flex()
-                                .justify_end()
-                                .gap(px(SPACE_SM))
-                                .child(
-                                    Button::new("cancel-action")
-                                        .label(tr("dialogs.cancel"))
-                                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
-                                )
-                                .child(if danger { confirm.danger() } else { confirm });
-                            let footer = crate::controls::dialog::footer(None, buttons, cx);
-                            crate::controls::dialog::shell(dialog, label.clone(), 448., window, cx)
-                                .child(crate::controls::dialog::body(question.clone()))
-                                .footer(footer)
+                        crate::controls::dialog::confirm(window, cx, label, question, danger, move |_, _| {
+                            send(request.clone())
                         });
                     }
                 }
@@ -2977,7 +2952,8 @@ mod tests {
 
     #[cfg(feature = "test-support")]
     mod ui {
-        use super::super::List;
+        use super::super::{Action, List};
+        use gpui_kit::component::WindowExt;
         use gpui_kit::test::{TestQueryExt, TestWindowExt};
         use gpui_kit::{
             div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Role, Styled,
@@ -3087,6 +3063,55 @@ mod tests {
             let first = headers.first().expect("column headers");
             let last = headers.last().expect("column headers");
             f32::from(last.bounds().right() - first.bounds().left())
+        }
+
+        #[gpui_kit::test]
+        fn a_row_action_that_asks_first_opens_the_shared_confirmation(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let mut model = commands_model();
+            model["actions"] = json!([{"id": "remove", "label": "Remove", "needs": "row", "danger": true}]);
+            model["rows"][0]["confirm"] = json!({"remove": "Remove Manage commands?"});
+            let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<List>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let s = slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(1000.), px(700.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let list = cx.new(|cx| List::new(model, "test:list".into(), window, cx));
+                        *s.borrow_mut() = Some(list.clone());
+                        cx.new(|_| ListHost { list, width: 1000. })
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let list = slot.borrow().clone().expect("list created");
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                list.update(cx, |list, cx| list.action(Action::Custom(0), Some(0), window, cx));
+                window.render_frame(cx);
+                let group = window.find("action-confirmation");
+                assert_eq!(group.role(), Some(Role::Group));
+                assert_eq!(group.label(), Some("Remove"));
+                assert!(window.has_active_dialog(cx));
+                window.click("cancel-action", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| assert!(!window.has_active_dialog(cx)))
+                .unwrap();
         }
 
         #[gpui_kit::test]
