@@ -283,6 +283,11 @@ fn s<'a>(o: &'a Obj, k: &str) -> &'a str {
     o.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
+/// Whether `a` and `b` are the same item: the same id or name (an empty one names nothing).
+fn same_item(a: (&str, &str), b: (&str, &str)) -> bool {
+    (!a.0.is_empty() && a.0 == b.0) || (!a.1.is_empty() && a.1 == b.1)
+}
+
 /// Every id a set of actions refers to (commands, timers, queues, clients, servers in triggers;
 /// queues of the actions).
 fn referenced(actions: &[Action]) -> Vec<String> {
@@ -498,7 +503,7 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
     }
     fn merge(into: &mut Vec<Obj>, new: Vec<Obj>) {
         for n in new {
-            into.retain(|o| s(o, "id") != s(&n, "id") && s(o, "name") != s(&n, "name"));
+            into.retain(|o| !same_item((s(o, "id"), s(o, "name")), (s(&n, "id"), s(&n, "name"))));
             into.push(n);
         }
     }
@@ -510,7 +515,9 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
         if !a.group.is_empty() && !c.actions.groups.iter().any(|g| g.as_str() == Some(&a.group)) {
             c.actions.groups.push(a.group.clone().into());
         }
-        c.actions.actions.retain(|o| o.id != a.id && o.name != a.name);
+        c.actions
+            .actions
+            .retain(|o| !same_item((&o.id, &o.name), (&a.id, &a.name)));
         c.actions.actions.push(a);
     }
     if let Some(groups) = x
