@@ -207,7 +207,7 @@ fn os_locale() -> Locale {
             .to_string_lossy()
             .into_owned()
     };
-    out.dec = get(0x10000);
+    keep(&mut out.dec, get(0x10000));
     out.group = get(0x10001);
     // CRNCYSTR: "-" before the number, "+" after, "." in place of the decimal point.
     let c = get(0x4000f);
@@ -227,11 +227,7 @@ fn os_locale() -> Locale {
     out.am = get(0x20026);
     out.pm = get(0x20027);
     out.short_date = strftime_to_net(&get(0x20029));
-    out.date_sep = out
-        .short_date
-        .chars()
-        .find(|c| !c.is_alphanumeric())
-        .map_or("/".into(), String::from);
+    out.date_sep = date_separator(&out.short_date);
     out.short_date = out.short_date.replace(&out.date_sep, "/");
     out.long_time = strftime_to_net(&get(0x2002a));
     out.short_time = out.long_time.replace(":ss", "").replace(".ss", "");
@@ -250,31 +246,49 @@ fn os_locale() -> Locale {
         let n = unsafe { GetLocaleInfoEx(std::ptr::null(), t, buf.as_mut_ptr(), buf.len() as i32) };
         String::from_utf16_lossy(&buf[..(n.max(1) - 1) as usize])
     };
-    out.dec = get(0x0E);
+    keep(&mut out.dec, get(0x0E));
     out.group = get(0x0F);
-    out.currency = get(0x14);
+    keep(&mut out.currency, get(0x14));
     let pos = get(0x1B); // 0 "$1", 1 "1$", 2 "$ 1", 3 "1 $"
     out.currency_after = pos == "1" || pos == "3";
     out.currency_space = pos == "2" || pos == "3";
-    out.date_sep = get(0x1D);
+    keep(&mut out.date_sep, get(0x1D));
     for i in 0..12 {
-        out.months[i] = get(0x38 + i as u32);
-        out.months_abbr[i] = get(0x44 + i as u32);
+        keep(&mut out.months[i], get(0x38 + i as u32));
+        keep(&mut out.months_abbr[i], get(0x44 + i as u32));
     }
     // Windows starts its day names on Monday.
     for i in 0..7 {
-        out.days[(i + 1) % 7] = get(0x2A + i as u32);
-        out.days_abbr[(i + 1) % 7] = get(0x31 + i as u32);
+        keep(&mut out.days[(i + 1) % 7], get(0x2A + i as u32));
+        keep(&mut out.days_abbr[(i + 1) % 7], get(0x31 + i as u32));
     }
+    // 24 hour locales may have no AM and PM: kept empty, as .NET has them.
     out.am = get(0x28);
     out.pm = get(0x29);
-    out.short_date = get(0x1F);
-    out.long_date = get(0x20);
-    out.long_time = get(0x1003);
-    out.short_time = get(0x79);
+    keep(&mut out.short_date, get(0x1F));
+    keep(&mut out.long_time, get(0x1003));
+    keep(&mut out.short_time, get(0x79));
     out.set_order();
-    out.long_date = get(0x20);
+    keep(&mut out.long_date, get(0x20));
     out
+}
+
+/// Sets `field` to what the OS said, unless it said nothing (a failed call): the default stays.
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+fn keep(field: &mut String, value: String) {
+    if !value.is_empty() {
+        *field = value;
+    }
+}
+
+/// The date separator of a short date pattern: its first character that isn't a letter, a digit
+/// or an escape ("/" when there is none).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn date_separator(pattern: &str) -> String {
+    pattern
+        .chars()
+        .find(|c| !c.is_alphanumeric() && !matches!(c, '\'' | '\\'))
+        .map_or("/".into(), String::from)
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
