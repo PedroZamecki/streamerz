@@ -508,9 +508,6 @@ pub(crate) use rest::{poll_args, prediction_args};
 pub use speech::wav_length_ms;
 pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
-// Older names of `fmt::civil` and `fmt::parse_iso`, still used by the platform modules.
-pub use crate::fmt::{civil as civil_time, parse_iso as rest_parse_iso};
-
 /// A random version 4 UUID.
 pub fn uuid() -> String {
     let r = |bits: u32| crate::math::secure_u64() >> (64 - bits);

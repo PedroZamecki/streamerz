@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -507,7 +507,7 @@ async fn live(
         .map_err(|_| LiveEnd::Error("timed out entering room".into(), 5))?
         .map_err(|e| LiveEnd::Error(e.to_string(), 5))?;
 
-    let joined_sec = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let joined_sec = crate::fmt::now_secs();
     engine.chat_welcome("tiktok", Vec::new());
 
     shared.set(TikTokStatus::Connected(format!("live @{channel}")));

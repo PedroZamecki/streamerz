@@ -594,7 +594,7 @@ impl YouTubeHandle {
             .text();
         let start = find(&page, "startTimestamp").and_then(|t| {
             // "2026-10-24T09:00:05+00:00"
-            crate::engine::rest_parse_iso(t)
+            crate::fmt::parse_iso(t)
         });
         let title = page
             .split("<meta name=\"title\" content=\"")
@@ -1837,7 +1837,7 @@ async fn oauth_broadcast_hint(
             if let Some(ts) = item
                 .pointer("/snippet/scheduledStartTime")
                 .and_then(Value::as_str)
-                .and_then(crate::engine::rest_parse_iso)
+                .and_then(crate::fmt::parse_iso)
             {
                 nearest_sched = Some(nearest_sched.map_or(ts, |prev| prev.min(ts)));
             }
@@ -1976,7 +1976,7 @@ pub async fn read_chat_with_standby(
                     crate::warn(msg.clone());
                     last_offline_note = msg;
                 }
-                let now_unix = crate::fmt::unix_now().as_secs() as i64;
+                let now_unix = crate::fmt::now_secs() as i64;
                 let near_sched = hint.1.is_some_and(|ts| ts.abs_diff(now_unix) <= 900);
                 let wait = if engine.stream_warming_up() {
                     Duration::from_secs(5)
@@ -2025,7 +2025,7 @@ pub async fn read_chat_with_standby(
         crate::host::polls_changed();
         crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
         engine.settle_role("youtube");
-        let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
+        let joined_usec = (crate::fmt::now_ms() as i64) * 1000;
         let mut initial_hist: Vec<crate::engine::chatlog::Line> = if !run_once {
             extract_initial_actions(&page)
                 .iter()
@@ -2464,7 +2464,7 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
         .and_then(|t| t.parse::<i64>().ok())
         .unwrap_or(0);
     if usec > 0 {
-        let t = crate::engine::civil_time(usec / 1_000_000);
+        let t = crate::fmt::civil(usec / 1_000_000);
         put("publishedAt", crate::fmt::date(&t, "o").into());
     }
     let c = engine.config();

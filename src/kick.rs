@@ -1483,7 +1483,7 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
 
     let raw_emotes = kick_emotes(raw_content);
     let (text, emotes) = crate::engine::chatlog::normalize_line_emotes("kick", raw_content.to_string(), &raw_emotes);
-    let secs = data["created_at"].as_str().and_then(crate::engine::rest_parse_iso);
+    let secs = data["created_at"].as_str().and_then(crate::fmt::parse_iso);
     let time = secs.map_or_else(String::new, crate::engine::chatlog::local_hhmm);
 
     // A reply's parent (the metadata is sometimes JSON in a string).
@@ -1574,7 +1574,7 @@ async fn fetch_kick_recent_messages(
 pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
     let m = &d["message"];
     let id = m["id"].as_str().filter(|s| !s.is_empty())?;
-    let now = crate::fmt::unix_now().as_millis() as u64;
+    let now = crate::fmt::now_ms();
     let secs = d["duration"]
         .as_u64()
         .or_else(|| d["duration"].as_str().and_then(|s| s.parse().ok()))
@@ -1582,7 +1582,7 @@ pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
     let ends = ["finish_at", "finishs_at", "expires_at"]
         .iter()
         .find_map(|k| d[*k].as_str())
-        .and_then(crate::engine::rest_parse_iso)
+        .and_then(crate::fmt::parse_iso)
         .and_then(|s| u64::try_from(s).ok())
         .and_then(|s| s.checked_mul(1000));
     let by = ["pinnedBy", "pinned_by"]
@@ -2584,7 +2584,7 @@ mod tests {
             (p.user.as_str(), p.text.as_str(), p.by.as_str()),
             ("Ana", "hi KEKW", "Mod")
         );
-        let left = p.until.unwrap() - crate::fmt::unix_now().as_millis() as u64;
+        let left = p.until.unwrap() - crate::fmt::now_ms();
         assert!((110_000..=120_000).contains(&left));
         let open = kick_pin(&json!({"message": {"id": "m2", "content": "x"}})).unwrap();
         assert!(open.until.is_none());

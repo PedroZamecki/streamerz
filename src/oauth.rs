@@ -140,9 +140,7 @@ impl Refresh<'_> {
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    crate::fmt::now_secs()
 }
 
 /// Whether a token expiring at `expires_at` should be refreshed before use (a minute early; 0 is

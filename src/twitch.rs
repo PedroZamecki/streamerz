@@ -815,12 +815,6 @@ pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
     !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 thread_local! {
     /// One refresh at a time: a refresh token is good once, so two at once make the second one fail and
     /// wipe the login the first just renewed.
@@ -851,7 +845,7 @@ where
 {
     let lock = REFRESHING.with(Rc::clone);
     let _one_at_a_time = lock.lock().await;
-    let now = now_secs();
+    let now = crate::fmt::now_secs();
     for bot in [false, true] {
         let rt = {
             let c = cfg.borrow();
@@ -3143,9 +3137,9 @@ pub(crate) fn handle_notification(
             populate_broadcaster_vars(&mut args, broadcaster);
             // EventSub has no duration: it's from the start to the end.
             let mut p = event.clone();
-            let start = crate::engine::rest_parse_iso(es(event, "/started_at"));
-            let end = crate::engine::rest_parse_iso(es(event, "/ends_at"))
-                .or_else(|| crate::engine::rest_parse_iso(es(event, "/ended_at")));
+            let start = crate::fmt::parse_iso(es(event, "/started_at"));
+            let end =
+                crate::fmt::parse_iso(es(event, "/ends_at")).or_else(|| crate::fmt::parse_iso(es(event, "/ended_at")));
             if let (Some(a), Some(b)) = (start, end) {
                 p["duration"] = (b - a).into();
             }
@@ -3167,7 +3161,7 @@ pub(crate) fn handle_notification(
                     })
                     .collect(),
                 ends: end.map(|e| e as u64 * 1000).filter(|_| sub_type != "channel.poll.end"),
-                over: (sub_type == "channel.poll.end").then(|| crate::fmt::unix_now().as_millis() as u64),
+                over: (sub_type == "channel.poll.end").then(crate::fmt::now_ms),
             });
             args.insert("pollId".into(), event["id"].clone());
             args.insert("pollTitle".into(), event["title"].clone());
@@ -3211,8 +3205,8 @@ pub(crate) fn handle_notification(
             let mut p = event.clone();
             p["created_at"] = event["started_at"].clone();
             if let (Some(a), Some(b)) = (
-                crate::engine::rest_parse_iso(es(event, "/started_at")),
-                crate::engine::rest_parse_iso(es(event, "/locks_at")),
+                crate::fmt::parse_iso(es(event, "/started_at")),
+                crate::fmt::parse_iso(es(event, "/locks_at")),
             ) {
                 p["prediction_window"] = (b - a).into();
             }
@@ -3235,11 +3229,10 @@ pub(crate) fn handle_notification(
                         )
                     })
                     .collect(),
-                ends: crate::engine::rest_parse_iso(es(event, "/locks_at"))
+                ends: crate::fmt::parse_iso(es(event, "/locks_at"))
                     .map(|e| e as u64 * 1000)
                     .filter(|_| sub_type != "channel.prediction.end" && sub_type != "channel.prediction.lock"),
-                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock")
-                    .then(|| crate::fmt::unix_now().as_millis() as u64),
+                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock").then(crate::fmt::now_ms),
             });
             args.insert("prediction.LockedAt".into(), event["locked_at"].clone());
             args.insert("prediction.EndedAt".into(), event["ended_at"].clone());
@@ -3455,7 +3448,7 @@ pub(crate) fn handle_notification(
             } else {
                 let (from, to) = (es(event, "/banned_at"), es(event, "/ends_at"));
                 args.insert("endsAt".into(), to.into());
-                if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(from), crate::engine::rest_parse_iso(to)) {
+                if let (Some(a), Some(b)) = (crate::fmt::parse_iso(from), crate::fmt::parse_iso(to)) {
                     args.insert("duration".into(), (b - a).into());
                 }
                 // What the chat's own line said (a viewer hears no more than that).
@@ -4452,7 +4445,7 @@ fn hype_args(args: &mut Obj, e: &Value) {
         }
     }
     if let (Some(a), Some(b)) = (e["started_at"].as_str(), e["expires_at"].as_str()) {
-        if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(a), crate::engine::rest_parse_iso(b)) {
+        if let (Some(a), Some(b)) = (crate::fmt::parse_iso(a), crate::fmt::parse_iso(b)) {
             args.insert("duration".into(), (b - a).into());
         }
     }
@@ -5099,8 +5092,8 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             {
                 let d = &ad["data"][0];
                 let next = d["next_ad_at"].as_str().unwrap_or("");
-                let at = crate::engine::rest_parse_iso(next).unwrap_or(0);
-                let left = (at - crate::fmt::unix_now().as_secs() as i64) / 60;
+                let at = crate::fmt::parse_iso(next).unwrap_or(0);
+                let left = (at - crate::fmt::now_secs() as i64) / 60;
                 if !next.is_empty() && (0..=5).contains(&left) && warned != next {
                     warned = next.to_string();
                     let mut a = args.clone();
@@ -5818,10 +5811,7 @@ pub(crate) mod tests {
         assert!(lines[0].starts_with("T 3 3 350 n1 %createdAt%"), "{lines:?}");
         assert!(lines[1].ends_with("%watchStreakId% 2026-01-02T03:04:05Z"), "{lines:?}");
         let unban = lines[2].rsplit(' ').next().unwrap();
-        assert!(
-            crate::engine::rest_parse_iso(unban).is_some(),
-            "an unban says when: {lines:?}"
-        );
+        assert!(crate::fmt::parse_iso(unban).is_some(), "an unban says when: {lines:?}");
     }
 
     #[test]

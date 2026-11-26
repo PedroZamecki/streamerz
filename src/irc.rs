@@ -270,7 +270,7 @@ pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
     }
     // A ban has no duration; a timeout is for so many seconds.
     let secs = m.tag("ban-duration").parse::<i64>().ok();
-    let at = |t: i64| crate::fmt::date(&crate::engine::civil_time(t), "o");
+    let at = |t: i64| crate::fmt::date(&crate::fmt::civil(t), "o");
     Some(json!({
         "broadcaster_user_id": broadcaster_id,
         "user_id": user,
@@ -346,7 +346,7 @@ async fn bans_session(
                     .map_err(|e| e.to_string())?,
                 "RECONNECT" => return Ok(()),
                 _ => {
-                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    let now = crate::fmt::now_secs() as i64;
                     if let Some(e) = ban_event(&m, &channel.user_id, now) {
                         crate::twitch::notify(engine, channel, cfg, "channel.ban", &e);
                     }
@@ -615,7 +615,7 @@ mod tests {
         );
         let (from, to) = (e["banned_at"].as_str().unwrap(), e["ends_at"].as_str().unwrap());
         assert_eq!(
-            crate::engine::rest_parse_iso(to).unwrap() - crate::engine::rest_parse_iso(from).unwrap(),
+            crate::fmt::parse_iso(to).unwrap() - crate::fmt::parse_iso(from).unwrap(),
             600
         );
         // No duration: a ban, for good.
