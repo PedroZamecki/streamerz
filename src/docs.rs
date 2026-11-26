@@ -201,9 +201,11 @@ pub fn guides() -> Vec<&'static str> {
 
 /// A guide by name (with or without `.md`, any case).
 pub fn guide(name: &str) -> Option<&'static str> {
-    let want = name.trim().trim_end_matches(".md").to_lowercase();
+    // Lower case first, so "GUIDE.MD" loses its extension too.
+    let want = name.trim().to_lowercase();
+    let want = want.trim_end_matches(".md");
     DOCS.iter()
-        .find(|(p, _)| p.trim_end_matches(".md").to_lowercase() == want)
+        .find(|(p, _)| p.to_lowercase().trim_end_matches(".md") == want)
         .map(|(_, t)| *t)
 }
 
