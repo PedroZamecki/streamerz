@@ -437,6 +437,7 @@ async fn spawn_worker() -> Result<WorkerProc, String> {
 
 /// Maximum audio response payload accepted from `Streamerz-Voice` (64 MiB).
 const MAX_WORKER_AUDIO: usize = 64 << 20;
+const MAX_WORKER_HEADER: usize = 16 << 10;
 
 enum WorkerErr {
     /// Logical error answered by a healthy worker (e.g. bad text or missing file); worker stays alive.
@@ -469,18 +470,11 @@ async fn send_on(proc: &mut WorkerProc, req: &Value) -> Result<(Value, Vec<u8>),
             .flush()
             .await
             .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice flush failed: {e}")))?;
-        let mut resp_line = String::new();
-        let n = proc
-            .stdout
-            .read_line(&mut resp_line)
-            .await
-            .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice read failed: {e}")))?;
-        if n == 0 {
-            return Err(WorkerErr::Transport("Streamerz-Voice exited unexpectedly".into()));
-        }
-        let head: Value = serde_json::from_str(resp_line.trim())
-            .map_err(|e| WorkerErr::Transport(format!("bad Streamerz-Voice JSON: {e}")))?;
-        let raw_len = head["bytes"].as_u64().unwrap_or(0);
+        let head = read_header(&mut proc.stdout).await?;
+        let raw_len = head.get("bytes").map_or(Ok(0), |n| {
+            n.as_u64()
+                .ok_or_else(|| WorkerErr::Transport("invalid Streamerz-Voice audio size".into()))
+        })?;
         if raw_len > MAX_WORKER_AUDIO as u64 {
             return Err(WorkerErr::Transport(format!(
                 "Streamerz-Voice audio payload too large ({raw_len} bytes)"
@@ -494,7 +488,7 @@ async fn send_on(proc: &mut WorkerProc, req: &Value) -> Result<(Value, Vec<u8>),
                 .await
                 .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice audio read failed: {e}")))?;
         }
-        if head["ok"] != true {
+        if head["ok"] == false {
             return Err(WorkerErr::App(
                 head["error"].as_str().unwrap_or("Streamerz-Voice error").to_string(),
             ));
@@ -506,61 +500,32 @@ async fn send_on(proc: &mut WorkerProc, req: &Value) -> Result<(Value, Vec<u8>),
         .map_err(|_| WorkerErr::Transport(format!("Streamerz-Voice timed out after {wait_secs}s")))?
 }
 
-/// Sends one request to the persistent `Streamerz-Voice` worker, spawning it lazily if needed.
-async fn request(req: Value) -> Result<(Value, Vec<u8>), String> {
-    let mut guard = worker_proc().lock().await;
-    if guard.is_none() {
-        *guard = Some(spawn_worker().await?);
+async fn read_header(input: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> Result<Value, WorkerErr> {
+    let mut line = Vec::new();
+    input
+        .take(MAX_WORKER_HEADER as u64 + 1)
+        .read_until(b'\n', &mut line)
+        .await
+        .map_err(|e| WorkerErr::Transport(format!("Streamerz-Voice read failed: {e}")))?;
+    if line.len() > MAX_WORKER_HEADER {
+        return Err(WorkerErr::Transport(
+            "Streamerz-Voice response header is too large".into(),
+        ));
     }
-    let res = {
-        let proc = guard.as_mut().unwrap();
-        send_on(proc, &req).await
-    };
-    match res {
-        Ok(done) => {
-            // Refresh memory & loaded state cheaply right after load/speak.
-            if matches!(req["op"].as_str(), Some("speak" | "load")) {
-                let proc = guard.as_mut().unwrap();
-                if let Ok((st, _)) = send_on(proc, &json!({"op": "state"})).await {
-                    let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
-                    m.running = true;
-                    m.loaded = st["loaded"].as_str().map(str::to_string);
-                    m.memory = st["memory"].as_u64().unwrap_or(0);
-                }
-                crate::host::changed();
-            }
-            Ok(done)
-        }
-        Err(WorkerErr::App(msg)) => Err(msg),
-        Err(WorkerErr::Transport(msg)) => {
-            // Transport failure, timeout, or crash: always kill and drop so the next call respawns cleanly.
-            if let Some(mut dead) = guard.take() {
-                let _ = dead.child.kill().await;
-                let _ = dead.child.wait().await;
-            }
-            {
-                let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
-                m.running = false;
-                m.loaded = None;
-                m.memory = 0;
-            }
-            crate::host::changed();
-            Err(msg)
-        }
+    if line.last() != Some(&b'\n') {
+        return Err(WorkerErr::Transport(
+            "Streamerz-Voice exited before sending a complete response".into(),
+        ));
     }
+    let head: Value =
+        serde_json::from_slice(&line).map_err(|e| WorkerErr::Transport(format!("bad Streamerz-Voice JSON: {e}")))?;
+    if !head["ok"].is_boolean() {
+        return Err(WorkerErr::Transport("Streamerz-Voice response has no status".into()));
+    }
+    Ok(head)
 }
 
-/// Stops the `Streamerz-Voice` worker process completely, returning 100% of its RAM to the OS.
-pub async fn unload() {
-    let proc = {
-        let mut guard = worker_proc().lock().await;
-        guard.take()
-    };
-    if let Some(mut p) = proc {
-        drop(p.stdin);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), p.child.wait()).await;
-        let _ = p.child.kill().await;
-    }
+fn worker_stopped() {
     {
         let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
         m.running = false;
@@ -568,6 +533,78 @@ pub async fn unload() {
         m.memory = 0;
     }
     crate::host::changed();
+}
+
+/// An unfinished exchange can leave a partial response in the pipe. Dropping it kills the child.
+struct Exchange(Option<WorkerProc>);
+
+impl Drop for Exchange {
+    fn drop(&mut self) {
+        if self.0.take().is_some() {
+            worker_stopped();
+        }
+    }
+}
+
+impl Exchange {
+    async fn stop(&mut self) {
+        if let Some(mut proc) = self.0.take() {
+            worker_stopped();
+            let _ = proc.child.kill().await;
+        }
+    }
+}
+
+/// Sends one request to the persistent `Streamerz-Voice` worker, spawning it lazily if needed.
+async fn request(req: Value) -> Result<(Value, Vec<u8>), String> {
+    let mut guard = worker_proc().lock().await;
+    let proc = match guard.take() {
+        Some(proc) => proc,
+        None => spawn_worker().await?,
+    };
+    let mut exchange = Exchange(Some(proc));
+    let proc = exchange.0.as_mut().unwrap();
+    let result = send_on(proc, &req).await;
+    if matches!(result, Err(WorkerErr::Transport(_))) {
+        exchange.stop().await;
+        return result.map_err(WorkerErr::into_message);
+    }
+    if matches!(req["op"].as_str(), Some("speak" | "load")) {
+        // Even on a synthesis error the worker may have loaded or dropped a model.
+        match send_on(proc, &json!({"op": "state"})).await {
+            Ok((st, _)) => {
+                {
+                    let mut m = worker_meta().lock().unwrap_or_else(|e| e.into_inner());
+                    m.loaded = st["loaded"].as_str().map(str::to_string);
+                    m.memory = st["memory"].as_u64().unwrap_or(0);
+                }
+                crate::host::changed();
+            }
+            Err(WorkerErr::Transport(_)) => {
+                exchange.stop().await;
+                return result.map_err(WorkerErr::into_message);
+            }
+            Err(WorkerErr::App(_)) => {}
+        }
+    }
+    *guard = exchange.0.take();
+    result.map_err(WorkerErr::into_message)
+}
+
+/// Stops the `Streamerz-Voice` worker process completely, returning its RAM to the OS.
+pub async fn unload() {
+    let mut guard = worker_proc().lock().await;
+    let proc = guard.take();
+    worker_stopped();
+    if let Some(mut p) = proc {
+        drop(p.stdin);
+        if tokio::time::timeout(std::time::Duration::from_secs(2), p.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = p.child.kill().await;
+        }
+    }
 }
 
 /// Called when the speech queue drains: if `keep_loaded` is false, stops `Streamerz-Voice` so no
@@ -897,23 +934,10 @@ pub fn import_recording(source: &Path, id: &str) -> Result<(String, u64), String
 }
 
 /// Wraps raw mono 16-bit little-endian PCM bytes in a standard RIFF WAVE header.
-fn encode_pcm_wav(pcm: &[u8], rate: u32) -> Vec<u8> {
-    let data = pcm.len() as u32;
-    let mut wav = Vec::with_capacity(44 + pcm.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&rate.to_le_bytes());
-    wav.extend_from_slice(&(rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data.to_le_bytes());
+fn encode_pcm_wav(pcm: &[u8], rate: u32) -> Result<Vec<u8>, String> {
+    let mut wav = crate::sound::pcm_wav_header(rate, 1, pcm.len() / 2)?;
     wav.extend_from_slice(pcm);
-    wav
+    Ok(wav)
 }
 
 /// Records `seconds` (clamped 3..=12) from the default microphone on Linux via `parec` (PulseAudio /
@@ -956,7 +980,7 @@ pub async fn record_mic(seconds: u32) -> Result<PathBuf, String> {
     read_res
         .map_err(|_| "Microphone recording timed out.".to_string())?
         .map_err(|e| format!("Microphone recording failed: {e}"))?;
-    let wav = encode_pcm_wav(&pcm, RATE);
+    let wav = encode_pcm_wav(&pcm, RATE)?;
     let path = std::env::temp_dir().join(format!("streamerz-mic-{}.wav", crate::engine::uuid()));
     std::fs::write(&path, &wav).map_err(|e| e.to_string())?;
     Ok(path)
@@ -1066,7 +1090,7 @@ fn record_mic_wasapi(secs: u32) -> Result<PathBuf, String> {
         capture_result?
     };
 
-    let wav = encode_pcm_wav(&pcm[..target_bytes], RATE);
+    let wav = encode_pcm_wav(&pcm, RATE)?;
     let path = std::env::temp_dir().join(format!("streamerz-mic-{}.wav", crate::engine::uuid()));
     std::fs::write(&path, &wav).map_err(|e| e.to_string())?;
     Ok(path)
@@ -1075,6 +1099,25 @@ fn record_mic_wasapi(secs: u32) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_header_is_bounded_and_leaves_binary_payload_unread() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut input = &b"{\"ok\":true,\"bytes\":2}\n\x00\xff"[..];
+            assert_eq!(read_header(&mut input).await.ok().unwrap()["bytes"], 2);
+            assert_eq!(input, b"\x00\xff");
+
+            let mut partial = &b"{\"ok\":true}"[..];
+            assert!(matches!(read_header(&mut partial).await, Err(WorkerErr::Transport(_))));
+            let overlong = vec![b' '; MAX_WORKER_HEADER * 2];
+            let mut input = overlong.as_slice();
+            assert!(matches!(read_header(&mut input).await, Err(WorkerErr::Transport(_))));
+            assert_eq!(input.len(), MAX_WORKER_HEADER - 1);
+            let mut input = &b"{}\n"[..];
+            assert!(matches!(read_header(&mut input).await, Err(WorkerErr::Transport(_))));
+        });
+    }
 
     #[test]
     fn bundled_catalog_has_valid_hashes_sizes_and_kokoro_speakers() {
@@ -1115,6 +1158,7 @@ mod tests {
 import json, os, struct, sys
 
 loaded = None
+stalled = False
 def sine_wav():
     rate = 24000
     frames = 2400
@@ -1132,15 +1176,22 @@ for line in sys.stdin:
         open(os.path.join(req["into"], "model.int8.onnx"), "wb").write(b"onnx")
         resp, blob = {"ok": True}, b""
     elif op == "speak":
-        loaded = f"{req.get('kind')}|{req.get('dir')}"
+        loaded = "exit" if req.get("text") == "exit on state" else f"{req.get('kind')}|{req.get('dir')}"
         blob = sine_wav()
         resp = {"ok": True, "rate": 24000, "ms": 5, "bytes": len(blob)}
     elif op == "state":
+        if loaded == "exit":
+            sys.exit(1)
         resp, blob = {"ok": True, "loaded": loaded, "memory": 12345678 if loaded else 1024}, b""
+    elif op == "stall":
+        stalled = True
+        resp, blob = {"ok": True, "bytes": 2}, b""
     else:
         resp, blob = {"ok": False, "error": "unknown"}, b""
     sys.stdout.buffer.write((json.dumps(resp) + "\n").encode() + blob)
     sys.stdout.buffer.flush()
+    if stalled:
+        open(sys.argv[0] + ".stalled", "w").close()
 "#,
         )
         .unwrap();
@@ -1201,6 +1252,27 @@ for line in sys.stdin:
             assert!(wav.starts_with(b"RIFF"));
             let st = state();
             assert!(st.running && st.memory_bytes == 12345678);
+
+            let wav = speak("exit on state", "piper:pt_BR-faber", 1.0, 1.0).await.unwrap();
+            assert!(wav.starts_with(b"RIFF"));
+            assert!(!state().running, "a failed state refresh clears the worker");
+            assert!(speak("retry", "piper:pt_BR-faber", 1.0, 1.0).await.is_ok());
+
+            let marker = fake.with_extension("stalled");
+            {
+                let exchange = request(json!({"op": "stall"}));
+                let until_stalled = async {
+                    while !marker.exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                };
+                tokio::select! {
+                    _ = exchange => panic!("the worker should still be sending the payload"),
+                    result = tokio::time::timeout(std::time::Duration::from_secs(3), until_stalled) => result.unwrap(),
+                }
+            }
+            assert!(!state().running, "a cancelled response must discard the worker");
+            assert!(speak("retry", "piper:pt_BR-faber", 1.0, 1.0).await.is_ok());
 
             // keep_loaded = false unloads the worker completely.
             maybe_unload_idle(false).await;
