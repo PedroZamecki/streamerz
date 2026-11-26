@@ -536,7 +536,8 @@ impl Digits {
 
     /// The integer part's digits ("0" for none).
     fn int_part(&self) -> String {
-        if self.exp <= 0 {
+        // Zero scaled up (0 as a percent) is still "0", not "00".
+        if self.exp <= 0 || self.digits.is_empty() {
             return "0".into();
         }
         (0..self.exp as usize)
@@ -626,6 +627,13 @@ pub fn number(n: Num, fmt: &str) -> Option<String> {
     let l = locale();
     let b = fmt.as_bytes();
     let standard = !b.is_empty() && b[0].is_ascii_alphabetic() && b.len() <= 3 && b[1..].iter().all(u8::is_ascii_digit);
+    if let Num::Float(f) = n {
+        if !f.is_finite() {
+            // .NET Framework writes these the same in every format (D and X take no fraction).
+            let integral = standard && matches!(b[0], b'D' | b'd' | b'X' | b'x');
+            return (!integral).then(|| general(f));
+        }
+    }
     if !standard {
         return Some(custom_number(n, fmt, l));
     }
