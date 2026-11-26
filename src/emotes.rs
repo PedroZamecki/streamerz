@@ -208,10 +208,21 @@ pub fn split(text: &str) -> Vec<(&str, Option<String>)> {
     let at: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
     let (mut out, mut plain, mut k) = (Vec::new(), 0, 0);
     while k + 1 < at.len() {
-        let hit = (1..=LONGEST.min(at.len() - 1 - k)).rev().find_map(|n| {
-            let key = text[at[k]..at[k + n]].replace('\u{FE0F}', "");
-            known().get(&key).map(|e| (n, *e))
-        });
+        // Emoji start past ASCII, but for the keycaps (#, * and digits): most text is skipped here.
+        let first = text.as_bytes()[at[k]];
+        let maybe = !first.is_ascii() || matches!(first, b'#' | b'*' | b'0'..=b'9');
+        let hit = (1..=LONGEST.min(at.len() - 1 - k))
+            .rev()
+            .filter(|_| maybe)
+            .find_map(|n| {
+                let piece = &text[at[k]..at[k + n]];
+                let key = if piece.contains('\u{FE0F}') {
+                    std::borrow::Cow::Owned(piece.replace('\u{FE0F}', ""))
+                } else {
+                    std::borrow::Cow::Borrowed(piece)
+                };
+                known().get(key.as_ref()).map(|e| (n, *e))
+            });
         match hit {
             Some((n, e)) => {
                 if plain < at[k] {
