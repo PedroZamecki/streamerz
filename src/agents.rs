@@ -826,20 +826,9 @@ fn write(file: &Path, text: &str) -> Result<(), String> {
         Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(file).map_err(err)?,
         _ => file.to_path_buf(),
     };
-    if let Some(d) = target.parent() {
-        std::fs::create_dir_all(d).map_err(err)?;
-    }
-    let tmp = target.with_extension("streamerz-tmp");
-    let done = std::fs::write(&tmp, text)
-        .and_then(|()| match std::fs::metadata(&target) {
-            Ok(m) => std::fs::set_permissions(&tmp, m.permissions()),
-            Err(_) => Ok(()),
-        })
-        .and_then(|()| std::fs::rename(&tmp, &target));
-    if done.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    done.map_err(err)
+    crate::fileio::make_parent(&target).map_err(err)?;
+    let perms = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    crate::fileio::replace(&target, perms, |f| std::io::Write::write_all(f, text.as_bytes())).map_err(err)
 }
 
 /// Puts Streamerz in `kind`'s config (replacing an older entry), or takes it out. Everything else in
@@ -1226,7 +1215,7 @@ mod tests {
         assert!(std::fs::read_to_string(&real)
             .unwrap()
             .contains("[mcp_servers.streamerz]"));
-        assert!(!real.with_extension("streamerz-tmp").exists());
+        assert_eq!(std::fs::read_dir(real.parent().unwrap()).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 

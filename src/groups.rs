@@ -1283,13 +1283,7 @@ fn store_files(meta: &mut Meta, was: &[File]) -> Result<(), String> {
                 .decode(&f.content)
                 .map_err(|_| format!("invalid file content: {}", f.name))?;
             // Whole or not at all: a page being served is never read half written.
-            let mut pending = path.as_os_str().to_os_string();
-            pending.push(".streamerz-writing");
-            let pending = PathBuf::from(pending);
-            if let Err(e) = std::fs::write(&pending, &bytes).and_then(|_| std::fs::rename(&pending, &path)) {
-                let _ = std::fs::remove_file(&pending);
-                return Err(failed(e));
-            }
+            crate::fileio::write_atomic(&path, &bytes).map_err(failed)?;
             f.size = bytes.len() as u64;
             f.content = String::new();
         } else if let Ok(m) = std::fs::metadata(&path) {

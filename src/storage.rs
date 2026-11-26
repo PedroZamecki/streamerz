@@ -52,15 +52,6 @@ fn check_source(source: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let pending = path.with_extension("migrating");
-    let res = std::fs::write(&pending, bytes).and_then(|()| std::fs::rename(&pending, path));
-    if res.is_err() {
-        let _ = std::fs::remove_file(&pending);
-    }
-    res
-}
-
 pub fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(source)?;
     if meta.file_type().is_symlink() {
@@ -163,13 +154,11 @@ pub fn migrate(source: &Path, target: &Path) -> io::Result<()> {
         copy_tree(&backup, &to.join("streamerz.json.bak"))?;
     }
     // Linux keyring entries are keyed by the original path. Keep using that key for migrated data.
-    write_atomic(&to.join("key-source"), source.to_string_lossy().as_bytes())?;
-    let pending = to.join("streamerz.json.migrating");
-    let res = std::fs::copy(source, &pending).and_then(|_| std::fs::rename(&pending, target));
-    if res.is_err() {
-        let _ = std::fs::remove_file(&pending);
-    }
-    res
+    crate::fileio::write_atomic(&to.join("key-source"), source.to_string_lossy().as_bytes())?;
+    // The settings keep their permissions (only the owner can read them).
+    let perms = std::fs::metadata(source)?.permissions();
+    let mut settings = std::fs::File::open(source)?;
+    crate::fileio::replace(target, Some(perms), |f| io::copy(&mut settings, f).map(drop))
 }
 
 pub fn key_source(target: &Path) -> PathBuf {

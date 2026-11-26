@@ -259,34 +259,15 @@ struct Snapshot<'a> {
     credits: &'a Credits,
 }
 
-fn unique_tmp_path(path: &std::path::Path) -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".{}.{n}.tmp", std::process::id()));
-    path.with_file_name(name)
-}
-
 fn write_snapshot(path: &std::path::Path, value: &impl Serialize) -> std::io::Result<()> {
     use std::io::Write;
     let _guard = crate::dev_write_guard()?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let tmp = unique_tmp_path(path);
-    let result = (|| -> std::io::Result<()> {
-        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, std::fs::File::create(&tmp)?);
-        serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
-        writer.flush()?;
-        drop(writer);
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    crate::fileio::make_parent(path)?;
+    crate::fileio::replace(path, None, |f| {
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, f);
+        serde_json::to_writer(&mut writer, value)?;
+        writer.flush()
+    })
 }
 
 /// `shrink`'s other way: the record as the program works with it.
@@ -400,22 +381,11 @@ impl Engine {
             }
         };
         let path = file();
-        let tmp = unique_tmp_path(&path);
         std::thread::Builder::new()
             .name("save-community".into())
             .spawn(move || {
                 let Ok(_guard) = crate::dev_write_guard() else { return };
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() && std::fs::create_dir_all(parent).is_err() {
-                        crate::error(format!("can't save {}", path.display()));
-                        return;
-                    }
-                }
-                if std::fs::write(&tmp, text)
-                    .and_then(|()| std::fs::rename(&tmp, &path))
-                    .is_err()
-                {
-                    let _ = std::fs::remove_file(&tmp);
+                if crate::fileio::write_atomic(&path, &text).is_err() {
                     crate::error(format!("can't save {}", path.display()));
                 }
             })

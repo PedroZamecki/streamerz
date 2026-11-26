@@ -319,33 +319,31 @@ fn apply_restored_files(loaded: &[(PathBuf, Vec<u8>)]) -> Result<(), String> {
     // Stage every file first so a read or write failure leaves current files untouched.
     let mut staged: Vec<(&Path, PathBuf, Option<Vec<u8>>)> = Vec::with_capacity(loaded.len());
     for (target, bytes) in loaded {
-        let tmp = tmp_path(target, ".restore.tmp");
-        if let Err(e) = std::fs::write(&tmp, bytes) {
-            for (_, old_tmp, _) in &staged {
-                let _ = std::fs::remove_file(old_tmp);
+        // A restored file keeps the permissions of the one it replaces (the settings are the owner's).
+        let perms = std::fs::metadata(target).ok().map(|m| m.permissions());
+        let tmp = match crate::fileio::stage(target, perms, |f| f.write_all(bytes)) {
+            Ok(tmp) => tmp,
+            Err(e) => {
+                for (_, old_tmp, _) in &staged {
+                    let _ = std::fs::remove_file(old_tmp);
+                }
+                return Err(format!("{}: {e}", target.display()));
             }
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("{}: {e}", target.display()));
-        }
+        };
         let prev = std::fs::read(target).ok();
         staged.push((target.as_path(), tmp, prev));
     }
     // Swap each staged file into place; roll back earlier swaps if a later rename fails.
     for i in 0..staged.len() {
         let (target, tmp, _) = &staged[i];
-        if let Err(e) = std::fs::rename(tmp, target) {
+        if let Err(e) = crate::fileio::commit(tmp, target) {
             for (_, leftover, _) in &staged[i..] {
                 let _ = std::fs::remove_file(leftover);
             }
             for (prev_target, _, prev_bytes) in staged[..i].iter().rev() {
                 match prev_bytes {
                     Some(bytes) => {
-                        let rb = tmp_path(prev_target, ".restore.tmp");
-                        if std::fs::write(&rb, bytes)
-                            .and_then(|()| std::fs::rename(&rb, prev_target))
-                            .is_err()
-                        {
-                            let _ = std::fs::remove_file(&rb);
+                        if crate::fileio::write_atomic(prev_target, bytes).is_err() {
                             let _ = std::fs::write(prev_target, bytes);
                         }
                     }
@@ -370,16 +368,12 @@ fn compact_old(root: &Path) {
                 continue;
             }
             let gz = tmp_path(&f, ".gz");
-            let tmp = tmp_path(&gz, ".tmp");
             let ok = std::fs::read(&f)
                 .and_then(|b| gzip(&b))
-                .and_then(|z| std::fs::write(&tmp, z))
-                .and_then(|()| std::fs::rename(&tmp, &gz))
+                .and_then(|z| crate::fileio::write_atomic(&gz, &z))
                 .is_ok();
             if ok {
                 let _ = std::fs::remove_file(&f);
-            } else {
-                let _ = std::fs::remove_file(&tmp);
             }
         }
     }

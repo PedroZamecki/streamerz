@@ -202,7 +202,7 @@ pub async fn firefox_xpi() -> Result<PathBuf, String> {
             &[("version", EXTENSION_VERSION)],
         ));
     }
-    std::fs::write(&path, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+    crate::fileio::write_atomic(&path, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
     Ok(path)
 }
 
@@ -534,25 +534,11 @@ fn build() -> String {
 
 /// Only the owner can read them: config.json holds the token. Written atomically via a temp file.
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");
-    let tmp = path.with_file_name(format!(".{name}.{}.{seq}.tmp", std::process::id()));
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    if let Err(err) = o.open(&tmp).and_then(|mut f| f.write_all(bytes)) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err);
-    }
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err);
-    }
-    Ok(())
+    let private = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    #[cfg(not(unix))]
+    let private = None;
+    crate::fileio::replace(path, private, |f| std::io::Write::write_all(f, bytes))
 }
 
 /// At start, and when the WebSocket server's address changes: the extension's files follow this

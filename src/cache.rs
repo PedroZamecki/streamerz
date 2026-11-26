@@ -1,9 +1,6 @@
 //! Persistent metadata cache, independent of image decoding and the frontend.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static PART_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn dir() -> PathBuf {
     crate::config_path().with_file_name("cache")
@@ -38,15 +35,7 @@ fn save_in(base: &Path, name: &str, v: &serde_json::Value) {
     let Some(file) = entry_path(base, name) else {
         return;
     };
-    let seq = PART_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = base.join(format!("{name}.{}.{seq}.part", std::process::id()));
-    let _ = std::fs::create_dir_all(base);
-    if std::fs::write(&tmp, v.to_string())
-        .and_then(|()| std::fs::rename(&tmp, &file))
-        .is_err()
-    {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    let _ = crate::fileio::write_json(&file, v);
 }
 
 /// What was saved as `name` in the cache (emote lists, picture URLs...), and how many seconds ago.

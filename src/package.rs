@@ -22,6 +22,15 @@ const FORMAT: u64 = 1;
 const LIMIT: u64 = 128 << 20;
 pub const EXTENSION: &str = "streamerz";
 
+/// Where an export named `file` goes: with the template extension added when it doesn't end in it.
+pub fn export_path(file: &str) -> std::path::PathBuf {
+    let mut path = std::path::PathBuf::from(file);
+    if path.extension().is_none_or(|x| x != EXTENSION) {
+        path.as_mut_os_string().push(format!(".{EXTENSION}"));
+    }
+    path
+}
+
 /// A template file, read and checked, not yet installed.
 #[derive(Debug)]
 pub struct Package {
@@ -612,11 +621,9 @@ pub(crate) async fn request(e: &std::rc::Rc<crate::engine::Engine>, req: &Value)
             if text("path").is_empty() {
                 out["content"] = b64().encode(&file).into();
             } else {
-                let mut path = std::path::PathBuf::from(text("path"));
-                if path.extension().is_none_or(|x| x != EXTENSION) {
-                    path.as_mut_os_string().push(format!(".{EXTENSION}"));
-                }
-                std::fs::write(&path, &file).map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+                let path = export_path(text("path"));
+                crate::fileio::write_atomic(&path, &file)
+                    .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
                 out["path"] = path.to_string_lossy().into_owned().into();
             }
             Ok(out)
@@ -681,6 +688,14 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_export_ends_in_the_template_extension() {
+        let p = |f: &str| super::export_path(f).to_string_lossy().into_owned();
+        assert_eq!(p("a/wheel"), "a/wheel.streamerz");
+        assert_eq!(p("a/wheel.streamerz"), "a/wheel.streamerz");
+        assert_eq!(p("a/wheel.zip"), "a/wheel.zip.streamerz");
+    }
+
     use super::*;
     use crate::groups::{text_file, Def, Kind, Page, Template};
 

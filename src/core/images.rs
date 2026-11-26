@@ -98,13 +98,16 @@ fn lookup_on_disk(url: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// The file named `stem`, whatever kind of picture it is.
+/// The file named `stem`, whatever kind of picture it is (an empty one is not a picture).
 fn on_disk(stem: &str) -> Option<PathBuf> {
-    let folder = dir();
+    on_disk_in(&dir(), stem)
+}
+
+fn on_disk_in(folder: &std::path::Path, stem: &str) -> Option<PathBuf> {
     EXTENSIONS
         .into_iter()
         .map(|extension| folder.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+        .find(|path| path.metadata().is_ok_and(|m| m.is_file() && m.len() > 0))
 }
 
 fn fetch(url: String, stem: String) {
@@ -153,8 +156,9 @@ async fn download(url: &str, stem: &str) -> Option<u64> {
         let _ = std::fs::remove_file(&part);
         return None;
     };
-    if std::fs::rename(&part, folder.join(format!("{stem}.{extension}"))).is_err() {
-        let _ = std::fs::remove_file(&part);
+    // Not flushed to the disk first: that would hold up the whole program for each picture. A
+    // power cut can leave an empty one, which `on_disk` treats as missing.
+    if crate::fileio::commit(&part, &folder.join(format!("{stem}.{extension}"))).is_err() {
         return None;
     }
     let count = ARRIVED.with(|arrived| {
@@ -329,6 +333,17 @@ mod tests {
         assert_eq!(head(&svg).unwrap().len(), SNIFF_BYTES);
         assert_eq!(kept(&finished(200, true), &svg), Some("svg"));
         assert_eq!(kept(&finished(200, true), &folder.join("missing.part")), None);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn an_empty_picture_left_by_a_power_cut_is_fetched_again() {
+        let folder = std::env::temp_dir().join(format!("streamerz-images-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.png"), b"").unwrap();
+        assert_eq!(on_disk_in(&folder, "a"), None);
+        std::fs::write(folder.join("a.gif"), b"GIF89a").unwrap();
+        assert_eq!(on_disk_in(&folder, "a"), Some(folder.join("a.gif")));
         let _ = std::fs::remove_dir_all(&folder);
     }
 

@@ -52,8 +52,7 @@ fn group_icon_file(icon: &Value) -> Option<String> {
         .join("group-icons")
         .join(format!("{digest}.{extension}"));
     if !path.is_file() {
-        std::fs::create_dir_all(path.parent()?).ok()?;
-        std::fs::write(&path, bytes).ok()?;
+        crate::fileio::write_atomic(&path, &bytes).ok()?;
     }
     Some(path.to_string_lossy().into_owned())
 }
@@ -2443,7 +2442,7 @@ fn deliver(export: &Obj, value: &Value) -> Result<Value, String> {
     let output = crate::model::write_export(export);
     let file = text(value, "file").trim();
     if !file.is_empty() {
-        std::fs::write(file, &output).map_err(|error| {
+        crate::fileio::write_atomic(std::path::Path::new(file), output.as_bytes()).map_err(|error| {
             trf(
                 "dialogs.export.cant_save",
                 &[("file", file), ("error", &error.to_string())],

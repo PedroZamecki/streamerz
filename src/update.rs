@@ -418,12 +418,10 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
 }
 
 fn publish_staged(part: &Path, new: &Path, tag: &Path, manifest: &Staged) -> std::io::Result<()> {
-    use std::io::Write;
     // The manifest commits the download. Invalidate the previous one before replacing its file.
     remove_if_present(tag)?;
-    std::fs::rename(part, new)?;
-    let mut marker = std::fs::File::create_new(tag)?;
-    marker.write_all(&serde_json::to_vec(manifest)?)
+    crate::fileio::settle(part, new)?;
+    crate::fileio::write_json(tag, manifest)
 }
 
 fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
@@ -436,14 +434,13 @@ fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
         }
     } else {
         if std::fs::rename(new, path).is_err() {
-            let tmp = beside(path, "tmp");
-            std::fs::copy(new, &tmp).map_err(|e| format!("{}: {e}", path.display()))?;
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-            }
-            std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let perms = Some(std::os::unix::fs::PermissionsExt::from_mode(0o755));
+            #[cfg(not(unix))]
+            let perms = None;
+            std::fs::File::open(new)
+                .and_then(|mut from| crate::fileio::replace(path, perms, |f| std::io::copy(&mut from, f).map(drop)))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             let _ = std::fs::remove_file(new);
         }
     }

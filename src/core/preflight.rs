@@ -1470,11 +1470,8 @@ def script_load(settings):
 /// Write `streamerz_obs_companion.py` to `target` (or the default config folder path when `None`).
 pub fn save_companion_script(config: &crate::Config, target: Option<&Path>) -> Result<PathBuf, String> {
     let path = target.map(Path::to_path_buf).unwrap_or_else(companion_script_path);
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let content = companion_script(config);
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    crate::fileio::write_atomic(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
 }
 

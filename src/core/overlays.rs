@@ -1693,11 +1693,8 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
             result?;
             let config = engine.config();
             let file = package::pack(&config, &group, item["values"] == true)?;
-            let mut path = std::path::PathBuf::from(text("file"));
-            if path.extension().is_none_or(|x| x != package::EXTENSION) {
-                path.as_mut_os_string().push(format!(".{}", package::EXTENSION));
-            }
-            std::fs::write(&path, &file).map_err(|error| {
+            let path = package::export_path(&text("file"));
+            crate::fileio::write_atomic(&path, &file).map_err(|error| {
                 trf(
                     "dialogs.export.cant_save",
                     &[("file", &path.display().to_string()), ("error", &error.to_string())],
