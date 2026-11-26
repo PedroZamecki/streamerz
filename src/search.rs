@@ -264,6 +264,14 @@ mod tests {
         assert_eq!(compact(340_000), "340K");
         assert_eq!(compact(8_144_770), "8.1M");
         assert_eq!(compact(2_000_000), "2M");
+        assert_eq!(compact(999), "999");
+        assert_eq!(compact(1_000), "1K");
+        assert_eq!(compact(1_050), "1K");
+        assert_eq!(compact(99_999), "99K");
+        assert_eq!(compact(999_999), "999K");
+        assert_eq!(compact(0), "0");
+        // A count from the network that big used to overflow.
+        assert!(compact(u64::MAX).ends_with('M'));
     }
 
     #[test]
