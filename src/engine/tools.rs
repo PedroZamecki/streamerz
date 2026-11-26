@@ -82,16 +82,7 @@ pub fn clock(secs: u64) -> String {
 /// How long since an ISO 8601 time, in seconds (0 when it can't be read or is ahead).
 fn since(iso: &str) -> u64 {
     let now = crate::fmt::unix_now().as_secs() as i64;
-    super::rest_parse_iso(iso).map_or(0, |t| (now - t).max(0) as u64)
-}
-
-/// Unix seconds as an ISO 8601 UTC time (`2026-11-15T20:00:00Z`).
-fn iso_utc(secs: i64) -> String {
-    let t = super::civil_time(secs);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        t.year, t.month, t.day, t.hour, t.min, t.sec
-    )
+    crate::fmt::parse_iso(iso).map_or(0, |t| (now - t).max(0) as u64)
 }
 
 /// A date and time as typed: ISO 8601 with its zone, or `2026-11-15 20:00` in local time.
@@ -101,7 +92,7 @@ fn parse_when(text: &str) -> Option<i64> {
         t.push_str(":00");
     }
     let zoned = t.get(19..).is_some_and(|z| z.contains(['Z', 'z', '+', '-']));
-    let secs = super::rest_parse_iso(&t)?;
+    let secs = crate::fmt::parse_iso(&t)?;
     Some(if zoned { secs } else { crate::fmt::from_local(secs) })
 }
 
@@ -496,7 +487,7 @@ impl Engine {
             t => format!("Tier{}", t.trim_start_matches("tier").trim()),
         };
         let latest = json!({"userName": user, "userLogin": login, "userId": id, "tier": tier, "isGift": kind == 105,
-            "at": iso_utc(crate::fmt::unix_now().as_secs() as i64)});
+            "at": crate::fmt::iso_utc(crate::fmt::unix_now().as_secs() as i64)});
         self.change(|c| c.twitch.latest_subscriber = Some(latest));
     }
 
@@ -620,7 +611,7 @@ impl Engine {
                 let days = (n(o, "days") as i64).clamp(0, 3650);
                 let started = (days > 0).then(|| {
                     let at = crate::fmt::unix_now().as_secs() as i64 - days * 86_400;
-                    iso_utc(at)
+                    crate::fmt::iso_utc(at)
                 });
                 let mut q = vec![("broadcaster_id", uid.as_str()), ("first", "100")];
                 if let Some(at) = &started {
@@ -1073,7 +1064,7 @@ impl Engine {
                     .round()
                     .clamp(30.0, 1380.0) as u64;
                 let mut body = json!({
-                    "start_time": iso_utc(start),
+                    "start_time": crate::fmt::iso_utc(start),
                     "timezone": local_zone(),
                     "duration": minutes.to_string(),
                     "is_recurring": b(o, "recurring", false),
@@ -1136,7 +1127,7 @@ impl Engine {
                 if on {
                     let from = parse_when(&text("start")).ok_or("the start isn't a date and time")?;
                     let to = parse_when(&text("end")).ok_or("the end isn't a date and time")?;
-                    (start, end) = (iso_utc(from), iso_utc(to));
+                    (start, end) = (crate::fmt::iso_utc(from), crate::fmt::iso_utc(to));
                     q.extend([
                         ("vacation_start_time", start.as_str()),
                         ("vacation_end_time", end.as_str()),
@@ -1899,7 +1890,7 @@ impl Engine {
             thumbnail: get("thumbnail"),
             fields,
             inline: b(o, "inlineFields", false),
-            timestamp: b(o, "timestamp", false).then(|| iso_utc(crate::fmt::unix_now().as_secs() as i64)),
+            timestamp: b(o, "timestamp", false).then(|| crate::fmt::iso_utc(crate::fmt::unix_now().as_secs() as i64)),
         }
     }
 
@@ -2296,10 +2287,9 @@ mod tests {
         assert_eq!(login(" @Ana "), "Ana");
         assert_eq!(clock(59), "0:59");
         assert_eq!(clock(3_661), "1:01:01");
-        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(
             parse_when("2026-11-15T20:00:00Z"),
-            crate::engine::rest_parse_iso("2026-11-15T20:00:00Z")
+            crate::fmt::parse_iso("2026-11-15T20:00:00Z")
         );
         assert!(parse_when("tomorrow").is_none());
         // A local time keeps the offset of its own day, winter or summer.
@@ -2307,7 +2297,7 @@ mod tests {
             ("2026-01-15 20:00", "2026-01-15T20:00:00Z"),
             ("2026-07-15 20:00", "2026-07-15T20:00:00Z"),
         ] {
-            let naive = crate::engine::rest_parse_iso(iso).unwrap();
+            let naive = crate::fmt::parse_iso(iso).unwrap();
             assert_eq!(parse_when(typed), Some(crate::fmt::from_local(naive)));
         }
         assert_eq!(twitch_extra_scope(592), Some("moderator:manage:automod_settings"));

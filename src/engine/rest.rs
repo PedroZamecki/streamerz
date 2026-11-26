@@ -3,6 +3,7 @@
 
 use super::{b, n, new_state, s, Ctx, Engine};
 use crate::commands::{self, Chat};
+use crate::fmt::{civil, days_from_civil, parse_iso};
 use crate::model::Obj;
 use crate::vars::{self, auto_type, text};
 use serde_json::{json, Value};
@@ -33,68 +34,6 @@ fn obs_color(c: &str) -> i64 {
     };
     let (a, r, g, b2) = (argb >> 24, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
     i64::from(a << 24 | b2 << 16 | g << 8 | r)
-}
-
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
-}
-
-pub(super) fn civil_pub(secs: i64) -> crate::fmt::Time {
-    civil(secs)
-}
-
-/// A UTC civil date and time from Unix seconds.
-fn civil(secs: i64) -> crate::fmt::Time {
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
-    crate::fmt::Time {
-        year,
-        month,
-        day,
-        hour: (rem / 3600) as u32,
-        min: (rem % 3600 / 60) as u32,
-        sec: (rem % 60) as u32,
-        nanos: 0,
-        weekday: (days + 4).rem_euclid(7) as u32,
-        offset: 0,
-    }
-}
-
-pub(super) fn parse_iso_pub(t: &str) -> Option<i64> {
-    parse_iso(t)
-}
-
-/// Unix seconds from an ISO 8601 UTC time as the platforms send it ("2024-08-17T12:34:56Z",
-/// fractions ignored).
-fn parse_iso(t: &str) -> Option<i64> {
-    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
-    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
-    // An offset after the seconds (and any fraction): "+02:00" is two hours ahead of UTC.
-    let tail = t
-        .get(19..)
-        .unwrap_or("")
-        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    let offset = match (tail.get(..1), tail.get(1..3).and_then(|h| h.parse::<i64>().ok())) {
-        (Some(sign @ ("+" | "-")), Some(h)) => {
-            let m = tail.get(4..6).and_then(|m| m.parse::<i64>().ok()).unwrap_or(0);
-            (h * 3600 + m * 60) * if sign == "+" { 1 } else { -1 }
-        }
-        _ => 0,
-    };
-    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? - offset)
 }
 
 /// The calendar time between two Unix times: years, months, days, hours, minutes, seconds.
@@ -5872,19 +5811,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn dates_and_ages() {
-        assert_eq!(
-            parse_iso("2024-08-17T14:34:56+02:00"),
-            parse_iso("2024-08-17T12:34:56Z")
-        );
-        assert_eq!(
-            parse_iso("2024-08-17T09:34:56.5-03:00"),
-            parse_iso("2024-08-17T12:34:56Z")
-        );
+    fn ages() {
         let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
-        assert_eq!(t, 1_723_898_096);
-        let c = civil(t);
-        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour), (2024, 8, 17, 6, 12));
         let later = parse_iso("2026-06-22T10:38:21Z").unwrap();
         let a = age(t, later);
         assert_eq!(a, [1, 10, 4, 22, 3, 25]);

@@ -660,7 +660,7 @@ fn twitch_pin(d: &Value) -> Option<Pin> {
     let id = d["message_id"].as_str().filter(|s| !s.is_empty())?;
     let until = d["ends_at"]
         .as_str()
-        .and_then(super::rest_parse_iso)
+        .and_then(crate::fmt::parse_iso)
         .and_then(|secs| u64::try_from(secs).ok())
         .map(|secs| secs.saturating_mul(1000));
     Some(Pin {

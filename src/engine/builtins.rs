@@ -343,7 +343,7 @@ impl Engine {
                         true,
                     )
                     .await?;
-                Ok(v["data"][0]["started_at"].as_str().and_then(super::rest::parse_iso_pub))
+                Ok(v["data"][0]["started_at"].as_str().and_then(crate::fmt::parse_iso))
             }
             "kick" => {
                 let chan = self.cfg.borrow().kick.channel.to_lowercase();
@@ -354,7 +354,7 @@ impl Engine {
                 Ok(v["livestream"]["created_at"]
                     .as_str()
                     .or_else(|| v["livestream"]["start_time"].as_str())
-                    .and_then(|t| super::rest::parse_iso_pub(&t.replacen(' ', "T", 1))))
+                    .and_then(|t| crate::fmt::parse_iso(&t.replacen(' ', "T", 1))))
             }
             "youtube" => {
                 let yt = self.youtube().ok_or("YouTube isn't connected")?;

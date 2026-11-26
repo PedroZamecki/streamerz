@@ -101,23 +101,14 @@ pub fn time(text: &str) -> Option<(u32, u32)> {
     (h < 24 && m < 60).then_some((h, m))
 }
 
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let (m, d) = (i64::from(m), i64::from(d));
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
-}
-
 fn now_ms() -> u64 {
     crate::fmt::unix_now().as_millis() as u64
 }
 
 /// A local day and time as milliseconds since 1970.
 fn local_ms(day: (i64, u32, u32), hour: u32, minute: u32) -> Option<u64> {
-    let naive = days_from_civil(day.0, day.1, day.2) * 86_400 + i64::from(hour * 3600 + minute * 60);
+    let naive =
+        crate::fmt::days_from_civil(day.0, day.1.into(), day.2.into()) * 86_400 + i64::from(hour * 3600 + minute * 60);
     let secs = crate::fmt::from_local(naive);
     u64::try_from(secs).ok().map(|s| s * 1000)
 }
@@ -400,7 +391,7 @@ mod tests {
     fn moments_keep_the_offset_of_their_own_day() {
         // Winter and summer: each uses its own offset, not today's.
         for (typed, day) in [("2030-01-15 12:00", (2030, 1, 15)), ("2030-07-15 12:00", (2030, 7, 15))] {
-            let naive = days_from_civil(day.0, day.1, day.2) * 86_400 + 12 * 3600;
+            let naive = crate::fmt::days_from_civil(day.0, day.1.into(), day.2.into()) * 86_400 + 12 * 3600;
             let at = moment(typed).unwrap();
             assert_eq!(at as i64, crate::fmt::from_local(naive) * 1000);
             assert_eq!(show_moment(at), typed);

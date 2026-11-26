@@ -150,7 +150,7 @@ pub fn shown_time(t: &Time) -> String {
 /// An ISO 8601 time ("2024-08-17T12:34:56-03:00") as the user reads it, in local time: the date, and
 /// the time after it with `time`. Empty when it isn't one.
 pub fn shown_iso(iso: &str, time: bool) -> String {
-    let Some(secs) = crate::engine::rest_parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
+    let Some(secs) = parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
         return String::new();
     };
     let t = local_time(secs);
@@ -178,7 +178,7 @@ pub fn local_time(secs: i64) -> Time {
     let offset = offset_at(secs);
     Time {
         offset,
-        ..crate::engine::civil_time(secs + i64::from(offset))
+        ..civil(secs + i64::from(offset))
     }
 }
 
@@ -460,9 +460,7 @@ pub fn now() -> Time {
 }
 
 /// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
-#[cfg_attr(not(windows), allow(dead_code))]
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let (m, d) = (i64::from(m), i64::from(d));
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
@@ -470,12 +468,66 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
+/// A UTC civil date and time from Unix seconds.
+pub fn civil(secs: i64) -> Time {
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    Time {
+        year,
+        month,
+        day,
+        hour: (rem / 3600) as u32,
+        min: (rem % 3600 / 60) as u32,
+        sec: (rem % 60) as u32,
+        nanos: 0,
+        weekday: (days + 4).rem_euclid(7) as u32,
+        offset: 0,
+    }
+}
+
+/// Unix seconds from an ISO 8601 time as the platforms send it ("2024-08-17T12:34:56Z", or with an
+/// offset such as "+02:00"; fractions ignored).
+pub fn parse_iso(t: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
+    // An offset after the seconds (and any fraction): "+02:00" is two hours ahead of UTC.
+    let tail = t
+        .get(19..)
+        .unwrap_or("")
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match (tail.get(..1), tail.get(1..3).and_then(|h| h.parse::<i64>().ok())) {
+        (Some(sign @ ("+" | "-")), Some(h)) => {
+            let m = tail.get(4..6).and_then(|m| m.parse::<i64>().ok()).unwrap_or(0);
+            (h * 3600 + m * 60) * if sign == "+" { 1 } else { -1 }
+        }
+        _ => 0,
+    };
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? - offset)
+}
+
+/// Unix seconds as an ISO 8601 UTC time (`2026-11-15T20:00:00Z`).
+pub fn iso_utc(secs: i64) -> String {
+    let t = civil(secs);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        t.year, t.month, t.day, t.hour, t.min, t.sec
+    )
+}
+
 /// The local offset from UTC at Unix time `secs`, in seconds (daylight saving time included).
 #[cfg(windows)]
 pub fn offset_at(secs: i64) -> i32 {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
-    let u = crate::engine::civil_time(secs);
+    let u = civil(secs);
     if !(1601..=30827).contains(&u.year) {
         return now().offset;
     }
@@ -494,7 +546,7 @@ pub fn offset_at(secs: i64) -> i32 {
     if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut l) } == 0 {
         return now().offset;
     }
-    let local = days_from_civil(i64::from(l.wYear), u32::from(l.wMonth), u32::from(l.wDay)) * 86_400
+    let local = days_from_civil(i64::from(l.wYear), i64::from(l.wMonth), i64::from(l.wDay)) * 86_400
         + i64::from(l.wHour) * 3600
         + i64::from(l.wMinute) * 60
         + i64::from(l.wSecond);
@@ -1225,11 +1277,11 @@ mod tests {
     }
 
     fn at(year: i32, month: u32, day: u32, hour: u32, min: u32) -> Time {
-        let days = days_from_civil(i64::from(year), month, day);
+        let days = days_from_civil(i64::from(year), i64::from(month), i64::from(day));
         Time {
             hour,
             min,
-            ..crate::engine::civil_time(days * 86_400)
+            ..civil(days * 86_400)
         }
     }
 
@@ -1412,8 +1464,27 @@ mod tests {
     }
 
     #[test]
+    fn iso_times_with_offsets() {
+        assert_eq!(
+            parse_iso("2024-08-17T14:34:56+02:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
+        assert_eq!(
+            parse_iso("2024-08-17T09:34:56.5-03:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
+        let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
+        assert_eq!(t, 1_723_898_096);
+        let c = civil(t);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour), (2024, 8, 17, 6, 12));
+        assert_eq!(iso_utc(t), "2024-08-17T12:34:56Z");
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(parse_iso("2024-08-17"), None);
+    }
+
+    #[test]
     fn dates_before_1970_and_leap_days() {
-        let t = crate::engine::civil_time(-1);
+        let t = civil(-1);
         assert_eq!(
             custom_date(&t, "yyyy-MM-dd HH:mm:ss dddd", en(), false),
             "1969-12-31 23:59:59 Wednesday"
@@ -1422,8 +1493,12 @@ mod tests {
         assert_eq!(custom_date(&at(2100, 2, 28, 0, 0), "ddd", en(), false), "Sun");
         // Every day, from 1600 to 2400, comes back to its day number.
         for days in (-135_000..160_000).step_by(37) {
-            let t = crate::engine::civil_time(days * 86_400);
-            assert_eq!(days_from_civil(i64::from(t.year), t.month, t.day), days, "{t:?}");
+            let t = civil(days * 86_400);
+            assert_eq!(
+                days_from_civil(i64::from(t.year), i64::from(t.month), i64::from(t.day)),
+                days,
+                "{t:?}"
+            );
         }
     }
 
@@ -1446,7 +1521,7 @@ mod tests {
         for secs in [-86_400 * 400, 0, 1_700_000_000, 1_720_000_000, 1_735_000_000] {
             let t = local_time(secs);
             assert_eq!(t.offset, offset_at(secs));
-            let back = days_from_civil(i64::from(t.year), t.month, t.day) * 86_400
+            let back = days_from_civil(i64::from(t.year), i64::from(t.month), i64::from(t.day)) * 86_400
                 + i64::from(t.hour * 3600 + t.min * 60 + t.sec)
                 - i64::from(t.offset);
             assert_eq!(back, secs);

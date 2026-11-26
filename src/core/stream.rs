@@ -770,7 +770,7 @@ fn unix_time(v: &Value) -> Option<i64> {
     let secs = match v {
         Value::Number(n) => n.as_i64(),
         Value::String(t) if t.is_empty() => None,
-        Value::String(t) => t.parse().ok().or_else(|| crate::engine::rest_parse_iso(t)),
+        Value::String(t) => t.parse().ok().or_else(|| crate::fmt::parse_iso(t)),
         _ => None,
     };
     secs.filter(|secs| *secs > 0)
@@ -3251,7 +3251,7 @@ mod tests {
         }
         assert_eq!(
             unix_time(&json!("2026-11-10T21:00:00Z")),
-            crate::engine::rest_parse_iso("2026-11-10T21:00:00Z")
+            crate::fmt::parse_iso("2026-11-10T21:00:00Z")
         );
     }
 
@@ -3548,10 +3548,7 @@ mod tests {
             assert_eq!(seen().info[TWITCH].title, "Old");
             assert_eq!(seen().info[TWITCH].live, Some(true));
             assert_eq!(seen().info[TWITCH].viewers, Some(12));
-            assert_eq!(
-                seen().info[TWITCH].since,
-                crate::engine::rest_parse_iso("2026-11-10T21:00:00Z")
-            );
+            assert_eq!(seen().info[TWITCH].since, crate::fmt::parse_iso("2026-11-10T21:00:00Z"));
             assert_eq!(seen().info[KICK].title, "Kick title", "read by the channel's slug");
             assert_eq!(seen().info[KICK].category, "IRL");
             // Not live on YouTube: what changes go to is the next live, shown with its title.

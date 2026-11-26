@@ -141,7 +141,7 @@ const VISIT_GAP_SECS: i64 = 30 * 60;
 
 /// Compare two ISO 8601 timestamps, using parsed Unix seconds when possible.
 fn earlier_iso(a: &str, b: &str) -> bool {
-    match (super::rest_parse_iso(a), super::rest_parse_iso(b)) {
+    match (crate::fmt::parse_iso(a), crate::fmt::parse_iso(b)) {
         (Some(ta), Some(tb)) => ta < tb,
         _ => a < b,
     }
@@ -153,7 +153,7 @@ fn activity_gap(last: &str, now: &str) -> (bool, Option<u64>) {
     if last.is_empty() || last == NEVER {
         return (true, None);
     }
-    let Some((a, b)) = super::rest_parse_iso(last).zip(super::rest_parse_iso(now)) else {
+    let Some((a, b)) = crate::fmt::parse_iso(last).zip(crate::fmt::parse_iso(now)) else {
         return (true, None);
     };
     let delta = b - a;

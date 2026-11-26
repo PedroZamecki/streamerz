@@ -508,15 +508,8 @@ pub(crate) use rest::{poll_args, prediction_args};
 pub use speech::wav_length_ms;
 pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
-/// A UTC civil date and time from Unix seconds.
-pub fn civil_time(secs: i64) -> crate::fmt::Time {
-    rest::civil_pub(secs)
-}
-
-/// Unix seconds from an ISO 8601 UTC time ("2024-08-17T12:34:56Z").
-pub fn rest_parse_iso(t: &str) -> Option<i64> {
-    rest::parse_iso_pub(t)
-}
+// Older names of `fmt::civil` and `fmt::parse_iso`, still used by the platform modules.
+pub use crate::fmt::{civil as civil_time, parse_iso as rest_parse_iso};
 
 /// A random version 4 UUID.
 pub fn uuid() -> String {
