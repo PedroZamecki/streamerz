@@ -18,7 +18,8 @@ pub struct Found {
 /// A count as people say it: 1.2M, 340K.
 fn compact(n: u64) -> String {
     let tenths = |n: u64, unit: u64| {
-        let t = n * 10 / unit;
+        // Not `n * 10`, which overflows for a huge count.
+        let t = n / (unit / 10);
         if t.is_multiple_of(10) || t >= 100 {
             format!("{}", t / 10)
         } else {
