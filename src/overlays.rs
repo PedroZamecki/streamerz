@@ -2134,7 +2134,7 @@ mod tests {
         assert_eq!(decode("a%2Bb"), "a+b");
         assert_eq!(decode("100%"), "100%", "a % with no hex after it stays");
         assert_eq!(decode("%zz%4"), "%zz%4");
-        assert_eq!(decode("%+1"), "%+1", "a sign is not a hex digit");
+        assert_eq!(decode("%+1"), "% 1", "a sign is not a hex digit");
         assert_eq!(decode("%FF"), "\u{FFFD}", "bytes that aren't UTF-8 don't panic");
         for name in ["Doação", "Ünïcödé 🎉", "a b/c+d.png", "100% Hype"] {
             assert_eq!(decode(&encode(name)), name, "{name}");

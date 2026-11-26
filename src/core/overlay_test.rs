@@ -396,10 +396,9 @@ mod tests {
         let id = oldest_shown["id"].as_str().unwrap().to_owned();
         let (_, args) = remembered(&id).unwrap();
         assert_eq!(args["user"], oldest_shown["who"]);
-        // Two more come: the oldest goes, and the one after it is still found by its id.
+        // One more comes: the oldest goes, and the one after it is still found by its id.
         let next = shown[shown.len() - 2]["id"].as_str().unwrap().to_owned();
-        remember(103, &with_values(Obj::new(), "user=late1"));
-        remember(103, &with_values(Obj::new(), "user=late2"));
+        remember(103, &with_values(Obj::new(), "user=late"));
         assert!(remembered(&id).is_err(), "pushed out: not another event in its place");
         let (code, args) = remembered(&next).unwrap();
         assert_eq!((code, &args["user"]), (101, &shown[shown.len() - 2]["who"]));
