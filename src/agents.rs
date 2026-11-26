@@ -791,15 +791,29 @@ fn toml_block(text: &str, name: &str) -> Option<(usize, usize)> {
     start.map(|s| (s, text.len()))
 }
 
-/// Writes `text` to `file` through a file beside it, so the agent never reads half of it.
+/// Writes `text` to `file` through a file beside it, so the agent never reads half of it. A link
+/// (dotfiles kept elsewhere) is followed and stays a link; the file keeps its permissions (Claude
+/// Code's and Codex's may hold keys only the user may read).
 fn write(file: &Path, text: &str) -> Result<(), String> {
-    if let Some(d) = file.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    let err = |e: std::io::Error| format!("{}: {e}", file.display());
+    let target = match std::fs::symlink_metadata(file) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(file).map_err(err)?,
+        _ => file.to_path_buf(),
+    };
+    if let Some(d) = target.parent() {
+        std::fs::create_dir_all(d).map_err(err)?;
     }
-    let tmp = file.with_extension("streamerz-tmp");
-    std::fs::write(&tmp, text)
-        .and_then(|()| std::fs::rename(&tmp, file))
-        .map_err(|e| format!("{}: {e}", file.display()))
+    let tmp = target.with_extension("streamerz-tmp");
+    let done = std::fs::write(&tmp, text)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(m) => std::fs::set_permissions(&tmp, m.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done.map_err(err)
 }
 
 /// Puts Streamerz in `kind`'s config (replacing an older entry), or takes it out. Everything else in
