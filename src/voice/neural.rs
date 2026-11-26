@@ -648,7 +648,7 @@ pub async fn install_engine() -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755));
     }
-    std::fs::rename(&part, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+    crate::fileio::settle(&part, &target).map_err(|e| format!("{}: {e}", target.display()))?;
     Ok(())
 }
 
@@ -814,7 +814,7 @@ pub async fn play_sample(id: &str) -> Result<PathBuf, String> {
                 entry.name, got.status
             ));
         }
-        std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
+        crate::fileio::settle(&part, &path).map_err(|e| e.to_string())?;
     }
     crate::sound::play(&path, "voice-sample", "Monitor", 1.0)?;
     Ok(path)
