@@ -1188,6 +1188,18 @@ impl Runner {
             populate_broadcaster_vars(&mut args, broadcaster);
             let raided = raid_target(&user);
             args.extend(raided.clone());
+            // Who goes along: the live count when it's known, else asked once.
+            let viewers = match self.engine.chat_viewers()[0] {
+                Some(n) => n,
+                None => {
+                    let url = format!("{HELIX_URL}/streams?user_id={from_id}");
+                    match crate::http::request("GET", &url, &headers, b"").await {
+                        Ok(r) => live_viewers(&serde_json::from_slice(&r.body).unwrap_or_default()).unwrap_or(0),
+                        Err(_) => 0,
+                    }
+                }
+            };
+            args.insert("viewers".into(), viewers.into());
             // Raid Send and Raid Cancelled say who too.
             SEEN.with_borrow_mut(|s| s.raid = Some(raided));
             go(
@@ -4322,6 +4334,11 @@ fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Ob
 }
 
 /// The event's `user_*` (or `{who}_user_*`) as the user arguments.
+/// The viewer count in a Helix `streams` answer (none when the channel is offline).
+fn live_viewers(streams: &Value) -> Option<u64> {
+    streams["data"][0]["viewer_count"].as_u64()
+}
+
 /// The arguments of User Unbanned and User Untimed Out: who (from `user`) and by whom.
 fn unban_args(broadcaster: &TwitchAccount, event: &Value, user: &Value) -> Obj {
     let mut args = Obj::new();
@@ -5055,11 +5072,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             continue;
         };
         let live = s["data"][0]["type"] == "live";
-        engine.set_chat_viewers("twitch", s["data"][0]["viewer_count"].as_u64());
+        engine.set_chat_viewers("twitch", live_viewers(&s));
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &broadcaster);
         if want[0] && live {
-            let count = s["data"][0]["viewer_count"].as_u64().unwrap_or(0);
+            let count = live_viewers(&s).unwrap_or(0);
             if viewers != Some(count) {
                 viewers = Some(count);
                 let mut a = args.clone();
@@ -5750,6 +5767,15 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
         assert_eq!(lines, ["T bob False 600", "T eve True %duration%"], "{lines:?}");
+    }
+
+    #[test]
+    fn a_raid_start_says_how_many_go_along() {
+        assert_eq!(
+            live_viewers(&json!({"data": [{"type": "live", "viewer_count": 42}]})),
+            Some(42)
+        );
+        assert_eq!(live_viewers(&json!({"data": []})), None);
     }
 
     #[test]
