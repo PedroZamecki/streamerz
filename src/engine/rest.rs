@@ -740,9 +740,10 @@ impl Engine {
                 }
             }
         }
+        let ids: Vec<String> = self.cfg.borrow().groups.iter().map(|g| s(g, "id").to_owned()).collect();
         self.fire(kind, name, "Core/Groups", "streamerbot", &args, |t| {
             let want = s(t, "groupId");
-            want.is_empty() || want == id
+            want.is_empty() || group_is(want, g, &ids)
         });
         self.emit("Group", &name.replace(' ', ""), || {
             let mut d = serde_json::json!({"groupId": id, "groupName": s(g, "name"), "groupBots": b(g, "bots", false)});
@@ -3402,7 +3403,8 @@ impl Engine {
                 let id = self.simple(ctx, s(o, "groupId"));
                 let mut group = None;
                 self.change(|c| {
-                    if let Some(g) = c.groups.iter_mut().find(|g| s(g, "id") == id) {
+                    let ids: Vec<String> = c.groups.iter().map(|g| s(g, "id").to_owned()).collect();
+                    if let Some(g) = c.groups.iter_mut().find(|g| group_is(&id, g, &ids)) {
                         g.insert("userIds".into(), Value::Array(vec![]));
                         group = Some(g.clone());
                     }
@@ -5771,10 +5773,47 @@ fn kick_background_color(h: &str) -> String {
     format!("#{}", &h[start..])
 }
 
+/// Whether a saved `groupId` means group `g`: its ID, else its name when no group has that ID (forms
+/// saved the name before they kept the ID). `ids` are every group's IDs.
+fn group_is(want: &str, g: &Obj, ids: &[String]) -> bool {
+    let want = want.trim();
+    !want.is_empty()
+        && (s(g, "id") == want || (s(g, "name").eq_ignore_ascii_case(want) && !ids.iter().any(|i| i == want)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn a_group_saved_by_its_name_still_matches() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let g = |id: &str, name: &str| json!({"id": id, "name": name}).as_object().cloned().unwrap();
+        let ids = ["g1".to_owned(), "g2".to_owned()];
+        assert!(group_is("g1", &g("g1", "Regulars"), &ids));
+        assert!(group_is(" regulars ", &g("g1", "Regulars"), &ids));
+        assert!(!group_is("", &g("g1", "Regulars"), &ids));
+        // A name that is also another group's ID means that group.
+        assert!(!group_is("g2", &g("g1", "g2"), &ids));
+        // Clear Users From Group and the Cleared trigger, both saved with the name.
+        let mut cleared = action("a1", "cleared", json!([log("T cleared %group.name%")]));
+        cleared["triggers"] = json!([{"groupId": "Regulars", "id": "t1", "type": 32003, "enabled": true}]);
+        let clear = action("a2", "clear", json!([{"type": 10001, "groupId": "regulars"}]));
+        let e = engine(json!({"actions": [cleared, clear]}));
+        e.cfg.send_modify(|c| {
+            c.groups = vec![json!({"id": "g1", "name": "Regulars", "bots": false, "userIds": ["1"]})
+                .as_object()
+                .cloned()
+                .unwrap()];
+        });
+        let out = run(async move {
+            e.queue("a2", Obj::new());
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert!(e.cfg.borrow().groups[0]["userIds"].as_array().unwrap().is_empty());
+        });
+        assert!(out.iter().any(|x| x == "T cleared Regulars"), "{out:?}");
+    }
 
     #[test]
     fn kick_color_handles_unicode() {
