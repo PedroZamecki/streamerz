@@ -572,7 +572,6 @@ fn apply_catalog(cat: Catalog) {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct LoadParams {
     cache_key: String,
     file_name: String,
@@ -1397,7 +1396,6 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         });
     }
 
-    let _ = json!({}); // keep json import used cleanly
     Catalog {
         twitch_native: [tw_broad_native, tw_bot_native],
         twitch_7tv,
