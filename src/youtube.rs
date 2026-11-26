@@ -11,6 +11,7 @@ use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::future::Future;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -742,7 +743,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
     };
 
     tokio::task::spawn_local(async move {
-        let mut active = false;
         let mut poll_task: Option<crate::emote_events::Abort> = None;
 
         while let Some(cmd) = rx.recv().await {
@@ -760,8 +760,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     if !runner.cfg.borrow().youtube.has_target() {
                         continue;
                     }
-                    if !active || poll_task.as_ref().is_some_and(|t| t.0.is_finished()) {
-                        active = true;
+                    if poll_task.as_ref().is_none_or(|t| t.0.is_finished()) {
                         let args = Obj::new();
                         runner.engine.fire(
                             T_YT_BROADCAST_MONITORING_STARTED,
@@ -775,44 +774,19 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                             .engine
                             .emit("YouTube", "BroadcastMonitoringStarted", || json!(args));
 
+                        let logout = broadcaster_logout(&runner.cfg);
                         let runner_clone = runner.clone();
                         poll_task = Some(crate::emote_events::Abort(tokio::task::spawn_local(async move {
-                            runner_clone.run_poll_loop().await;
+                            runner_clone.monitor(logout, runner_clone.run_poll_loop()).await;
                         })));
                     } else {
                         runner.engine.live_wake.notify_waiters();
                     }
                 }
                 YouTubeCmd::Disconnect => {
-                    clear_poll();
-                    *runner.live.borrow_mut() = Default::default();
-                    runner.poll.borrow_mut().clear();
-                    runner.engine.set_chat_viewers("youtube", None);
-                    BROADCAST.with_borrow_mut(Obj::clear);
-                    ACTIVE.with_borrow_mut(std::collections::HashMap::clear);
-                    runner.engine.chat_polls_clear("youtube");
-                    runner.engine.chat_unpinned("youtube", "");
-                    crate::host::polls_changed();
-                    if active {
-                        active = false;
-                        connected.store(false, Ordering::Relaxed);
-                        standby.store(false, Ordering::Relaxed);
-                        crate::host::changed();
-                        drop(poll_task.take());
-                        crate::say("YouTube: monitoring ended".into());
-                        let args = Obj::new();
-                        runner.engine.fire(
-                            T_YT_BROADCAST_MONITORING_ENDED,
-                            "YouTubeBroadcastMonitoringEnded",
-                            "YouTube",
-                            "youtube",
-                            &args,
-                            |_| true,
-                        );
-                        runner
-                            .engine
-                            .emit("YouTube", "BroadcastMonitoringEnded", || json!(args));
-                    }
+                    let was_active = poll_task.as_ref().is_some_and(|task| !task.0.is_finished());
+                    drop(poll_task.take());
+                    runner.stop_monitoring(was_active);
                 }
                 YouTubeCmd::SendMessage {
                     broadcast,
@@ -1084,6 +1058,21 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<YouTubeAccount, S
     })
 }
 
+/// A broadcaster logout stops the active reader without requiring an extra command or a timer.
+fn broadcaster_logout(cfg: &watch::Sender<Config>) -> impl Future<Output = ()> {
+    let mut config = cfg.subscribe();
+    let mut signed_in = config.borrow().youtube.broadcaster.is_some();
+    async move {
+        let _ = config
+            .wait_for(|c| {
+                let was_signed_in = signed_in;
+                signed_in = c.youtube.broadcaster.is_some();
+                was_signed_in && !signed_in
+            })
+            .await;
+    }
+}
+
 #[derive(Clone)]
 struct YouTubeRunner {
     engine: Rc<Engine>,
@@ -1097,6 +1086,43 @@ struct YouTubeRunner {
 }
 
 impl YouTubeRunner {
+    async fn monitor(&self, logout: impl Future<Output = ()>, reader: impl Future<Output = ()>) {
+        tokio::select! {
+            biased;
+            () = logout => {}
+            () = reader => {}
+        }
+        self.stop_monitoring(true);
+    }
+
+    fn stop_monitoring(&self, was_active: bool) {
+        clear_poll();
+        *self.live.borrow_mut() = Default::default();
+        self.poll.borrow_mut().clear();
+        self.engine.set_chat_viewers("youtube", None);
+        BROADCAST.with_borrow_mut(Obj::clear);
+        ACTIVE.with_borrow_mut(std::collections::HashMap::clear);
+        self.engine.chat_polls_clear("youtube");
+        self.engine.chat_unpinned("youtube", "");
+        crate::host::polls_changed();
+        if was_active {
+            self.connected.store(false, Ordering::Relaxed);
+            self.standby.store(false, Ordering::Relaxed);
+            crate::host::changed();
+            crate::say("YouTube: monitoring ended".into());
+            let args = Obj::new();
+            self.engine.fire(
+                T_YT_BROADCAST_MONITORING_ENDED,
+                "YouTubeBroadcastMonitoringEnded",
+                "YouTube",
+                "youtube",
+                &args,
+                |_| true,
+            );
+            self.engine.emit("YouTube", "BroadcastMonitoringEnded", || json!(args));
+        }
+    }
+
     async fn run_poll_loop(&self) {
         read_chat_with_standby(
             &self.engine,
@@ -3310,6 +3336,36 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn broadcaster_logout_cancels_youtube_reader() {
+        crate::engine::tests::run(async {
+            let mut config = Config::default();
+            config.youtube.broadcaster = Some(YouTubeAccount::default());
+            let cfg = Arc::new(watch::channel(config).0);
+            let runner = YouTubeRunner {
+                engine: Engine::new(cfg.clone(), |_| {}),
+                cfg: cfg.clone(),
+                connected: Arc::new(AtomicBool::new(true)),
+                standby: Arc::new(AtomicBool::new(false)),
+                live: Rc::new(std::cell::RefCell::new(("video".into(), "chat".into()))),
+                poll: Rc::new(std::cell::RefCell::new("poll".into())),
+            };
+            let (send, recv) = oneshot::channel::<()>();
+            let reader = async move {
+                let _ = recv.await;
+            };
+            let logout = broadcaster_logout(&cfg);
+            let mut monitor = std::pin::pin!(runner.monitor(logout, reader));
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            cfg.send_modify(|c| c.youtube.broadcaster = None);
+            assert!(futures_util::poll!(&mut monitor).is_ready());
+            assert!(send.is_closed(), "the in-flight reader was dropped");
+            assert!(!runner.connected.load(Ordering::Relaxed));
+            assert!(runner.live.borrow().0.is_empty());
+            assert!(runner.poll.borrow().is_empty());
+        });
+    }
 
     #[test]
     fn oauth_refresh_does_not_replace_a_new_login() {

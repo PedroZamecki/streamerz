@@ -12,6 +12,7 @@ use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -624,35 +625,20 @@ impl Runner {
             return;
         }
 
+        crate::say(format!("Kick: connecting (@{channel})..."));
+
         let engine = self.engine.clone();
         let cfg = self.cfg.clone();
         let connected = self.connected.clone();
-
-        crate::say(format!("Kick: connecting (@{channel})..."));
-
-        self.read_task = Some(crate::emote_events::Abort(tokio::task::spawn_local(async move {
-            run_pusher_loop(engine, cfg, connected).await;
-        })));
+        let reader = run_pusher_loop_url(engine.clone(), cfg.clone(), connected.clone(), KICK_PUSHER_URL, false);
+        self.read_task = Some(crate::emote_events::Abort(tokio::task::spawn_local(monitor_pusher(
+            engine, &cfg, connected, reader,
+        ))));
     }
 
     fn disconnect(&mut self) {
         drop(self.read_task.take());
-        self.engine.chat_polls_clear("kick");
-        self.engine.chat_unpinned("kick", "");
-        crate::host::polls_changed();
-        if self.connected.swap(false, Ordering::Relaxed) {
-            crate::say("Kick: disconnected".into());
-            let args = Obj::new();
-            self.engine.fire(
-                T_KICK_DISCONNECTED,
-                "KickBroadcasterChatDisconnected",
-                "Kick",
-                "kick",
-                &args,
-                |_| true,
-            );
-            self.engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
-        }
+        disconnect_pusher(&self.engine, &self.connected);
     }
 
     /// A user id from a login: every Kick user has a channel whose slug is their name.
@@ -827,8 +813,52 @@ impl Runner {
     }
 }
 
-async fn run_pusher_loop(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, connected: Arc<AtomicBool>) {
-    run_pusher_loop_url(engine, cfg, connected, KICK_PUSHER_URL, false).await;
+/// Watch only while a reader is active. A broadcaster logout cancels even an in-flight read.
+fn monitor_pusher(
+    engine: Rc<Engine>,
+    cfg: &watch::Sender<Config>,
+    connected: Arc<AtomicBool>,
+    reader: impl Future<Output = ()>,
+) -> impl Future<Output = ()> {
+    let mut config = cfg.subscribe();
+    let mut signed_in = config.borrow().kick.broadcaster.is_some();
+    async move {
+        let logout = async {
+            let _ = config
+                .wait_for(|c| {
+                    let was_signed_in = signed_in;
+                    signed_in = c.kick.broadcaster.is_some();
+                    was_signed_in && !signed_in
+                })
+                .await;
+        };
+        tokio::select! {
+            biased;
+            () = logout => disconnect_pusher(&engine, &connected),
+            () = reader => {}
+        }
+    }
+}
+
+fn disconnect_pusher(engine: &Rc<Engine>, connected: &AtomicBool) {
+    engine.chat_polls_clear("kick");
+    engine.chat_unpinned("kick", "");
+    engine.set_chat_viewers("kick", None);
+    crate::host::polls_changed();
+    if connected.swap(false, Ordering::Relaxed) {
+        crate::host::changed();
+        crate::say("Kick: disconnected".into());
+        let args = Obj::new();
+        engine.fire(
+            T_KICK_DISCONNECTED,
+            "KickBroadcasterChatDisconnected",
+            "Kick",
+            "kick",
+            &args,
+            |_| true,
+        );
+        engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
+    }
 }
 
 /// Deletes a chat message, as the broadcaster.
@@ -2353,6 +2383,38 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn broadcaster_logout_cancels_kick_reader() {
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let connected = Arc::new(AtomicBool::new(true));
+            let (send, recv) = oneshot::channel::<()>();
+            let reader = async move {
+                let _ = recv.await;
+            };
+            let mut monitor = std::pin::pin!(monitor_pusher(engine, &cfg, connected.clone(), reader));
+            assert!(
+                futures_util::poll!(&mut monitor).is_pending(),
+                "public reader can start unsigned"
+            );
+            cfg.send_modify(|c| {
+                c.kick.broadcaster = Some(KickAccount::default());
+                c.kick.bot = Some(KickAccount::default());
+            });
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            cfg.send_modify(|c| c.kick.bot = None);
+            assert!(
+                futures_util::poll!(&mut monitor).is_pending(),
+                "bot logout leaves chat running"
+            );
+            cfg.send_modify(|c| c.kick.broadcaster = None);
+            assert!(futures_util::poll!(&mut monitor).is_ready());
+            assert!(send.is_closed(), "the in-flight reader was dropped");
+            assert!(!connected.load(Ordering::Relaxed));
+        });
+    }
 
     #[test]
     fn oauth_refresh_requires_the_same_account_and_credentials() {
