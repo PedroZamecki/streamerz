@@ -210,12 +210,7 @@ impl Engine {
                         continue;
                     }
                     at = len;
-                    partial.extend_from_slice(&new);
-                    while let Some(i) = partial.iter().position(|b| *b == b'\n') {
-                        let line: Vec<u8> = partial.drain(..=i).collect();
-                        let line = String::from_utf8_lossy(&line)
-                            .trim_end_matches(['\n', '\r'])
-                            .to_string();
+                    for line in take_lines(&mut partial, &new) {
                         self.tail_fire(&t, &path, &line);
                     }
                 }
@@ -270,6 +265,31 @@ fn changed_data(path: &Path, json: bool, lines: bool) -> Obj {
         }
     }
     args
+}
+
+/// The longest line a tail keeps waiting for its end: a file that never writes a newline would
+/// otherwise grow the memory for ever. Past it, what came is a line of its own.
+const MAX_LINE: usize = 64 * 1024;
+
+/// Adds what came to the line not ended yet; the lines now whole (no line end), oldest first.
+fn take_lines(partial: &mut Vec<u8>, new: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut emit = |bytes: &[u8]| {
+        let line = String::from_utf8_lossy(bytes);
+        lines.push(line.trim_end_matches(['\n', '\r']).to_string());
+    };
+    partial.extend_from_slice(new);
+    let mut start = 0;
+    while let Some(i) = partial[start..].iter().position(|b| *b == b'\n') {
+        emit(&partial[start..=start + i]);
+        start += i + 1;
+    }
+    while partial.len() - start > MAX_LINE {
+        emit(&partial[start..start + MAX_LINE]);
+        start += MAX_LINE;
+    }
+    partial.drain(..start);
+    lines
 }
 
 /// The file's length, and what is past `from` (nothing when it got shorter).
@@ -332,6 +352,31 @@ mod tests {
         assert_eq!(read_from(&file, 20), Some((8, Vec::new())));
         assert_eq!(read_from(&dir.join("none"), 0), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tail_gives_whole_lines_and_keeps_the_rest_for_later() {
+        let mut partial = Vec::new();
+        assert_eq!(take_lines(&mut partial, b"one\r\ntw"), ["one"]);
+        assert_eq!(partial, b"tw");
+        assert_eq!(take_lines(&mut partial, b"o\n\nthree"), ["two", ""]);
+        assert_eq!(take_lines(&mut partial, b"\n"), ["three"]);
+        assert!(partial.is_empty());
+    }
+
+    /// A file that never writes a newline doesn't grow the memory: past 64 KB, what came is a line.
+    #[test]
+    fn a_line_with_no_end_is_given_once_it_is_too_long() {
+        let mut partial = Vec::new();
+        assert!(take_lines(&mut partial, &vec![b'a'; MAX_LINE]).is_empty());
+        assert_eq!(partial.len(), MAX_LINE);
+        let lines = take_lines(&mut partial, &vec![b'b'; MAX_LINE + 10]);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "a".repeat(MAX_LINE));
+        assert_eq!(lines[1], "b".repeat(MAX_LINE));
+        assert_eq!(partial, vec![b'b'; 10]);
+        assert_eq!(take_lines(&mut partial, b"c\n"), ["bbbbbbbbbbc"]);
+        assert!(partial.is_empty());
     }
 
     #[test]
