@@ -8,7 +8,7 @@
 use crate::commands::Chat;
 use crate::engine::Engine;
 use crate::model::Obj;
-use crate::runner::{ask, ReplyErrors};
+use crate::runner::{ask, ConnectionCommand, Handle, ReplyErrors};
 use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -241,42 +241,20 @@ pub struct KickStatus {
     pub chatroom_id: Option<u64>,
 }
 
-#[derive(Clone)]
-pub struct KickHandle {
-    tx: mpsc::UnboundedSender<KickCmd>,
-    connected: Arc<AtomicBool>,
+pub type KickHandle = Handle<KickCmd>;
+
+impl ConnectionCommand for KickCmd {
+    const CONNECT: Self = Self::Connect;
+    const DISCONNECT: Self = Self::Disconnect;
 }
 
 const REPLY_ERRORS: ReplyErrors = ReplyErrors::new("Kick runner is down");
 
 impl KickHandle {
-    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
-    pub fn detached() -> (Self, mpsc::UnboundedReceiver<KickCmd>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        (KickHandle { tx, connected }, rx)
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-
     /// A test's handle that dropped its connection (Disconnect keeps the handle).
     #[cfg(test)]
     pub fn set_connected(&self, on: bool) {
-        self.connected.store(on, Ordering::Relaxed)
-    }
-
-    pub fn connect(&self) {
-        let _ = self.tx.send(KickCmd::Connect);
-    }
-
-    pub fn disconnect(&self) {
-        let _ = self.tx.send(KickCmd::Disconnect);
-    }
-
-    pub fn send(&self, cmd: KickCmd) {
-        let _ = self.tx.send(cmd);
+        self.state.store(on, Ordering::Relaxed)
     }
 
     pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
@@ -412,10 +390,7 @@ impl KickHandle {
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let connected = Arc::new(AtomicBool::new(false));
-    let handle = KickHandle {
-        tx,
-        connected: connected.clone(),
-    };
+    let handle = KickHandle::new(tx, connected.clone());
 
     let runner = Runner {
         engine,

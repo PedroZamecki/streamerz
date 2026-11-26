@@ -12,7 +12,7 @@ use crate::commands::{self, Chat};
 use crate::emote_events::Abort;
 use crate::engine::Engine;
 use crate::model::Obj;
-use crate::runner::{ask, ReplyErrors};
+use crate::runner::{ask, ConnectionCommand, Handle, ReplyErrors};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -411,10 +411,11 @@ pub struct TwitchStatus {
 }
 
 /// A cloneable handle to communicate with the Twitch task.
-#[derive(Clone)]
-pub struct TwitchHandle {
-    tx: mpsc::UnboundedSender<TwitchCmd>,
-    connected: Arc<AtomicBool>,
+pub type TwitchHandle = Handle<TwitchCmd>;
+
+impl ConnectionCommand for TwitchCmd {
+    const CONNECT: Self = Self::Connect;
+    const DISCONNECT: Self = Self::Disconnect;
 }
 
 const REPLY_ERRORS: ReplyErrors = ReplyErrors {
@@ -424,29 +425,6 @@ const REPLY_ERRORS: ReplyErrors = ReplyErrors {
 };
 
 impl TwitchHandle {
-    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
-    pub fn detached() -> (Self, mpsc::UnboundedReceiver<TwitchCmd>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        (TwitchHandle { tx, connected }, rx)
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-
-    pub fn send(&self, cmd: TwitchCmd) {
-        let _ = self.tx.send(cmd);
-    }
-
-    pub fn connect(&self) {
-        self.send(TwitchCmd::Connect);
-    }
-
-    pub fn disconnect(&self) {
-        self.send(TwitchCmd::Disconnect);
-    }
-
     pub async fn send_message(
         &self,
         text: String,
@@ -796,10 +774,7 @@ pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let is_connected = Arc::new(AtomicBool::new(false));
-    let handle = TwitchHandle {
-        tx,
-        connected: is_connected.clone(),
-    };
+    let handle = TwitchHandle::new(tx, is_connected.clone());
     let runner = Runner {
         engine,
         cfg: cfg.clone(),

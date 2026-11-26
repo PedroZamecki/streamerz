@@ -7,7 +7,7 @@
 use crate::commands::Chat;
 use crate::engine::Engine;
 use crate::model::Obj;
-use crate::runner::{ask, ReplyErrors};
+use crate::runner::{ask, ConnectionCommand, Handle, ReplyErrors};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -386,42 +386,30 @@ pub enum YouTubeCmd {
     },
 }
 
-#[derive(Clone)]
-pub struct YouTubeHandle {
-    tx: mpsc::UnboundedSender<YouTubeCmd>,
+pub type YouTubeHandle = Handle<YouTubeCmd, YouTubeConnection>;
+
+#[derive(Clone, Default)]
+pub struct YouTubeConnection {
     connected: Arc<AtomicBool>,
     standby: Arc<AtomicBool>,
+}
+
+impl AsRef<AtomicBool> for YouTubeConnection {
+    fn as_ref(&self) -> &AtomicBool {
+        &self.connected
+    }
+}
+
+impl ConnectionCommand for YouTubeCmd {
+    const CONNECT: Self = Self::Connect;
+    const DISCONNECT: Self = Self::Disconnect;
 }
 
 const REPLY_ERRORS: ReplyErrors = ReplyErrors::new("YouTube runner is down");
 
 impl YouTubeHandle {
-    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
-    pub fn detached() -> (Self, mpsc::UnboundedReceiver<YouTubeCmd>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        let standby = Arc::new(AtomicBool::new(false));
-        (YouTubeHandle { tx, connected, standby }, rx)
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-
     pub fn is_standby(&self) -> bool {
-        self.standby.load(Ordering::Relaxed) && !self.is_connected()
-    }
-
-    pub fn connect(&self) {
-        let _ = self.tx.send(YouTubeCmd::Connect);
-    }
-
-    pub fn disconnect(&self) {
-        let _ = self.tx.send(YouTubeCmd::Disconnect);
-    }
-
-    pub fn send(&self, cmd: YouTubeCmd) {
-        let _ = self.tx.send(cmd);
+        self.state.standby.load(Ordering::Relaxed) && !self.is_connected()
     }
 
     pub async fn send_message(&self, broadcast: &str, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
@@ -679,19 +667,14 @@ fn channel_label(y: &YouTubeConfig) -> String {
 
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<YouTubeCmd>();
-    let connected = Arc::new(AtomicBool::new(false));
-    let standby = Arc::new(AtomicBool::new(false));
-    let handle = YouTubeHandle {
-        tx,
-        connected: connected.clone(),
-        standby: standby.clone(),
-    };
+    let state = YouTubeConnection::default();
+    let handle = YouTubeHandle::new(tx, state.clone());
 
     let runner = YouTubeRunner {
         engine: engine.clone(),
         cfg: cfg.clone(),
-        connected: connected.clone(),
-        standby: standby.clone(),
+        connected: state.connected,
+        standby: state.standby,
         live: Default::default(),
         poll: Default::default(),
     };

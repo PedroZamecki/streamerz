@@ -5,6 +5,7 @@ use crate::commands::Chat;
 use crate::engine::chatlog::{local_hhmm, normalize_line_emotes, Line};
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::Handle;
 use crate::webcast::RoomLookupError;
 use crate::Config;
 use futures_util::{SinkExt, StreamExt};
@@ -178,10 +179,16 @@ pub enum TikTokCmd {
 
 /// What the reader shares with the handle (read from the UI's queries).
 #[derive(Clone, Default)]
-struct Shared {
+pub struct Shared {
     connected: Arc<AtomicBool>,
     status: Arc<Mutex<TikTokStatus>>,
     room_id: Arc<Mutex<Option<String>>>,
+}
+
+impl AsRef<AtomicBool> for Shared {
+    fn as_ref(&self) -> &AtomicBool {
+        &self.connected
+    }
 }
 
 impl Shared {
@@ -195,23 +202,11 @@ impl Shared {
     }
 }
 
-#[derive(Clone)]
-pub struct TikTokHandle {
-    tx: mpsc::UnboundedSender<TikTokCmd>,
-    shared: Shared,
-}
+pub type TikTokHandle = Handle<TikTokCmd, Shared>;
 
 impl TikTokHandle {
-    pub fn send(&self, cmd: TikTokCmd) {
-        let _ = self.tx.send(cmd);
-    }
-
     pub fn room_id(&self) -> Option<String> {
-        self.shared.room_id.lock().ok().and_then(|r| r.clone())
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.shared.connected.load(Ordering::Relaxed)
+        self.state.room_id.lock().ok().and_then(|r| r.clone())
     }
 
     pub fn is_standby(&self) -> bool {
@@ -219,7 +214,7 @@ impl TikTokHandle {
     }
 
     pub fn current_status(&self) -> TikTokStatus {
-        self.shared.status.lock().map(|s| s.clone()).unwrap_or_default()
+        self.state.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
@@ -234,7 +229,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TikTokHand
         read_task: None,
     };
     tokio::task::spawn_local(runner.run());
-    TikTokHandle { tx, shared }
+    TikTokHandle::new(tx, shared)
 }
 
 struct Runner {
@@ -1329,10 +1324,7 @@ pub mod tests {
                 shared: shared.clone(),
                 read_task: None,
             };
-            let handle = TikTokHandle {
-                tx,
-                shared: shared.clone(),
-            };
+            let handle = TikTokHandle::new(tx, shared.clone());
             let task = tokio::task::spawn_local(runner.run());
             handle.send(TikTokCmd::Disconnect);
             drop(handle);
