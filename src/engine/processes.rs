@@ -200,11 +200,15 @@ fn list(known: &mut HashMap<u32, Proc>) -> Seen {
         let mut now = HashMap::new();
         let mut ok = Process32FirstW(snap, &mut e) != 0;
         while ok {
-            let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
-            now.insert(
-                e.th32ProcessID,
-                (String::from_utf16_lossy(&e.szExeFile[..len]), e.th32ParentProcessID),
-            );
+            // Exited processes stay in the Toolhelp snapshot with zero threads while an open
+            // handle keeps their PID alive (including a parent's Child handle).
+            if e.cntThreads > 0 {
+                let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
+                now.insert(
+                    e.th32ProcessID,
+                    (String::from_utf16_lossy(&e.szExeFile[..len]), e.th32ParentProcessID),
+                );
+            }
             ok = Process32NextW(snap, &mut e) != 0;
         }
         CloseHandle(snap);
@@ -347,15 +351,24 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        list(&mut known);
-        let p = known.get(&child.id()).cloned().expect("the new process");
+        let pid = child.id();
+        let seen = list(&mut known);
+        assert!(seen.started.contains(&pid));
+        let p = known.get(&pid).cloned().expect("the new process");
         assert_eq!(p.name.to_lowercase(), "ping", "{p:?}");
         assert!(p.full_path.to_lowercase().ends_with("\\ping.exe"), "{p:?}");
         assert_eq!(p.parent, std::process::id());
         assert!(p.is("ping") && p.is("PING.exe") && !p.is("obs64.exe"));
         child.kill().unwrap();
         child.wait().unwrap();
-        list(&mut known);
-        assert!(!known.contains_key(&child.id()));
+        // Exited process is reported stopped even while `child` still holds its handle.
+        let seen = list(&mut known);
+        drop(child);
+        assert!(!known.contains_key(&pid));
+        assert!(seen
+            .stopped
+            .iter()
+            .any(|(stopped_pid, gone)| *stopped_pid == pid && gone.name.eq_ignore_ascii_case("ping")));
+        assert!(!seen.started.contains(&pid));
     }
 }
