@@ -2,9 +2,11 @@
 //! one-shot listener on loopback, and token refresh. (Twitch uses the device code flow, twitch.rs.)
 
 use crate::commands::url_encode;
+use crate::{engine::Engine, Config};
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::rc::Rc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -38,6 +40,103 @@ pub struct Token {
     pub access: String,
     pub refresh: String,
     pub expires_at: u64,
+}
+
+pub(crate) fn needs_refresh(expires_at: u64, refresh_token: &str) -> bool {
+    stale(expires_at) && !refresh_token.is_empty()
+}
+
+pub(crate) fn select_account<A: Clone>(
+    broadcaster: &Option<A>,
+    bot_account: &Option<A>,
+    bot: bool,
+    fallback: bool,
+    platform: &'static str,
+    access: impl Fn(&A) -> &str,
+    locked: impl Fn() -> bool,
+) -> Result<(A, bool), String> {
+    let (first, other) = if bot {
+        (bot_account, broadcaster)
+    } else {
+        (broadcaster, bot_account)
+    };
+    let pick = |account: &Option<A>| account.as_ref().filter(|a| !access(a).is_empty()).cloned();
+    if let Some(account) = pick(first) {
+        return Ok((account, bot));
+    }
+    if let Some(account) = fallback.then(|| pick(other)).flatten() {
+        return Ok((account, !bot));
+    }
+    if locked() {
+        return Err(format!(
+            "System keyring is locked; unlock it to use saved {platform} login"
+        ));
+    }
+    if fallback {
+        return Err(format!("No {platform} account logged in"));
+    }
+    // Only ask about an account that had a login.
+    if first.is_some() {
+        crate::notify::login_needed(platform, bot);
+    }
+    Err(format!(
+        "{platform} {} isn't logged in",
+        if bot { "bot" } else { "broadcaster" }
+    ))
+}
+
+type TokenFields<'a> = (&'a mut String, &'a mut String, &'a mut u64);
+
+pub(crate) struct Refresh<'a> {
+    pub platform: &'static str,
+    pub url: &'static str,
+    pub bot: bool,
+    pub credentials: (&'a str, &'a str),
+}
+
+impl Refresh<'_> {
+    pub async fn run(
+        self,
+        engine: &Rc<Engine>,
+        refresh_token: &str,
+        exchange: impl AsyncFnOnce(&str, &[(&str, &str)]) -> Result<Token, String>,
+        explain: impl FnOnce(&str) -> String,
+        target: impl FnOnce(&mut Config) -> Option<TokenFields<'_>>,
+    ) -> Result<String, String> {
+        let (id, secret) = self.credentials;
+        let t = exchange(
+            self.url,
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", id),
+                ("client_secret", secret),
+            ],
+        )
+        .await
+        .map_err(|e| {
+            // An explicit rejection needs a new login. Other failures can be retried.
+            if e.contains("HTTP 400") || e.contains("HTTP 401") {
+                crate::notify::login_needed(self.platform, self.bot);
+            }
+            explain(&e)
+        })?;
+        let mut updated = false;
+        engine.change(|c| {
+            if let Some((access, refresh, expires)) = target(c) {
+                access.clone_from(&t.access);
+                *expires = t.expires_at;
+                if !t.refresh.is_empty() {
+                    *refresh = t.refresh;
+                }
+                updated = true;
+            }
+        });
+        if !updated {
+            return Err(format!("{}: login changed during token refresh", self.platform));
+        }
+        Ok(t.access)
+    }
 }
 
 pub fn now() -> u64 {

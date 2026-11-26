@@ -816,80 +816,57 @@ pub async fn token(
     bot: bool,
     fallback: bool,
 ) -> Result<String, String> {
+    token_with(
+        engine,
+        cfg,
+        bot,
+        fallback,
+        crate::oauth::token,
+        crate::secrets::is_locked,
+    )
+    .await
+}
+
+async fn token_with(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    bot: bool,
+    fallback: bool,
+    exchange: impl AsyncFnOnce(&str, &[(&str, &str)]) -> Result<crate::oauth::Token, String>,
+    locked: impl Fn() -> bool,
+) -> Result<String, String> {
     let _one = REFRESH.lock().await;
-    let pick = |c: &Config, bot: bool| {
-        if bot { &c.kick.bot } else { &c.kick.broadcaster }
-            .clone()
-            .filter(|a| !a.token.access_token.is_empty())
-    };
     let (acc, bot) = {
         let c = cfg.borrow();
-        match (pick(&c, bot), fallback) {
-            (Some(a), _) => (a, bot),
-            (None, true) => (
-                pick(&c, !bot).ok_or_else(|| {
-                    if crate::secrets::is_locked() {
-                        "System keyring is locked; unlock it to use saved Kick login"
-                    } else {
-                        "No Kick account logged in"
-                    }
-                })?,
-                !bot,
-            ),
-            (None, false) => {
-                if crate::secrets::is_locked() {
-                    return Err("System keyring is locked; unlock it to use saved Kick login".into());
-                }
-                // An account that's there but has lost its login (not one never made).
-                if (if bot { &c.kick.bot } else { &c.kick.broadcaster }).is_some() {
-                    crate::notify::login_needed("Kick", bot);
-                }
-                return Err(format!(
-                    "Kick {} isn't logged in",
-                    if bot { "bot" } else { "broadcaster" }
-                ));
-            }
-        }
+        crate::oauth::select_account(
+            &c.kick.broadcaster,
+            &c.kick.bot,
+            bot,
+            fallback,
+            "Kick",
+            |a| &a.token.access_token,
+            locked,
+        )?
     };
-    if !crate::oauth::stale(acc.token.expires_at) || acc.token.refresh_token.is_empty() {
+    if !crate::oauth::needs_refresh(acc.token.expires_at, &acc.token.refresh_token) {
         return Ok(acc.token.access_token);
     }
     let (id, secret) = {
         let c = cfg.borrow();
         (c.kick.client_id.clone(), c.kick.client_secret.clone())
     };
-    let t = crate::oauth::token(
-        KICK_TOKEN_URL,
-        &[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &acc.token.refresh_token),
-            ("client_id", &id),
-            ("client_secret", &secret),
-        ],
-    )
-    .await
-    .map_err(|e| {
-        // The server turned the refresh token down (not a network failure): it needs a new login.
-        if e.contains("HTTP 400") || e.contains("HTTP 401") {
-            crate::notify::login_needed("Kick", bot);
-        }
-        kick_oauth_error(&e)
-    })?;
-    let mut updated = false;
-    engine.change(|c| {
-        if let Some(token) = c.kick.refresh_target(bot, &acc, (&id, &secret)) {
-            token.access_token.clone_from(&t.access);
-            token.expires_at = t.expires_at;
-            if !t.refresh.is_empty() {
-                token.refresh_token = t.refresh;
-            }
-            updated = true;
-        }
-    });
-    if !updated {
-        return Err("Kick: login changed during token refresh".into());
+    crate::oauth::Refresh {
+        platform: "Kick",
+        url: KICK_TOKEN_URL,
+        bot,
+        credentials: (&id, &secret),
     }
-    Ok(t.access)
+    .run(engine, &acc.token.refresh_token, exchange, kick_oauth_error, |c| {
+        c.kick
+            .refresh_target(bot, &acc, (&id, &secret))
+            .map(|token| (&mut token.access_token, &mut token.refresh_token, &mut token.expires_at))
+    })
+    .await
 }
 
 /// The OAuth endpoint may include request details in its error body.
@@ -2343,6 +2320,134 @@ mod tests {
             assert!(futures_util::poll!(&mut monitor).is_ready());
             assert!(send.is_closed(), "the in-flight reader was dropped");
             assert!(!connected.load(Ordering::Relaxed));
+        });
+    }
+
+    #[test]
+    fn oauth_selects_the_account_and_keeps_login_errors() {
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let unused = async |_: &str, _: &[(&str, &str)]| panic!("should not refresh");
+            assert_eq!(
+                token_with(&engine, &cfg, true, false, unused, || false).await,
+                Err("Kick bot isn't logged in".into())
+            );
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Err("No Kick account logged in".into())
+            );
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || true).await,
+                Err("System keyring is locked; unlock it to use saved Kick login".into())
+            );
+            cfg.send_modify(|c| {
+                c.kick.broadcaster = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "broadcaster".into(),
+                        expires_at: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                c.kick.bot = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "bot".into(),
+                        expires_at: u64::MAX,
+                        refresh_token: "unused".into(),
+                    },
+                    ..Default::default()
+                });
+            });
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Ok("bot".into())
+            );
+            cfg.send_modify(|c| c.kick.bot.as_mut().unwrap().token.access_token.clear());
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Ok("broadcaster".into())
+            );
+        });
+    }
+
+    #[test]
+    fn oauth_refresh_uses_the_selected_account_and_preserves_the_latest_login() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            cfg.send_modify(|c| {
+                c.kick.client_id = " app ".into();
+                c.kick.client_secret = " placeholder ".into();
+                c.kick.broadcaster = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "old".into(),
+                        refresh_token: "original".into(),
+                        expires_at: 1,
+                    },
+                    ..Default::default()
+                });
+            });
+            for (before, refresh, after) in [("original", "", "original"), ("original", "rotated", "rotated")] {
+                let exchange = async |url: &str, form: &[(&str, &str)]| {
+                    assert_eq!(url, KICK_TOKEN_URL);
+                    assert_eq!(
+                        form,
+                        &[
+                            ("grant_type", "refresh_token"),
+                            ("refresh_token", before),
+                            ("client_id", " app "),
+                            ("client_secret", " placeholder "),
+                        ]
+                    );
+                    Ok(crate::oauth::Token {
+                        access: "refreshed".into(),
+                        refresh: refresh.into(),
+                        expires_at: 60,
+                    })
+                };
+                assert_eq!(
+                    token_with(&engine, &cfg, true, true, exchange, || false).await,
+                    Ok("refreshed".into())
+                );
+                {
+                    let config = cfg.borrow();
+                    let token = &config.kick.broadcaster.as_ref().unwrap().token;
+                    assert_eq!(
+                        (
+                            token.access_token.as_str(),
+                            token.refresh_token.as_str(),
+                            token.expires_at
+                        ),
+                        ("refreshed", after, 60)
+                    );
+                    assert!(config.kick.bot.is_none());
+                }
+            }
+            let exchange = async |_: &str, _: &[(&str, &str)]| Err("token request failed (HTTP 500): detail".into());
+            assert_eq!(
+                token_with(&engine, &cfg, false, false, exchange, || false).await,
+                Err("Kick token request failed (HTTP 500)".into())
+            );
+            let exchange = async |_: &str, _: &[(&str, &str)]| {
+                cfg.send_modify(|c| c.kick.broadcaster.as_mut().unwrap().token.access_token = "replacement".into());
+                Ok(crate::oauth::Token {
+                    access: "superseded".into(),
+                    refresh: "other".into(),
+                    expires_at: 50,
+                })
+            };
+            assert_eq!(
+                token_with(&engine, &cfg, false, false, exchange, || false).await,
+                Err("Kick: login changed during token refresh".into())
+            );
+            let config = cfg.borrow();
+            let token = &config.kick.broadcaster.as_ref().unwrap().token;
+            assert_eq!(
+                (token.access_token.as_str(), token.refresh_token.as_str()),
+                ("replacement", "rotated")
+            );
         });
     }
 
