@@ -99,6 +99,15 @@ impl Sections {
         this.update_model(model, window, cx);
         this
     }
+    /// The core downloaded pictures: an open channel finder asks for the ones it still misses.
+    pub fn images_arrived(&self, cx: &mut Context<Self>) {
+        if let Some(finder) = &self.finder {
+            finder.read(cx).images_arrived();
+        }
+        if let Some(dialog) = self.dialog.clone() {
+            dialog.update(cx, |dialog, cx| dialog.images_arrived(cx));
+        }
+    }
     /// The page these sections fill: a heading shows only when there is more than one section, and never
     /// repeats the page's title.
     pub fn set_page(&mut self, title: String) {

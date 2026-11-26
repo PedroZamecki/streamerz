@@ -30,11 +30,8 @@ pub struct Finder {
     /// The number of the latest search: an older answer is dropped.
     asked: u64,
     images: HashMap<String, PathBuf>,
-    /// How many times the pictures were asked for since the last search.
-    tries: u32,
     confirmed: bool,
     search_task: Option<Task<()>>,
-    image_task: Option<Task<()>>,
     buttons_view: Entity<FinderButtons>,
     _subscriptions: Vec<Subscription>,
 }
@@ -78,10 +75,8 @@ impl Finder {
             status,
             asked: 0,
             images: HashMap::new(),
-            tries: 0,
             confirmed: false,
             search_task: None,
-            image_task: None,
             buttons_view,
             _subscriptions: subscriptions,
         };
@@ -115,7 +110,6 @@ impl Finder {
         self.selected = None;
         if query.is_empty() {
             self.rows.clear();
-            self.image_task = None;
             self.status = self.label("empty");
             cx.notify();
             return;
@@ -142,7 +136,6 @@ impl Finder {
         if number != self.asked {
             return;
         }
-        self.image_task = None;
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             self.rows.clear();
             self.selected = None;
@@ -160,32 +153,24 @@ impl Finder {
             } else {
                 String::new()
             };
-            self.tries = 0;
             self.ask_images();
         }
         cx.notify();
     }
 
-    /// Pictures that are on disk now (the others come with the next answer).
+    /// Pictures that are on disk now (the core says when it has downloaded the others).
     pub fn images(&mut self, value: &Value, cx: &mut Context<Self>) {
         for (url, file) in value["files"].as_object().into_iter().flatten() {
             if let Some(file) = file.as_str() {
                 self.images.insert(url.clone(), PathBuf::from(file));
             }
         }
-        // The core is still downloading the rest: ask again in a moment (a few times at most).
-        if !self.missing().is_empty() && self.tries < 8 {
-            self.tries += 1;
-            self.image_task = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(600))
-                    .await;
-                let _ = this.update(cx, |finder, _| finder.ask_images());
-            }));
-        } else {
-            self.image_task = None;
-        }
         cx.notify();
+    }
+
+    /// The core downloaded pictures: ask for the ones still missing.
+    pub fn images_arrived(&self) {
+        self.ask_images();
     }
 
     /// The rows' pictures not on disk yet.
@@ -199,11 +184,17 @@ impl Finder {
     }
 
     fn ask_images(&self) {
-        let urls = self.missing();
-        if !urls.is_empty() {
-            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls,
-                "id": format!("{}:find-images", self.route)}));
+        if let Some(request) = self.images_request() {
+            send(request);
         }
+    }
+
+    fn images_request(&self) -> Option<Value> {
+        let urls = self.missing();
+        (!urls.is_empty()).then(|| {
+            json!({"request": "StreamerzChat", "op": "images", "urls": urls,
+                "id": format!("{}:find-images", self.route)})
+        })
     }
 
     /// The handle that OK would submit right now (selected row, else typed handle/link).
@@ -521,6 +512,29 @@ mod tests {
             });
             assert_eq!(finder.read(cx).rows.len(), 1);
             assert_eq!(finder.read(cx).selected, Some(0));
+
+            // Pictures: the ones not on disk yet are asked for again only when the core says some arrived.
+            finder.update(cx, |finder, cx| {
+                finder.rows = vec![
+                    json!({"handle": "a", "picture": "https://a/1.png"}),
+                    json!({"handle": "b", "picture": "https://b/2.png"}),
+                ];
+                finder.images(&json!({"files": {"https://a/1.png": "/tmp/1.png"}}), cx);
+            });
+            let request = finder.read(cx).images_request().expect("one picture still missing");
+            assert_eq!(request["urls"], json!(["https://b/2.png"]));
+            assert_eq!(request["id"], "accounts:find-images");
+            finder.update(cx, |finder, cx| {
+                finder.images(&json!({"files": {"https://b/2.png": "/tmp/2.png"}}), cx);
+            });
+            assert!(finder.read(cx).images_request().is_none());
+            finder.update(cx, |finder, cx| {
+                finder.found(
+                    asked,
+                    json!({"channels": [{"handle": "streamerz", "name": "Streamerz", "detail": "100"}]}),
+                    cx,
+                );
+            });
 
             // Clearing the query clears rows and restores the empty prompt.
             window.key_down("ctrl-a", false, cx);

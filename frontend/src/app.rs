@@ -190,7 +190,8 @@ impl Frontend {
             .cloned()
             .collect()
     }
-    /// Pictures the core downloaded reach an open form's picture pickers (no page read).
+    /// Pictures the core downloaded reach an open form's picture pickers and the channel finder (no
+    /// page read).
     pub fn images_for_forms(&mut self, topics: Option<&Vec<Value>>, cx: &mut Context<Self>) {
         if topics.is_some_and(|topics| topics.iter().any(|topic| topic == "images")) {
             if let Some(actions) = self.actions.clone() {
@@ -198,6 +199,9 @@ impl Frontend {
             }
             if let Some(overlay) = self.overlay.clone() {
                 overlay.update(cx, |overlay, cx| overlay.images_arrived(cx));
+            }
+            if let Some(sections) = self.sections.clone() {
+                sections.update(cx, |sections, cx| sections.images_arrived(cx));
             }
         }
     }
