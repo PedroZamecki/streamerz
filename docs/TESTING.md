@@ -774,3 +774,24 @@ machine, so `.deb` was inspected with `ar`+`tar` and `.rpm` contents were not in
 native Windows runtime and `Streamerz-Voice.exe` execution; GPG / SignPath signing and store uploads;
 GitHub Actions artifact reuse and publication; live service checks against real Twitch, Kick, YouTube,
 TikTok, Spotify and OBS accounts; and the connected Twitch + OBS hidden RSS/CPU measurement.
+
+### Follow-up CI release and extension publish fix (2026-11-26)
+
+Local verification on `fix/ci-release-and-extension-publish` (Linux):
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `cargo fmt --check` (root and `voice/`), YAML parse of `.github/workflows/build.yml` | Passed. |
+| `cargo clippy --profile ci-test --all-targets --locked -- -D warnings` (root and `voice/`) | Passed, zero warnings. |
+| `cargo test --profile ci-test --locked -- --test-threads=4` | **1,198 passed, 0 failed, 14 ignored** (includes `extension_manifests_match_extension_version`). |
+| `cargo test --profile ci-test -p streamerz-frontend --features test-support --locked` | **112 passed, 0 failed, 0 ignored**. |
+| `cargo test --manifest-path voice/Cargo.toml --locked` | **5 passed, 0 failed, 0 ignored**. |
+| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | **35 passed, 0 failed** (includes `ChromeErrorReportingAndVersionSync`). |
+| `dev/locale.py check`, `node --test` (49 passed), `dev/test-subathon-overlay.cjs`, `dev/package-extensions.py`, `dev/scan_secrets.py` | Passed. |
+| `cargo xwin check --locked --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed (Windows type-check only). |
+| `GITHUB_OUTPUT=/dev/stdout bash dev/release-version.sh pull_request` | `tag=v1.10.1`, `last=v1.10.0`. |
+
+Unavailable / not run locally: `actionlint` and `cargo-audit` (not installed on this machine);
+GitHub Pages artifact upload/deploy timing and GitHub Release creation; live Chrome Web Store,
+Microsoft Edge Add-ons, and Mozilla AMO publishing; native Windows execution; and Linux release
+repackaging (unchanged since the `release/1.10.1` run above).

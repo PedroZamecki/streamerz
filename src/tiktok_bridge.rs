@@ -23,7 +23,7 @@ pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
 /// The extension version this Streamerz is built with: what it writes to disk, and the signed Firefox
 /// add-on it downloads. Store copies update themselves and may be newer; they work while their
 /// protocol is in [`MIN_PROTOCOL`]..=[`PROTOCOL`].
-pub const EXTENSION_VERSION: &str = "1.4.0";
+pub const EXTENSION_VERSION: &str = "1.4.1";
 /// The published Google Chrome Web Store extension ID.
 pub const CHROME_STORE_ID: &str = "anckdakmhognoancpeefjlgicihplcjc";
 /// The Chrome Web Store installation URL.
@@ -1497,6 +1497,14 @@ mod tests {
         assert!(firefox_xpi_url().ends_with(&format!(
             "/releases/download/tiktok-extension-v{EXTENSION_VERSION}/streamerz-tiktok-{EXTENSION_VERSION}.xpi"
         )));
+    }
+
+    #[test]
+    fn extension_manifests_match_extension_version() {
+        let chrome: Value = serde_json::from_slice(FILES[0].1).unwrap();
+        let firefox: Value = serde_json::from_slice(FIREFOX_MANIFEST).unwrap();
+        assert_eq!(chrome["version"].as_str(), Some(EXTENSION_VERSION));
+        assert_eq!(firefox["version"].as_str(), Some(EXTENSION_VERSION));
     }
 
     #[test]

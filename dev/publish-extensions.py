@@ -63,6 +63,28 @@ def save_cache(cache_data: dict):
     CACHE_FILE.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
 
 
+def format_http_error(step: str, err: urllib.error.HTTPError, secrets: tuple[str, ...] = ()) -> str:
+    body = ""
+    try:
+        raw = err.read(400)
+        if raw:
+            body = " ".join(raw.decode("utf-8", errors="replace").split())
+    except Exception:
+        body = ""
+    finally:
+        try:
+            err.close()
+        except Exception:
+            pass
+    for secret in secrets:
+        if secret:
+            body = body.replace(secret, "***")
+    if len(body) > 300:
+        body = body[:300] + "..."
+    detail = f" ({body})" if body else ""
+    return f"{step}: HTTP {err.code} {err.reason}{detail}"
+
+
 def publish_chrome(zip_path: Path):
     client_id = os.environ.get("CHROME_CLIENT_ID")
     client_secret = os.environ.get("CHROME_CLIENT_SECRET")
@@ -75,6 +97,8 @@ def publish_chrome(zip_path: Path):
         return False
 
     print("  [*] Uploading to Chrome Web Store...")
+    step = "OAuth token refresh"
+    token = ""
     try:
         # 1. Fetch OAuth access token
         token_url = "https://oauth2.googleapis.com/token"
@@ -89,6 +113,7 @@ def publish_chrome(zip_path: Path):
             token = json.loads(resp.read())["access_token"]
 
         # 2. Upload zip
+        step = "upload"
         upload_url = f"https://www.googleapis.com/upload/chromewebstore/v1.1/items/{ext_id}"
         req = urllib.request.Request(
             upload_url,
@@ -107,6 +132,7 @@ def publish_chrome(zip_path: Path):
                 return False
 
         # 3. Publish as unlisted (publishTarget: default or trustedTesters)
+        step = "publish"
         pub_url = f"https://www.googleapis.com/chromewebstore/v1.1/items/{ext_id}/publish"
         req = urllib.request.Request(
             pub_url,
@@ -116,8 +142,14 @@ def publish_chrome(zip_path: Path):
         with urllib.request.urlopen(req) as resp:
             print("  [+] Chrome Web Store: Successfully published item", ext_id)
             return True
+    except urllib.error.HTTPError as err:
+        msg = format_http_error(step, err, (client_secret, refresh_token, token))
+        print(f"      Chrome Web Store API error ({msg})")
+        if step == "OAuth token refresh" and "invalid_grant" in msg:
+            print("      Hint: CHROME_REFRESH_TOKEN is expired or revoked. Refresh it in repository secrets and publish the Google OAuth app so tokens do not expire after 7 days.")
+        return False
     except Exception as err:
-        print(f"      Chrome Web Store API error: {err}")
+        print(f"      Chrome Web Store API error ({step}): {err}")
         return False
 
 
@@ -151,6 +183,7 @@ def publish_edge(zip_path: Path):
         except Exception:
             pass
 
+    step = "upload"
     try:
         # 2. Upload zip
         upload_url = f"https://api.addons.microsoftedge.microsoft.com/v1/products/{product_id}/submissions/draft/package"
@@ -164,6 +197,7 @@ def publish_edge(zip_path: Path):
             print("  [+] Microsoft Edge: Successfully uploaded package for", product_id)
 
         # 3. Publish submission
+        step = "submit"
         pub_url = f"https://api.addons.microsoftedge.microsoft.com/v1/products/{product_id}/submissions"
         req = urllib.request.Request(
             pub_url,
@@ -179,10 +213,10 @@ def publish_edge(zip_path: Path):
             print("     NOTE: Microsoft Edge Add-ons API only supports UPDATES to already-submitted extensions.")
             print("     The initial draft must be manually published on Partner Center once.")
             return True
-        print(f"      Microsoft Edge Add-ons API error: {err}")
+        print(f"      Microsoft Edge Add-ons API error ({format_http_error(step, err, (api_key,))})")
         return False
     except Exception as err:
-        print(f"      Microsoft Edge Add-ons API error: {err}")
+        print(f"      Microsoft Edge Add-ons API error ({step}): {err}")
         return False
 
 
@@ -322,6 +356,7 @@ def publish_firefox(zip_path: Path):
         return False
 
     print("  [*] Uploading to Mozilla AMO Add-on Signing API...")
+    step = "upload"
     try:
         import time
 
@@ -369,6 +404,7 @@ def publish_firefox(zip_path: Path):
             upload_uuid = json.loads(resp.read())["uuid"]
 
         # 3. Wait for validation
+        step = "validation poll"
         for _ in range(15):
             time.sleep(2)
             poll_req = urllib.request.Request(
@@ -384,6 +420,7 @@ def publish_firefox(zip_path: Path):
                     break
 
         # 4. Create version
+        step = "version submit"
         ver_url = f"https://addons.mozilla.org/api/v5/addons/addon/{urllib.parse.quote(addon_id)}/versions/"
         req = urllib.request.Request(
             ver_url,
@@ -394,8 +431,11 @@ def publish_firefox(zip_path: Path):
         with urllib.request.urlopen(req) as resp:
             print("  [+] Mozilla AMO: Uploaded and submitted version", version)
             return True
+    except urllib.error.HTTPError as err:
+        print(f"      Mozilla AMO error ({format_http_error(step, err, (secret,))})")
+        return False
     except Exception as err:
-        print(f"      Mozilla AMO error: {err}")
+        print(f"      Mozilla AMO error ({step}): {err}")
         return False
 
 

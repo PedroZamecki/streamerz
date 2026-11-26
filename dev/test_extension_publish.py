@@ -72,3 +72,48 @@ class FirefoxRelease(unittest.TestCase):
         self.assertEqual(create[2], "tiktok-extension-v" + publisher.firefox_version()[1])
         self.assertIn("--prerelease", create)
         self.assertIn("--latest=false", create)
+
+
+class ChromeErrorReportingAndVersionSync(unittest.TestCase):
+    def test_chrome_http_error_reports_step_and_redacts_secrets(self):
+        import io
+        import urllib.error
+        from contextlib import redirect_stdout
+
+        secret = "super-secret-value"
+        err = urllib.error.HTTPError(
+            "https://oauth2.googleapis.com/token",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(f'{{"error":"invalid_grant","detail":"bad {secret}"}}'.encode("utf-8")),
+        )
+        buf = io.StringIO()
+        env = {
+            "CHROME_CLIENT_ID": "cid",
+            "CHROME_CLIENT_SECRET": secret,
+            "CHROME_REFRESH_TOKEN": "refresh-tok",
+            "CHROME_EXTENSION_ID": "ext-id",
+        }
+        with patch.dict("os.environ", env, clear=False), \
+                patch("urllib.request.urlopen", side_effect=err), \
+                redirect_stdout(buf):
+            self.assertFalse(publisher.publish_chrome(Path("/tmp/unused.zip")))
+        out = buf.getvalue()
+        self.assertIn("OAuth token refresh: HTTP 400 Bad Request", out)
+        self.assertIn("invalid_grant", out)
+        self.assertIn("CHROME_REFRESH_TOKEN is expired or revoked", out)
+        self.assertNotIn(secret, out)
+
+    def test_extension_manifests_and_rust_constant_match(self):
+        import json
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        chrome = json.loads((root / "assets/tiktok-extension/manifest.json").read_text(encoding="utf-8"))["version"]
+        firefox = json.loads((root / "assets/tiktok-extension/manifest.firefox.json").read_text(encoding="utf-8"))["version"]
+        rust_src = (root / "src/tiktok_bridge.rs").read_text(encoding="utf-8")
+        match = re.search(r'pub const EXTENSION_VERSION: &str = "([^"]+)";', rust_src)
+        self.assertIsNotNone(match)
+        self.assertEqual(chrome, firefox)
+        self.assertEqual(chrome, match.group(1))
