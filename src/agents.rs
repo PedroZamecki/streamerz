@@ -771,18 +771,44 @@ fn same(have: &Value, want: &Value) -> bool {
     })
 }
 
+/// A TOML table header's key parts (`[ mcp_servers."streamerz" ] # note` is `mcp_servers`,
+/// `streamerz`), or None for a line that isn't one (or an array of tables).
+fn toml_header(line: &str) -> Option<Vec<String>> {
+    let t = line.trim();
+    let inner = t.strip_prefix('[').filter(|r| !r.starts_with('['))?;
+    let (mut parts, mut cur, mut quote) = (Vec::new(), String::new(), None);
+    let mut chars = inner.chars();
+    loop {
+        let c = chars.next()?;
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some('"'), '\\') => cur.extend(chars.next()),
+            (Some(_), _) => cur.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '.') => parts.push(std::mem::take(&mut cur)),
+            (None, ']') => break,
+            (None, c) if c.is_whitespace() => {}
+            (None, _) => cur.push(c),
+        }
+    }
+    parts.push(cur);
+    // Only a comment may follow.
+    let rest = chars.as_str().trim();
+    (rest.is_empty() || rest.starts_with('#')).then_some(parts)
+}
+
 /// Where `[mcp_servers.NAME]` (and its subtables) sits in a TOML text: start and end bytes.
 fn toml_block(text: &str, name: &str) -> Option<(usize, usize)> {
-    let head = format!("[mcp_servers.{name}]");
-    let sub = format!("[mcp_servers.{name}.");
+    let ours = |h: &[String]| h.len() >= 2 && h[0] == "mcp_servers" && h[1] == name;
     let mut at = 0;
     let mut start = None;
     for line in text.split_inclusive('\n') {
         let t = line.trim();
         if t.starts_with('[') {
+            let head = toml_header(t);
             match start {
-                None if t == head => start = Some(at),
-                Some(s) if !t.starts_with(&sub) => return Some((s, at)),
+                None if head.as_deref().is_some_and(|h| h.len() == 2 && ours(h)) => start = Some(at),
+                Some(s) if !head.as_deref().is_some_and(|h| h.len() > 2 && ours(h)) => return Some((s, at)),
                 _ => {}
             }
         }
