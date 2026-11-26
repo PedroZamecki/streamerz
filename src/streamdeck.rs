@@ -300,11 +300,18 @@ mod tests {
             drop(probe);
 
             let srv = tokio::task::spawn_local(run_server(e.clone(), port)).abort_handle();
-            tokio::time::sleep(Duration::from_millis(40)).await;
-
-            let (mut ws, _) = crate::http::ws_connect(&format!("ws://127.0.0.1:{port}/"))
-                .await
-                .unwrap();
+            let url = format!("ws://127.0.0.1:{port}/");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let mut ws = loop {
+                match crate::http::ws_connect(&url).await {
+                    Ok((ws, _)) => break ws,
+                    Err(err) if tokio::time::Instant::now() < deadline => {
+                        let _ = err;
+                        tokio::time::sleep(Duration::from_millis(15)).await;
+                    }
+                    Err(err) => panic!("streamdeck server did not accept on {url}: {err}"),
+                }
+            };
 
             // Subscribe and DoAction work over the Stream Deck link.
             ws.send(Message::Text(
