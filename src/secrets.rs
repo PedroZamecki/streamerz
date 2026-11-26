@@ -86,31 +86,16 @@ fn b64() -> base64::engine::GeneralPurpose {
 }
 
 /// Random bytes from the OS.
-// On Windows, DPAPI seals without a key of ours: only the tests use it there.
-#[cfg_attr(windows, allow(dead_code))]
-pub fn random(n: usize) -> Vec<u8> {
-    let mut b = vec![0u8; n];
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
-        // SAFETY: the buffer is n bytes long.
-        unsafe {
-            BCryptGenRandom(
-                std::ptr::null_mut(),
-                b.as_mut_ptr(),
-                n as u32,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        };
-    }
-    #[cfg(not(windows))]
-    {
-        use std::io::Read;
-        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-            let _ = f.read_exact(&mut b);
-        }
-    }
-    b
+#[cfg(not(windows))]
+fn random<const N: usize>() -> std::io::Result<[u8; N]> {
+    random_from(std::fs::File::open("/dev/urandom")?)
+}
+
+#[cfg(not(windows))]
+fn random_from<const N: usize>(mut source: impl std::io::Read) -> std::io::Result<[u8; N]> {
+    let mut bytes = [0; N];
+    source.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The encrypted value read at start, kept as is while it can't be decrypted.
@@ -436,7 +421,8 @@ fn open_with(key: &[u8; 32], sealed: &[u8]) -> Option<Vec<u8>> {
 #[cfg(not(windows))]
 fn protect(plain: &[u8]) -> Result<String, String> {
     let k = key(true, 2)?;
-    Ok(format!("keyring:{}", b64().encode(seal_with(&k, &random(16), plain))))
+    let nonce = random::<16>().map_err(|e| format!("Could not read random bytes: {e}"))?;
+    Ok(format!("keyring:{}", b64().encode(seal_with(&k, &nonce, plain))))
 }
 
 #[cfg(not(windows))]
@@ -531,7 +517,7 @@ mod keyring {
             return Err("keyring item not available yet".into());
         }
         // None yet: make one in the default collection.
-        let key: [u8; 32] = super::random(32).try_into().map_err(|_| "no random".to_string())?;
+        let key = super::random::<32>().map_err(|e| format!("Could not read random bytes: {e}"))?;
         let mut coll: OwnedObjectPath = svc.call("ReadAlias", &("default",)).await.map_err(e)?;
         if coll.as_str() == "/" {
             coll = OwnedObjectPath::try_from("/org/freedesktop/secrets/collection/login").map_err(|x| x.to_string())?;
@@ -611,15 +597,24 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
+    fn incomplete_random_reads_cannot_produce_keys() {
+        assert_eq!(random_from::<4>(&b"abcd"[..]).unwrap(), *b"abcd");
+        assert_eq!(
+            random_from::<4>(&b"abc"[..]).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn cipher_and_transient_errors() {
         let k = [7u8; 32];
         let plain = b"{\"a\":\"some secret longer than one 32 byte block\"}";
-        let mut sealed = seal_with(&k, &random(16), plain);
+        let mut sealed = seal_with(&k, &[9; 16], plain);
         assert_eq!(open_with(&k, &sealed).unwrap(), plain);
         assert!(open_with(&[8u8; 32], &sealed).is_none());
         sealed[20] ^= 1;
         assert!(open_with(&k, &sealed).is_none());
-        assert_ne!(random(16), random(16));
         assert!(is_transient(
             "org.freedesktop.DBus.Error.NoReply: Remote peer disconnected"
         ));
