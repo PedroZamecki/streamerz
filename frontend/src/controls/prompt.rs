@@ -1,4 +1,5 @@
 //! Core prompts are ordinary in-window dialogs; the core owns their lifetime and answers.
+use super::slot::Slot;
 use crate::theme::{CONTROL_HEIGHT, FONT_MICRO, LINE_MICRO, SPACE_SM, SPACE_XS};
 use crate::{i18n::tr, send};
 use gpui_kit::component::{
@@ -99,7 +100,7 @@ pub struct Prompt {
     selected: Option<String>,
     pub pending: bool,
     pub error: Option<crate::error::StreamerzError>,
-    buttons_view: Entity<PromptButtons>,
+    buttons_view: Entity<Slot<Self>>,
 }
 impl Prompt {
     pub fn new(model: Value, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -115,17 +116,7 @@ impl Prompt {
             selected: None,
             pending: false,
             error: None,
-            buttons_view: {
-                let entity = cx.entity();
-                let weak = entity.downgrade();
-                cx.new(|cx| {
-                    let sub = cx.observe(&entity, |_, _, cx| cx.notify());
-                    PromptButtons {
-                        prompt: weak,
-                        _subscription: sub,
-                    }
-                })
-            },
+            buttons_view: Slot::new(|prompt, _, cx| prompt.buttons(cx).into_any_element(), cx),
         }
     }
     pub fn answer(&mut self, value: Value, cx: &mut Context<Self>) {
@@ -312,22 +303,8 @@ impl Prompt {
     }
 
     /// The buttons as their own view, for a dialog's footer slot.
-    pub fn buttons_view(&self) -> Entity<PromptButtons> {
+    pub fn buttons_view(&self) -> Entity<Slot<Self>> {
         self.buttons_view.clone()
-    }
-}
-
-/// A prompt's buttons, drawn in its dialog's footer.
-pub struct PromptButtons {
-    prompt: WeakEntity<Prompt>,
-    _subscription: Subscription,
-}
-impl Render for PromptButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.prompt.upgrade() {
-            Some(prompt) => prompt.update(cx, |prompt, cx| prompt.buttons(cx)).into_any_element(),
-            None => div().into_any_element(),
-        }
     }
 }
 

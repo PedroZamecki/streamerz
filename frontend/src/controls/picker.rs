@@ -3,6 +3,7 @@
 //! description are on the right (under the tree when the window is narrow). Cancel and OK go in the
 //! dialog's footer.
 use super::form::Form;
+use super::slot::Slot;
 use super::tree::{Node, Options, PaneEvent, TreePane};
 use crate::i18n::tr;
 use crate::theme::{CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM};
@@ -30,7 +31,7 @@ pub struct Picker {
     authoring: bool,
     /// What the panel says while nothing is picked.
     hint: String,
-    buttons_view: Entity<PickerButtons>,
+    buttons_view: Entity<Slot<Self>>,
     _subscription: Subscription,
 }
 impl Picker {
@@ -62,7 +63,6 @@ impl Picker {
                         picker.chosen.as_ref().map(|node| node.id.clone()).unwrap_or_default(),
                     ));
                 }
-                picker.buttons_view.update(cx, |_, cx| cx.notify());
                 cx.notify();
             }
             PaneEvent::Activate(node) if node.kind == "item" && !picker.authoring => cx.emit(Picked(node.id.clone())),
@@ -73,14 +73,13 @@ impl Picker {
             }
             _ => {}
         });
-        let weak = cx.entity().downgrade();
         Self {
             pane,
             chosen: None,
             form: None,
             authoring,
             hint,
-            buttons_view: cx.new(|_| PickerButtons(weak)),
+            buttons_view: Slot::new(Self::buttons, cx),
             _subscription: subscription,
         }
     }
@@ -91,14 +90,38 @@ impl Picker {
     }
 
     /// The buttons as their own view, for the dialog's footer.
-    pub fn buttons_view(&self) -> Entity<PickerButtons> {
+    pub fn buttons_view(&self) -> Entity<Slot<Self>> {
         self.buttons_view.clone()
     }
 
     pub fn set_form(&mut self, form: Entity<Form>, cx: &mut Context<Self>) {
         self.form = Some(form);
-        self.buttons_view.update(cx, |_, cx| cx.notify());
         cx.notify();
+    }
+
+    /// The picker's Cancel and OK, or its attached form's footer, drawn in the dialog's footer.
+    fn buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(form) = &self.form {
+            return form.read(cx).buttons_view().into_any_element();
+        }
+        let right = div()
+            .flex()
+            .gap(px(SPACE_SM))
+            .child(
+                Button::new("cancel-picker")
+                    .h(px(CONTROL_HEIGHT))
+                    .label(tr("dialogs.cancel"))
+                    .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
+            )
+            .child(
+                Button::new("pick")
+                    .h(px(CONTROL_HEIGHT))
+                    .primary()
+                    .label(tr("btn.add"))
+                    .disabled(self.chosen.is_none() || self.authoring)
+                    .on_click(cx.listener(|picker, _, _, cx| picker.pick(cx))),
+            );
+        super::dialog::footer(None, right, cx).into_any_element()
     }
 
     fn pick(&mut self, cx: &mut Context<Self>) {
@@ -231,38 +254,6 @@ impl Render for Picker {
                 )
         };
         div().id("picker").test_support().role(Role::Group).child(layout)
-    }
-}
-
-/// The picker's Cancel and OK, drawn in the dialog's footer.
-pub struct PickerButtons(WeakEntity<Picker>);
-impl Render for PickerButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(picker) = self.0.upgrade() else {
-            return div().into_any_element();
-        };
-        if let Some(form) = &picker.read(cx).form {
-            return form.read(cx).buttons_view().into_any_element();
-        }
-        let picked = picker.read(cx).chosen.is_some();
-        let right = div()
-            .flex()
-            .gap(px(SPACE_SM))
-            .child(
-                Button::new("cancel-picker")
-                    .h(px(CONTROL_HEIGHT))
-                    .label(tr("dialogs.cancel"))
-                    .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
-            )
-            .child(
-                Button::new("pick")
-                    .h(px(CONTROL_HEIGHT))
-                    .primary()
-                    .label(tr("btn.add"))
-                    .disabled(!picked || picker.read(cx).authoring)
-                    .on_click(move |_, _, cx| picker.update(cx, |picker, cx| picker.pick(cx))),
-            );
-        super::dialog::footer(None, right, cx).into_any_element()
     }
 }
 

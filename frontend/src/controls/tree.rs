@@ -1,5 +1,6 @@
 //! A searchable tree with a button bar and a right-click menu, drawn from any model of nodes and
 //! buttons. The core decides what the rows and buttons mean; a page decides what a press does.
+use super::slot::Slot;
 use crate::i18n::tr;
 use crate::theme::{
     CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
@@ -73,26 +74,8 @@ pub struct TreePane {
     toggled: HashSet<String>,
     options: Options,
     id: SharedString,
-    header_view: Entity<HeaderButtons>,
+    header_view: Entity<Slot<Self>>,
     _subscriptions: Vec<Subscription>,
-}
-
-/// A tree's page-wide buttons, drawn in the page's header.
-pub struct HeaderButtons {
-    pane: WeakEntity<TreePane>,
-    _subscription: Subscription,
-}
-impl Render for HeaderButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self
-            .pane
-            .upgrade()
-            .and_then(|pane| pane.update(cx, |pane, cx| pane.header_buttons(cx)))
-        {
-            Some(buttons) => buttons,
-            None => div().into_any_element(),
-        }
-    }
 }
 
 fn find<'a>(nodes: &'a Value, id: &str) -> Option<&'a Value> {
@@ -277,17 +260,10 @@ impl TreePane {
                 }
             }));
         }
-        let header_view = {
-            let entity = cx.entity();
-            let weak = entity.downgrade();
-            cx.new(|cx| {
-                let sub = cx.observe(&entity, |_, _, cx| cx.notify());
-                HeaderButtons {
-                    pane: weak,
-                    _subscription: sub,
-                }
-            })
-        };
+        let header_view = Slot::new(
+            |pane, _, cx| pane.header_buttons(cx).unwrap_or_else(|| div().into_any_element()),
+            cx,
+        );
         let mut pane = Self {
             model,
             header_view,
@@ -306,7 +282,7 @@ impl TreePane {
     }
 
     /// The page-wide buttons as their own view, for the page's header.
-    pub fn header_view(&self) -> Entity<HeaderButtons> {
+    pub fn header_view(&self) -> Entity<Slot<Self>> {
         self.header_view.clone()
     }
     pub fn selected(&self) -> Option<&Node> {

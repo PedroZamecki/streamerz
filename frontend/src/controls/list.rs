@@ -4,6 +4,7 @@ use super::{
     form::Form,
     rows::{Action, Rows},
     sections::Sections,
+    slot::Slot,
 };
 use crate::{
     i18n::tr,
@@ -74,8 +75,8 @@ pub struct List {
     card: Option<Entity<Card>>,
     /// Fields drawn in place of a settings row (the MCP connection's address, port and route).
     inline: Option<Entity<Sections>>,
-    rows_view: Entity<ButtonRows>,
-    actions_view: Entity<HeaderActions>,
+    rows_view: Entity<Slot<Self>>,
+    actions_view: Entity<Slot<Self>>,
     _subscriptions: Vec<Subscription>,
 }
 /// The height of a table's header row, and how many rows a table sized to its rows shows at least and at most.
@@ -219,14 +220,25 @@ impl List {
             let (inline, route) = (model["inline"].clone(), format!("{route}:inline"));
             cx.new(|cx| Sections::new(inline, route, window, cx))
         });
-        let rows_view = {
-            let weak = cx.entity().downgrade();
-            cx.new(|_| ButtonRows(weak))
-        };
-        let actions_view = {
-            let weak = cx.entity().downgrade();
-            cx.new(|_| HeaderActions(weak))
-        };
+        let rows_view = Slot::new(
+            |list, window, cx| {
+                list.button_rows(window, cx)
+                    .map_or_else(|| div().into_any_element(), IntoElement::into_any_element)
+            },
+            cx,
+        );
+        let actions_view = Slot::new(
+            |list, window, cx| {
+                let top = if list.header_add() {
+                    Vec::new()
+                } else {
+                    list.top_buttons(0., window, cx)
+                };
+                list.heading_actions(list.header_add(), top, cx)
+                    .unwrap_or_else(|| div().into_any_element())
+            },
+            cx,
+        );
         let mut this = Self {
             model,
             table,
@@ -519,7 +531,7 @@ impl List {
             && (self.header_add() || self.top_in_header(cx))
     }
     /// The page-wide buttons as their own view, for the page's header.
-    pub fn header_actions_view(&self) -> Entity<HeaderActions> {
+    pub fn header_actions_view(&self) -> Entity<Slot<Self>> {
         self.actions_view.clone()
     }
     pub fn set_show(&mut self, tabs: Option<Value>, cx: &mut Context<Self>) {
@@ -1298,39 +1310,8 @@ impl List {
         (!actions.is_empty() && !only_open).then_some(buttons)
     }
     /// The button grid as its own view, for a list whose buttons come last on the page.
-    pub fn buttons_view(&self) -> Entity<ButtonRows> {
+    pub fn buttons_view(&self) -> Entity<Slot<Self>> {
         self.rows_view.clone()
-    }
-}
-/// The buttons of one list, drawn where the page puts them.
-pub struct ButtonRows(WeakEntity<List>);
-impl Render for ButtonRows {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let list = self.0.upgrade();
-        match list.and_then(|list| list.update(cx, |list, cx| list.button_rows(window, cx))) {
-            Some(rows) => rows.into_any_element(),
-            None => div().into_any_element(),
-        }
-    }
-}
-/// A list's page-wide buttons, drawn in the page's header.
-pub struct HeaderActions(WeakEntity<List>);
-impl Render for HeaderActions {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let list = self.0.upgrade();
-        match list.and_then(|list| {
-            list.update(cx, |list, cx| {
-                let top = if list.header_add() {
-                    Vec::new()
-                } else {
-                    list.top_buttons(0., window, cx)
-                };
-                list.heading_actions(list.header_add(), top, cx)
-            })
-        }) {
-            Some(actions) => actions,
-            None => div().into_any_element(),
-        }
     }
 }
 impl List {

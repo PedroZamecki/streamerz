@@ -20,5 +20,6 @@ pub mod picker;
 pub mod prompt;
 pub mod rows;
 pub mod sections;
+pub mod slot;
 pub mod tabs;
 pub mod tree;

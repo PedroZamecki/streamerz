@@ -1,5 +1,6 @@
 //! Shared schema-driven forms. Validation and type conversion stay in the core.
 use super::gallery::Gallery;
+use super::slot::Slot;
 use crate::theme::{CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_MD, SPACE_SM, SPACE_XS};
 use crate::{i18n::tr, send};
 use gpui_kit::component::{
@@ -212,7 +213,7 @@ pub struct Form {
     pub pending: bool,
     /// A field button waiting on an async reply (e.g. microphone recording).
     busy_button: Option<usize>,
-    buttons_view: Entity<FormButtons>,
+    buttons_view: Entity<Slot<Self>>,
     /// A file picked with Browse, for its field (set into the box on the next draw, which has the window).
     picked: Option<(usize, String)>,
     autofocus: bool,
@@ -659,17 +660,7 @@ impl Form {
             error: None,
             pending: false,
             busy_button: None,
-            buttons_view: {
-                let entity = cx.entity();
-                let weak = entity.downgrade();
-                cx.new(|cx| {
-                    let sub = cx.observe(&entity, |_, _, cx| cx.notify());
-                    FormButtons {
-                        form: weak,
-                        _subscription: sub,
-                    }
-                })
-            },
+            buttons_view: Slot::new(|form, _, cx| form.buttons(cx).into_any_element(), cx),
             picked: None,
             autofocus: !inline,
             section_toggles: std::collections::HashSet::new(),
@@ -1952,22 +1943,8 @@ impl Form {
     }
 
     /// The buttons as their own view, for a dialog's footer slot.
-    pub fn buttons_view(&self) -> Entity<FormButtons> {
+    pub fn buttons_view(&self) -> Entity<Slot<Self>> {
         self.buttons_view.clone()
-    }
-}
-
-/// A form's buttons, drawn where its dialog puts them (the footer).
-pub struct FormButtons {
-    form: WeakEntity<Form>,
-    _subscription: Subscription,
-}
-impl Render for FormButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.form.upgrade() {
-            Some(form) => form.update(cx, |form, cx| form.buttons(cx)).into_any_element(),
-            None => div().into_any_element(),
-        }
     }
 }
 

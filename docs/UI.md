@@ -132,6 +132,7 @@ new that others could use, add it to the right module (or a new one) first, then
 | A page's "Show" selector | `tabs.rs` (`bar`) | buttons of its own |
 | The inside of a button | `body.rs` (`button_body`: icon and label) | an icon and text placed by hand |
 | Loading remote pictures in batches | `images.rs` (`Pictures`: bounded cache, queue or computed set, `"images"` requests) | a per-control image map and request loop |
+| Drawing a control's buttons in a footer or header slot | `slot.rs` (`Slot`: weak owner view that repaints with its owner) | a custom button host view per control |
 | A connection's state | `health.rs` (`appearance`) | a coloured label |
 
 Cards: a section with `"card": true` draws as a rounded, bordered panel, two to a row when the window is

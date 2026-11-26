@@ -3,6 +3,7 @@
 //! @name typed in the box works too (for what can't be searched). The core supplies the model (`finder`),
 //! searches (`StreamerzSearchChannels`) and reads the pick (`<platform>.set_channel`, `.own_channel`).
 use super::images::{Pictures, MAX_PENDING};
+use super::slot::Slot;
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
@@ -34,7 +35,7 @@ pub struct Finder {
     images: Pictures,
     confirmed: bool,
     search_task: Option<Task<()>>,
-    buttons_view: Entity<FinderButtons>,
+    buttons_view: Entity<Slot<Self>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,17 +58,7 @@ impl Finder {
             },
         )];
         let status = model["labels"]["empty"].as_str().unwrap_or_default().to_owned();
-        let buttons_view = {
-            let entity = cx.entity();
-            let weak = entity.downgrade();
-            cx.new(|cx| {
-                let sub = cx.observe(&entity, |_, _, cx| cx.notify());
-                FinderButtons {
-                    finder: weak,
-                    _subscription: sub,
-                }
-            })
-        };
+        let buttons_view = Slot::new(|finder, _, cx| finder.buttons(cx).into_any_element(), cx);
         let images = Pictures::new(format!("{route}:find-images"), BATCH, REMEMBERED, MAX_PENDING);
         let mut finder = Self {
             model,
@@ -252,7 +243,7 @@ impl Finder {
         super::dialog::footer(Some(own), right, cx)
     }
 
-    pub fn buttons_view(&self) -> Entity<FinderButtons> {
+    pub fn buttons_view(&self) -> Entity<Slot<Self>> {
         self.buttons_view.clone()
     }
 }
@@ -396,20 +387,6 @@ impl Render for Finder {
                         .child(note),
                 )
             })
-    }
-}
-
-/// The finder's buttons, drawn in its dialog's footer.
-pub struct FinderButtons {
-    finder: WeakEntity<Finder>,
-    _subscription: Subscription,
-}
-impl Render for FinderButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.finder.upgrade() {
-            Some(finder) => finder.update(cx, |finder, cx| finder.buttons(cx)).into_any_element(),
-            None => div().into_any_element(),
-        }
     }
 }
 
@@ -642,7 +619,7 @@ mod tests {
         })
         .unwrap();
 
-        // Non-searchable finder: typing enables OK immediately via FinderButtons observer.
+        // Non-searchable finder: typing enables OK immediately via Slot observer.
         let slot2: std::rc::Rc<std::cell::RefCell<Option<Entity<Finder>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
         let s2 = slot2.clone();

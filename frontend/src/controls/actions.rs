@@ -92,7 +92,7 @@ impl ActionsPage {
     }
 
     /// The page-wide buttons (Add, Import, Templates), drawn in the page's header.
-    pub fn header_actions_view(&self, cx: &App) -> Entity<super::tree::HeaderButtons> {
+    pub fn header_actions_view(&self, cx: &App) -> Entity<super::slot::Slot<super::tree::TreePane>> {
         self.actions.read(cx).header_view()
     }
 
