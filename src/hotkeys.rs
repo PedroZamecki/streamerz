@@ -320,7 +320,7 @@ pub struct Live {
     #[cfg(not(windows))]
     task: Option<crate::emote_events::Abort>,
     #[cfg(windows)]
-    thread: Option<u32>,
+    thread: Option<win::Listener>,
 }
 
 impl Engine {
@@ -353,6 +353,14 @@ impl Engine {
         if live.combos == combos && live.mouse == mouse {
             return;
         }
+        #[cfg(windows)]
+        if let Some(old) = live.thread.take() {
+            if let Err(old) = old.stop() {
+                live.thread = Some(old);
+                crate::warn("Hotkeys: could not stop the previous listener".into());
+                return;
+            }
+        }
         live.combos.clone_from(&combos);
         live.mouse = mouse;
         #[cfg(not(windows))]
@@ -365,9 +373,6 @@ impl Engine {
         }
         #[cfg(windows)]
         {
-            if let Some(t) = live.thread.take() {
-                win::stop(t);
-            }
             if !combos.is_empty() || mouse {
                 live.thread = win::start(self.clone(), combos, mouse);
             }
@@ -880,13 +885,32 @@ mod win {
         CallNextHookEx(std::ptr::null_mut(), code, w, l)
     }
 
-    /// Listen on a thread of its own (hotkeys and hooks need a message loop); its id, to stop it.
-    pub fn start(e: Rc<Engine>, combos: Vec<(i64, i64)>, mouse: bool) -> Option<u32> {
+    pub struct Listener {
+        id: u32,
+        worker: std::thread::JoinHandle<()>,
+    }
+
+    impl Listener {
+        pub fn stop(self) -> Result<(), Self> {
+            if !self.worker.is_finished() {
+                // SAFETY: the worker has created its message queue, and the message takes no pointers.
+                let posted = unsafe { PostThreadMessageW(self.id, WM_QUIT, 0, 0) };
+                if posted == 0 && !self.worker.is_finished() {
+                    return Err(self);
+                }
+            }
+            // Windows releases the worker's shortcuts when it exits. Join before registering again.
+            let _ = self.worker.join();
+            Ok(())
+        }
+    }
+
+    /// Hotkeys and mouse hooks need a Windows message loop of their own.
+    pub fn start(e: Rc<Engine>, combos: Vec<(i64, i64)>, mouse: bool) -> Option<Listener> {
         let (tx, mut rx) = unbounded_channel::<Ev>();
         let (id_tx, id_rx) = std::sync::mpsc::channel();
         let list = combos.clone();
-        std::thread::spawn(move || unsafe {
-            let _ = id_tx.send(GetCurrentThreadId());
+        let worker = std::thread::spawn(move || unsafe {
             // The hotkeys belong to a message-only window of this thread (not to the thread itself, which
             // Wine's server crashes on when input is injected); its WM_HOTKEY still comes through GetMessageW.
             let class: Vec<u16> = "STATIC".encode_utf16().chain([0]).collect();
@@ -904,6 +928,17 @@ mod win {
                 GetModuleHandleW(std::ptr::null()),
                 std::ptr::null(),
             );
+            if window.is_null() {
+                crate::warn(format!(
+                    "Hotkeys: could not create the listener ({})",
+                    std::io::Error::last_os_error()
+                ));
+                return;
+            }
+            if id_tx.send(GetCurrentThreadId()).is_err() {
+                DestroyWindow(window);
+                return;
+            }
             for (i, &(k, m)) in list.iter().enumerate() {
                 let Some(key) = by_code(k) else { continue };
                 let mut mods = MOD_NOREPEAT;
@@ -934,11 +969,9 @@ mod win {
                     *s = None;
                 }
             }
-            if !window.is_null() {
-                DestroyWindow(window);
-            }
-            // Hotkeys go with the window.
+            DestroyWindow(window);
         });
+        let id = id_rx.recv().ok()?;
         tokio::task::spawn_local(async move {
             while let Some(ev) = rx.recv().await {
                 match ev {
@@ -951,13 +984,42 @@ mod win {
                 }
             }
         });
-        id_rx.recv().ok()
+        Some(Listener { id, worker })
     }
 
-    pub fn stop(thread: u32) {
-        unsafe {
-            PostThreadMessageW(thread, WM_QUIT, 0, 0);
-        }
+    #[test]
+    fn replacing_a_listener_waits_for_the_old_thread_to_finish() {
+        use std::sync::mpsc::{channel, TryRecvError};
+        use std::time::Duration;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, PM_NOREMOVE, WM_USER};
+
+        let timeout = Duration::from_secs(5);
+        let (ready, id) = channel();
+        let (quitting, quit_seen) = channel();
+        let (release, cleanup_can_finish) = channel();
+        let (stopped, stop_returned) = channel();
+
+        let worker = std::thread::spawn(move || {
+            // SAFETY: the message is initialized, and both calls operate on this thread's queue.
+            unsafe {
+                let mut msg: MSG = std::mem::zeroed();
+                PeekMessageW(&mut msg, std::ptr::null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+                ready.send(GetCurrentThreadId()).unwrap();
+                assert_eq!(GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0), 0);
+            }
+            quitting.send(()).unwrap();
+            cleanup_can_finish.recv_timeout(timeout).unwrap();
+        });
+        let listener = Listener {
+            id: id.recv_timeout(timeout).unwrap(),
+            worker,
+        };
+        let stopper = std::thread::spawn(move || stopped.send(listener.stop().is_ok()).unwrap());
+        quit_seen.recv_timeout(timeout).unwrap();
+        assert_eq!(stop_returned.try_recv(), Err(TryRecvError::Empty));
+        release.send(()).unwrap();
+        assert!(stop_returned.recv_timeout(timeout).unwrap());
+        stopper.join().unwrap();
     }
 }
 
