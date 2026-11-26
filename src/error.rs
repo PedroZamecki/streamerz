@@ -16,45 +16,77 @@ pub fn redact(line: &str) -> String {
         "accesstoken",
         "refreshtoken",
         "client_secret",
+        "clientsecret",
         "id_token",
+        "idtoken",
         "sessionid",
+        "sessioncookie",
         "token=",
-        "Bearer ",
+        "bearer ",
         "password",
     ];
     let lower = line.to_ascii_lowercase();
-    let mut cuts: Vec<(usize, usize)> = Vec::new();
-    for m in MARKERS {
-        let m = m.to_ascii_lowercase();
+    let mut cuts = Vec::new();
+    for marker in MARKERS {
         let mut from = 0;
-        while let Some(i) = lower[from..].find(&m) {
-            let mut j = from + i + m.len();
-            let b = line.as_bytes();
-            while j < b.len() && matches!(b[j], b'"' | b'\'' | b':' | b'=' | b' ') {
-                j += 1;
+        while let Some(i) = lower[from..].find(marker) {
+            let end = from + i + marker.len();
+            from = end;
+            if let Some((start, end)) = credential_range(line, end, marker.ends_with(['=', ' '])) {
+                cuts.push((start, end));
+                from = end;
             }
-            let start = j;
-            while j < b.len() && (b[j].is_ascii_alphanumeric() || b"._~+/-%=".contains(&b[j])) {
-                j += 1;
-            }
-            if j > start {
-                cuts.push((start, j));
-            }
-            from = j.max(from + i + 1);
         }
+    }
+    if cuts.is_empty() {
+        return line.to_owned();
     }
     cuts.sort_unstable();
     let mut out = String::with_capacity(line.len());
     let mut at = 0;
-    for (a, b) in cuts {
-        if a >= at {
-            out.push_str(&line[at..a]);
+    for (start, end) in cuts {
+        if start >= at {
+            out.push_str(&line[at..start]);
             out.push_str("***");
-            at = b;
         }
+        at = at.max(end);
     }
     out.push_str(&line[at..]);
     out
+}
+
+fn credential_range(line: &str, after_key: usize, has_separator: bool) -> Option<(usize, usize)> {
+    let rest = &line[after_key..];
+    let value = if has_separator {
+        rest
+    } else {
+        rest.trim_start_matches(['"', '\''])
+            .trim_start()
+            .strip_prefix([':', '='])?
+    }
+    .trim_start();
+    let first = *value.as_bytes().first()?;
+    let (value, len) = if matches!(first, b'"' | b'\'') {
+        let value = &value[1..];
+        let mut escaped = false;
+        let len = value
+            .bytes()
+            .position(|b| {
+                let closes = b == first && !escaped;
+                escaped = b == b'\\' && !escaped;
+                closes
+            })
+            .unwrap_or(value.len());
+        (value, len)
+    } else {
+        let len = value
+            .bytes()
+            .position(|b| b.is_ascii_whitespace() || b"&;,'\"}]".contains(&b))
+            .unwrap_or(value.len());
+        (value, len)
+    };
+    let start = line.len() - value.len();
+    (len > 0).then_some((start, start + len))
 }
 
 /// Optional recovery action attached to an error banner.
@@ -666,6 +698,19 @@ mod tests {
         assert!(!err.description.contains("secret_tok"));
         assert!(!err.description.contains("r1"));
         assert!(err.description.contains("***"));
+    }
+
+    #[test]
+    fn redacts_whole_quoted_credentials_and_keeps_surrounding_text() {
+        let input = r#"prefix {"password": "quoted \"part\" with spaces", "clientSecret": "other value", "ok":true}"#;
+        assert_eq!(
+            redact(input),
+            r#"prefix {"password": "***", "clientSecret": "***", "ok":true}"#
+        );
+        assert_eq!(redact("password='with a space'"), "password='***'");
+        assert_eq!(redact("password=áß!"), "password=***");
+        assert_eq!(redact("password field is required"), "password field is required");
+        assert_eq!(redact("token=t87%2B&state=one"), "token=***&state=one");
     }
 
     #[test]

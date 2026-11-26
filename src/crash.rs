@@ -256,7 +256,7 @@ fn capture_stderr(dir: &Path) {
         .stack_size(64 * 1024)
         .spawn(move || {
             for line in BufReader::new(read).lines().map_while(Result::ok) {
-                let _ = writeln!(file, "{line}");
+                let _ = writeln!(file, "{}", crate::error::redact(&line));
                 if !line.trim().is_empty() {
                     crate::log(stderr_level(&line), format!("stderr: {}", line.trim_end()));
                 }
@@ -306,7 +306,8 @@ extern "C" fn drain_stderr() {
     }
     if !rest.is_empty() {
         if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(dir().join("stderr.log")) {
-            let _ = f.write_all(&rest);
+            let clean = crate::error::redact(&String::from_utf8_lossy(&rest));
+            let _ = f.write_all(clean.as_bytes());
         }
     }
 }
@@ -404,15 +405,16 @@ fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
     private(&report)
 }
 
-/// `text` without the user's home folder.
+/// `text` with the user's home folder and credentials hidden.
 fn private(text: &str) -> String {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
+    let text = crate::error::redact(text);
     if home.len() > 3 {
         text.replace(&home, "~")
     } else {
-        text.to_string()
+        text
     }
 }
 
@@ -752,6 +754,14 @@ pub async fn offer() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_text_hides_credentials_from_panic_and_stderr() {
+        assert_eq!(
+            private("Panic: password='with spaces'\nLast stderr line: Authorization: Bearer hidden"),
+            "Panic: password='***'\nLast stderr line: Authorization: Bearer ***"
+        );
+    }
 
     #[test]
     fn windows_display_does_not_depend_on_unix_variables() {
