@@ -16,6 +16,7 @@ pub struct Entry {
 }
 
 /// `- Key: value` under a section's title.
+#[cfg(test)]
 fn field<'a>(section: &'a str, key: &str) -> Option<&'a str> {
     section
         .lines()
@@ -24,7 +25,8 @@ fn field<'a>(section: &'a str, key: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// The entries of one file.
+/// The entries of one file (build.rs indexes them the same way, into `REFERENCE`).
+#[cfg(test)]
 fn entries_in(file: &'static str, text: &str) -> Vec<Entry> {
     text.split("\n## ")
         .skip(1)
@@ -48,7 +50,8 @@ fn entries_in(file: &'static str, text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// Every entry of the reference.
+/// Every entry of the reference, parsed from the files (to check `REFERENCE` against).
+#[cfg(test)]
 pub fn entries() -> Vec<Entry> {
     DOCS.iter()
         .filter(|(p, _)| p.starts_with("reference/") && !p.ends_with("README.md"))
@@ -56,11 +59,21 @@ pub fn entries() -> Vec<Entry> {
         .collect()
 }
 
-/// The page of a `kind` ("subaction" or "trigger") by its code.
-pub fn entry(kind: &str, code: u32) -> Option<Entry> {
-    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
-    let (kind, code, file, start, end) = REFERENCE[at];
-    let text = &DOCS[file].1[start..end];
+/// Where the page of a `kind` and `code` is in [`REFERENCE`].
+fn index(kind: &str, code: u32) -> Option<usize> {
+    REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()
+}
+
+/// The text of the page at `at` in [`REFERENCE`].
+fn text_at(at: usize) -> &'static str {
+    let (_, _, file, start, end) = REFERENCE[at];
+    &DOCS[file].1[start..end]
+}
+
+/// The page at `at` in [`REFERENCE`].
+fn entry_at(at: usize) -> Option<Entry> {
+    let (kind, code, file, _, _) = REFERENCE[at];
+    let text = text_at(at);
     Some(Entry {
         kind,
         code,
@@ -70,11 +83,14 @@ pub fn entry(kind: &str, code: u32) -> Option<Entry> {
     })
 }
 
+/// The page of a `kind` ("subaction" or "trigger") by its code.
+pub fn entry(kind: &str, code: u32) -> Option<Entry> {
+    entry_at(index(kind, code)?)
+}
+
 /// Borrow compiled reference text without parsing or allocating the other pages.
 pub fn text(kind: &str, code: u32) -> Option<&'static str> {
-    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
-    let (_, _, file, start, end) = REFERENCE[at];
-    Some(&DOCS[file].1[start..end])
+    Some(text_at(index(kind, code)?))
 }
 
 /// A reference page split for in-app Help: title for the dialog header, leading metadata lines, and
@@ -215,14 +231,17 @@ pub fn search(query: &str) -> Vec<Entry> {
     if words.is_empty() {
         return Vec::new();
     }
-    let mut found: Vec<(usize, Entry)> = entries()
-        .into_iter()
-        .filter_map(|e| {
-            let (title, text) = (e.title.to_lowercase(), e.text.to_lowercase());
-            words.iter().all(|w| text.contains(w)).then(|| {
-                let in_title = words.iter().filter(|w| title.contains(w.as_str())).count();
-                (words.len() - in_title, e)
-            })
+    // From the index: only the pages found are copied out.
+    let mut found: Vec<(usize, Entry)> = (0..REFERENCE.len())
+        .filter_map(|at| {
+            let text = text_at(at).to_lowercase();
+            if !words.iter().all(|w| text.contains(w)) {
+                return None;
+            }
+            let e = entry_at(at)?;
+            let title = e.title.to_lowercase();
+            let in_title = words.iter().filter(|w| title.contains(w.as_str())).count();
+            Some((words.len() - in_title, e))
         })
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.title.cmp(&b.1.title)));
