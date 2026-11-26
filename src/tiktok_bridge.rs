@@ -4,6 +4,7 @@
 //! Streamerz opens nothing for it: the extension connects to the WebSocket server on [`PATH`] with the
 //! token Streamerz wrote next to it, and its hidden context closes when Streamerz does.
 
+use crate::commands::uri_component;
 use crate::engine::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -826,7 +827,7 @@ pub(crate) async fn gift_list(e: &Rc<Engine>, room: &str) -> Result<Value, Strin
     params.push(("room_id".into(), room.into()));
     let query = params
         .iter()
-        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .map(|(k, v)| format!("{}={}", uri_component(k), uri_component(v)))
         .collect::<Vec<_>>()
         .join("&");
     let url = format!("https://webcast.tiktok.com/webcast/gift/list/?{query}");
@@ -844,17 +845,6 @@ fn common_params(v: &Value) -> Vec<(String, String)> {
         .filter(|(k, _)| COMMON.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
         .collect()
-}
-
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// TikTok's chat send, as its live page makes it: (URL, JSON body). The page's common query, with the
@@ -888,7 +878,7 @@ pub fn chat_request(
         ("client_start_timestamp_millisecond", now),
     ]);
     query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", uri_component(v))).collect();
     let url = format!("https://webcast.tiktok.com/webcast/room/chat/?{}", q.join("&"));
     let body = json!({"room_id": room, "content": text, "emotes_with_index": "", "input_type": 0,
         "client_start_timestamp_millisecond": now_ms});
@@ -967,7 +957,7 @@ async fn webcast_post(e: &Rc<Engine>, endpoint: &str, mut body: Value) -> Result
         .collect();
     query.push(("room_id", room.clone()));
     query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", uri_component(v))).collect();
     let url = format!("https://webcast.tiktok.com/webcast/room/{endpoint}/?{}", q.join("&"));
     body["room_id"] = room.into();
     let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});

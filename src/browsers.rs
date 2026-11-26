@@ -1075,13 +1075,9 @@ pub fn file_url(path: &Path) -> String {
     if !normalized.starts_with('/') {
         out.push('/');
     }
-    for b in normalized.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~' | b':') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
+    crate::commands::percent_into(&mut out, &normalized, |b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~' | b':')
+    });
     out
 }
 

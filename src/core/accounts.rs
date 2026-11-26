@@ -580,13 +580,9 @@ fn twitch_public_query(login: &str) -> String {
 /// letters, digits, - and _; anything else, a dot or a slash, is escaped).
 fn kick_channel_url(channel: &str) -> String {
     let mut url = String::from("https://kick.com/api/v2/channels/");
-    for b in channel.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
-            url.push(b as char);
-        } else {
-            url.push_str(&format!("%{b:02X}"));
-        }
-    }
+    crate::commands::percent_into(&mut url, channel, |b| {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+    });
     url
 }
 

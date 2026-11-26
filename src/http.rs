@@ -65,19 +65,16 @@ fn parse(url: &str) -> Result<(bool, String, u16, String), String> {
 /// The path and query as sent: what a URL can't hold raw (spaces, quotes, non-ASCII) percent-encoded,
 /// as browsers and .NET do. A control character would end the request line early, so it is refused.
 fn request_target(path: &str) -> Result<String, String> {
+    if path.bytes().any(|b| b.is_ascii_control()) {
+        return Err("control character in the URL".into());
+    }
     let mut out = String::with_capacity(path.len() + 1);
     if !path.starts_with('/') {
         out.push('/');
     }
-    for b in path.bytes() {
-        match b {
-            0..=0x1f | 0x7f => return Err("control character in the URL".into()),
-            b' ' | b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}' | 0x80.. => {
-                out += &format!("%{b:02X}")
-            }
-            _ => out.push(char::from(b)),
-        }
-    }
+    crate::commands::percent_into(&mut out, path, |b| {
+        !matches!(b, b' ' | b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}')
+    });
     Ok(out)
 }
 

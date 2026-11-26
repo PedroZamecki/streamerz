@@ -3,6 +3,7 @@
 //! (`window.streamerz`: the group's settings, and `on(topic)` / `event(name)` for live data over
 //! server-sent events on the same port). Nothing listens until an overlay page asks.
 
+use crate::commands::uri_component;
 use crate::engine::events::Subs;
 use crate::engine::Engine;
 use crate::groups;
@@ -639,15 +640,6 @@ const CLIENT: &str = include_str!("../assets/overlays/client.js");
 /// Listener ids above the WebSocket connections' (they count up from 1).
 static NEXT: AtomicU64 = AtomicU64::new(1 << 62);
 
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -770,13 +762,13 @@ fn speech(name: &str) -> Option<Served> {
 
 /// Where an overlay's controls dock is served.
 pub fn controls_url(c: &Config, group: &str) -> String {
-    format!("{}/overlays/{}/-/controls", base(c), encode(group))
+    format!("{}/overlays/{}/-/controls", base(c), uri_component(group))
 }
 
 pub fn url_at(base: &str, group: &str, file: &str) -> String {
     // A file's folders stay as they are, so the page's relative links work.
-    let file: Vec<String> = file.split('/').map(encode).collect();
-    format!("{base}/overlays/{}/{}", encode(group), file.join("/"))
+    let file: Vec<String> = file.split('/').map(uri_component).collect();
+    format!("{base}/overlays/{}/{}", uri_component(group), file.join("/"))
 }
 
 /// The page with Streamerz's script added at the top of its head. `server` is empty when the page is
@@ -2094,7 +2086,7 @@ mod tests {
 
     #[test]
     fn names_are_encoded_in_urls() {
-        assert_eq!(encode("My group/1.html"), "My%20group%2F1.html");
+        assert_eq!(uri_component("My group/1.html"), "My%20group%2F1.html");
         assert_eq!(
             url_at("http://h:1", "My/group", "img/a b.png"),
             "http://h:1/overlays/My%2Fgroup/img/a%20b.png"
@@ -2120,7 +2112,7 @@ mod tests {
             "bytes that aren't UTF-8 don't panic"
         );
         for name in ["Doação", "Ünïcödé 🎉", "a b/c+d.png", "100% Hype"] {
-            assert_eq!(crate::commands::url_decode(&encode(name)), name, "{name}");
+            assert_eq!(crate::commands::url_decode(&uri_component(name)), name, "{name}");
         }
         assert_eq!(query_value("a=1&group=Doa%C3%A7%C3%A3o&token=x", "group"), "Doação");
         assert_eq!(query_value("a=1", "group"), "");
@@ -2163,7 +2155,7 @@ mod tests {
         // Its pages listen with their group's name and token, encoded as a browser does.
         let query = format!(
             "topics=a&group={}&token={}",
-            encode("Alertas de Doação"),
+            uri_component("Alertas de Doação"),
             token(&c, "Alertas de Doação")
         );
         assert_eq!(caller(&c, &query).as_deref(), Some("Alertas de Doação"));
@@ -2183,8 +2175,8 @@ mod tests {
         // As the page script sends it: the list joined with commas, then encoded whole.
         let query = format!(
             "events={}&group={}&token={}",
-            encode("Twitch.Follow,Settings.Goals, subs"),
-            encode("Goals, subs"),
+            uri_component("Twitch.Follow,Settings.Goals, subs"),
+            uri_component("Goals, subs"),
             token(&c, "Goals, subs")
         );
         let subs = permitted(&c, subscriptions(&query), &query);
@@ -2193,8 +2185,8 @@ mod tests {
         // Another group's settings stay closed to it.
         let other = format!(
             "events={}&group={}&token={}",
-            encode("Settings.Other"),
-            encode("Goals, subs"),
+            uri_component("Settings.Other"),
+            uri_component("Goals, subs"),
             token(&c, "Goals, subs")
         );
         assert!(!permitted(&c, subscriptions(&other), &other).contains_key("Settings"));

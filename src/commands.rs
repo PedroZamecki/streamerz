@@ -109,25 +109,48 @@ pub fn matches(c: &Obj, text: &str) -> Option<(String, String, Obj)> {
     None
 }
 
+/// Pushes `s` to `out` percent-encoded: the ASCII bytes `keep` accepts as they are, every other byte
+/// of its UTF-8 as %XX (uppercase hex).
+pub fn percent_into(out: &mut String, s: &str, keep: impl Fn(u8) -> bool) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for b in s.bytes() {
+        if b.is_ascii() && keep(b) {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 15)]));
+        }
+    }
+}
+
+/// `s` percent-encoded, keeping the bytes `keep` accepts (see `percent_into`).
+pub fn percent(s: &str, keep: impl Fn(u8) -> bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    percent_into(&mut out, s, keep);
+    out
+}
+
 /// .NET's WebUtility.UrlEncode: unreserved `A-Z a-z 0-9 - _ . ! * ( )` stay, space is `+`, the
 /// rest is %XX (uppercase) of the UTF-8 bytes.
 pub fn url_encode(s: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let keep = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'!' | b'*' | b'(' | b')');
     let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'*' | b'(' | b')' => {
-                out.push(b as char)
-            }
-            b' ' => out.push('+'),
-            _ => {
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0x0f) as usize] as char);
-            }
+    for (i, part) in s.split(' ').enumerate() {
+        if i > 0 {
+            out.push('+');
         }
+        percent_into(&mut out, part, keep);
     }
     out
+}
+
+/// RFC 3986's encoding of a path segment or a query value: unreserved `A-Z a-z 0-9 - _ . ~` stay,
+/// the rest (a space too) is %XX of the UTF-8 bytes.
+pub fn uri_component(s: &str) -> String {
+    percent(s, |b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~')
+    })
 }
 
 /// A form or query value decoded: `+` is a space, %XX a byte (two hex digits, else kept as typed),
@@ -246,6 +269,63 @@ pub fn permitted(c: &Obj, chat: &Chat, in_group: &dyn Fn(&str) -> bool) -> bool 
 
 #[cfg(test)]
 mod tests {
+    /// The encoders as they were written before `percent`: the new ones must match them byte for byte.
+    fn dotnet_before(s: &str) -> String {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'*' | b'(' | b')' => {
+                    out.push(b as char)
+                }
+                b' ' => out.push('+'),
+                _ => {
+                    out.push('%');
+                    out.push(HEX[(b >> 4) as usize] as char);
+                    out.push(HEX[(b & 0x0f) as usize] as char);
+                }
+            }
+        }
+        out
+    }
+
+    fn rfc3986_before(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn both_percent_alphabets_match_the_old_encoders() {
+        // Every ASCII character, some of the wider ones, and strings made of them (a fixed seed).
+        let pool: Vec<char> = (0u8..128)
+            .map(char::from)
+            .chain("é ç ã 中 😀 \u{a0}\u{fffd}".chars())
+            .collect();
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut samples: Vec<String> = pool.iter().map(|c| c.to_string()).collect();
+        for _ in 0..2000 {
+            let mut s = String::new();
+            for _ in 0..(seed % 24) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                s.push(pool[(seed % pool.len() as u64) as usize]);
+            }
+            samples.push(s);
+        }
+        samples.extend(["", " ", "  a  ", "a+b c&d=e/f?g#h~i'j"].map(String::from));
+        for s in &samples {
+            assert_eq!(super::url_encode(s), dotnet_before(s), "{s:?}");
+            assert_eq!(super::uri_component(s), rfc3986_before(s), "{s:?}");
+        }
+        assert_eq!(super::url_encode("a b~!"), "a+b%7E!");
+        assert_eq!(super::uri_component("a b~!"), "a%20b~%21");
+    }
+
     use super::*;
     use serde_json::json;
 
