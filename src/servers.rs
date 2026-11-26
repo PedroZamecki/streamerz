@@ -428,6 +428,7 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
 
 const WEBSOCKET_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WEBSOCKET_CLIENTS: usize = 128;
+const MAX_WEBSOCKET_PAYLOAD_BYTES: usize = 16 << 20;
 
 /// A custom WebSocket server: each connection gets a sessionId; fires Opened / Message (data) /
 /// Closed, with sessionId and ip.
@@ -513,12 +514,15 @@ pub fn origin_ok(origin: Option<&str>, fetch_site: Option<&str>, allowed: &str) 
 /// (403). With `bridge`, the TikTok extension's path is open too, to the extension only; the bool
 /// says it's that. The handshake callback's error type is tungstenite's (a whole HTTP response).
 #[allow(clippy::result_large_err)]
-async fn accept(
-    tcp: TcpStream,
+async fn accept<S>(
+    stream: S,
     endpoint: String,
     allowed: String,
     bridge: bool,
-) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, bool), String> {
+) -> Result<(tokio_tungstenite::WebSocketStream<S>, bool), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -547,12 +551,13 @@ async fn accept(
         *r.status_mut() = status;
         Err(r)
     };
-    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
-    let message_limit = config.max_frame_size;
-    let config = config.read_buffer_size(4 << 10).max_message_size(message_limit);
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(4 << 10)
+        .max_frame_size(Some(MAX_WEBSOCKET_PAYLOAD_BYTES))
+        .max_message_size(Some(MAX_WEBSOCKET_PAYLOAD_BYTES));
     let ws = tokio::time::timeout(
         WEBSOCKET_IO_TIMEOUT,
-        tokio_tungstenite::accept_hdr_async_with_config(tcp, check, Some(config)),
+        tokio_tungstenite::accept_hdr_async_with_config(stream, check, Some(config)),
     )
     .await
     .map_err(|_| "WebSocket handshake timed out".to_owned())?
@@ -2578,6 +2583,37 @@ mod tests {
                     .kind(),
                 std::io::ErrorKind::UnexpectedEof
             );
+        });
+    }
+
+    #[test]
+    fn websocket_handshakes_apply_the_same_limits_to_the_api_and_bridge() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for (path, bridge) in [("/", false), (crate::tiktok_bridge::PATH, true)] {
+                let (client, server) = tokio::io::duplex(1024);
+                let mut request = format!("ws://localhost{path}").into_client_request().unwrap();
+                if bridge {
+                    let origin = format!("chrome-extension://{}", crate::tiktok_bridge::EXTENSION_ID);
+                    request.headers_mut().insert("origin", origin.parse().unwrap());
+                }
+                let (accepted, connected) = tokio::join!(
+                    accept(server, "/".into(), String::new(), true),
+                    tokio_tungstenite::client_async(request, client),
+                );
+                connected.unwrap();
+                let (socket, is_bridge) = accepted.unwrap();
+                assert_eq!(is_bridge, bridge);
+                let config = socket.get_config();
+                assert_eq!(config.read_buffer_size, 4 << 10);
+                assert_eq!(config.max_frame_size, Some(16 << 20));
+                assert_eq!(config.max_message_size, config.max_frame_size);
+            }
         });
     }
 
