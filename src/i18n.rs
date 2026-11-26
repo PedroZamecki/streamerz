@@ -117,9 +117,33 @@ pub fn snapshot() -> serde_json::Value {
 
 /// The text of `key` with each `{name}` in it replaced by its value in `args`.
 pub fn trf(key: &'static str, args: &[(&str, &str)]) -> String {
-    args.iter().fold(tr(key).to_string(), |s, (name, value)| {
-        s.replace(&format!("{{{name}}}"), value)
-    })
+    fill(tr(key), args)
+}
+
+/// `text` with each `{name}` replaced by its value in `args`, in one pass: a value that holds a
+/// `{name}` itself (a chatter's message, a title) is kept as it is. Unknown names stay.
+fn fill(text: &str, args: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after
+            .find('}')
+            .and_then(|close| Some((close, args.iter().find(|(n, _)| *n == &after[..close])?.1)))
+        {
+            Some((close, value)) => {
+                out.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
