@@ -192,9 +192,13 @@ impl Kind {
             Kind::Time => v.as_str().is_some_and(|s| s.is_empty() || kinds::time(s).is_some()),
             Kind::Easing | Kind::Gradient | Kind::UserGroup | Kind::Scene | Kind::Source | Kind::Code => v.is_string(),
             Kind::Percent => v.as_f64().is_some_and(|n| (0.0..=100.0).contains(&n)),
-            Kind::Range => v
-                .as_array()
-                .is_some_and(|pair| pair.len() == 2 && pair.iter().all(Value::is_number)),
+            Kind::Range => v.as_array().is_some_and(|pair| {
+                pair.len() == 2
+                    && match (pair[0].as_f64(), pair[1].as_f64()) {
+                        (Some(a), Some(b)) => a <= b,
+                        _ => false,
+                    }
+            }),
             Kind::Event => v
                 .as_array()
                 .is_some_and(|list| list.iter().all(|k| k.as_str().is_some_and(kinds::is_event))),
@@ -299,11 +303,23 @@ pub fn parse_duration(s: &str) -> Option<u64> {
         return None;
     }
     if s.contains(':') {
-        let (clock, frac) = s.split_once('.').unwrap_or((s, ""));
+        let (clock, frac) = match s.split_once('.') {
+            Some((clock, frac)) if !frac.is_empty() => (clock, frac),
+            Some(_) => return None,
+            None => (s, ""),
+        };
         if frac.len() > 3 || !frac.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        let parts: Vec<u64> = clock.split(':').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+        let parts: Vec<u64> = clock
+            .split(':')
+            .map(|p| {
+                let p = p.trim();
+                (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| p.parse().ok())
+                    .flatten()
+            })
+            .collect::<Option<_>>()?;
         let (h, m, sec) = match parts[..] {
             [m, s] => (0, m, s),
             [h, m, s] => (h, m, s),
@@ -347,7 +363,11 @@ pub fn parse_duration(s: &str) -> Option<u64> {
             };
             let n: f64 = number.parse().ok()?;
             number.clear();
-            total = total.checked_add((n * per).round() as u64)?;
+            let ms = n * per;
+            if !ms.is_finite() || !(0.0..1e15).contains(&ms) {
+                return None;
+            }
+            total = total.checked_add(ms.round() as u64)?;
             seen = true;
         }
     }
@@ -422,8 +442,14 @@ pub fn accepted(accept: &str) -> &'static [&'static str] {
 /// Whether a file's name is one a `file` setting with this `accept` takes.
 pub fn accepts_file(accept: &str, name: &str) -> bool {
     let wanted = accepted(accept);
-    let extension = name.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
-    wanted.is_empty() || wanted.contains(&extension.as_str())
+    if wanted.is_empty() {
+        return true;
+    }
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    wanted.contains(&extension.as_str())
 }
 
 /// When a setting is worth showing: `{"setting": "look", "is": "Custom color"}`.
@@ -1121,18 +1147,21 @@ pub fn folder(c: &Config, group: &str) -> Option<PathBuf> {
 /// Where a file of a group is on disk.
 pub fn file_path(c: &Config, group: &str, name: &str) -> Option<PathBuf> {
     let m = meta(c, group);
-    if !valid_file_name(&m.store) {
+    if !valid_file_name(&m.store) || !valid_file_path(name) {
         return None;
     }
     let path = root().join(m.store).join(name);
     // One of its files, or one put in its folder by hand that the list has not caught up with
     // (`sync_files`): a portable name can't leave the folder.
     let listed = m.files.iter().any(|f| f.name == name);
-    (listed || (valid_file_path(name) && path.is_file())).then_some(path)
+    (listed || path.is_file()).then_some(path)
 }
 
 /// A file's bytes: from disk, or from `content` when it has not been written yet.
 pub fn read_file(c: &Config, group: &str, name: &str) -> Option<Vec<u8>> {
+    if !valid_file_path(name) {
+        return None;
+    }
     let m = meta(c, group);
     let Some(f) = m.files.iter().find(|f| f.name == name) else {
         // Put in the folder by hand, and not yet in the list.
@@ -1152,7 +1181,7 @@ pub fn meta_with_files(c: &Config, group: &str) -> Meta {
     let mut m = meta(c, group);
     let dir = Some(&m.store).filter(|s| valid_file_name(s)).map(|s| root().join(s));
     for f in &mut m.files {
-        if f.content.is_empty() {
+        if f.content.is_empty() && valid_file_path(&f.name) {
             if let Some(bytes) = dir.as_ref().and_then(|d| std::fs::read(d.join(&f.name)).ok()) {
                 f.content = base64::engine::general_purpose::STANDARD.encode(bytes);
             }
@@ -1254,10 +1283,7 @@ fn store_files(meta: &mut Meta, was: &[File]) -> Result<(), String> {
                 .decode(&f.content)
                 .map_err(|_| format!("invalid file content: {}", f.name))?;
             // Whole or not at all: a page being served is never read half written.
-            let pending = path.with_extension("streamerz-writing");
-            std::fs::write(&pending, &bytes)
-                .and_then(|_| std::fs::rename(&pending, &path))
-                .map_err(failed)?;
+            crate::fileio::write_atomic(&path, &bytes).map_err(failed)?;
             f.size = bytes.len() as u64;
             f.content = String::new();
         } else if let Ok(m) = std::fs::metadata(&path) {
@@ -1389,12 +1415,14 @@ pub fn create(c: &mut Config, group: &str) -> bool {
 
 /// Whether the name is a group of actions: what the Actions page lists.
 pub fn listed(c: &Config, group: &str) -> bool {
-    c.actions.groups.iter().any(|v| v.as_str() == Some(group)) || c.actions.actions.iter().any(|a| a.group == group)
+    !group.is_empty()
+        && (c.actions.groups.iter().any(|v| v.as_str() == Some(group))
+            || c.actions.actions.iter().any(|a| a.group == group))
 }
 
 /// Whether the name is taken: by a group of actions, or by an overlay that has none.
 pub fn exists(c: &Config, group: &str) -> bool {
-    listed(c, group) || c.action_groups.contains_key(group)
+    !group.is_empty() && (listed(c, group) || c.action_groups.contains_key(group))
 }
 
 /// Whether the group has a page: it is an overlay, with or without actions.
@@ -1583,16 +1611,12 @@ pub fn connect(c: &mut Config, overlay: &str, group: &str) -> Result<(), String>
     }
     // The group's values come along where the overlay has none of its own (a setting both declare
     // keeps the overlay's kind, so a value of another kind is left behind).
+    let defs = settings_defs(&into);
     let mut merged = values(c, group);
-    merged.retain(|name, v| {
-        into.variables
-            .iter()
-            .find(|d| d.name == *name)
-            .is_none_or(|d| d.accepts(v))
-    });
     if let Some(own) = c.action_group_variables.get(overlay).and_then(Value::as_object) {
         merged.extend(own.clone());
     }
+    merged.retain(|name, v| defs.iter().find(|d| d.name == *name).is_none_or(|d| d.accepts(v)));
     set_meta(c, overlay, into)?;
     set_values(c, overlay, merged)?;
     for a in &mut c.actions.actions {
@@ -1651,19 +1675,33 @@ pub fn text_file(name: &str, text: &str) -> File {
     }
 }
 
-/// `%group.name%` replaced by the group's values, nothing else expanded.
+/// `%group.name%` replaced by the group's values in a single pass, nothing else expanded.
 pub fn resolve(c: &Config, group: &str, text: &str) -> String {
-    if !text.contains("%group.") {
+    const PREFIX: &str = "%group.";
+    if !text.contains(PREFIX) {
         return text.to_string();
     }
-    let mut out = text.to_string();
-    for (k, v) in values(c, group) {
-        let s = match v {
-            Value::String(s) => s,
-            v => v.to_string(),
-        };
-        out = out.replace(&format!("%group.{k}%"), &s);
+    let vals = values(c, group);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find(PREFIX) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + PREFIX.len()..];
+        if let Some(end) = after.find('%') {
+            let key = &after[..end];
+            if let Some(v) = vals.get(key) {
+                match v {
+                    Value::String(s) => out.push_str(s),
+                    v => out.push_str(&v.to_string()),
+                }
+                rest = &after[end + 1..];
+                continue;
+            }
+        }
+        out.push_str(PREFIX);
+        rest = after;
     }
+    out.push_str(rest);
     out
 }
 
@@ -1676,15 +1714,25 @@ pub fn export_meta(c: &Config, groups: &[String]) -> Obj {
         .collect()
 }
 
-/// Take in what an export carries: each imported group's description, settings, files and
-/// members replace the ones here; the values already set stay unless the import has the same name.
-pub fn import_meta(c: &mut Config, groups: &Obj) -> Result<(), String> {
-    let mut parsed = Vec::new();
+fn parse_import_meta(groups: &Obj) -> Result<Vec<(String, Meta)>, String> {
+    let mut parsed = Vec::with_capacity(groups.len());
     for (g, v) in groups {
         let m: Meta = serde_json::from_value(v.clone()).map_err(|e| format!("invalid group {g}: {e}"))?;
         m.validate().map_err(|e| format!("group {g}: {e}"))?;
         parsed.push((g.clone(), m));
     }
+    Ok(parsed)
+}
+
+/// Check that every group entry in an export is valid without writing any files to disk.
+pub fn validate_import_meta(groups: &Obj) -> Result<(), String> {
+    parse_import_meta(groups).map(|_| ())
+}
+
+/// Take in what an export carries: each imported group's description, settings, files and
+/// members replace the ones here; the values already set stay unless the import has the same name.
+pub fn import_meta(c: &mut Config, groups: &Obj) -> Result<(), String> {
+    let parsed = parse_import_meta(groups)?;
     for (g, m) in parsed {
         // An overlay is listed among the groups of actions only once something is in it (`edit::import`
         // lists the group of every action, command and timer it brings).
@@ -2349,5 +2397,59 @@ mod tests {
         nan.min = Some(f64::NAN);
         assert!(slider_problem(&nan).is_some());
         assert_eq!(nan.range(), (0.0, 100.0, 1.0));
+    }
+
+    #[test]
+    fn path_traversal_empty_group_and_resolve_edge_cases_are_safe() {
+        // Traversal names in stored metadata are never served by file_path or read_file.
+        let mut c = config();
+        let store = meta(&c, "Timer").store;
+        c.action_groups.insert(
+            "Evil".into(),
+            json!({"store": store, "files": [{"name": "../../streamerz.json"}]}),
+        );
+        assert_eq!(file_path(&c, "Evil", "../../streamerz.json"), None);
+        assert_eq!(read_file(&c, "Evil", "../../streamerz.json"), None);
+
+        // Empty group name is never listed or renamed even when ungrouped actions exist.
+        c.actions.actions.push(crate::model::Action {
+            id: "ungrouped".into(),
+            name: "Loose".into(),
+            group: String::new(),
+            ..Default::default()
+        });
+        assert!(!listed(&c, ""));
+        assert!(!exists(&c, ""));
+        assert!(!rename(&mut c, "", "Hijacked"));
+        assert_eq!(c.actions.actions[0].group, "");
+
+        // accepts_file requires a real extension dot.
+        assert!(!accepts_file("image", "png"));
+        assert!(accepts_file("image", "pic.png"));
+
+        // parse_duration rejects trailing dot, signed clock parts, and huge unit overflows.
+        assert_eq!(parse_duration("1:02."), None);
+        assert_eq!(parse_duration("+1:02"), None);
+        assert_eq!(parse_duration("999999999999999999999h"), None);
+
+        // Kind::Range rejects reversed bounds.
+        assert!(!Kind::Range.accepts(&json!([20, 10])));
+        assert!(Kind::Range.accepts(&json!([10, 20])));
+
+        // resolve is single-pass (no double expansion) and handles stray %group. prefixes.
+        let mut v = Obj::new();
+        v.insert("a".into(), json!("%group.b%"));
+        v.insert("b".into(), json!("secret"));
+        set_values(&mut c, "Timer", v).unwrap();
+        assert_eq!(resolve(&c, "Timer", "%group.a%"), "%group.b%");
+        assert_eq!(resolve(&c, "Timer", "%group.bad %group.b%"), "%group.bad secret");
+
+        // validate_import_meta checks validity without creating files on disk.
+        let exported = export_meta(&c, &["Timer".to_string()]);
+        let before: usize = std::fs::read_dir(root()).map(|r| r.count()).unwrap_or(0);
+        validate_import_meta(&exported).unwrap();
+        let after: usize = std::fs::read_dir(root()).map(|r| r.count()).unwrap_or(0);
+        assert_eq!(before, after);
+        remove(&mut c, "Timer");
     }
 }

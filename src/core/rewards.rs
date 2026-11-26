@@ -85,24 +85,50 @@ pub fn opened(engine: &Rc<Engine>) {
     reload(engine);
 }
 
+/// Platform validation limits for custom channel point rewards.
+const TWITCH_TITLE_MAX: usize = 45;
+const KICK_TITLE_MAX: usize = 50;
+const PROMPT_MAX: usize = 200;
+const TWITCH_COST_MAX: u64 = 1_000_000_000;
+
+/// Syncs Kick's reward cache with a full `/channels/rewards` response, removing deleted rewards.
+fn sync_kick_rewards(list: &Value) {
+    let Some(items) = list["data"].as_array() else {
+        return;
+    };
+    let mut seen = std::collections::HashSet::with_capacity(items.len());
+    for r in items {
+        if let Some(id) = r["id"].as_str() {
+            seen.insert(id.to_owned());
+            crate::kick::reward_saved(r);
+        }
+    }
+    for old in crate::kick::rewards_known() {
+        if let Some(id) = old["id"].as_str().filter(|id| !seen.contains(*id)) {
+            crate::kick::reward_removed(id);
+        }
+    }
+}
+
 fn reload(engine: &Rc<Engine>) {
     let engine = engine.clone();
     tokio::task::spawn_local(async move {
-        if engine.twitch().is_some() {
-            if let Err(e) = crate::twitch::reload_rewards(&engine).await {
-                crate::warn(format!("Rewards: Twitch: {e}"));
-            }
-        }
-        if engine.kick().is_some() && engine.config().kick.broadcaster.is_some() {
-            match engine.kick_start().api("GET", "/channels/rewards", None).await {
-                Ok(list) => {
-                    for r in list["data"].as_array().into_iter().flatten() {
-                        crate::kick::reward_saved(r);
-                    }
+        let twitch = async {
+            if engine.twitch().is_some() {
+                if let Err(e) = crate::twitch::reload_rewards(&engine).await {
+                    crate::warn(format!("Rewards: Twitch: {e}"));
                 }
-                Err(e) => crate::warn(format!("Rewards: Kick: {e}")),
             }
-        }
+        };
+        let kick = async {
+            if let Some(kick) = engine.kick().filter(|_| engine.config().kick.broadcaster.is_some()) {
+                match kick.api("GET", "/channels/rewards", None).await {
+                    Ok(list) => sync_kick_rewards(&list),
+                    Err(e) => crate::warn(format!("Rewards: Kick: {e}")),
+                }
+            }
+        };
+        tokio::join!(twitch, kick);
         crate::host::changed();
     });
 }
@@ -219,21 +245,28 @@ pub fn act(engine: &Rc<Engine>, action: &str, key: &str) -> Result<Value, String
             });
             accepted
         }
-        "toggle" => {
-            change(engine, &r, json!({"is_enabled": !r.enabled}));
-            accepted
-        }
-        "pause" => {
-            change(engine, &r, json!({"is_paused": !r.paused}));
-            accepted
-        }
-        "delete" => {
-            let (code, field) = if r.platform == "twitch" {
-                (99523, "rewardId")
-            } else {
-                (99604, "rewardId")
-            };
-            run(engine, code, json!({ field: r.id }), &r.key);
+        "toggle" | "pause" | "delete" => {
+            if r.ours == Some(false) {
+                return Err(tr("rewards.not_ours").into());
+            }
+            match action {
+                "toggle" => change(engine, &r, json!({"is_enabled": !r.enabled}), None),
+                "pause" => {
+                    if !r.enabled {
+                        return Err("Enable the reward before pausing or resuming it.".into());
+                    }
+                    change(engine, &r, json!({"is_paused": !r.paused}), None);
+                }
+                "delete" => {
+                    let (code, field) = if r.platform == "twitch" {
+                        (99523, "rewardId")
+                    } else {
+                        (99604, "rewardId")
+                    };
+                    run(engine, code, json!({ field: r.id }), &r.title);
+                }
+                _ => unreachable!(),
+            }
             accepted
         }
         _ => Err(format!("rewards has no action {action}")),
@@ -241,8 +274,8 @@ pub fn act(engine: &Rc<Engine>, action: &str, key: &str) -> Result<Value, String
 }
 
 /// Changes a reward on its platform, and says plainly when it couldn't.
-fn change(engine: &Rc<Engine>, r: &Reward, body: Value) {
-    let (engine, platform, id, title) = (engine.clone(), r.platform, r.id.clone(), r.title.clone());
+fn change(engine: &Rc<Engine>, r: &Reward, body: Value, group: Option<String>) {
+    let (engine, platform, id, key, title) = (engine.clone(), r.platform, r.id.clone(), r.key.clone(), r.title.clone());
     tokio::task::spawn_local(async move {
         let result = if platform == "twitch" {
             match engine.twitch() {
@@ -256,16 +289,26 @@ fn change(engine: &Rc<Engine>, r: &Reward, body: Value) {
                 None => Err(tr("rewards.no_twitch").into()),
             }
         } else {
-            let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));
-            engine
-                .kick_start()
-                .api("PATCH", &path, Some(body))
-                .await
-                .map(|v| crate::kick::reward_saved(&v["data"]))
+            match engine.kick() {
+                Some(kick) => {
+                    let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));
+                    kick.api("PATCH", &path, Some(body))
+                        .await
+                        .map(|v| crate::kick::reward_saved(&v["data"]))
+                }
+                None => Err("Kick isn't connected".into()),
+            }
         };
-        if let Err(e) = result {
-            super::prompts::notice(title, trf("rewards.failed", &[("error", &e)]));
-            crate::host::prompts_changed();
+        match result {
+            Ok(()) => {
+                if let Some(group) = group {
+                    engine.change(|c| c.rewards.set_group(&key, &group));
+                }
+            }
+            Err(e) => {
+                super::prompts::notice(title, trf("rewards.failed", &[("error", &e)]));
+                crate::host::prompts_changed();
+            }
         }
         crate::host::changed();
     });
@@ -351,7 +394,11 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str) -> Option<Result<Value, St
     let fields = external_fields(kind)?;
     let groups: Vec<String> = engine.config().rewards.groups.keys().cloned().collect();
     if kind.starts_with("reward_new:") {
-        let item = json!({"id": "", "platform": 0, "title": "", "cost": 100, "prompt": "", "inputRequired": false,
+        let default_platform = {
+            let c = engine.config();
+            usize::from(c.twitch.broadcaster.is_none() && c.kick.broadcaster.is_some())
+        };
+        let item = json!({"id": "", "platform": default_platform, "title": "", "cost": 100, "prompt": "", "inputRequired": false,
             "backgroundColor": "", "enabled": true, "group": ""});
         return Some(Ok(form_json(
             kind,
@@ -363,16 +410,61 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str) -> Option<Result<Value, St
         )));
     }
     let key = kind.split_once(':').map_or("", |(_, key)| key);
-    Some(find(engine, key).map(|r| {
+    Some(find(engine, key).and_then(|r| {
+        if kind.starts_with("reward_edit:") && r.ours == Some(false) {
+            return Err(tr("rewards.not_ours").into());
+        }
         let group = engine.config().rewards.group_of(&r.key).unwrap_or_default().to_string();
         let item = json!({"id": r.key, "title": r.title, "cost": r.cost, "prompt": r.prompt, "inputRequired": r.input,
             "backgroundColor": r.color, "enabled": r.enabled, "paused": r.paused, "group": group});
-        form_json(kind, r.title.clone(), tr("btn.save"), fields, item, &groups)
+        Ok(form_json(kind, r.title.clone(), tr("btn.save"), fields, item, &groups))
     }))
 }
 
 fn get<'a>(item: &'a Obj, key: &str) -> &'a str {
     item.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+fn parse_cost(value: Option<&Value>, platform: &str) -> Result<u64, String> {
+    let raw = value
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+        })
+        .ok_or_else(|| "Reward cost must be a whole number of at least 1.".to_string())?;
+    if raw < 1 {
+        return Err("Reward cost must be at least 1.".into());
+    }
+    let cost = raw as u64;
+    if platform == "twitch" && cost > TWITCH_COST_MAX {
+        return Err(format!("Twitch reward cost cannot exceed {TWITCH_COST_MAX}."));
+    }
+    Ok(cost)
+}
+
+fn validate_reward(platform: &str, title: &str, prompt: &str, cost: Option<&Value>) -> Result<u64, String> {
+    if title.is_empty() {
+        return Err(tr("rewards.needs_title").into());
+    }
+    let max_title = if platform == "twitch" {
+        TWITCH_TITLE_MAX
+    } else {
+        KICK_TITLE_MAX
+    };
+    if title.chars().count() > max_title {
+        let where_name = if platform == "twitch" { "Twitch" } else { "Kick" };
+        return Err(format!("{where_name} reward titles take up to {max_title} characters."));
+    }
+    if prompt.chars().count() > PROMPT_MAX {
+        return Err(format!("Reward prompt takes up to {PROMPT_MAX} characters."));
+    }
+    parse_cost(cost, platform)
+}
+
+fn normalize_color(color: &str) -> Option<String> {
+    let rgb = color.trim().trim_start_matches('#');
+    (rgb.len() >= 6 && rgb.bytes().all(|c| c.is_ascii_hexdigit()))
+        .then(|| format!("#{}", &rgb[rgb.len() - 6..]).to_uppercase())
 }
 
 pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Result<Value, String>> {
@@ -386,15 +478,16 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         }));
     }
     let title = get(&item, "title").trim().to_string();
-    if title.is_empty() {
-        return Some(Err(tr("rewards.needs_title").into()));
-    }
-    let cost = item.get("cost").and_then(Value::as_u64).unwrap_or(0).max(1);
     let flag = |k: &str| item.get(k).and_then(Value::as_bool).unwrap_or(false);
     let prompt = get(&item, "prompt").to_string();
     let color = get(&item, "backgroundColor").to_string();
     if kind.starts_with("reward_new:") {
         let kick = item.get("platform").and_then(Value::as_u64) == Some(1);
+        let platform = if kick { "kick" } else { "twitch" };
+        let cost = match validate_reward(platform, &title, &prompt, item.get("cost")) {
+            Ok(cost) => cost,
+            Err(error) => return Some(Err(error)),
+        };
         let (code, text) = if kick {
             (99603, "description")
         } else {
@@ -403,7 +496,7 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         let settings = json!({"title": title, "cost": cost, text: prompt, "inputRequired": flag("inputRequired"),
             "backgroundColor": color, "enabled": flag("enabled")});
         // The group, once the reward exists.
-        let (engine, platform) = (engine.clone(), if kick { "kick" } else { "twitch" });
+        let engine = engine.clone();
         tokio::task::spawn_local(async move {
             let settings = settings.as_object().cloned().unwrap_or_default();
             let (after, outcome) = engine.execute_one(code, settings).await;
@@ -422,17 +515,19 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Resul
         });
         return Some(Ok(json!({"accepted": true})));
     }
-    Some(find(engine, &key).map(|r| {
-        engine.change(|c| c.rewards.set_group(&r.key, &group));
+    Some(find(engine, &key).and_then(|r| {
+        if r.ours == Some(false) {
+            return Err(tr("rewards.not_ours").into());
+        }
+        let cost = validate_reward(r.platform, &title, &prompt, item.get("cost"))?;
         let text = if r.platform == "twitch" { "prompt" } else { "description" };
         let mut body = json!({"title": title, "cost": cost, text: prompt, "is_user_input_required": flag("inputRequired"),
             "is_enabled": flag("enabled"), "is_paused": flag("paused")});
-        let rgb = color.trim().trim_start_matches('#');
-        if rgb.len() >= 6 && rgb.bytes().all(|c| c.is_ascii_hexdigit()) {
-            body["background_color"] = format!("#{}", &rgb[rgb.len() - 6..]).to_uppercase().into();
+        if let Some(hex) = normalize_color(&color) {
+            body["background_color"] = hex.into();
         }
-        change(engine, &r, body);
-        json!({"saved": r.key})
+        change(engine, &r, body, Some(group));
+        Ok(json!({"saved": r.key}))
     }))
 }
 
@@ -498,6 +593,163 @@ mod tests {
                 .unwrap()
                 .is_err());
             assert!(act(&engine, "reset", "twitch:gone").is_err());
+        });
+    }
+
+    #[test]
+    fn reward_validation_enforces_platform_limits_and_cost_parsing() {
+        assert_eq!(
+            validate_reward("twitch", "Hydrate", "", Some(&json!(100))).unwrap(),
+            100
+        );
+        assert_eq!(
+            validate_reward("twitch", "Hydrate", "", Some(&json!(" 250 "))).unwrap(),
+            250
+        );
+        assert!(validate_reward("twitch", "", "", Some(&json!(10))).is_err());
+        assert!(validate_reward("twitch", "Hydrate", "", Some(&json!(0))).is_err());
+        assert!(validate_reward("twitch", "Hydrate", "", Some(&json!(-5))).is_err());
+        assert!(validate_reward("twitch", "Hydrate", "", Some(&json!("abc"))).is_err());
+        assert!(validate_reward("twitch", "Hydrate", "", None).is_err());
+        assert!(validate_reward("twitch", "Hydrate", "", Some(&json!(TWITCH_COST_MAX + 1))).is_err());
+        assert_eq!(
+            validate_reward("twitch", "Hydrate", "", Some(&json!(TWITCH_COST_MAX))).unwrap(),
+            TWITCH_COST_MAX
+        );
+        // Title limits: 45 on Twitch, 50 on Kick (counted in Unicode chars).
+        let t45 = "é".repeat(TWITCH_TITLE_MAX);
+        let t46 = "é".repeat(TWITCH_TITLE_MAX + 1);
+        let k50 = "é".repeat(KICK_TITLE_MAX);
+        let k51 = "é".repeat(KICK_TITLE_MAX + 1);
+        assert!(validate_reward("twitch", &t45, "", Some(&json!(1))).is_ok());
+        assert!(validate_reward("twitch", &t46, "", Some(&json!(1))).is_err());
+        assert!(validate_reward("kick", &k50, "", Some(&json!(1))).is_ok());
+        assert!(validate_reward("kick", &k51, "", Some(&json!(1))).is_err());
+        // Prompt / description limit: 200 chars.
+        assert!(validate_reward("twitch", "Ok", &"a".repeat(PROMPT_MAX), Some(&json!(1))).is_ok());
+        assert!(validate_reward("twitch", "Ok", &"a".repeat(PROMPT_MAX + 1), Some(&json!(1))).is_err());
+        assert!(validate_reward("kick", "Ok", &"a".repeat(PROMPT_MAX + 1), Some(&json!(1))).is_err());
+    }
+
+    #[test]
+    fn normalize_color_accepts_rgb_and_argb_hex_only() {
+        assert_eq!(normalize_color("#9146ff"), Some("#9146FF".into()));
+        assert_eq!(normalize_color("ff112233"), Some("#112233".into()));
+        assert_eq!(normalize_color(" #00aaff "), Some("#00AAFF".into()));
+        assert_eq!(normalize_color("#12345"), None);
+        assert_eq!(normalize_color("#zzzzzz"), None);
+        assert_eq!(normalize_color(""), None);
+    }
+
+    #[test]
+    fn read_only_and_disabled_guards_block_invalid_actions_and_edits() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            crate::twitch::rewards_for_test(
+                vec![
+                    json!({"id": "ours_off", "title": "Off", "cost": 50, "is_enabled": false}),
+                    json!({"id": "theirs", "title": "External", "cost": 50, "is_enabled": true}),
+                ],
+                &["ours_off"],
+            );
+            // Non-owned rewards cannot be toggled, paused, deleted or edited, only grouped.
+            for action in ["toggle", "pause", "delete"] {
+                assert_eq!(
+                    act(&engine, action, "twitch:theirs").unwrap_err(),
+                    tr("rewards.not_ours"),
+                    "{action}"
+                );
+            }
+            assert_eq!(
+                external_form(&engine, "reward_edit:twitch:theirs")
+                    .unwrap()
+                    .unwrap_err(),
+                tr("rewards.not_ours")
+            );
+            assert_eq!(
+                save_external(
+                    &engine,
+                    "reward_edit:twitch:theirs",
+                    obj(json!({"title": "X", "cost": 10}))
+                )
+                .unwrap()
+                .unwrap_err(),
+                tr("rewards.not_ours")
+            );
+            // Disabled owned reward cannot be paused.
+            assert!(act(&engine, "pause", "twitch:ours_off").is_err());
+            // Group edit on failed platform edit does not mutate local config prematurely.
+            engine.change(|c| c.rewards.set_group("twitch:ours_off", "Original"));
+            save_external(
+                &engine,
+                "reward_edit:twitch:ours_off",
+                obj(json!({"title": "Off", "cost": 50, "group": "Changed", "enabled": false})),
+            )
+            .unwrap()
+            .unwrap();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            if let Some(prompt) = super::super::prompts::list().last() {
+                super::super::prompts::answer(prompt.id, Value::Null).ok();
+            }
+            assert_eq!(
+                engine.config().rewards.group_of("twitch:ours_off"),
+                Some("Original"),
+                "failed PATCH must not overwrite the local group"
+            );
+        });
+    }
+
+    #[test]
+    fn new_reward_form_defaults_to_kick_when_only_kick_is_logged_in_and_sync_removes_deleted() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| {
+                c.kick.broadcaster = Some(crate::kick::KickAccount {
+                    username: "streamer".into(),
+                    ..Default::default()
+                });
+            });
+            let form = external_form(&engine, "reward_new:").unwrap().unwrap();
+            assert_eq!(form["item"]["platform"], 1, "defaults to Kick when Twitch has no login");
+            sync_kick_rewards(&json!({"data": [
+                {"id": "k1", "title": "First", "cost": 10, "is_enabled": true},
+                {"id": "k2", "title": "Second", "cost": 20, "is_enabled": true}
+            ]}));
+            assert_eq!(crate::kick::rewards_known().len(), 2);
+            sync_kick_rewards(&json!({"data": [
+                {"id": "k2", "title": "Second", "cost": 25, "is_enabled": true}
+            ]}));
+            let known = crate::kick::rewards_known();
+            assert_eq!(known.len(), 1);
+            assert_eq!(known[0]["id"], "k2");
+            assert_eq!(known[0]["cost"], 25);
+            // Non-array response does not wipe the cache.
+            sync_kick_rewards(&json!({"data": null}));
+            assert_eq!(crate::kick::rewards_known().len(), 1);
+            // Deleting a reward when Twitch is disconnected reports the reward's title, not its key.
+            crate::twitch::rewards_for_test(
+                vec![json!({"id": "del1", "title": "Stretch", "cost": 100, "is_enabled": true})],
+                &["del1"],
+            );
+            let before = super::super::prompts::list().len();
+            act(&engine, "delete", "twitch:del1").unwrap();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            let prompts = super::super::prompts::list();
+            assert!(prompts.len() > before);
+            let prompt = prompts.last().unwrap();
+            let super::super::prompts::Content::Notice { title, .. } = &prompt.content else {
+                panic!("expected notice prompt");
+            };
+            assert_eq!(title, "Stretch");
+            super::super::prompts::answer(prompt.id, Value::Null).ok();
+            // Clean up Kick cache so other tests start clean.
+            sync_kick_rewards(&json!({"data": []}));
         });
     }
 }

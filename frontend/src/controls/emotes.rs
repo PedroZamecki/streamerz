@@ -5,6 +5,7 @@
 //! grid is virtualised, and asks the core for the pictures of the rows in view only. A click picks
 //! (Shift keeps the picker open to pick several), a right-click keeps or drops a favorite. Animated
 //! pictures play.
+use super::images::{Pictures, MAX_PENDING};
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_SM};
 use gpui_kit::component::{
@@ -17,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -27,6 +28,8 @@ const CELL: f32 = 40.;
 const PICTURE: f32 = 28.;
 /// Pictures asked for in one request.
 const BATCH: usize = 48;
+/// Pictures remembered before stale entries are evicted.
+const REMEMBERED: usize = 2000;
 
 /// An emote was picked: its name, picture URL, and whether the picker stays open for more.
 pub struct Picked(pub String, pub String, pub bool);
@@ -52,9 +55,7 @@ pub struct EmotePicker {
     folded: HashSet<String>,
     favorites: HashSet<String>,
     input: Entity<InputState>,
-    images: HashMap<String, PathBuf>,
-    missing: HashSet<String>,
-    asking: bool,
+    images: Pictures,
     error: Option<crate::error::StreamerzError>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -65,6 +66,7 @@ impl EmotePicker {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscriptions = vec![cx.subscribe_in(&input, window, |view, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
+                view.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 view.request(cx);
             }
         })];
@@ -77,9 +79,7 @@ impl EmotePicker {
             folded: HashSet::new(),
             favorites: HashSet::new(),
             input,
-            images: HashMap::new(),
-            missing: HashSet::new(),
-            asking: false,
+            images: Pictures::new("chat:emoteimages", BATCH, REMEMBERED, MAX_PENDING),
             error: None,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -117,10 +117,21 @@ impl EmotePicker {
         self.error = None;
         let data = value["emotes"].clone();
         // A search that is no longer what is typed is an old answer.
-        if data["query"].as_str().unwrap_or_default() != self.input.read(cx).value().trim().to_lowercase() {
+        let typed = self.input.read(cx).value().trim().to_lowercase();
+        if data["query"].as_str().unwrap_or_default() != typed {
             return;
         }
-        self.provider = data["active"].as_str().unwrap_or_default().to_owned();
+        // A reply for a previously open tab must not snap the user back after a tab switch.
+        let active = data["active"].as_str().unwrap_or_default();
+        let has_current_provider = !self.provider.is_empty()
+            && data["tabs"].as_array().is_some_and(|tabs| {
+                tabs.iter()
+                    .any(|tab| tab["id"].as_str() == Some(self.provider.as_str()))
+            });
+        if typed.is_empty() && has_current_provider && active != self.provider {
+            return;
+        }
+        self.provider = active.to_owned();
         self.favorites = data["favorites"]
             .as_array()
             .into_iter()
@@ -130,8 +141,9 @@ impl EmotePicker {
         self.frequent = pairs(&data["frequent"]);
         self.data = data;
         self.layout();
-        let wanted: Vec<String> = self.frequent.iter().map(|(_, url)| url.clone()).collect();
-        self.want_urls(wanted);
+        self.images.clear_pending();
+        self.images.want_all(self.frequent.iter().map(|(_, url)| url.as_str()));
+        self.images.ask();
         cx.notify();
     }
 
@@ -156,56 +168,40 @@ impl EmotePicker {
 
     /// Pictures the page asked for arrived (or the core has more of them now).
     pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
-        // A catalog still loading fills the tab when it lands.
-        if self.rows.iter().all(|row| matches!(row, Row::Head { .. })) {
+        // A catalog still loading fills the tab when it lands; skip empty searches, empty favorites, or folded tabs.
+        let waiting_catalog = self.data.is_null()
+            || (self.input.read(cx).value().trim().is_empty()
+                && self.provider != "favorites"
+                && self.folded.is_empty()
+                && self.rows.iter().all(|row| matches!(row, Row::Head { .. })));
+        if waiting_catalog {
             self.request(cx);
         }
-        self.ask_images();
+        self.images.arrived();
     }
 
     pub fn images(&mut self, value: &Value, cx: &mut Context<Self>) {
-        self.asking = false;
-        for (url, file) in value["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-                self.missing.remove(url);
+        let (frequent, rows) = (&self.frequent, &self.rows);
+        self.images.apply(value, || {
+            let mut urls: HashSet<String> = frequent.iter().map(|(_, url)| url.clone()).collect();
+            for row in rows {
+                if let Row::Cells(cells) = row {
+                    urls.extend(cells.iter().map(|(_, url)| url.clone()));
+                }
             }
-        }
+            urls
+        });
         cx.notify();
-    }
-
-    fn ask_images(&mut self) {
-        if self.asking || self.missing.is_empty() {
-            return;
-        }
-        let urls: Vec<&String> = self.missing.iter().take(BATCH).collect();
-        self.asking = true;
-        send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:emoteimages"}));
     }
 
     /// Note the pictures of the rows in view that are not here yet.
     fn want(&mut self, range: Range<usize>) {
-        let urls: Vec<String> = self
-            .rows
-            .get(range)
-            .into_iter()
-            .flatten()
-            .filter_map(|row| match row {
-                Row::Cells(cells) => Some(cells.iter().map(|(_, url)| url.clone())),
-                Row::Head { .. } => None,
-            })
-            .flatten()
-            .collect();
-        self.want_urls(urls);
-    }
-
-    fn want_urls(&mut self, urls: Vec<String>) {
-        for url in urls {
-            if url.starts_with("http") && !self.images.contains_key(&url) {
-                self.missing.insert(url);
+        for row in self.rows.get(range).into_iter().flatten() {
+            if let Row::Cells(cells) = row {
+                self.images.want_all(cells.iter().map(|(_, url)| url.as_str()));
             }
         }
-        self.ask_images();
+        self.images.ask();
     }
 
     /// One emote: its picture (playing when animated), its name on hover; a click picks it, a
@@ -250,7 +246,7 @@ impl EmotePicker {
                     .into_any_element(),
                 None => div()
                     .text_size(px(FONT_CAPTION))
-.line_height(px(LINE_CAPTION))
+                    .line_height(px(LINE_CAPTION))
                     .text_color(theme.muted_foreground)
                     .child(name.chars().take(3).collect::<String>())
                     .into_any_element(),
@@ -336,10 +332,13 @@ impl Render for EmotePicker {
                     .on_click(cx.listener(move |view, index: &usize, window, cx| {
                         if let Some(id) = ids.get(*index) {
                             view.provider = id.clone();
+                            view.scroll.scroll_to_item(0, ScrollStrategy::Top);
                             if !view.input.read(cx).value().is_empty() {
+                                // Clearing the input triggers InputEvent::Change, which sends the request.
                                 view.input.update(cx, |input, cx| input.set_value("", window, cx));
+                            } else {
+                                view.request(cx);
                             }
-                            view.request(cx);
                         }
                     })),
             );
@@ -625,6 +624,57 @@ mod tests {
         cx.update_window(window.into(), |_, _, cx| {
             assert_eq!(picker.read(cx).provider, "7tv");
             assert_eq!(picker.read(cx).input.read(cx).value(), "");
+
+            // Stale reply for the old "platform" tab must be ignored after switching to "7tv".
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "platform",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "Stale Platform", "emotes": [["Kappa", "https://example.com/kappa.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            assert_eq!(picker.read(cx).provider, "7tv");
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "Matches");
+
+            // Matching reply for "7tv" applies cleanly.
+            picker.update(cx, |picker, cx| {
+                picker.apply(
+                    json!({
+                        "emotes": {
+                            "query": "",
+                            "active": "7tv",
+                            "tabs": [
+                                {"id": "platform", "label": "Twitch"},
+                                {"id": "7tv", "label": "7TV"}
+                            ],
+                            "sections": [
+                                {"title": "7TV Global", "emotes": [["KEKW", "https://example.com/kekw.png"]]}
+                            ]
+                        }
+                    }),
+                    cx,
+                );
+            });
+            let first_head = match picker.read(cx).rows.first() {
+                Some(Row::Head { title, .. }) => title.as_str(),
+                _ => "",
+            };
+            assert_eq!(first_head, "7TV Global");
         })
         .unwrap();
     }

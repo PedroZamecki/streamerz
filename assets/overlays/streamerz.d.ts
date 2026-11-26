@@ -24,17 +24,17 @@ declare namespace Streamerz {
   interface Line {
     platform: Platform;
     /** The time of day, as the user reads it. */
-    time: string;
+    time?: string;
     user: string;
     userId: string;
     /** The colour of the name, already readable on a dark background. */
     color: string;
-    badges: Badge[];
+    badges?: Badge[];
     /** The message in pieces, with the emotes of every provider found. */
     parts: Part[];
     /** The message as plain text. */
     text: string;
-    msgId: string;
+    msgId?: string;
     /** The picture of who wrote it, when the platform sends it along (else `streamerz.avatar`). */
     avatar?: string;
     reply?: { user: string; text: string };
@@ -46,8 +46,14 @@ declare namespace Streamerz {
     action?: boolean;
     gif?: string;
     picture?: string;
+    /** The picture is to be drawn big. */
+    huge?: boolean;
+    /** A highlight or event colour. */
+    accent?: string;
     tag?: string;
     deleted?: boolean;
+    /** Original text of a deleted message, when kept. */
+    original?: string;
   }
 
   type AlertKind =
@@ -62,7 +68,7 @@ declare namespace Streamerz {
     /** A Lucide icon name: star, gift, swords, user-plus, gem. */
     icon: string;
     /** The event's colour. */
-    accent: string;
+    accent?: string;
     cost?: number;
     costIcon?: string;
     /** The picture is to be drawn big. */
@@ -76,23 +82,33 @@ declare namespace Streamerz {
   }
 
   interface Song {
-    title: string;
-    artist: string;
-    album: string;
+    title?: string;
+    artist?: string;
+    album?: string;
     /** The cover's address, empty when the player gives none. */
-    cover: string;
+    cover?: string;
     playing: boolean;
-    durationMs: number;
-    positionMs: number;
+    durationMs?: number;
+    positionMs?: number;
     /** When `positionMs` was true, in ms since 1970: `streamerz.position(song)` counts on from it. */
-    at: number;
+    at?: number;
+  }
+
+  interface Ad {
+    running: boolean;
+    /** Break length, in seconds. */
+    duration?: number;
+    isAutomatic?: boolean;
+    startedAt?: string;
+    /** When the break ends, in ms since 1970. */
+    endsAt?: number;
   }
 
   interface Countdown {
     running: boolean;
     remainingMs: number;
-    /** When it reaches zero, in ms since 1970: count down from this, no ticks are sent. */
-    deadlineMs: number;
+    /** When it reaches zero, in ms since 1970, or null while paused: count down from this, no ticks are sent. */
+    deadlineMs: number | null;
     maxMs: number;
   }
 
@@ -235,6 +251,7 @@ declare namespace Streamerz {
     /** A topic: its current value first (`old` is true for one from before the page opened), then every change. */
     on(topic: "viewers", fn: (value: Viewers, old: boolean) => void): Api;
     on(topic: "song", fn: (value: Song, old: boolean) => void): Api;
+    on(topic: "ad", fn: (value: Ad, old: boolean) => void): Api;
     on(topic: string, fn: (value: any, old: boolean) => void): Api;
     /** Any Streamerz event by `Source.Type` ("Twitch.Follow"), or `Source.*` for all of one source. */
     event(name: string, fn: (data: any, name: string) => void): Api;

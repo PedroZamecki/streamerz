@@ -50,7 +50,7 @@ pub struct ObsConfig {
 }
 
 /// Parsed connection parameters with sensible defaults.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObsConnInfo {
     pub id: String,
     pub name: String,
@@ -61,6 +61,25 @@ pub struct ObsConnInfo {
     pub reconnect: bool,
     pub retry_interval: u64,
     pub version: u8,
+}
+
+/// WebSocket URL for an OBS host and port, bracketing bare IPv6 addresses.
+pub(crate) fn ws_url(host: &str, port: u16) -> String {
+    let h = host.trim();
+    let h = if h.is_empty() { "127.0.0.1" } else { h };
+    if h.contains(':') && !h.starts_with('[') {
+        format!("ws://[{h}]:{port}")
+    } else {
+        format!("ws://{h}:{port}")
+    }
+}
+
+/// Exponential reconnect delay starting at `base_secs` (at least 1s), capped at `max(base_secs, 60)`s.
+pub(crate) fn reconnect_delay(base_secs: u64, attempt: u32) -> Duration {
+    let base = base_secs.max(1);
+    let cap = base.max(60);
+    let factor = 1u64 << attempt.saturating_sub(1).min(4);
+    Duration::from_secs(base.saturating_mul(factor).min(cap))
 }
 
 impl ObsConnInfo {
@@ -83,15 +102,16 @@ impl ObsConnInfo {
             "" => "127.0.0.1".to_string(),
             h => h.to_string(),
         };
-        let port = match u64_val("port", 4455) {
-            0 => 4455,
-            p => p as u16,
-        };
-        let password = str_val("password").to_string();
+        let port = u16::try_from(u64_val("port", 4455))
+            .ok()
+            .filter(|&p| p > 0)
+            .unwrap_or(4455);
+        // Preserve leading/trailing spaces in passwords.
+        let password = o.get("password").and_then(Value::as_str).unwrap_or("").to_string();
         let auto_connect = bool_val("autoConnect", true);
         let reconnect = bool_val("reconnect", bool_val("reconnectOnDisconnect", true));
         let retry_interval = u64_val("retryInterval", 5).max(1);
-        let version = u64_val("version", 5) as u8;
+        let version = u64_val("version", 5).min(u8::MAX as u64) as u8;
 
         Self {
             id,
@@ -165,16 +185,21 @@ impl crate::ports::ObsPort for ObsHandle {
         request_data: Value,
     ) -> crate::ports::Fut<'a, Result<Value, String>> {
         Box::pin(async move {
-            let (resp_tx, resp_rx) = oneshot::channel();
-            self.tx
-                .send(ObsCmd::Request {
+            crate::runner::ask(
+                &self.tx,
+                crate::runner::ReplyErrors {
+                    down: "OBS runner is down",
+                    cancelled: "OBS request cancelled",
+                    timeout: Some((Duration::from_secs(30), "OBS request timed out")),
+                },
+                |resp| ObsCmd::Request {
                     connection_id: connection_id.map(String::from),
                     request_type: request_type.to_string(),
                     request_data,
-                    resp: resp_tx,
-                })
-                .map_err(|_| "OBS runner is down".to_string())?;
-            resp_rx.await.map_err(|_| "OBS request cancelled".to_string())?
+                    resp,
+                },
+            )
+            .await
         })
     }
 
@@ -185,17 +210,22 @@ impl crate::ports::ObsPort for ObsHandle {
         requests: Vec<Value>,
     ) -> crate::ports::Fut<'a, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            let (resp_tx, resp_rx) = oneshot::channel();
-            self.tx
-                .send(ObsCmd::BatchRequest {
+            crate::runner::ask(
+                &self.tx,
+                crate::runner::ReplyErrors {
+                    down: "OBS runner is down",
+                    cancelled: "OBS batch request cancelled",
+                    timeout: Some((Duration::from_secs(30), "OBS batch request timed out")),
+                },
+                |resp| ObsCmd::BatchRequest {
                     connection_id: connection_id.map(String::from),
                     halt_on_failure,
                     execution_type: 0,
                     requests,
-                    resp: resp_tx,
-                })
-                .map_err(|_| "OBS runner is down".to_string())?;
-            resp_rx.await.map_err(|_| "OBS batch request cancelled".to_string())?
+                    resp,
+                },
+            )
+            .await
         })
     }
 
@@ -241,6 +271,13 @@ struct ConnHandle {
     info: ObsConnInfo,
     connected: Arc<AtomicBool>,
     cmd_tx: mpsc::UnboundedSender<ConnCmd>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+impl ConnHandle {
+    fn is_running(&self) -> bool {
+        self.task.as_ref().is_some_and(|t| !t.is_finished())
+    }
 }
 
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> ObsHandle {
@@ -257,6 +294,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> ObsHandle 
         rx,
         connections,
         conn_handles: HashMap::new(),
+        conn_order: Vec::new(),
     };
     tokio::task::spawn_local(runner.run());
     handle
@@ -268,6 +306,7 @@ struct Runner {
     rx: mpsc::UnboundedReceiver<ObsCmd>,
     connections: Arc<std::sync::RwLock<HashMap<String, Arc<AtomicBool>>>>,
     conn_handles: HashMap<String, ConnHandle>,
+    conn_order: Vec<String>,
 }
 
 impl Runner {
@@ -304,7 +343,7 @@ impl Runner {
                     if let Some(id) = connection_id.as_deref() {
                         self.start_connection(id);
                     } else {
-                        let all_ids: Vec<String> = self.conn_handles.keys().cloned().collect();
+                        let all_ids = self.conn_order.clone();
                         for id in all_ids {
                             self.start_connection(&id);
                         }
@@ -312,12 +351,11 @@ impl Runner {
                 }
                 ObsCmd::Disconnect { connection_id } => {
                     if let Some(id) = connection_id.as_deref() {
-                        if let Some(h) = self.conn_handles.get(id) {
-                            let _ = h.cmd_tx.send(ConnCmd::Disconnect);
-                        }
+                        self.stop_connection(id);
                     } else {
-                        for h in self.conn_handles.values() {
-                            let _ = h.cmd_tx.send(ConnCmd::Disconnect);
+                        let all_ids = self.conn_order.clone();
+                        for id in all_ids {
+                            self.stop_connection(&id);
                         }
                     }
                 }
@@ -328,9 +366,21 @@ impl Runner {
         }
     }
 
+    fn stop_connection(&mut self, id: &str) {
+        if let Some(h) = self.conn_handles.get_mut(id) {
+            let _ = h.cmd_tx.send(ConnCmd::Disconnect);
+            if !h.connected.load(Ordering::Relaxed) {
+                if let Some(task) = h.task.take() {
+                    task.abort();
+                }
+            }
+        }
+    }
+
     fn sync_connections(&mut self, auto_start: bool) {
         let obs_cfg = self.cfg.borrow().obs.clone();
         let mut active_ids = Vec::new();
+        let mut restart_ids = Vec::new();
 
         for obj in &obs_cfg.connections {
             let mut info = ObsConnInfo::from_obj(obj);
@@ -350,17 +400,40 @@ impl Runner {
                     info: info.clone(),
                     connected: connected.clone(),
                     cmd_tx,
+                    task: None,
                 };
                 self.conn_handles.insert(info.id.clone(), handle);
             } else if let Some(h) = self.conn_handles.get_mut(&info.id) {
-                h.info = info.clone();
+                if h.info != info {
+                    let was_running = h.is_running();
+                    let was_connected = h.connected.swap(false, Ordering::Relaxed);
+                    let old_info = h.info.clone();
+                    if let Some(task) = h.task.take() {
+                        task.abort();
+                    }
+                    if was_connected {
+                        fire_disconnected(&self.engine, &old_info);
+                    }
+                    h.info = info.clone();
+                    if was_running {
+                        restart_ids.push(info.id.clone());
+                    }
+                }
             }
         }
 
         // Remove deleted connections
+        let mut removed_connected = Vec::new();
         self.conn_handles.retain(|id, h| {
             if !active_ids.contains(id) {
                 let _ = h.cmd_tx.send(ConnCmd::Disconnect);
+                if let Some(task) = h.task.take() {
+                    task.abort();
+                }
+                if h.connected.swap(false, Ordering::Relaxed) {
+                    removed_connected.push(h.info.clone());
+                }
+                SEEN.with_borrow_mut(|m| m.remove(id));
                 if let Ok(mut map) = self.connections.write() {
                     map.remove(id);
                 }
@@ -369,13 +442,25 @@ impl Runner {
                 true
             }
         });
+        for old_info in removed_connected {
+            fire_disconnected(&self.engine, &old_info);
+        }
+        self.conn_order = active_ids;
+
+        for id in restart_ids {
+            self.start_connection(&id);
+        }
 
         if auto_start {
             let ids_to_start: Vec<String> = self
-                .conn_handles
+                .conn_order
                 .iter()
-                .filter(|(_, h)| h.info.auto_connect)
-                .map(|(id, _)| id.clone())
+                .filter(|id| {
+                    self.conn_handles
+                        .get(*id)
+                        .is_some_and(|h| h.info.auto_connect && !h.is_running())
+                })
+                .cloned()
                 .collect();
             for id in ids_to_start {
                 self.start_connection(&id);
@@ -388,14 +473,19 @@ impl Runner {
             if h.connected.load(Ordering::Relaxed) {
                 return;
             }
+            if let Some(task) = h.task.take() {
+                task.abort();
+            }
             let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
             h.cmd_tx = cmd_tx;
             let engine = self.engine.clone();
             let info = h.info.clone();
             let connected = h.connected.clone();
-            tokio::task::spawn_local(async move {
+            let task = tokio::task::spawn_local(async move {
                 run_conn_loop(engine, info, connected, &mut cmd_rx).await;
-            });
+            })
+            .abort_handle();
+            h.task = Some(task);
         }
     }
 
@@ -404,21 +494,27 @@ impl Runner {
             if let Some(h) = self.conn_handles.get(id) {
                 return Some(h);
             }
-            // Check by name or index
-            if let Some(h) = self.conn_handles.values().find(|h| h.info.name == id) {
+            // Check by name or deterministic config index
+            if let Some(h) = self
+                .conn_order
+                .iter()
+                .filter_map(|k| self.conn_handles.get(k))
+                .find(|h| h.info.name == id)
+            {
                 return Some(h);
             }
             if let Ok(idx) = id.parse::<usize>() {
-                if let Some(h) = self.conn_handles.values().nth(idx) {
+                if let Some(h) = self.conn_order.get(idx).and_then(|k| self.conn_handles.get(k)) {
                     return Some(h);
                 }
             }
         }
-        // Fall back to first connected connection, or first connection
-        self.conn_handles
-            .values()
+        // Fall back to first connected connection, or first connection in config order
+        self.conn_order
+            .iter()
+            .filter_map(|k| self.conn_handles.get(k))
             .find(|h| h.connected.load(Ordering::Relaxed))
-            .or_else(|| self.conn_handles.values().next())
+            .or_else(|| self.conn_order.first().and_then(|k| self.conn_handles.get(k)))
     }
 
     fn dispatch_request(
@@ -436,8 +532,8 @@ impl Runner {
                 request_data,
                 resp,
             };
-            if h.cmd_tx.send(ConnCmd::Request(req)).is_err() {
-                // Connection channel dead
+            if let Err(mpsc::error::SendError(ConnCmd::Request(req))) = h.cmd_tx.send(ConnCmd::Request(req)) {
+                let _ = req.resp.send(Err("OBS is not connected".to_string()));
             }
         } else {
             let _ = resp.send(Err("No configured OBS connection".to_string()));
@@ -461,10 +557,27 @@ impl Runner {
                 requests,
                 resp,
             };
-            let _ = h.cmd_tx.send(ConnCmd::Batch(req));
+            if let Err(mpsc::error::SendError(ConnCmd::Batch(req))) = h.cmd_tx.send(ConnCmd::Batch(req)) {
+                let _ = req.resp.send(Err("OBS is not connected".to_string()));
+            }
         } else {
             let _ = resp.send(Err("No configured OBS connection".to_string()));
         }
+    }
+}
+
+/// Replies immediately to a request received while OBS is not ready; returns true if the task should exit.
+fn handle_offline_cmd(cmd: Option<ConnCmd>) -> bool {
+    match cmd {
+        Some(ConnCmd::Request(req)) => {
+            let _ = req.resp.send(Err("OBS is not connected".to_string()));
+            false
+        }
+        Some(ConnCmd::Batch(req)) => {
+            let _ = req.resp.send(Err("OBS is not connected".to_string()));
+            false
+        }
+        Some(ConnCmd::Disconnect) | None => true,
     }
 }
 
@@ -474,75 +587,122 @@ async fn run_conn_loop(
     is_connected: Arc<AtomicBool>,
     cmd_rx: &mut mpsc::UnboundedReceiver<ConnCmd>,
 ) {
-    let url = format!("ws://{}:{}", info.host, info.port);
+    let url = ws_url(&info.host, info.port);
     crate::say(format!("OBS '{}': connecting to {url}...", info.name));
+    let mut attempt: u32 = 0;
+    let mut last_err: Option<String> = None;
 
     loop {
-        match crate::http::ws_connect(&url).await {
-            Ok((ws, _)) => {
+        let connect_fut = tokio::time::timeout(Duration::from_secs(15), crate::http::ws_connect(&url));
+        tokio::pin!(connect_fut);
+        let connect_res = loop {
+            tokio::select! {
+                res = &mut connect_fut => break res,
+                cmd = cmd_rx.recv() => {
+                    if handle_offline_cmd(cmd) {
+                        return;
+                    }
+                }
+            }
+        };
+
+        match connect_res {
+            Ok(Ok((ws, _))) => {
                 let (mut sink, mut stream) = ws.split();
                 let mut identified = false;
                 let mut pending: HashMap<String, oneshot::Sender<Result<Value, String>>> = HashMap::new();
                 let mut batch_pending: HashMap<String, oneshot::Sender<Result<Vec<Value>, String>>> = HashMap::new();
 
-                // Step 1: Wait for Op 0 (Hello)
-                while let Some(msg_res) = stream.next().await {
-                    let msg = match msg_res {
-                        Ok(m) => m,
-                        Err(e) => {
-                            crate::warn(format!("OBS '{}': handshake error: {e}", info.name));
+                // Step 1: Wait for Op 0 (Hello) and Op 2 (Identified) with a handshake timeout.
+                let handshake_deadline = tokio::time::sleep(Duration::from_secs(15));
+                tokio::pin!(handshake_deadline);
+                let mut close_note: Option<String> = None;
+                loop {
+                    tokio::select! {
+                        _ = &mut handshake_deadline => {
+                            crate::warn(format!("OBS '{}': handshake timed out", info.name));
                             break;
                         }
-                    };
-                    if let Message::Text(txt) = msg {
-                        if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                            let op = v.get("op").and_then(Value::as_u64).unwrap_or(99);
-                            if op == OP_HELLO {
-                                let d = v.get("d").cloned().unwrap_or(json!({}));
-                                let ws = d["obsWebSocketVersion"].as_str().unwrap_or("").to_string();
-                                let studio = d["obsStudioVersion"].as_str().unwrap_or("").to_string();
-                                SEEN.with_borrow_mut(|m| m.entry(info.id.clone()).or_default().0 = (studio, ws));
-                                let auth_obj = d.get("authentication");
-                                let identify_data = if let Some(auth) = auth_obj {
-                                    let salt = auth.get("salt").and_then(Value::as_str).unwrap_or("");
-                                    let challenge = auth.get("challenge").and_then(Value::as_str).unwrap_or("");
-                                    let auth_response = crate::servers::auth_response(&info.password, salt, challenge);
-                                    json!({
-                                        "rpcVersion": 1,
-                                        "authentication": auth_response,
-                                        "eventSubscriptions": EVENT_SUBSCRIPTIONS_ALL,
-                                    })
-                                } else {
-                                    json!({
-                                        "rpcVersion": 1,
-                                        "eventSubscriptions": EVENT_SUBSCRIPTIONS_ALL,
-                                    })
-                                };
-
-                                let identify_msg = json!({
-                                    "op": OP_IDENTIFY,
-                                    "d": identify_data,
-                                });
-                                if sink.send(Message::Text(identify_msg.to_string().into())).await.is_err() {
+                        cmd = cmd_rx.recv() => {
+                            if handle_offline_cmd(cmd) {
+                                let _ = tokio::time::timeout(Duration::from_secs(1), sink.close()).await;
+                                return;
+                            }
+                        }
+                        msg_opt = stream.next() => {
+                            let Some(msg_res) = msg_opt else { break };
+                            let msg = match msg_res {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    crate::warn(format!("OBS '{}': handshake error: {e}", info.name));
                                     break;
                                 }
-                            } else if op == OP_IDENTIFIED {
-                                identified = true;
-                                is_connected.store(true, Ordering::Relaxed);
-                                crate::core::status::clear_failure(&format!("obs:{}", info.id));
-                                crate::say(format!(
-                                    "OBS '{}' ({}): connected and identified at {url}",
-                                    info.name, info.id
-                                ));
+                            };
+                            match msg {
+                                Message::Ping(data) => {
+                                    let _ = sink.send(Message::Pong(data)).await;
+                                }
+                                Message::Close(frame) => {
+                                    if let Some(f) = frame {
+                                        close_note = Some(format!("code {} ({})", u16::from(f.code), f.reason));
+                                    }
+                                    break;
+                                }
+                                Message::Text(txt) => {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                        let op = v.get("op").and_then(Value::as_u64).unwrap_or(99);
+                                        if op == OP_HELLO {
+                                            let d = v.get("d").cloned().unwrap_or(json!({}));
+                                            let ws_ver = d["obsWebSocketVersion"].as_str().unwrap_or("").to_string();
+                                            let studio = d["obsStudioVersion"].as_str().unwrap_or("").to_string();
+                                            SEEN.with_borrow_mut(|m| m.entry(info.id.clone()).or_default().0 = (studio, ws_ver));
+                                            let auth_obj = d.get("authentication").filter(|a| a.is_object());
+                                            let identify_data = if let Some(auth) = auth_obj {
+                                                let salt = auth.get("salt").and_then(Value::as_str).unwrap_or("");
+                                                let challenge = auth.get("challenge").and_then(Value::as_str).unwrap_or("");
+                                                let auth_response = crate::servers::auth_response(&info.password, salt, challenge);
+                                                json!({
+                                                    "rpcVersion": 1,
+                                                    "authentication": auth_response,
+                                                    "eventSubscriptions": EVENT_SUBSCRIPTIONS_ALL,
+                                                })
+                                            } else {
+                                                json!({
+                                                    "rpcVersion": 1,
+                                                    "eventSubscriptions": EVENT_SUBSCRIPTIONS_ALL,
+                                                })
+                                            };
 
-                                let args = obs_args(&info);
-                                engine.fire(T_OBS_CONNECTED, "ObsConnected", "OBS Studio", "obs", &args, |t| {
-                                    field_matches(t, "connectionId", &info.id)
-                                });
-                                engine.emit("ObsStudio", "Connected", || json!(args));
-                                crate::core::preflight::on_obs_connected(&engine, &info.id);
-                                tokio::task::spawn_local(publish_catalog(engine.clone(), info.id.clone()));
-                                break;
+                                            let identify_msg = json!({
+                                                "op": OP_IDENTIFY,
+                                                "d": identify_data,
+                                            });
+                                            if sink.send(Message::Text(identify_msg.to_string().into())).await.is_err() {
+                                                break;
+                                            }
+                                        } else if op == OP_IDENTIFIED {
+                                            identified = true;
+                                            attempt = 0;
+                                            last_err = None;
+                                            is_connected.store(true, Ordering::Relaxed);
+                                            crate::core::status::clear_failure(&format!("obs:{}", info.id));
+                                            crate::say(format!(
+                                                "OBS '{}' ({}): connected and identified at {url}",
+                                                info.name, info.id
+                                            ));
+
+                                            let args = obs_args(&info);
+                                            engine.fire(T_OBS_CONNECTED, "ObsConnected", "OBS Studio", "obs", &args, |t| {
+                                                field_matches(t, "connectionId", &info.id)
+                                            });
+                                            engine.emit("ObsStudio", "Connected", || json!(args));
+                                            crate::core::preflight::on_obs_connected(&engine, &info.id);
+                                            tokio::task::spawn_local(publish_catalog(engine.clone(), info.id.clone()));
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -553,7 +713,11 @@ async fn run_conn_loop(
                         &format!("obs:{}", info.id),
                         crate::core::status::Failure::Handshake,
                     );
-                    crate::error(format!("OBS '{}': identification failed", info.name));
+                    if let Some(note) = close_note {
+                        crate::error(format!("OBS '{}': identification failed: {note}", info.name));
+                    } else {
+                        crate::error(format!("OBS '{}': identification failed", info.name));
+                    }
                 } else {
                     // Step 2: Active communication loop
                     loop {
@@ -561,13 +725,16 @@ async fn run_conn_loop(
                             cmd_opt = cmd_rx.recv() => {
                                 match cmd_opt {
                                     Some(ConnCmd::Request(req)) => {
+                                        let mut d = json!({
+                                            "requestType": req.request_type,
+                                            "requestId": req.request_id,
+                                        });
+                                        if !req.request_data.is_null() {
+                                            d["requestData"] = req.request_data;
+                                        }
                                         let req_msg = json!({
                                             "op": OP_REQUEST,
-                                            "d": {
-                                                "requestType": req.request_type,
-                                                "requestId": req.request_id,
-                                                "requestData": req.request_data,
-                                            }
+                                            "d": d,
                                         });
                                         pending.insert(req.request_id, req.resp);
                                         if sink.send(Message::Text(req_msg.to_string().into())).await.is_err() {
@@ -590,7 +757,13 @@ async fn run_conn_loop(
                                         }
                                     }
                                     Some(ConnCmd::Disconnect) | None => {
-                                        let _ = sink.close().await;
+                                        let _ = tokio::time::timeout(Duration::from_secs(1), sink.close()).await;
+                                        for (_, tx) in pending.drain() {
+                                            let _ = tx.send(Err("OBS connection closed".to_string()));
+                                        }
+                                        for (_, tx) in batch_pending.drain() {
+                                            let _ = tx.send(Err("OBS connection closed".to_string()));
+                                        }
                                         crate::say(format!("OBS '{}': disconnected by user request", info.name));
                                         is_connected.store(false, Ordering::Relaxed);
                                         fire_disconnected(&engine, &info);
@@ -636,9 +809,21 @@ async fn run_conn_loop(
                     fire_disconnected(&engine, &info);
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 crate::core::status::record_failure(&format!("obs:{}", info.id), crate::core::status::Failure::Connect);
-                crate::warn(format!("OBS '{}': failed to connect to {url}: {e}", info.name));
+                let msg = e.to_string();
+                if last_err.as_deref() != Some(msg.as_str()) {
+                    crate::warn(format!("OBS '{}': failed to connect to {url}: {msg}", info.name));
+                    last_err = Some(msg);
+                }
+            }
+            Err(_) => {
+                crate::core::status::record_failure(&format!("obs:{}", info.id), crate::core::status::Failure::Connect);
+                let msg = "connection timed out".to_string();
+                if last_err.as_deref() != Some(msg.as_str()) {
+                    crate::warn(format!("OBS '{}': failed to connect to {url}: {msg}", info.name));
+                    last_err = Some(msg);
+                }
             }
         }
 
@@ -646,12 +831,16 @@ async fn run_conn_loop(
             break;
         }
 
-        // Wait retry_interval or check for disconnect command
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(info.retry_interval)) => {}
-            cmd = cmd_rx.recv() => {
-                if matches!(cmd, Some(ConnCmd::Disconnect) | None) {
-                    return;
+        attempt = attempt.saturating_add(1);
+        let wait = tokio::time::sleep(reconnect_delay(info.retry_interval, attempt));
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                _ = &mut wait => break,
+                cmd = cmd_rx.recv() => {
+                    if handle_offline_cmd(cmd) {
+                        return;
+                    }
                 }
             }
         }
@@ -723,6 +912,11 @@ fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
     crate::core::outputs::reset_connection(&info.id);
     crate::core::stream::obs_changed();
     let args = obs_args(info);
+    SEEN.with_borrow_mut(|m| {
+        if let Some(entry) = m.get_mut(&info.id) {
+            entry.1.clear();
+        }
+    });
     engine.fire(T_OBS_DISCONNECTED, "ObsDisconnected", "OBS Studio", "obs", &args, |t| {
         field_matches(t, "connectionId", &info.id)
     });
@@ -754,14 +948,14 @@ pub(crate) fn handle_obs_message(
 
             let mut args = obs_args(info);
             args.insert("eventType".into(), event_type.to_string().into());
-            args.insert("obsEvent.eventType".into(), event_type.to_string().into());
-
             if let Some(data) = event_data {
                 for (k, val) in data {
                     args.insert(k.clone(), val.clone());
                     args.insert(format!("obsEvent.{k}"), val.clone());
                 }
             }
+            // Keep obsEvent.eventType as the outer OBS event type even when eventData has its own eventType.
+            args.insert("obsEvent.eventType".into(), event_type.to_string().into());
 
             // Always fire 14003: ObsEvent
             let ev_type_owned = event_type.to_string();
@@ -1000,9 +1194,310 @@ mod tests {
         let challenge = "+IxH4CnCiqpX1rM9scsNynZzbOe4KhDeYcTNS3PDaeY=";
         let expected = "1Ct943GAT+6YQUUX47Ia/ncufilbe6+oD6lY+5kaCu4=";
         assert_eq!(crate::servers::auth_response(pass, salt, challenge), expected);
+        // Empty and Unicode passwords still produce valid 44-char base64 SHA-256 digests.
+        let empty = crate::servers::auth_response("", salt, challenge);
+        let unicode = crate::servers::auth_response("pässwörd 🎬", salt, challenge);
+        assert_eq!(empty.len(), 44);
+        assert_eq!(unicode.len(), 44);
+        assert_ne!(empty, unicode);
+        assert_ne!(empty, expected);
+    }
+
+    #[test]
+    fn obs_conn_info_and_url_edge_cases() {
+        let mut obj = Obj::new();
+        obj.insert("port".into(), 70000.into());
+        obj.insert("password".into(), " keep spaces ".into());
+        obj.insert("retryInterval".into(), (-5).into());
+        obj.insert("version".into(), 999.into());
+        let info = ObsConnInfo::from_obj(&obj);
+        assert_eq!(info.port, 4455, "port above u16::MAX falls back to default");
+        assert_eq!(info.password, " keep spaces ");
+        assert_eq!(info.retry_interval, 1);
+        assert_eq!(info.version, 255);
+
+        assert_eq!(ws_url("127.0.0.1", 4455), "ws://127.0.0.1:4455");
+        assert_eq!(ws_url("", 4455), "ws://127.0.0.1:4455");
+        assert_eq!(ws_url("::1", 4455), "ws://[::1]:4455");
+        assert_eq!(ws_url("[::1]", 4455), "ws://[::1]:4455");
+    }
+
+    #[test]
+    fn reconnect_delay_backs_off_with_cap() {
+        let seq: Vec<u64> = (1..=6).map(|n| reconnect_delay(5, n).as_secs()).collect();
+        assert_eq!(seq, [5, 10, 20, 40, 60, 60]);
+        assert_eq!(reconnect_delay(0, 1).as_secs(), 1);
+        assert_eq!(reconnect_delay(120, 1).as_secs(), 120);
+        assert_eq!(reconnect_delay(120, 5).as_secs(), 120);
+    }
+
+    #[test]
+    fn request_and_batch_response_matching() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+        let info = ObsConnInfo::from_obj(&Obj::new());
+        let mut pending = HashMap::new();
+        let mut batch_pending = HashMap::new();
+
+        let (ok_tx, mut ok_rx) = oneshot::channel();
+        let (err_tx, mut err_rx) = oneshot::channel();
+        let (batch_tx, mut batch_rx) = oneshot::channel();
+        pending.insert("r1".into(), ok_tx);
+        pending.insert("r2".into(), err_tx);
+        batch_pending.insert("b1".into(), batch_tx);
+
+        // Unknown request id leaves real pending requests untouched.
+        handle_obs_message(
+            &engine,
+            &info,
+            &json!({"op": OP_REQUEST_RESPONSE, "d": {"requestId": "other", "requestStatus": {"result": true}}})
+                .to_string(),
+            &mut pending,
+            &mut batch_pending,
+        );
+        assert_eq!(pending.len(), 2);
+
+        handle_obs_message(
+            &engine,
+            &info,
+            &json!({
+                "op": OP_REQUEST_RESPONSE,
+                "d": {
+                    "requestType": "GetVersion",
+                    "requestId": "r1",
+                    "requestStatus": {"result": true, "code": 100},
+                    "responseData": {"obsVersion": "31.0.0"}
+                }
+            })
+            .to_string(),
+            &mut pending,
+            &mut batch_pending,
+        );
+        assert_eq!(ok_rx.try_recv().unwrap().unwrap()["obsVersion"], "31.0.0");
+
+        handle_obs_message(
+            &engine,
+            &info,
+            &json!({
+                "op": OP_REQUEST_RESPONSE,
+                "d": {
+                    "requestType": "SetCurrentProgramScene",
+                    "requestId": "r2",
+                    "requestStatus": {"result": false, "code": 600, "comment": "No scene found"}
+                }
+            })
+            .to_string(),
+            &mut pending,
+            &mut batch_pending,
+        );
+        assert_eq!(err_rx.try_recv().unwrap().unwrap_err(), "No scene found");
+
+        handle_obs_message(
+            &engine,
+            &info,
+            &json!({
+                "op": OP_REQUEST_BATCH_RESPONSE,
+                "d": {
+                    "requestId": "b1",
+                    "results": [{"requestStatus": {"result": true}}, {"requestStatus": {"result": false}}]
+                }
+            })
+            .to_string(),
+            &mut pending,
+            &mut batch_pending,
+        );
+        assert_eq!(batch_rx.try_recv().unwrap().unwrap().len(), 2);
+        assert!(pending.is_empty() && batch_pending.is_empty());
+    }
+
+    #[test]
+    fn vendor_event_and_record_states_and_disconnect_clears_scene() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mk = |id: &str, code: u32, msg: &str, extra: Value| {
+            let mut a = action(id, id, json!([log(msg)]));
+            let mut t = extra;
+            t["id"] = "t".into();
+            t["type"] = code.into();
+            t["enabled"] = true.into();
+            a["triggers"] = json!([t]);
+            a
+        };
+        let e = engine(json!({
+            "actions": [
+                mk("rec_on", T_OBS_RECORDING_STARTED, "T R on", json!({})),
+                mk("rec_off", T_OBS_RECORDING_STOPPED, "T R off", json!({})),
+                mk("vend", T_OBS_VENDOR_EVENT, "T V %obsEvent.eventType% %obsVendorEvent.vendor% %obsVendorEvent.event%", json!({"vendorName": "my-plugin"})),
+            ]
+        }));
+        let info = ObsConnInfo {
+            id: "obs-v".into(),
+            name: "Studio".into(),
+            host: "127.0.0.1".into(),
+            port: 4455,
+            password: String::new(),
+            auto_connect: false,
+            reconnect: false,
+            retry_interval: 1,
+            version: 5,
+        };
+        let out = run(async move {
+            let (mut p, mut b) = (HashMap::new(), HashMap::new());
+            let ev = |t: &str, d: Value| json!({"op": OP_EVENT, "d": {"eventType": t, "eventData": d}}).to_string();
+            handle_obs_message(
+                &e,
+                &info,
+                &ev("CurrentProgramSceneChanged", json!({"sceneName": "Live"})),
+                &mut p,
+                &mut b,
+            );
+            assert_eq!(current_scene("obs-v").as_deref(), Some("Live"));
+            for st in ["STARTING", "STARTED", "PAUSED", "RESUMED", "STOPPING", "STOPPED"] {
+                handle_obs_message(
+                    &e,
+                    &info,
+                    &ev(
+                        "RecordStateChanged",
+                        json!({"outputState": format!("OBS_WEBSOCKET_OUTPUT_{st}")}),
+                    ),
+                    &mut p,
+                    &mut b,
+                );
+            }
+            handle_obs_message(
+                &e,
+                &info,
+                &ev("VendorEvent", json!({"vendorName": "my-plugin", "eventType": "cue"})),
+                &mut p,
+                &mut b,
+            );
+            fire_disconnected(&e, &info);
+            assert_eq!(current_scene("obs-v"), None, "disconnect clears cached scene");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(out, ["T R on", "T R off", "T V VendorEvent my-plugin cue"]);
     }
 
     #[tokio::test]
+    async fn mock_obs_no_auth_null_batch_and_backoff_offline_requests() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let hello = json!({
+                "op": OP_HELLO,
+                "d": { "obsWebSocketVersion": "5.5.0", "rpcVersion": 1, "authentication": null }
+            });
+            ws.send(Message::Text(hello.to_string().into())).await.unwrap();
+            if let Some(Ok(Message::Text(txt))) = ws.next().await {
+                let v: Value = serde_json::from_str(&txt).unwrap();
+                assert_eq!(v["op"].as_u64(), Some(OP_IDENTIFY));
+                assert!(
+                    v["d"].get("authentication").is_none(),
+                    "null auth must not send auth string"
+                );
+            }
+            ws.send(Message::Text(
+                json!({"op": OP_IDENTIFIED, "d": {"negotiatedRpcVersion": 1}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            if let Some(Ok(Message::Text(txt))) = ws.next().await {
+                let v: Value = serde_json::from_str(&txt).unwrap();
+                assert_eq!(v["op"].as_u64(), Some(OP_REQUEST_BATCH));
+                let id = v["d"]["requestId"].as_str().unwrap();
+                ws.send(Message::Text(
+                    json!({"op": OP_REQUEST_BATCH_RESPONSE, "d": {"requestId": id, "results": [{"requestStatus": {"result": true}}]}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            }
+            let _ = ws.close(None).await;
+        });
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async move {
+                let (tx, _rx) = watch::channel(Config::default());
+                let engine = Engine::new(Arc::new(tx), |_| {});
+                let info = ObsConnInfo {
+                    id: "mock-null-auth".into(),
+                    name: "Mock".into(),
+                    host: "127.0.0.1".into(),
+                    port,
+                    password: "ignored".into(),
+                    auto_connect: true,
+                    reconnect: true,
+                    retry_interval: 10,
+                    version: 5,
+                };
+                let connected = Arc::new(AtomicBool::new(false));
+                let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+                let cc = connected.clone();
+                let task = tokio::task::spawn_local(async move {
+                    run_conn_loop(engine, info, cc, &mut cmd_rx).await;
+                });
+
+                let start = std::time::Instant::now();
+                while !connected.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(2) {
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+                assert!(connected.load(Ordering::Relaxed));
+
+                let (btx, brx) = oneshot::channel();
+                cmd_tx
+                    .send(ConnCmd::Batch(ObsBatchRequest {
+                        request_id: "batch-1".into(),
+                        halt_on_failure: false,
+                        execution_type: 0,
+                        requests: vec![json!({"requestType": "GetVersion"})],
+                        resp: btx,
+                    }))
+                    .unwrap();
+                let res = brx.await.unwrap().unwrap();
+                assert_eq!(res.len(), 1);
+
+                // Wait for close so the loop enters its 10s reconnect wait.
+                let start = std::time::Instant::now();
+                while connected.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(2) {
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+                assert!(!connected.load(Ordering::Relaxed));
+
+                // Requests during reconnect wait fail fast without waking or aborting the sleep.
+                let (rtx, rrx) = oneshot::channel();
+                cmd_tx
+                    .send(ConnCmd::Request(ObsRequest {
+                        request_type: "GetVersion".into(),
+                        request_id: "offline-1".into(),
+                        request_data: json!({}),
+                        resp: rtx,
+                    }))
+                    .unwrap();
+                let err = tokio::time::timeout(Duration::from_millis(500), rrx)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_err();
+                assert!(err.contains("not connected"), "unexpected error: {err}");
+
+                // Disconnect exits the reconnect wait promptly.
+                let _ = cmd_tx.send(ConnCmd::Disconnect);
+                tokio::time::timeout(Duration::from_secs(1), task)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OBS instance"]
     async fn live_obs_connection_test() {
         let local = tokio::task::LocalSet::new();
         local
@@ -1014,7 +1509,7 @@ mod tests {
                     name: "Live OBS".into(),
                     host: "127.0.0.1".into(),
                     port: 4455,
-                    password: "K1RyrKTv1h1gQOcj".into(),
+                    password: std::env::var("OBS_TEST_PASSWORD").unwrap_or_default(),
                     auto_connect: false,
                     reconnect: false,
                     retry_interval: 1,

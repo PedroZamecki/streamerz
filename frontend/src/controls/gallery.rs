@@ -2,6 +2,7 @@
 //! a gift's price) and opens a searchable grid of them, with "any" first. The core sends the items
 //! (`choices` with `picture`, `detail` and `tip`) and what the field says (`gallery`); the grid is
 //! virtualised and asks the core for the pictures of the rows in view only. Ids stay out of sight.
+use super::images::{Pictures, MAX_PENDING};
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, FONT_MICRO, LINE_CAPTION, LINE_MICRO, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
@@ -13,10 +14,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use serde_json::Value;
 use std::ops::Range;
-use std::path::PathBuf;
 
 /// Cells per row, a cell's size and its picture's.
 const COLUMNS: usize = 6;
@@ -25,6 +24,8 @@ const CELL_H: f32 = 92.;
 const PICTURE: f32 = 40.;
 /// Pictures asked for in one request.
 const BATCH: usize = 48;
+/// Pictures remembered before stale entries are evicted.
+const REMEMBERED: usize = 1000;
 
 struct Item {
     id: String,
@@ -60,15 +61,12 @@ pub struct Gallery {
     search: Entity<InputState>,
     /// The items the search keeps, by index.
     shown: Vec<usize>,
-    images: HashMap<String, PathBuf>,
-    missing: HashSet<String>,
-    asking: bool,
-    /// The request id pictures come back with.
-    images_id: String,
+    images: Pictures,
     /// Reload, as the core described it (`request`, `label`), and whether it is on its way.
     refresh: Value,
     refresh_id: String,
     pub loading: bool,
+    error: Option<crate::error::StreamerzError>,
     scroll: UniformListScrollHandle,
     id: SharedString,
     _subscription: Subscription,
@@ -94,18 +92,17 @@ impl Gallery {
             open: false,
             search,
             shown: Vec::new(),
-            images: HashMap::new(),
-            missing: HashSet::new(),
-            asking: false,
-            images_id: format!("{route}:images"),
+            images: Pictures::new(format!("{route}:images"), BATCH, REMEMBERED, MAX_PENDING),
             refresh: field["refresh"].clone(),
             refresh_id: format!("{route}:choices"),
             loading: false,
+            error: None,
             scroll: UniformListScrollHandle::new(),
             id: SharedString::from(route),
             _subscription: subscription,
         };
         gallery.filter(cx);
+        gallery.want_selected();
         // No list yet: load it as the form opens.
         if gallery.refresh["auto"] == true {
             gallery.reload(cx);
@@ -118,6 +115,19 @@ impl Gallery {
         self.shown = (0..self.items.len())
             .filter(|at| query.is_empty() || self.items[*at].label.to_lowercase().contains(&query))
             .collect();
+        self.images.clear_pending();
+    }
+
+    fn want_selected(&mut self) {
+        if let Some(url) = self
+            .items
+            .iter()
+            .find(|item| !self.selected.is_empty() && item.id == self.selected)
+            .map(|item| item.picture.clone())
+        {
+            self.images.want(&url);
+            self.images.ask();
+        }
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -128,6 +138,7 @@ impl Gallery {
         request["id"] = self.refresh_id.clone().into();
         send(request);
         self.loading = true;
+        self.error = None;
         cx.notify();
     }
 
@@ -135,8 +146,9 @@ impl Gallery {
     pub fn set_choices(&mut self, reply: &Value, cx: &mut Context<Self>) {
         self.loading = false;
         if let Some(err) = crate::error::StreamerzError::from_response(reply) {
-            self.spec["status"] = json!(err.summary_line());
+            self.error = Some(err);
         } else {
+            self.error = None;
             self.items = items_of(&reply["choices"]);
             self.spec["status"] = reply["status"].clone();
             // A trigger saved with a gift the old list didn't have may be named now.
@@ -145,40 +157,26 @@ impl Gallery {
             }
         }
         self.filter(cx);
+        self.want_selected();
         cx.notify();
     }
 
     /// Pictures the grid asked for.
     pub fn images(&mut self, reply: &Value, cx: &mut Context<Self>) {
-        self.asking = false;
-        for (url, file) in reply["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-                self.missing.remove(url);
-            }
-        }
+        let items = &self.items;
+        self.images.apply(reply, || {
+            items
+                .iter()
+                .filter(|item| !item.picture.is_empty())
+                .map(|item| item.picture.clone())
+                .collect()
+        });
         cx.notify();
     }
 
     /// The core downloaded pictures: ask again for the ones still missing.
     pub fn images_arrived(&mut self) {
-        self.asking = false;
-        self.ask_images();
-    }
-
-    fn ask_images(&mut self) {
-        if self.asking || self.missing.is_empty() {
-            return;
-        }
-        let urls: Vec<&String> = self.missing.iter().take(BATCH).collect();
-        self.asking = true;
-        send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": self.images_id}));
-    }
-
-    fn want(&mut self, url: &str) {
-        if url.starts_with("http") && !self.images.contains_key(url) {
-            self.missing.insert(url.to_owned());
-        }
+        self.images.arrived();
     }
 
     /// The icon drawn for "any" and for a picture not here yet (`gallery.icon`, else an image).
@@ -421,6 +419,12 @@ impl Render for Gallery {
             .flex_col()
             .gap(px(SPACE_SM))
             .child(header);
+        if let Some(err) = &self.error {
+            panel = panel.child(super::notice::error(err, cx));
+            if self.items.is_empty() {
+                return panel.into_any_element();
+            }
+        }
         // Loading, failed or empty, said in place of the grid (what is known still shows).
         let status = self.spec["status"].as_str().filter(|_| self.items.is_empty());
         if let Some(status) = status {
@@ -467,17 +471,22 @@ impl Render for Gallery {
             "gallery-rows",
             rows,
             cx.processor(move |gallery, range: Range<usize>, _, cx| {
+                let live_count = any + gallery.shown.len();
                 for at in range.clone().flat_map(|row| row * COLUMNS..(row + 1) * COLUMNS) {
-                    if let Some(index) = at.checked_sub(any).and_then(|at| gallery.shown.get(at)) {
-                        let url = gallery.items[*index].picture.clone();
-                        gallery.want(&url);
+                    if let Some(item) = at
+                        .checked_sub(any)
+                        .and_then(|at| gallery.shown.get(at))
+                        .and_then(|&index| gallery.items.get(index))
+                    {
+                        let url = item.picture.clone();
+                        gallery.images.want(&url);
                     }
                 }
-                gallery.ask_images();
+                gallery.images.ask();
                 range
                     .map(|row| {
                         let mut line = div().h(px(CELL_H)).flex();
-                        for at in row * COLUMNS..((row + 1) * COLUMNS).min(count) {
+                        for at in row * COLUMNS..((row + 1) * COLUMNS).min(live_count) {
                             let cell = if at < any {
                                 let icon = Icon::empty()
                                     .path(gallery.icon())
@@ -494,7 +503,13 @@ impl Render for Gallery {
                                     cx,
                                 )
                             } else {
-                                let item = &gallery.items[gallery.shown[at - any]];
+                                let Some(item) = at
+                                    .checked_sub(any)
+                                    .and_then(|i| gallery.shown.get(i))
+                                    .and_then(|&idx| gallery.items.get(idx))
+                                else {
+                                    continue;
+                                };
                                 let (id, label, tip) = (item.id.clone(), item.label.clone(), item.tip.clone());
                                 let picture = gallery.picture(&item.picture, PICTURE, cx);
                                 let detail = (!item.detail.is_empty()).then(|| gallery.detail(&item.detail, true, cx));
@@ -623,6 +638,28 @@ mod tests {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(gallery.read(cx).selected, "g-rose");
+
+            // A failed reload keeps existing items and surfaces the error instead of swallowing it.
+            gallery.update(cx, |gallery, cx| {
+                gallery.set_choices(&json!({"status": "error", "error": "catalog offline"}), cx);
+            });
+            assert!(gallery.read(cx).error.is_some());
+            assert_eq!(gallery.read(cx).items.len(), 3);
+
+            // A successful reload clears the error and replaces choices.
+            gallery.update(cx, |gallery, cx| {
+                gallery.set_choices(
+                    &json!({
+                        "choices": [
+                            {"id": "g-rose", "label": "Rose", "picture": "https://example.com/rose.png", "detail": "5"}
+                        ]
+                    }),
+                    cx,
+                );
+            });
+            assert!(gallery.read(cx).error.is_none());
+            assert_eq!(gallery.read(cx).items.len(), 1);
+            window.render_frame(cx);
         })
         .unwrap();
     }

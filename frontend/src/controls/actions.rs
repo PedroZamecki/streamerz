@@ -10,10 +10,7 @@ use crate::theme::{
     SPACE_XS,
 };
 use crate::{i18n::tr, send};
-use gpui_kit::component::{
-    button::{Button, ButtonVariants},
-    ActiveTheme, WindowExt,
-};
+use gpui_kit::component::{button::Button, ActiveTheme, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -49,6 +46,8 @@ pub struct ActionsPage {
     select_after: Option<String>,
     error: Option<crate::error::StreamerzError>,
     _subscriptions: Vec<Subscription>,
+    /// The open action's panes' subscriptions, dropped with the panes.
+    editor_subscriptions: Vec<Subscription>,
 }
 
 impl ActionsPage {
@@ -86,13 +85,14 @@ impl ActionsPage {
             select_after: None,
             error: None,
             _subscriptions: vec![subscription],
+            editor_subscriptions: Vec::new(),
         };
         page.sync_editor(window, cx);
         page
     }
 
     /// The page-wide buttons (Add, Import, Templates), drawn in the page's header.
-    pub fn header_actions_view(&self, cx: &App) -> Entity<super::tree::HeaderButtons> {
+    pub fn header_actions_view(&self, cx: &App) -> Entity<super::slot::Slot<super::tree::TreePane>> {
         self.actions.read(cx).header_view()
     }
 
@@ -127,6 +127,7 @@ impl ActionsPage {
         if !editor.is_object() {
             self.triggers = None;
             self.subs = None;
+            self.editor_subscriptions.clear();
             return;
         }
         match &self.triggers {
@@ -142,11 +143,11 @@ impl ActionsPage {
                         cx,
                     )
                 });
-                self._subscriptions.push(
-                    cx.subscribe_in(&pane, window, |page, _, event: &PaneEvent, window, cx| {
-                        page.pane_event(Pane::Triggers, event, window, cx)
-                    }),
-                );
+                self.editor_subscriptions.push(cx.subscribe_in(
+                    &pane,
+                    window,
+                    |page, _, event: &PaneEvent, window, cx| page.pane_event(Pane::Triggers, event, window, cx),
+                ));
                 self.triggers = Some(pane);
             }
         }
@@ -155,11 +156,11 @@ impl ActionsPage {
             None => {
                 let pane =
                     cx.new(|cx| TreePane::new("subs", editor["subs"].clone(), true, Options::default(), window, cx));
-                self._subscriptions.push(
-                    cx.subscribe_in(&pane, window, |page, _, event: &PaneEvent, window, cx| {
-                        page.pane_event(Pane::Subs, event, window, cx)
-                    }),
-                );
+                self.editor_subscriptions.push(cx.subscribe_in(
+                    &pane,
+                    window,
+                    |page, _, event: &PaneEvent, window, cx| page.pane_event(Pane::Subs, event, window, cx),
+                ));
                 self.subs = Some(pane);
             }
         }
@@ -231,33 +232,9 @@ impl ActionsPage {
         let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
         let danger = spec["danger"] == true;
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let (owner, spec, node) = (owner.clone(), spec.clone(), node.clone());
-            let confirm = Button::new("confirm-action")
-                .label(label.clone())
-                .on_click(move |_, window, cx| {
-                    let (spec, node) = (spec.clone(), node.clone());
-                    let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
-                    window.close_dialog(cx);
-                });
-            let buttons = div()
-                .id("action-confirmation")
-                .test_support()
-                .role(Role::Group)
-                .aria_label(label.clone())
-                .flex()
-                .justify_end()
-                .gap(px(SPACE_SM))
-                .child(
-                    Button::new("cancel-action")
-                        .label(tr("dialogs.cancel"))
-                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
-                )
-                .child(if danger { confirm.danger() } else { confirm });
-            let footer = crate::controls::dialog::footer(None, buttons, cx);
-            crate::controls::dialog::shell(dialog, label.clone(), 448., window, cx)
-                .child(crate::controls::dialog::body(question.clone()))
-                .footer(footer)
+        super::dialog::confirm(window, cx, label, question, danger, move |_, cx| {
+            let (spec, node) = (spec.clone(), node.clone());
+            let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
         });
     }
 

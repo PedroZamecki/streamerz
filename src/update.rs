@@ -223,8 +223,9 @@ pub fn is_protected(path: &Path) -> bool {
 fn staging_dir(path: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
-    let id: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    crate::default_config_path().with_file_name("updates").join(id)
+    crate::default_config_path()
+        .with_file_name("updates")
+        .join(crate::fmt::hex(&digest))
 }
 
 fn private_dir(path: &Path) -> std::io::Result<()> {
@@ -281,8 +282,8 @@ fn own_file(path: &Path) -> bool {
 }
 
 /// Where an update for `path` is staged: (.new, .version, .part).
-fn staged_paths(path: &Path) -> (PathBuf, PathBuf, PathBuf) {
-    if is_protected(path) {
+fn staged_paths(path: &Path, protected: bool) -> (PathBuf, PathBuf, PathBuf) {
+    if protected {
         let dir = staging_dir(path);
         (
             dir.join("update.new"),
@@ -291,6 +292,55 @@ fn staged_paths(path: &Path) -> (PathBuf, PathBuf, PathBuf) {
         )
     } else {
         (beside(path, "new"), beside(path, "version"), beside(path, "part"))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Staged {
+    tag: String,
+    len: u64,
+    sha256: String,
+}
+
+impl Staged {
+    fn read(marker: &Path) -> Option<Self> {
+        use std::io::Read;
+        if !own_file(marker) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(marker)
+            .ok()?
+            .take(512)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    fn verify(&self, file: &Path) -> std::io::Result<bool> {
+        use sha2::Digest;
+        use std::io::Read;
+        if !own_file(file) || !(100_001..=MAX_SIZE).contains(&self.len) {
+            return Ok(false);
+        }
+        let mut file = std::fs::File::open(file)?;
+        if file.metadata()?.len() != self.len {
+            return Ok(false);
+        }
+        let mut hash = sha2::Sha256::new();
+        let mut buffer = [0u8; 32 * 1024];
+        let mut remaining = self.len;
+        while remaining > 0 {
+            let length = remaining.min(buffer.len() as u64) as usize;
+            let got = file.read(&mut buffer[..length])?;
+            if got == 0 {
+                return Ok(false);
+            }
+            hash.update(&buffer[..got]);
+            remaining -= got as u64;
+        }
+        let actual = crate::fmt::hex(&hash.finalize());
+        Ok(actual.eq_ignore_ascii_case(&self.sha256))
     }
 }
 
@@ -315,39 +365,64 @@ fn find_staged_in(path: &Path, dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// Downloads the release as `.new` (beside the binary or in temp if protected), with the tag in `.version`;
 /// nothing else changes until `apply`.
-pub async fn stage(r: &Release) -> Result<(), String> {
-    let (new, tag, part) = staged_paths(&r.path);
-    if is_protected(&r.path) {
-        let dir = staging_dir(&r.path);
+async fn stage(r: &Release, protected: bool) -> Result<(PathBuf, PathBuf), String> {
+    let (new, tag, part) = staged_paths(&r.path, protected);
+    if protected {
+        let dir = new.parent().ok_or("missing update directory")?;
         let root = dir.parent().ok_or("missing update directory")?;
         if let Some(parent) = root.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         private_dir(root)
-            .and_then(|_| private_dir(&dir))
+            .and_then(|_| private_dir(dir))
             .map_err(|e| e.to_string())?;
     }
-    if new.is_file() && std::fs::read_to_string(&tag).is_ok_and(|t| t == r.tag) {
-        return Ok(());
+    if own_file(&new)
+        && Staged::read(&tag).is_some_and(|m| {
+            m.tag == r.tag
+                && (r.size == 0 || m.len == r.size)
+                && r.sha256
+                    .as_ref()
+                    .is_none_or(|hash| hash.eq_ignore_ascii_case(&m.sha256))
+        })
+    {
+        return Ok((new, tag));
     }
+    // The downloader creates its output. Remove any abandoned file or link before opening it.
+    remove_if_present(&part).map_err(|e| format!("{}: {e}", part.display()))?;
     let headers = [("User-Agent".to_string(), "Streamerz".to_string())];
-    // Written to .part as it arrives, never held in memory, and checked before it becomes .new.
-    let got = crate::http::download(&r.url, &headers, &part, MAX_SIZE).await;
-    let bad = match &got {
-        Ok(got) => unsound(got, r.size, r.sha256.as_deref()),
-        Err(e) => Some(e.clone()),
-    };
-    if let Some(why) = bad {
+    let got = crate::http::download(&r.url, &headers, &part, MAX_SIZE).await?;
+    if let Some(why) = unsound(&got, r.size, r.sha256.as_deref()) {
         let _ = std::fs::remove_file(&part);
         return Err(why);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755));
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", part.display()))?;
     }
-    std::fs::rename(&part, &new).map_err(|e| format!("{}: {e}", new.display()))?;
-    std::fs::write(&tag, &r.tag).map_err(|e| format!("{}: {e}", tag.display()))
+    let manifest = Staged {
+        tag: r.tag.clone(),
+        len: got.len,
+        sha256: got.sha256,
+    };
+    publish_staged(&part, &new, &tag, &manifest).map_err(|e| format!("{}: {e}", new.display()))?;
+    Ok((new, tag))
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+fn publish_staged(part: &Path, new: &Path, tag: &Path, manifest: &Staged) -> std::io::Result<()> {
+    // The manifest commits the download. Invalidate the previous one before replacing its file.
+    remove_if_present(tag)?;
+    crate::fileio::settle(part, new)?;
+    crate::fileio::write_json(tag, manifest)
 }
 
 fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
@@ -360,14 +435,13 @@ fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
         }
     } else {
         if std::fs::rename(new, path).is_err() {
-            let tmp = beside(path, "tmp");
-            std::fs::copy(new, &tmp).map_err(|e| format!("{}: {e}", path.display()))?;
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-            }
-            std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let perms = Some(std::os::unix::fs::PermissionsExt::from_mode(0o755));
+            #[cfg(not(unix))]
+            let perms = None;
+            std::fs::File::open(new)
+                .and_then(|mut from| crate::fileio::replace(path, perms, |f| std::io::copy(&mut from, f).map(drop)))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             let _ = std::fs::remove_file(new);
         }
     }
@@ -388,26 +462,41 @@ fn free_old_path(path: &Path) -> PathBuf {
 /// PowerShell receives paths only as literals inside an encoded script, never through cmd.exe.
 #[cfg(any(windows, test))]
 fn windows_elevation_command(path: &Path, new: &Path) -> String {
+    let script = elevation_script(path, new);
+    let encoded = powershell_utf16(&script);
+    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
+}
+
+#[cfg(any(windows, test))]
+fn powershell_utf16(text: &str) -> String {
     use base64::Engine;
-    let literal = |p: &Path| p.to_string_lossy().replace('\'', "''");
-    let script = format!(
+    let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn elevation_script(path: &Path, new: &Path) -> String {
+    let literal = |p: &Path| powershell_utf16(&p.to_string_lossy());
+    format!(
         r#"$ErrorActionPreference='Stop'
-$target='{}'
-$source='{}'
+$target=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))
+$source=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))
 $old=$target+'.old'
 $n=2
 while (Test-Path -LiteralPath $old) {{ $old=$target+'.old.'+$n; $n++ }}
-Move-Item -LiteralPath $target -Destination $old -Force
-try {{ Copy-Item -LiteralPath $source -Destination $target -Force }}
-catch {{ Move-Item -LiteralPath $old -Destination $target -Force; throw }}
-Remove-Item -LiteralPath $source -Force
+$temp=$target+'.update.'+[guid]::NewGuid().ToString('N')
+try {{
+    [IO.File]::Copy($source, $temp, $false)
+    [IO.File]::Move($target, $old)
+    try {{ [IO.File]::Move($temp, $target) }}
+    catch {{ [IO.File]::Move($old, $target); throw }}
+}}
+finally {{ Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }}
+Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
 "#,
         literal(path),
         literal(new)
-    );
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
+    )
 }
 
 #[cfg(windows)]
@@ -436,7 +525,8 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
         .map_err(|e| format!("powershell: {e}"))?;
     if status.code() == Some(122) {
         Err("cancelled".into())
-    } else if status.success() && !new.exists() && path.is_file() {
+    } else if status.success() && path.is_file() {
+        let _ = std::fs::remove_file(new);
         Ok(())
     } else {
         Err(format!("{}: elevation cancelled or update failed", path.display()))
@@ -542,16 +632,20 @@ fn apply_elevated(path: &Path, new: &Path) -> Result<(), String> {
 /// copy open, so nothing breaks); Windows can't replace a running program, only rename it, so the old
 /// one waits as `.old` until the next start.
 /// If the target folder is protected, prompts for elevation (UAC on Windows, polkit on Linux).
-fn apply(path: &Path) -> Result<(), String> {
-    let (new, tag) =
-        find_staged(path).ok_or_else(|| format!("{}: no staged update found", beside(path, "new").display()))?;
+fn apply(path: &Path, new: &Path, tag: &Path) -> Result<(), String> {
+    let verified = Staged::read(tag).is_some_and(|manifest| manifest.verify(new).unwrap_or(false));
+    if !verified {
+        // Not what was downloaded: drop both, or the next check would reuse it.
+        let _ = std::fs::remove_file(new);
+        let _ = std::fs::remove_file(tag);
+        return Err(tr("update.not_program").to_string());
+    }
     if is_protected(path) {
-        apply_elevated(path, &new)?;
+        apply_elevated(path, new)?;
     } else {
-        apply_unprivileged(path, &new)?;
+        apply_unprivileged(path, new)?;
     }
     let _ = std::fs::remove_file(tag);
-    let _ = std::fs::remove_file(beside(path, "version"));
     Ok(())
 }
 
@@ -566,28 +660,26 @@ pub fn tidy() {
     for n in 2..10 {
         let _ = std::fs::remove_file(beside(&path, &format!("old.{n}")));
     }
-    let staged = find_staged(&path);
-    let tag = staged
-        .as_ref()
-        .and_then(|(_, t)| std::fs::read_to_string(t).ok())
-        .or_else(|| std::fs::read_to_string(beside(&path, "version")).ok());
-    let Some(tag) = tag else {
-        return;
-    };
-    let newer = matches!((semver(&tag), running().and_then(semver)), (Some(t), Some(r)) if t > r);
-    if newer && !is_protected(&path) && apply(&path).is_ok() {
-        restart();
-    }
-    // Stale: this build is that release already, or newer.
-    if !newer {
-        let _ = std::fs::remove_file(beside(&path, "new"));
-        let _ = std::fs::remove_file(beside(&path, "version"));
-        if let Some((new, tag)) = staged {
-            let _ = std::fs::remove_file(new);
-            let _ = std::fs::remove_file(tag);
+    let Some((new, tag)) = find_staged(&path) else { return };
+    let newer = matches!(
+        (Staged::read(&tag).and_then(|m| semver(&m.tag)), running().and_then(semver)),
+        (Some(t), Some(r)) if t > r
+    );
+    if newer {
+        if !is_protected(&path) {
+            match apply(&path, &new, &tag) {
+                Ok(()) => restart(),
+                Err(e) => crate::error(format!("Could not apply the staged update: {e}")),
+            }
         }
+    } else {
+        let _ = std::fs::remove_file(new);
+        let _ = std::fs::remove_file(tag);
     }
 }
+
+/// The startup check and Check now share the same staging files.
+static UPDATE_CHECK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The release tag last announced, so each is told about once.
 static ANNOUNCED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -598,6 +690,13 @@ static ANNOUNCED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new()
 ///   Background: only downloads it; it goes in place at the next start.
 ///   Ignore: nothing, unless asked.
 pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>, asked: bool) {
+    // Check now waits for a check already running; the hourly one skips its turn.
+    let check = if asked {
+        UPDATE_CHECK.lock().await
+    } else {
+        let Ok(check) = UPDATE_CHECK.try_lock() else { return };
+        check
+    };
     let mode = cfg.borrow().updates;
     if mode == Updates::Ignore && !asked {
         return;
@@ -636,15 +735,16 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     if fresh {
         crate::say(format!("Streamerz {tag} is out"));
     }
-    if background_download(mode, asked, is_protected(&release.path)) {
+    let protected = is_protected(&release.path);
+    if background_download(mode, asked, protected) {
         crate::say(format!("Downloading {tag}..."));
-        match stage(&release).await {
-            Ok(()) if fresh => crate::notify::send(
+        match stage(&release, protected).await {
+            Ok(_) if fresh => crate::notify::send(
                 crate::notify::Kind::Updates,
                 &trf("update.ready.title", &[("version", &tag)]),
                 tr("update.ready.body"),
             ),
-            Ok(()) => {}
+            Ok(_) => {}
             Err(e) => crate::error(format!("Download of {tag} failed: {e}")),
         }
         return;
@@ -660,7 +760,6 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         );
     }
     let now = running().unwrap_or("");
-    let protected = is_protected(&release.path);
     let question = if protected {
         trf("update.ask_admin", &[("version", &tag), ("now", now)])
     } else {
@@ -676,10 +775,13 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     // The password or UAC prompt can take as long as the user needs: it waits on a thread of its own,
     // never on the one that runs chat, the servers and the window.
     let path = release.path.clone();
-    let applied = match stage(&release).await {
-        Ok(()) => tokio::task::spawn_blocking(move || apply(&path))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string())),
+    let applied = match stage(&release, protected).await {
+        Ok((new, marker)) => tokio::task::spawn_blocking(move || {
+            let _check = check;
+            apply(&path, &new, &marker)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string())),
         Err(e) => Err(e),
     };
     if let Err(e) = applied {
@@ -748,7 +850,7 @@ pub fn restart() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, semver, unsound};
+    use super::{beside, elevation_script, semver, unsound};
     use std::path::Path;
 
     #[test]
@@ -850,7 +952,7 @@ mod tests {
         let custom_exe = temp.join("CustomStreamerzApp.exe");
 
         // When in writable folder:
-        let (new_path, ver_path, part_path) = super::staged_paths(&custom_exe);
+        let (new_path, ver_path, part_path) = super::staged_paths(&custom_exe, false);
         assert_eq!(new_path, temp.join("CustomStreamerzApp.exe.new"));
         assert_eq!(ver_path, temp.join("CustomStreamerzApp.exe.version"));
         assert_eq!(part_path, temp.join("CustomStreamerzApp.exe.part"));
@@ -892,16 +994,46 @@ mod tests {
 
         let new_file = temp.join("Streamerz Renamed Executable.new");
         let ver_file = temp.join("Streamerz Renamed Executable.version");
-        std::fs::write(&new_file, b"new-version-content").unwrap();
-        std::fs::write(&ver_file, b"v9.9.9").unwrap();
+        let bytes = vec![1; 100_001];
+        std::fs::write(&new_file, &bytes).unwrap();
+        let manifest = super::Staged {
+            tag: "v9.9.9".into(),
+            len: bytes.len() as u64,
+            sha256: "c135ee244e997557e86c912c09ffc1a1b85504996cbc87abdcadad4fa0022be6".into(),
+        };
+        std::fs::write(&ver_file, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
-        super::apply(&custom_exe).unwrap();
+        super::apply(&custom_exe, &new_file, &ver_file).unwrap();
 
-        assert_eq!(std::fs::read(&custom_exe).unwrap(), b"new-version-content");
+        assert_eq!(std::fs::read(&custom_exe).unwrap(), bytes);
         assert!(!new_file.exists());
         assert!(!ver_file.exists());
 
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn changed_staged_bytes_cannot_replace_the_program() {
+        let dir = std::env::temp_dir().join(format!("streamerz-test-verify-{}", crate::engine::uuid()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("Streamerz");
+        let (new, tag, part) = super::staged_paths(&target, false);
+        let original = vec![1; 100_001];
+        let manifest = super::Staged {
+            tag: "v9.9.9".into(),
+            len: original.len() as u64,
+            sha256: "c135ee244e997557e86c912c09ffc1a1b85504996cbc87abdcadad4fa0022be6".into(),
+        };
+        std::fs::write(&target, b"installed").unwrap();
+        std::fs::write(&part, &original).unwrap();
+        super::publish_staged(&part, &new, &tag, &manifest).unwrap();
+        assert!(super::Staged::read(&tag).unwrap().verify(&new).unwrap());
+        // A same-size change must be picked up by the digest, even after a restart.
+        std::fs::write(&new, vec![2; original.len()]).unwrap();
+        assert!(super::apply(&target, &new, &tag).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"installed");
+        assert!(!tag.exists() && !new.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -933,7 +1065,18 @@ mod tests {
     #[test]
     fn windows_elevation_paths_are_encoded_literals() {
         use base64::Engine;
-        let target = Path::new(r"C:\Program Files\App's %TEMP% & $(exit 9).exe");
+        fn decode(s: &str) -> String {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(s).unwrap();
+            let utf16: Vec<_> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
+                .collect();
+            String::from_utf16(&utf16).unwrap()
+        }
+        let target = Path::new("C:\\Program Files\\App's \u{2019}Tool %TEMP% & $(exit 9).exe");
         let source = Path::new(r"C:\private\new.exe");
         let command = super::windows_elevation_command(target, source);
         assert!(!command.contains("cmd.exe"));
@@ -949,17 +1092,25 @@ mod tests {
             .split('\'')
             .next()
             .unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
-        let utf16: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            .collect();
-        let script = String::from_utf16(&utf16).unwrap();
-        assert!(script.contains("$target='C:\\Program Files\\App''s %TEMP% & $(exit 9).exe'"));
+        let script = decode(encoded);
+        assert!(!script.contains("$(exit 9)"));
+        for (name, path) in [("target", target), ("source", source)] {
+            let prefix = format!("${name}=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('");
+            let encoded = script.split(&prefix).nth(1).unwrap().split('\'').next().unwrap();
+            assert_eq!(decode(encoded), path.to_str().unwrap());
+        }
         assert!(script.contains("-LiteralPath $source"));
         assert!(script.contains("while (Test-Path -LiteralPath $old)"));
+    }
+
+    #[test]
+    fn elevated_windows_update_prepares_the_replacement_before_moving_the_exe() {
+        let script = elevation_script(Path::new("Streamerz.exe"), Path::new("update.new"));
+        let copy = script.find("[IO.File]::Copy($source, $temp, $false)").unwrap();
+        let backup = script.find("[IO.File]::Move($target, $old)").unwrap();
+        let replace = script.find("[IO.File]::Move($temp, $target)").unwrap();
+        let restore = script.find("catch { [IO.File]::Move($old, $target); throw }").unwrap();
+        assert!(copy < backup && backup < replace && replace < restore);
     }
 
     #[cfg(unix)]

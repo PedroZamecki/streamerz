@@ -22,6 +22,8 @@ const LABEL_WIDTH: f32 = 112.;
 const PLATFORM_NAME_WIDTH: f32 = 96.;
 /// A person's picture beside a value.
 const PICTURE: f32 = 24.;
+/// How long typing rests in a text setting before it is sent to the core.
+const TEXT_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Asks the page to show another page.
 pub struct Navigate(pub String);
@@ -34,9 +36,17 @@ pub struct Sections {
     route: String,
     selects: HashMap<String, Entity<SelectState<Vec<String>>>>,
     inputs: HashMap<String, Entity<InputState>>,
+    /// Last value sent to or confirmed by the core for each text setting.
+    sent_text: HashMap<String, String>,
+    /// Programmatic text updates whose Change event should not echo back to the core.
+    suppressed_text: HashMap<String, String>,
+    /// Pending debounced saves for non-commit text settings.
+    text_tasks: HashMap<String, Task<()>>,
     search: Option<Entity<InputState>>,
     form: Option<Entity<Form>>,
+    form_subscription: Option<Subscription>,
     dialog: Option<Entity<Sections>>,
+    dialog_subscription: Option<Subscription>,
     /// The channel finder, while it is open.
     finder: Option<Entity<super::find::Finder>>,
     /// A button asked for a dialog: the next dialog view opens it (a refresh never does).
@@ -62,9 +72,14 @@ impl Sections {
             route,
             selects: HashMap::new(),
             inputs: HashMap::new(),
+            sent_text: HashMap::new(),
+            suppressed_text: HashMap::new(),
+            text_tasks: HashMap::new(),
             search,
             form: None,
+            form_subscription: None,
             dialog: None,
+            dialog_subscription: None,
             opening: false,
             opening_title: String::new(),
             finder: None,
@@ -84,6 +99,15 @@ impl Sections {
         this.update_model(model, window, cx);
         this
     }
+    /// The core downloaded pictures: an open channel finder asks for the ones it still misses.
+    pub fn images_arrived(&self, cx: &mut Context<Self>) {
+        if let Some(finder) = self.finder.clone() {
+            finder.update(cx, |finder, _| finder.images_arrived());
+        }
+        if let Some(dialog) = self.dialog.clone() {
+            dialog.update(cx, |dialog, cx| dialog.images_arrived(cx));
+        }
+    }
     /// The page these sections fill: a heading shows only when there is more than one section, and never
     /// repeats the page's title.
     pub fn set_page(&mut self, title: String) {
@@ -91,6 +115,39 @@ impl Sections {
             self.page_title = title;
         }
     }
+
+    fn flush_text_save(&mut self, key: &str, value: String, commit: bool) -> bool {
+        self.text_tasks.remove(key);
+        if self.sent_text.get(key).is_some_and(|sent| sent == &value) {
+            return false;
+        }
+        self.sent_text.insert(key.to_owned(), value.clone());
+        let id = format!("{}:{}", self.route, if commit { "commit" } else { "text" });
+        send(json!({
+            "request": "StreamerzCoreSetting",
+            "domain": self.domain,
+            "key": key,
+            "value": value,
+            "id": id
+        }));
+        true
+    }
+
+    fn schedule_text_save(&mut self, key: String, value: String, cx: &mut Context<Self>) {
+        if self.sent_text.get(&key).is_some_and(|sent| sent == &value) {
+            self.text_tasks.remove(&key);
+            return;
+        }
+        let task_key = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TEXT_SAVE_DELAY).await;
+            let _ = this.update(cx, |sections, _| {
+                sections.flush_text_save(&task_key, value, false);
+            });
+        });
+        self.text_tasks.insert(key, task);
+    }
+
     pub fn update_model(&mut self, model: Value, window: &mut Window, cx: &mut Context<Self>) {
         for section in model["sections"].as_array().into_iter().flatten() {
             for row in section["rows"].as_array().into_iter().flatten() {
@@ -105,15 +162,15 @@ impl Sections {
                             .filter_map(Value::as_str)
                             .map(str::to_owned)
                             .collect();
-                        let selected = control["value"].as_u64().map(|index| IndexPath::new(index as usize));
+                        let selected = control["value"]
+                            .as_u64()
+                            .and_then(|index| usize::try_from(index).ok())
+                            .filter(|&index| index < options.len())
+                            .map(IndexPath::new);
                         match self.selects.get(&key) {
                             Some(select) => {
                                 if select.read(cx).selected_index(cx) != selected {
-                                    if let Some(selected) = selected {
-                                        select.update(cx, |select, cx| {
-                                            select.set_selected_index(Some(selected), window, cx)
-                                        });
-                                    }
+                                    select.update(cx, |select, cx| select.set_selected_index(selected, window, cx));
                                 }
                             }
                             None => {
@@ -129,26 +186,51 @@ impl Sections {
                             }
                         }
                     }
-                    Some("text") if !self.inputs.contains_key(&key) => {
-                        let input = cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .default_value(control["value"].as_str().unwrap_or_default().to_owned())
-                        });
-                        let (domain, route, name) = (self.domain.clone(), self.route.clone(), key.clone());
-                        // A field that restarts something saves when it is left or Enter is pressed, not per key.
-                        let commit = control["commit"] == true;
-                        self.subscriptions.push(cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
-                            let sends = if commit {
-                                matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
-                            } else {
-                                matches!(event, InputEvent::Change)
-                            };
-                            if sends {
-                                let id = format!("{route}:{}", if commit { "commit" } else { "text" });
-                                send(json!({"request": "StreamerzCoreSetting", "domain": domain, "key": name, "value": input.read(cx).value().to_string(), "id": id}));
+                    Some("text") => {
+                        let value = control["value"].as_str().unwrap_or_default().to_owned();
+                        if let Some(input) = self.inputs.get(&key).cloned() {
+                            if !input.read(cx).focus_handle(cx).is_focused(window)
+                                && !self.text_tasks.contains_key(&key)
+                            {
+                                self.sent_text.insert(key.clone(), value.clone());
+                                if input.read(cx).value().as_ref() != value {
+                                    self.suppressed_text.insert(key.clone(), value.clone());
+                                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                                }
                             }
-                        }));
-                        self.inputs.insert(key, input);
+                        } else {
+                            self.sent_text.insert(key.clone(), value.clone());
+                            let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+                            let name = key.clone();
+                            // A field that restarts something saves when it is left or Enter is pressed, not per key.
+                            let commit = control["commit"] == true;
+                            self.subscriptions.push(cx.subscribe(
+                                &input,
+                                move |sections, input, event: &InputEvent, cx| match event {
+                                    InputEvent::Change => {
+                                        let current = input.read(cx).value().to_string();
+                                        if sections
+                                            .suppressed_text
+                                            .get(&name)
+                                            .is_some_and(|expected| expected == &current)
+                                        {
+                                            sections.suppressed_text.remove(&name);
+                                            return;
+                                        }
+                                        sections.suppressed_text.remove(&name);
+                                        if !commit {
+                                            sections.schedule_text_save(name.clone(), current, cx);
+                                        }
+                                    }
+                                    InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                                        let current = input.read(cx).value().to_string();
+                                        sections.flush_text_save(&name, current, commit);
+                                    }
+                                    _ => {}
+                                },
+                            ));
+                            self.inputs.insert(key, input);
+                        }
                     }
                     _ => {}
                 }
@@ -158,6 +240,7 @@ impl Sections {
         // An open dialog follows the core too (a login finishing, an extension connecting).
         if !window.has_active_dialog(cx) {
             self.dialog = None;
+            self.dialog_subscription = None;
         }
         if let Some(dialog) = &self.dialog {
             let domain = dialog.read(cx).domain.clone();
@@ -213,6 +296,9 @@ impl Sections {
             return false;
         }
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
+            if operation == "dialog-view" {
+                self.opening = false;
+            }
             if matches!(operation, "save" | "json") {
                 if let Some(form) = &self.form {
                     form.update(cx, |form, cx| {
@@ -240,6 +326,7 @@ impl Sections {
                 }
                 // A refresh that arrives after the dialog closed opens nothing; only a press does.
                 self.dialog = None;
+                self.dialog_subscription = None;
                 if !std::mem::take(&mut self.opening) {
                     return false;
                 }
@@ -248,11 +335,15 @@ impl Sections {
                     .filter(|title| !title.is_empty())
                     .map_or_else(|| std::mem::take(&mut self.opening_title), str::to_owned);
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));
-                self.subscriptions
-                    .push(cx.subscribe(&nested, |this, _, event: &Navigate, cx| {
-                        this.dialog = None;
-                        cx.emit(Navigate(event.0.clone()));
-                    }));
+                self.dialog_subscription =
+                    Some(
+                        cx.subscribe_in(&nested, window, |this, _, event: &Navigate, window, cx| {
+                            this.dialog = None;
+                            this.dialog_subscription = None;
+                            super::dialog::dismiss(window, cx);
+                            cx.emit(Navigate(event.0.clone()));
+                        }),
+                    );
                 self.dialog = Some(nested.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
@@ -271,7 +362,10 @@ impl Sections {
                         ))
                         .footer(close)
                         .on_cancel(move |_, _, cx| {
-                            let _ = owner.update(cx, |sections, _| sections.dialog = None);
+                            let _ = owner.update(cx, |sections, _| {
+                                sections.dialog = None;
+                                sections.dialog_subscription = None;
+                            });
                             true
                         })
                 });
@@ -280,6 +374,8 @@ impl Sections {
             "form" => {
                 let title = value["title"].as_str().unwrap_or_default().to_owned();
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
+                self.form_subscription =
+                    Some(cx.subscribe(&form, |_, _, go: &Navigate, cx| cx.emit(Navigate(go.0.clone()))));
                 self.form = Some(form.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
@@ -294,6 +390,7 @@ impl Sections {
                                 }
                                 let _ = owner.update(cx, |sections, cx| {
                                     sections.form = None;
+                                    sections.form_subscription = None;
                                     cx.notify();
                                 });
                                 true
@@ -312,6 +409,7 @@ impl Sections {
             }
             "save" => {
                 self.form = None;
+                self.form_subscription = None;
                 window.close_dialog(cx);
                 true
             }
@@ -353,7 +451,6 @@ impl Sections {
 
     fn control(&self, row: &Value, key: &str, cx: &mut Context<Self>) -> AnyElement {
         let control = &row["control"];
-        let owner = cx.entity().downgrade();
         let roomy = self.domain == "settings";
         let compact = roomy && self.compact;
         // A narrow window folds the long buttons of an account's lines to their icon.
@@ -476,10 +573,7 @@ impl Sections {
                 None => div().into_any_element(),
             },
             Some("buttons") => buttons(control["buttons"].as_array().map_or(&[], Vec::as_slice), cx).into_any_element(),
-            _ => {
-                let _ = owner;
-                div().into_any_element()
-            }
+            _ => div().into_any_element(),
         }
     }
 }
@@ -501,7 +595,7 @@ fn card_frame(index: usize, content: Div, cx: &App) -> Stateful<Div> {
 }
 
 /// A small rounded tag: a category, a stream tag.
-fn chip(icon: Option<&str>, text: String, cx: &App) -> Div {
+fn chip(id: ElementId, icon: Option<&str>, text: String, cx: &App) -> Div {
     div()
         .flex()
         .items_center()
@@ -526,7 +620,7 @@ fn chip(icon: Option<&str>, text: String, cx: &App) -> Div {
         .child({
             let tip = text.clone();
             div()
-                .id(SharedString::from(format!("chip-{text}")))
+                .id(id)
                 .min_w_0()
                 .truncate()
                 .child(text)
@@ -614,8 +708,9 @@ impl Sections {
                     .flex()
                     .flex_wrap()
                     .gap(px(SPACE_SM))
-                    .children(chips.iter().map(|chip_spec| {
+                    .children(chips.iter().enumerate().map(|(chip_index, chip_spec)| {
                         chip(
+                            ("chip", (index << 16) + chip_index).into(),
                             chip_spec["icon"].as_str(),
                             chip_spec["text"].as_str().unwrap_or_default().to_owned(),
                             cx,
@@ -923,7 +1018,7 @@ impl Render for Sections {
             if let Some(brand) = section["brand"].as_str() {
                 heading = heading.child(
                     img(format!("brands/{brand}.svg"))
-                        .id(SharedString::from(format!("brand-{brand}")))
+                        .id(("brand", section_index))
                         .size(px(LINE_SECTION_TITLE))
                         .flex_shrink_0(),
                 );
@@ -1528,6 +1623,141 @@ mod tests {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert!(window.try_find_by_label(no_matches).is_none());
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn text_settings_debounce_skip_unchanged_and_sync_external_updates(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let model = json!({
+                "domain": "settings",
+                "sections": [
+                    {
+                        "title": "General",
+                        "rows": [
+                            {
+                                "key": "instance",
+                                "label": "Instance",
+                                "control": {"type": "text", "value": "Main"}
+                            },
+                            {
+                                "key": "host",
+                                "label": "Host",
+                                "control": {"type": "text", "value": "127.0.0.1", "commit": true}
+                            },
+                            {
+                                "key": "mode",
+                                "label": "Mode",
+                                "control": {"type": "select", "options": ["A", "B"], "value": 99}
+                            }
+                        ]
+                    }
+                ]
+            });
+            let host_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<SectionsHost>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let s = host_slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(800.), px(600.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |_, cx| {
+                        let host = cx.new(|_| SectionsHost(None));
+                        *s.borrow_mut() = Some(host.clone());
+                        host
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let host = host_slot.borrow().clone().expect("host created");
+            let sections = cx
+                .update_window(window.into(), |_, window, cx| {
+                    let sections = cx.new(|cx| Sections::new(model, "settings".into(), window, cx));
+                    host.update(cx, |host, cx| {
+                        host.0 = Some(sections.clone());
+                        cx.notify();
+                    });
+                    sections
+                })
+                .unwrap();
+
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                // Out-of-bounds select value stays unselected instead of setting an invalid index.
+                let mode = sections.read(cx).selects.get("mode").cloned().expect("mode select");
+                assert_eq!(mode.read(cx).selected_index(cx), None);
+
+                // Commit text field does not send when flushed unchanged.
+                assert!(!sections.update(cx, |s, _| s.flush_text_save("host", "127.0.0.1".into(), true)));
+
+                // Non-commit typing schedules a debounced task instead of sending on every keystroke.
+                let instance = sections
+                    .read(cx)
+                    .inputs
+                    .get("instance")
+                    .cloned()
+                    .expect("instance input");
+                instance.update(cx, |input, cx| input.focus(window, cx));
+                window.input("2", cx);
+            })
+            .unwrap();
+            cx.update_window(window.into(), |_, _, cx| {
+                assert!(
+                    sections.read(cx).text_tasks.contains_key("instance"),
+                    "typing should queue a debounced save"
+                );
+                assert_eq!(
+                    sections.read(cx).sent_text.get("instance").map(String::as_str),
+                    Some("Main")
+                );
+            })
+            .unwrap();
+
+            // Flushing commits the pending value and clears the timer task.
+            cx.update_window(window.into(), |_, window, cx| {
+                assert!(sections.update(cx, |s, _| s.flush_text_save("instance", "Main2".into(), false)));
+                assert!(!sections.read(cx).text_tasks.contains_key("instance"));
+                assert_eq!(
+                    sections.read(cx).sent_text.get("instance").map(String::as_str),
+                    Some("Main2")
+                );
+
+                // External update for unfocused commit field updates the box without queueing a save.
+                let updated = json!({
+                    "domain": "settings",
+                    "sections": [{
+                        "title": "General",
+                        "rows": [
+                            {"key": "instance", "label": "Instance", "control": {"type": "text", "value": "Main2"}},
+                            {"key": "host", "label": "Host", "control": {"type": "text", "value": "0.0.0.0", "commit": true}},
+                            {"key": "mode", "label": "Mode", "control": {"type": "select", "options": ["A", "B"], "value": 1}}
+                        ]
+                    }]
+                });
+                sections.update(cx, |s, cx| s.update_model(updated, window, cx));
+                let host = sections.read(cx).inputs.get("host").cloned().expect("host input");
+                assert_eq!(host.read(cx).value().as_ref(), "0.0.0.0");
+                let mode = sections.read(cx).selects.get("mode").cloned().expect("mode select");
+                assert_eq!(mode.read(cx).selected_index(cx).map(|i| i.row), Some(1));
+
+                // Error on dialog-view resets opening so a later refresh cannot hijack the dialog.
+                sections.update(cx, |s, cx| {
+                    s.opening = true;
+                    s.apply("dialog-view", json!({"status": "error", "error": "fail"}), window, cx);
+                    assert!(!s.opening);
+                });
             })
             .unwrap();
         }

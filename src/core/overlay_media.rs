@@ -35,57 +35,84 @@ fn icon_of(kind: &str) -> &'static str {
     }
 }
 
+/// What parts a setting's text that lists files: `a.png|b.png`, one a line, or `a.png, b.png`.
+const PARTS: [char; 3] = ['|', '\n', ','];
+
 /// Whether a setting's value names the file: as itself, a part of a `|` or line list, or anywhere in a
 /// list setting's rows.
 fn names(value: &Value, name: &str) -> bool {
     match value {
-        Value::String(text) => text.split(['|', '\n', ',']).any(|part| part.trim() == name),
+        Value::String(text) => text.split(PARTS).any(|part| part.trim() == name),
         Value::Array(items) => items.iter().any(|v| names(v, name)),
         Value::Object(map) => map.values().any(|v| names(v, name)),
         _ => false,
     }
 }
 
+/// What can use a group's files: its settings (by label) with their values, and the text of its pages
+/// and code. Read once for the whole list, not once a file.
+struct Users {
+    settings: Vec<(String, Value)>,
+    code: Vec<(String, String)>,
+}
+
+impl Users {
+    fn of(c: &crate::Config, group: &str, meta: &groups::Meta) -> Self {
+        let mut values = groups::values(c, group);
+        let settings = meta
+            .variables
+            .iter()
+            .filter_map(|d| {
+                let label = if d.label.is_empty() { &d.name } else { &d.label };
+                Some((label.clone(), values.remove(&d.name)?))
+            })
+            .collect();
+        let code = meta
+            .files
+            .iter()
+            .filter(|f| matches!(kind_of(&f.name), "page" | "code"))
+            .map(|f| {
+                let text = groups::read_file(c, group, &f.name)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_default();
+                (f.name.clone(), text)
+            })
+            .collect();
+        Users { settings, code }
+    }
+
+    /// What uses a file: the settings that hold its name, and the pages and code that name it.
+    fn of_file(&self, name: &str) -> Vec<String> {
+        let settings = self
+            .settings
+            .iter()
+            .filter(|(_, v)| names(v, name))
+            .map(|(l, _)| l.clone());
+        let code = self
+            .code
+            .iter()
+            .filter(|(file, text)| file != name && text.contains(name))
+            .map(|(file, _)| file.clone());
+        settings.chain(code).collect()
+    }
+}
+
 /// What uses a file: the settings that hold its name, and the pages and code that name it.
 pub fn used_by(c: &crate::Config, group: &str, name: &str) -> Vec<String> {
-    let meta = groups::meta(c, group);
-    let values = groups::values(c, group);
-    let mut users: Vec<String> = meta
-        .variables
-        .iter()
-        .filter(|d| values.get(&d.name).is_some_and(|v| names(v, name)))
-        .map(|d| {
-            if d.label.is_empty() {
-                d.name.clone()
-            } else {
-                d.label.clone()
-            }
-        })
-        .collect();
-    for f in &meta.files {
-        if f.name == name || !matches!(kind_of(&f.name), "page" | "code") {
-            continue;
-        }
-        let text = groups::read_file(c, group, &f.name)
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
-        if text.contains(name) {
-            users.push(f.name.clone());
-        }
-    }
-    users
+    Users::of(c, group, &groups::meta(c, group)).of_file(name)
 }
 
 /// The tab: a list of the files, each with its picture (a local path) and its buttons.
 pub fn section(engine: &Rc<Engine>, group: &str, id: &str) -> Value {
     let config = engine.config();
     let meta = groups::meta(&config, group);
+    let all_users = Users::of(&config, group, &meta);
     let rows: Vec<Value> = meta
         .files
         .iter()
         .map(|f| {
             let kind = kind_of(&f.name);
-            let users = used_by(&config, group, &f.name);
+            let users = all_users.of_file(&f.name);
             let used = if users.is_empty() {
                 tr("overlays.media.unused").to_owned()
             } else {
@@ -154,12 +181,7 @@ pub fn act(engine: &Rc<Engine>, group: &str, action: &str) -> Result<Value, Stri
             Ok(json!({"accepted": true}))
         }
         "media_copy" => {
-            let address = format!(
-                "{}/overlays/{}/{}",
-                crate::overlays::base(&config),
-                crate::commands::url_encode(group),
-                name
-            );
+            let address = crate::overlays::url(&config, group, name);
             Ok(json!({"copy": address, "message": tr("overlays.copied")}))
         }
         "media_delete" => {
@@ -176,11 +198,31 @@ pub fn act(engine: &Rc<Engine>, group: &str, action: &str) -> Result<Value, Stri
     }
 }
 
-/// Puts `to` wherever a value names `from` (see `names`).
+/// Puts `to` wherever a value names `from` (see `names`). Only a part that is the whole name changes:
+/// `a.png|aa.png` renamed from `a.png` is `b.png|aa.png`, the spaces and separators as they were.
 fn follow(value: &mut Value, from: &str, to: &str) {
     match value {
-        Value::String(text) if text.split(['|', '\n', ',']).any(|part| part.trim() == from) => {
-            *text = text.replace(from, to);
+        Value::String(text) => {
+            if text.split(PARTS).any(|part| part.trim() == from) {
+                let mut out = String::with_capacity(text.len());
+                for piece in text.split_inclusive(PARTS) {
+                    let (body, separator) = match piece.char_indices().last() {
+                        Some((at, c)) if PARTS.contains(&c) => piece.split_at(at),
+                        _ => (piece, ""),
+                    };
+                    if body.trim() == from {
+                        let lead = &body[..body.len() - body.trim_start().len()];
+                        let trail = &body[body.trim_end().len()..];
+                        out.push_str(lead);
+                        out.push_str(to);
+                        out.push_str(trail);
+                    } else {
+                        out.push_str(body);
+                    }
+                    out.push_str(separator);
+                }
+                *text = out;
+            }
         }
         Value::Array(items) => items.iter_mut().for_each(|v| follow(v, from, to)),
         Value::Object(map) => map.values_mut().for_each(|v| follow(v, from, to)),
@@ -300,6 +342,62 @@ mod tests {
         follow(&mut rules, "img/star.svg", "img/new.svg");
         assert_eq!(rules[0]["media"], "img/new.svg");
         assert!(names(&json!("a.png|img/star.svg"), "img/star.svg"));
+    }
+
+    #[test]
+    fn a_rename_changes_only_the_parts_that_are_the_whole_name() {
+        let mut list = json!("a.png|aa.png|img/a.png");
+        follow(&mut list, "a.png", "b.png");
+        assert_eq!(list, "b.png|aa.png|img/a.png", "the other names keep their letters");
+        let mut lines = json!(" a.png \nb-a.png, a.png");
+        follow(&mut lines, "a.png", "c.png");
+        assert_eq!(lines, " c.png \nb-a.png, c.png", "spaces and separators stay");
+        let mut untouched = json!("banana.png");
+        follow(&mut untouched, "a.png", "x.png");
+        assert_eq!(untouched, "banana.png");
+        let mut rows = json!([{"sound": "pop.wav"}, {"sound": "pop.wav.bak"}, 3]);
+        follow(&mut rows, "pop.wav", "chime.wav");
+        assert_eq!(rows, json!([{"sound": "chime.wav"}, {"sound": "pop.wav.bak"}, 3]));
+    }
+
+    #[test]
+    fn what_uses_a_file_is_its_settings_and_the_code_that_names_it() {
+        use base64::Engine as _;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = crate::Config::default();
+        let file = |name: &str, text: &str| groups::File {
+            name: name.into(),
+            content: base64::engine::general_purpose::STANDARD.encode(text),
+            ..Default::default()
+        };
+        let meta = groups::Meta {
+            description: "d".into(),
+            variables: vec![groups::Def {
+                name: "logo".into(),
+                label: "Logo".into(),
+                kind: groups::Kind::Text,
+                default: json!("star.png"),
+                ..Default::default()
+            }],
+            files: vec![
+                file("index.html", "<img src=star.png><script src=app.js></script>"),
+                file("app.js", "load('pop.wav')"),
+                file("star.png", "png"),
+                file("pop.wav", "wav"),
+                file("lonely.gif", "gif"),
+            ],
+            ..Default::default()
+        };
+        groups::set_meta(&mut c, "Media use", meta).unwrap();
+        assert_eq!(used_by(&c, "Media use", "star.png"), ["Logo", "index.html"]);
+        assert_eq!(used_by(&c, "Media use", "pop.wav"), ["app.js"]);
+        assert!(used_by(&c, "Media use", "lonely.gif").is_empty());
+        assert_eq!(
+            used_by(&c, "Media use", "app.js"),
+            ["index.html"],
+            "a file never uses itself"
+        );
+        let _ = groups::set_meta(&mut c, "Media use", groups::Meta::default());
     }
 
     #[test]

@@ -1,18 +1,8 @@
 //! Shared visible and accessible validation, info, warning, and structured error banners.
 use crate::error::{ActiveError, StreamerzError};
-use crate::i18n::tr;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-
-fn recommended_prefix() -> &'static str {
-    let val = tr("error.recommended_prefix");
-    if val == "error.recommended_prefix" {
-        "Recommended: "
-    } else {
-        val
-    }
-}
 
 /// The icon's box at the start of a message: one body line high, the icon centred in it.
 fn icon_slot() -> Div {
@@ -64,7 +54,7 @@ fn error_card(
     cx: &App,
 ) -> impl IntoElement {
     let recs = err.all_recommendations();
-    let rec_prefix = recommended_prefix();
+    let rec_prefix = crate::error::tr_or("error.recommended_prefix", "Recommended: ");
     let mut card = div()
         .id(id)
         .test_support()

@@ -81,7 +81,19 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
                 (if enabled { flags | bit } else { flags }).into()
             }
             // A slider gives a number, a box its text.
-            W::Int if value.is_number() => json!(value.as_f64().unwrap_or(0.0).round() as i64),
+            W::Int if value.is_number() => {
+                if let Some(number) = value.as_i64() {
+                    number.into()
+                } else if let Some(number) = value.as_f64().filter(|_| value.is_f64()) {
+                    let number = number.round();
+                    if !(i64::MIN as f64..-(i64::MIN as f64)).contains(&number) {
+                        return Err(invalid());
+                    }
+                    (number as i64).into()
+                } else {
+                    return Err(invalid());
+                }
+            }
             W::Num if value.is_number() => value.clone(),
             W::Int => {
                 let input = input()?.trim();
@@ -161,6 +173,7 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
             | W::FileTail
             | W::Command
             | W::UserGroup
+            | W::UserGroupId
             | W::Client
             | W::Server
             | W::ObsConnection
@@ -202,6 +215,18 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
 mod tests {
     use super::*;
     use W::*;
+
+    #[test]
+    fn integer_edits_preserve_precision_and_reject_overflow() {
+        let fields = &[("count", "Count", Int)];
+        let change = |value| apply(fields, &Obj::new(), &[json!({"field": 0, "value": value})]);
+        for value in [i64::MIN, 9_007_199_254_740_993, i64::MAX] {
+            assert_eq!(change(json!(value)).unwrap()["count"], value);
+        }
+        assert_eq!(change(json!(2.6)).unwrap()["count"], 3);
+        assert!(change(json!(u64::MAX)).is_err());
+        assert!(change(json!(9_223_372_036_854_775_808.0)).is_err());
+    }
 
     #[test]
     fn edits_preserve_unknown_fields_missing_defaults_and_other_flags() {

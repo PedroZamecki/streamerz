@@ -65,5 +65,23 @@
       {"event": {"platform": "youtube", "data": {"markChatItemsByAuthorAsDeletedAction": {"externalChannelId": "UCa"}}}}
     ],
     "expect": {"runs": [{"action": "on 4016", "args": {"user": "ana", "userName": "@ana", "messageId": "m1"}}, {"action": "on 4003", "args": {"user": "ana", "userName": "@ana", "message": "hi there", "input0": "hi", "userProfileUrl": "big", "userId": "UCa"}}, {"action": "on 4006", "args": {"amount": "\u20ac2.50", "microAmount": 2500000, "currencyCode": "EUR", "message": "gg"}}, {"action": "on 4007", "args": {"microAmount": 5000000, "currencyCode": "USD", "stickerAltText": "Cat", "stickerImageUrl": "st"}}, {"action": "on 4009", "args": {"months": 6, "levelName": "Gold", "message": "yay"}}, {"action": "on 4008", "args": {"levelName": "Gold", "isUpgrade": false}}, {"action": "on 4014", "args": {"user": "ana", "count": 5}}, {"action": "on 4015", "args": {"user": "bo", "gifterUser": "ana"}}, {"action": "on 4030", "args": {"jewelCount": 50, "gift.jewelsAmount": 50}}, {"action": "on 4010", "args": {}}, {"action": "on 4011", "args": {}}, {"action": "on 4028", "args": {"poll.question": "Pets?", "poll.option1.text": "Dogs"}}, {"action": "on 4029", "args": {"poll.question": "Pets?"}}, {"action": "on 4027", "args": {"poll.question": "Pets?", "poll.totalVotes": 40, "panelId": "p"}}, {"action": "on 4004", "args": {"messageId": "m1"}}, {"action": "on 4005", "args": {"userId": "UCa", "banType": "unknown", "userType": "youtube"}}]}
+  },
+  {
+    "name": "youtube: set thumbnail and run commercial",
+    "fakes": {"youtube": {}},
+    "actions": [
+      {"name": "media", "subActions": [
+        {"type": 4013, "broadcast": "b1", "file": "{tmp}/thumb.png"},
+        {"type": 4014, "broadcast": "b1", "duration": 60}
+      ]}
+    ],
+    "steps": [{"run": "media"}],
+    "expect": {
+      "calls": [
+        {"platform": "youtube", "call": "setThumbnail", "broadcast": "b1"},
+        {"platform": "youtube", "call": "runCommercial", "broadcast": "b1", "duration": 60}
+      ],
+      "runs": [{"action": "media", "after": {"thumbnailSuccess": true, "commercialSuccess": true}}]
+    }
   }
 ]

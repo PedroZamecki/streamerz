@@ -9,8 +9,10 @@
 //!   Cancel Raid (501), Reply to Message (560).
 
 use crate::commands::{self, Chat};
+use crate::emote_events::Abort;
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::{ask, ConnectionCommand, Handle, ReplyErrors};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -28,6 +30,64 @@ pub const DEFAULT_EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 pub const HELIX_URL: &str = "https://api.twitch.tv/helix";
 pub const OAUTH_DEVICE_URL: &str = "https://id.twitch.tv/oauth2/device";
 pub const OAUTH_TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
+/// Twitch's per-message chat character limit (Unicode scalar values).
+pub const MAX_CHAT_CHARS: usize = 500;
+
+/// Checks a message being sent from the Chat page against Twitch's 500-character limit.
+pub fn validate_chat_message(text: &str) -> Result<(), String> {
+    if text.chars().count() > MAX_CHAT_CHARS {
+        Err(crate::i18n::tr("chat.twitch_too_long").to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// Splits a Twitch chat message for automation sub-actions into chunks of at most `MAX_CHAT_CHARS`
+/// characters, preferring whitespace boundaries so words stay whole when possible.
+pub fn split_chat_message(text: &str) -> Vec<String> {
+    split_chat_message_at(text, MAX_CHAT_CHARS)
+}
+
+fn split_chat_message_at(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 || text.chars().count() <= max_chars {
+        return vec![text.to_owned()];
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if rest.chars().count() <= max_chars {
+            out.push(rest.to_owned());
+            break;
+        }
+        let hard = rest.char_indices().nth(max_chars).map_or(rest.len(), |(idx, _)| idx);
+        if rest[hard..].chars().next().is_some_and(char::is_whitespace) {
+            let chunk = rest[..hard].trim_end();
+            if !chunk.is_empty() {
+                out.push(chunk.to_owned());
+            }
+            rest = rest[hard..].trim_start();
+            continue;
+        }
+        let window = &rest[..hard];
+        let split_at = window
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .filter(|&idx| !rest[..idx].trim_end().is_empty());
+        match split_at {
+            Some(idx) => {
+                out.push(rest[..idx].trim_end().to_owned());
+                rest = rest[idx..].trim_start();
+            }
+            None => {
+                out.push(window.to_owned());
+                rest = &rest[hard..];
+            }
+        }
+    }
+    out
+}
 
 pub const BROADCASTER_SCOPES: &[&str] = &[
     "user:read:chat",
@@ -409,36 +469,20 @@ pub struct TwitchStatus {
 }
 
 /// A cloneable handle to communicate with the Twitch task.
-#[derive(Clone)]
-pub struct TwitchHandle {
-    tx: mpsc::UnboundedSender<TwitchCmd>,
-    connected: Arc<AtomicBool>,
+pub type TwitchHandle = Handle<TwitchCmd>;
+
+impl ConnectionCommand for TwitchCmd {
+    const CONNECT: Self = Self::Connect;
+    const DISCONNECT: Self = Self::Disconnect;
 }
 
+const REPLY_ERRORS: ReplyErrors = ReplyErrors {
+    down: "Twitch task stopped",
+    cancelled: "Twitch task stopped",
+    timeout: None,
+};
+
 impl TwitchHandle {
-    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
-    pub fn detached() -> (Self, mpsc::UnboundedReceiver<TwitchCmd>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        (TwitchHandle { tx, connected }, rx)
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-
-    pub fn send(&self, cmd: TwitchCmd) {
-        let _ = self.tx.send(cmd);
-    }
-
-    pub fn connect(&self) {
-        self.send(TwitchCmd::Connect);
-    }
-
-    pub fn disconnect(&self) {
-        self.send(TwitchCmd::Disconnect);
-    }
-
     pub async fn send_message(
         &self,
         text: String,
@@ -446,15 +490,14 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::SendMessage {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::SendMessage {
             text,
             reply_id,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn send_announcement(
@@ -464,30 +507,26 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::SendAnnouncement {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::SendAnnouncement {
             text,
             color,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn start_raid(&self, target_login: String) -> Result<bool, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::StartRaid {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::StartRaid {
             target_login,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn cancel_raid(&self) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::CancelRaid { resp: resp_tx });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::CancelRaid { resp }).await
     }
 
     pub async fn helix(
@@ -499,26 +538,24 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::Helix {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::Helix {
             method,
             path: path.to_string(),
             query: query.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             body,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn resolve_user_id(&self, login: &str) -> Result<String, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::ResolveUserId {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::ResolveUserId {
             login: login.to_string(),
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn status(&self) -> TwitchStatus {
@@ -612,29 +649,34 @@ pub async fn fetch_user(client_id: &str, access_token: &str, login: Option<&str>
 /// Helper to parse hex colors like `#e5e5e5` into RGB.
 pub fn parse_hex_color(hex: &str) -> (i64, i64, i64) {
     let s = hex.trim_start_matches('#');
+    // Two hex digits, nothing else (from_str_radix alone takes a sign: "+F").
+    let part = |at: usize| {
+        s.get(at..at + 2)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|h| i64::from_str_radix(h, 16).ok())
+            .unwrap_or(255)
+    };
     if s.len() >= 6 && s.is_ascii() {
-        let r = i64::from_str_radix(&s[0..2], 16).unwrap_or(255);
-        let g = i64::from_str_radix(&s[2..4], 16).unwrap_or(255);
-        let b = i64::from_str_radix(&s[4..6], 16).unwrap_or(255);
-        (r, g, b)
+        (part(0), part(2), part(4))
     } else {
         (255, 255, 255)
     }
 }
 
 pub fn populate_broadcaster_vars(args: &mut Obj, broadcaster: &TwitchAccount) {
-    args.insert("broadcastUser".into(), broadcaster.display_name.as_str().into());
-    args.insert("broadcastUserName".into(), broadcaster.login.as_str().into());
-    args.insert("broadcastUserId".into(), broadcaster.user_id.as_str().into());
+    crate::platform_args::broadcaster(
+        args,
+        "broadcastUserName",
+        broadcaster.user_id.as_str().into(),
+        broadcaster.login.as_str(),
+        Some(&broadcaster.display_name),
+    );
     args.insert("broadcastIsAffiliate".into(), false.into());
     args.insert("broadcastIsPartner".into(), false.into());
 }
 
 pub fn populate_user_vars(args: &mut Obj, user_id: &str, login: &str, display: &str, role: u8, sub: bool) {
-    args.insert("user".into(), display.into());
-    args.insert("userName".into(), login.into());
-    args.insert("userId".into(), user_id.into());
-    args.insert("userType".into(), "twitch".into());
+    crate::platform_args::user(args, "twitch", user_id.into(), login, display);
     args.insert("isSubscribed".into(), sub.into());
     args.insert("isModerator".into(), (role == 3 || role == 4).into());
     args.insert("isVip".into(), (role == 2).into());
@@ -738,6 +780,22 @@ pub fn populate_chat_vars(args: &mut Obj, ctx: &ChatContext) {
     }
 }
 
+/// What Helix's Send Chat Message answered with a 200: an error when Twitch dropped the message anyway
+/// (AutoMod, a duplicate, too long...), with its reason.
+fn chat_sent(body: &[u8]) -> Result<(), String> {
+    let v: Value = serde_json::from_slice(body).unwrap_or_default();
+    let d = &v["data"][0];
+    if d["is_sent"] != false {
+        return Ok(());
+    }
+    let reason = &d["drop_reason"];
+    let why = [&reason["message"], &reason["code"]]
+        .into_iter()
+        .find_map(|r| r.as_str().filter(|r| !r.is_empty()))
+        .unwrap_or("no reason given");
+    Err(format!("Twitch didn't send the message: {why}"))
+}
+
 /// The message this one replies to, if it is a reply (`"reply": null` on a message that isn't one).
 fn reply_of(event: &Value) -> Option<ReplyInfo> {
     let r = event.get("reply").filter(|r| r.is_object())?;
@@ -775,10 +833,7 @@ pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let is_connected = Arc::new(AtomicBool::new(false));
-    let handle = TwitchHandle {
-        tx,
-        connected: is_connected.clone(),
-    };
+    let handle = TwitchHandle::new(tx, is_connected.clone());
     let runner = Runner {
         engine,
         cfg: cfg.clone(),
@@ -787,7 +842,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
         is_connected,
         wanted: Arc::new(AtomicBool::new(false)),
         read_task: None,
-        bot_read_task: None,
     };
     tokio::task::spawn_local(runner.run());
     handle
@@ -800,13 +854,11 @@ struct Runner {
     session_id: Option<String>,
     is_connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
-    /// The EventSub supervisor + read loop; aborted on Disconnect, which closes the socket.
+    /// The EventSub supervisor + read loop; aborted on Disconnect, which closes the socket and stops
+    /// the session's other tasks (they are `Abort` guards inside it).
     read_task: Option<tokio::task::JoinHandle<()>>,
-    /// Extra bot task slot (also managed inside supervisor).
-    bot_read_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
 /// How long an EventSub socket may say nothing: its keepalive time (10 s unless it says) and a margin.
 fn stale_after(welcome: &Value) -> Duration {
     let keep = welcome
@@ -816,14 +868,9 @@ fn stale_after(welcome: &Value) -> Duration {
     Duration::from_secs(keep + 20)
 }
 
+/// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
 pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
     !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 thread_local! {
@@ -856,7 +903,7 @@ where
 {
     let lock = REFRESHING.with(Rc::clone);
     let _one_at_a_time = lock.lock().await;
-    let now = now_secs();
+    let now = crate::fmt::now_secs();
     for bot in [false, true] {
         let rt = {
             let c = cfg.borrow();
@@ -1009,9 +1056,6 @@ impl Runner {
         if let Some(t) = self.read_task.take() {
             t.abort();
         }
-        if let Some(t) = self.bot_read_task.take() {
-            t.abort();
-        }
         self.session_id = None;
         self.engine.chat_polls_clear("twitch");
         self.engine.chat_unpinned("twitch", "");
@@ -1078,9 +1122,6 @@ impl Runner {
             self.read_task = Some(tokio::task::spawn_local(crate::irc::read(engine, cfg, is_conn, wanted)));
             return;
         }
-        if let Some(t) = self.bot_read_task.take() {
-            t.abort();
-        }
         self.wanted.store(true, Ordering::Relaxed);
         let engine = self.engine.clone();
         let cfg = self.cfg.clone();
@@ -1120,7 +1161,7 @@ impl Runner {
         if res.status != 200 {
             return Err(format!("Send chat message failed: HTTP {} {}", res.status, res.text()));
         }
-        Ok(())
+        chat_sent(&res.body)
     }
 
     async fn send_announcement(&self, text: &str, color: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
@@ -1175,6 +1216,18 @@ impl Runner {
             populate_broadcaster_vars(&mut args, broadcaster);
             let raided = raid_target(&user);
             args.extend(raided.clone());
+            // Who goes along: the live count when it's known, else asked once.
+            let viewers = match self.engine.chat_viewers()[0] {
+                Some(n) => n,
+                None => {
+                    let url = format!("{HELIX_URL}/streams?user_id={from_id}");
+                    match crate::http::request("GET", &url, &headers, b"").await {
+                        Ok(r) => live_viewers(&serde_json::from_slice(&r.body).unwrap_or_default()).unwrap_or(0),
+                        Err(_) => 0,
+                    }
+                }
+            };
+            args.insert("viewers".into(), viewers.into());
             // Raid Send and Raid Cancelled say who too.
             SEEN.with_borrow_mut(|s| s.raid = Some(raided));
             go(
@@ -1386,7 +1439,7 @@ async fn supervise_eventsub(
     is_connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
 ) {
-    let mut backoff_secs = 2u64;
+    let mut retries = 0;
     let mut logged_locked = false;
     let mut first_connect_log = true;
 
@@ -1454,12 +1507,13 @@ async fn supervise_eventsub(
             Ok((ws, _)) => ws,
             Err(e) => {
                 crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
+                let delay = crate::http::reconnect_delay(&mut retries, 30);
                 crate::warn(format!(
-                    "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
-                    broadcaster.login
+                    "Twitch: EventSub connect failed for @{} ({e}); retrying in {}s",
+                    broadcaster.login,
+                    delay.as_secs()
                 ));
-                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                backoff_secs = (backoff_secs * 2).min(30);
+                tokio::time::sleep(delay).await;
                 continue;
             }
         };
@@ -1468,21 +1522,14 @@ async fn supervise_eventsub(
         crate::core::status::clear_failure("twitch");
         crate::host::changed();
 
-        let bot_task = bot.map(|bot_acct| {
-            let bot_engine = engine.clone();
-            let bot_cfg = cfg.clone();
-            let bot_url = url.clone();
-            let b_acct = broadcaster.clone();
-            tokio::task::spawn_local(async move {
-                match crate::http::ws_connect(&bot_url).await {
-                    Ok((bot_ws, _)) => {
-                        run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
-                    }
-                    Err(e) => {
-                        crate::warn(format!("Twitch: bot EventSub connect failed ({e})"));
-                    }
-                }
-            })
+        // Stops with this session, and with this task when Disconnect aborts it.
+        let bot_task = bot.is_some().then(|| {
+            Abort(tokio::task::spawn_local(bot_eventsub(
+                engine.clone(),
+                cfg.clone(),
+                url.clone(),
+                broadcaster.clone(),
+            )))
         });
 
         let started = std::time::Instant::now();
@@ -1498,9 +1545,7 @@ async fn supervise_eventsub(
         )
         .await;
 
-        if let Some(t) = bot_task {
-            t.abort();
-        }
+        drop(bot_task);
 
         if !wanted.load(Ordering::Relaxed) {
             break;
@@ -1514,7 +1559,7 @@ async fn supervise_eventsub(
             },
         );
         if started.elapsed() >= Duration::from_secs(15) {
-            backoff_secs = 2;
+            retries = 0;
         }
         if auth_refused.load(Ordering::Relaxed) {
             refresh_accounts(&engine, &cfg, true).await;
@@ -1530,12 +1575,13 @@ async fn supervise_eventsub(
                 break;
             }
         }
+        let delay = crate::http::reconnect_delay(&mut retries, 30);
         crate::say(format!(
-            "Twitch: reconnecting @{} in {backoff_secs}s...",
-            broadcaster.login
+            "Twitch: reconnecting @{} in {}s...",
+            broadcaster.login,
+            delay.as_secs()
         ));
-        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-        backoff_secs = (backoff_secs * 2).min(30);
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -1550,11 +1596,13 @@ async fn run_eventsub_loop(
 ) {
     use futures_util::StreamExt;
     let mut reconnecting = false;
-    let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
+    // The session's own tasks: each stops when dropped, so they end with the session, also when the
+    // task running it is aborted (Disconnect, a channel change).
+    let mut poll_task: Option<Abort> = None;
+    let mut emote_task: Option<Abort> = None;
+    let mut setup_task: Option<Abort> = None;
     // A viewer isn't told of timeouts and bans: the chat's own lines are listened to for them (irc.rs).
-    let bans_task: Rc<RefCell<Option<tokio::task::JoinHandle<()>>>> = Rc::default();
+    let bans_task: Rc<RefCell<Option<Abort>>> = Rc::default();
 
     // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
     // for a good while longer is dead, though nothing closed it, and is opened again.
@@ -1644,11 +1692,15 @@ async fn run_eventsub_loop(
                         let role = channel_role(&token, &bid, &me, &login).await;
                         // Those who moderate are told of timeouts and bans; the rest listen for them.
                         let watcher = (!role.moderates() && !custom_eventsub && !login.is_empty()).then(|| {
-                            tokio::task::spawn_local(crate::irc::watch_bans(e.clone(), cfg_c.clone(), channel))
+                            Abort(tokio::task::spawn_local(crate::irc::watch_bans(
+                                e.clone(),
+                                cfg_c.clone(),
+                                channel,
+                            )))
                         });
-                        if let Some(old) = std::mem::replace(&mut *bans.borrow_mut(), watcher) {
-                            old.abort();
-                        }
+                        // The one it replaces stops as it is dropped.
+                        let old = std::mem::replace(&mut *bans.borrow_mut(), watcher);
+                        drop(old);
                         create_all_subscriptions(&sid, &token, &bid, &me, role, &refused).await
                     };
                     let welcome = async {
@@ -1672,13 +1724,11 @@ async fn run_eventsub_loop(
                 });
                 // A channel change closes this session: its setup must not go on (nor its history land
                 // in the new channel's chat).
-                if let Some(t) = setup_task.replace(setup) {
-                    t.abort();
-                }
-                if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
-                {
-                    t.abort();
-                }
+                setup_task = Some(Abort(setup));
+                poll_task = Some(Abort(tokio::task::spawn_local(poll(
+                    engine.clone(),
+                    broadcaster.clone(),
+                ))));
                 let codes = crate::emote_events::Codes {
                     platform: "twitch",
                     source: "Twitch",
@@ -1687,7 +1737,7 @@ async fn run_eventsub_loop(
                 };
                 if codes.wanted(&engine) && emote_task.is_none() {
                     let watch = crate::emote_events::watch(engine.clone(), codes, broadcaster.user_id.clone());
-                    emote_task = Some(tokio::task::spawn_local(watch));
+                    emote_task = Some(Abort(tokio::task::spawn_local(watch)));
                 }
             }
             "notification" => {
@@ -1726,12 +1776,9 @@ async fn run_eventsub_loop(
         }
     }
 
-    for t in [poll_task, emote_task, setup_task, bans_task.borrow_mut().take()]
-        .into_iter()
-        .flatten()
-    {
-        t.abort();
-    }
+    drop((poll_task, emote_task, setup_task));
+    let bans = bans_task.borrow_mut().take();
+    drop(bans);
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
@@ -1769,6 +1816,41 @@ async fn run_eventsub_loop(
         engine.emit("Twitch", "BotChatDisconnected", || json!(args));
     }
     crate::host::changed();
+}
+
+/// The bot's EventSub session (its whispers) while the broadcaster's lasts: opened again when it drops on
+/// its own, waiting longer each time it fails soon. Ends when the bot has no login left.
+async fn bot_eventsub(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, url: String, broadcaster: TwitchAccount) {
+    let mut fails = 0u32;
+    loop {
+        refresh_accounts(&engine, &cfg, false).await;
+        let Some(bot) = cfg
+            .borrow()
+            .twitch
+            .bot
+            .clone()
+            .filter(|b| !b.token.access_token.is_empty())
+        else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        match crate::http::ws_connect(&url).await {
+            Ok((ws, _)) => run_bot_eventsub_loop(ws, engine.clone(), cfg.clone(), broadcaster.clone(), bot).await,
+            Err(e) => crate::warn(format!("Twitch: bot EventSub connect failed ({e})")),
+        }
+        fails = if started.elapsed() >= Duration::from_secs(60) {
+            1
+        } else {
+            fails.saturating_add(1)
+        };
+        tokio::time::sleep(bot_retry(fails)).await;
+    }
+}
+
+/// The wait before the bot's session is opened again after `fails` short ones: 2 s, doubling, 5 minutes at
+/// most (a session Twitch keeps closing isn't asked for every few seconds).
+fn bot_retry(fails: u32) -> Duration {
+    Duration::from_secs((1u64 << fails.clamp(1, 9)).min(300))
 }
 
 async fn run_bot_eventsub_loop(
@@ -2159,9 +2241,10 @@ async fn create_all_subscriptions(
 
     // Twitch says what this account may have: nothing is assumed. What it refuses is told once, below.
     let mut refused = Vec::new();
+    MODERATE_ON.set(false);
     for (stype, ver, cond) in subs {
         match create_sub(sid, token, stype, ver, cond, auth_refused).await {
-            Sub::Made => {}
+            Sub::Made => MODERATE_ON.set(MODERATE_ON.get() || stype == "channel.moderate"),
             Sub::Refused => refused.push(stype),
             Sub::Stop => break,
         }
@@ -2261,27 +2344,6 @@ async fn create_sub(
     Sub::Made
 }
 
-fn unescape_irc_tag(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    let mut chars = v.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some(':') => out.push(';'),
-                Some('s') => out.push(' '),
-                Some('\\') => out.push('\\'),
-                Some('r') => out.push('\r'),
-                Some('n') => out.push('\n'),
-                Some(other) => out.push(other),
-                None => {}
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Parse an IRCv3 `PRIVMSG` line (e.g. from `recent-messages.robotty.de`) into a historical chat `Line`.
 fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
     let fragments = event.pointer("/message/fragments")?.as_array()?;
@@ -2295,67 +2357,30 @@ fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
 }
 
 pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate::engine::chatlog::Line> {
-    let raw = raw.trim_end_matches(['\r', '\n']);
-    let (tags_part, rest) = if let Some(r) = raw.strip_prefix('@') {
-        r.split_once(' ')?
-    } else {
-        ("", raw)
-    };
-    let rest = rest.trim_start();
-    let (prefix, cmd_rest) = if let Some(r) = rest.strip_prefix(':') {
-        r.split_once(' ')?
-    } else {
-        ("", rest)
-    };
-    let login = prefix.split('!').next().unwrap_or("");
-    let cmd_rest = cmd_rest.trim_start();
-    let after_cmd = cmd_rest.strip_prefix("PRIVMSG ")?;
-    // The text follows ` :`, except a one-word message, which IRC sends without the colon.
-    let (_, trailing) = after_cmd.split_once(" :").or_else(|| after_cmd.split_once(' '))?;
-    let mut text = trailing.to_string();
-    let mut action = false;
-    if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
-        text = act.to_string();
-        action = true;
+    let m = crate::irc::parse(raw)?;
+    // Deleted by a moderator since: not shown again.
+    if m.command != "PRIVMSG" || m.text.is_empty() || m.tag("rm-deleted") == "1" {
+        return None;
     }
-
-    let mut msg_id = String::new();
-    let mut user_id = String::new();
-    let mut display_name = String::new();
-    let mut color = String::new();
-    let mut badges_raw = String::new();
-    let mut emotes_raw = String::new();
-    let mut gifs_raw = String::new();
-    let mut sent_ts: Option<i64> = None;
-    let mut reply = crate::engine::chatlog::Reply::default();
-
-    for kv in tags_part.split(';') {
-        let Some((k, v)) = kv.split_once('=') else { continue };
-        match k {
-            "id" => msg_id = v.to_string(),
-            "user-id" => user_id = v.to_string(),
-            "display-name" => display_name = unescape_irc_tag(v),
-            "color" => color = v.to_string(),
-            "badges" => badges_raw = v.to_string(),
-            "emotes" => emotes_raw = v.to_string(),
-            "gifs" => gifs_raw = unescape_irc_tag(v),
-            "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
-            // Deleted by a moderator since: not shown again.
-            "rm-deleted" if v == "1" => return None,
-            "reply-parent-display-name" => reply.user = unescape_irc_tag(v),
-            "reply-parent-msg-body" => reply.text = unescape_irc_tag(v),
-            _ => {}
-        }
-    }
+    let login = m.login.as_str();
+    let (text, action) = crate::irc::split_action(&m.text);
+    let text = text.to_string();
+    let msg_id = m.tag("id").to_string();
+    let user_id = m.tag("user-id").to_string();
+    let display_name = m.tag("display-name").to_string();
+    let mut color = m.tag("color").to_string();
+    let (badges_raw, emotes_raw, gifs_raw) = (m.tag("badges"), m.tag("emotes"), m.tag("gifs"));
+    let sent_ts = m.tag("tmi-sent-ts").parse::<i64>().ok();
+    let reply = crate::engine::chatlog::Reply {
+        user: m.tag("reply-parent-display-name").to_string(),
+        text: m.tag("reply-parent-msg-body").to_string(),
+    };
 
     let user = if display_name.is_empty() {
         login.to_string()
     } else {
         display_name
     };
-    if user.is_empty() && text.is_empty() {
-        return None;
-    }
     if color.is_empty() {
         color = default_user_color(if !login.is_empty() { login } else { &user }).to_string();
     }
@@ -2404,7 +2429,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         }
     }
 
-    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, &emotes_raw, &gifs_raw)}});
+    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, emotes_raw, gifs_raw)}});
     let gif = standalone_gif(&gif_event, &text).unwrap_or("").to_string();
     let reply = (!reply.user.is_empty()).then_some(reply);
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
@@ -2731,8 +2756,14 @@ pub(crate) fn handle_notification(
             match kind {
                 "watch_streak" => {
                     let w = &event["watch_streak"];
-                    args.insert("streak".into(), w["streak_count"].clone());
-                    args.insert("pointsAwarded".into(), w["channel_points_awarded"].clone());
+                    // Streamer.bot's names, and the ones Streamerz used before.
+                    for k in ["watchStreak", "streak"] {
+                        args.insert(k.into(), w["streak_count"].clone());
+                    }
+                    for k in ["channelPointsAwarded", "pointsAwarded"] {
+                        args.insert(k.into(), w["channel_points_awarded"].clone());
+                    }
+                    args.insert("watchStreakId".into(), event["message_id"].clone());
                     go(
                         engine,
                         T_WATCH_STREAK,
@@ -3164,9 +3195,9 @@ pub(crate) fn handle_notification(
             populate_broadcaster_vars(&mut args, broadcaster);
             // EventSub has no duration: it's from the start to the end.
             let mut p = event.clone();
-            let start = crate::engine::rest_parse_iso(es(event, "/started_at"));
-            let end = crate::engine::rest_parse_iso(es(event, "/ends_at"))
-                .or_else(|| crate::engine::rest_parse_iso(es(event, "/ended_at")));
+            let start = crate::fmt::parse_iso(es(event, "/started_at"));
+            let end =
+                crate::fmt::parse_iso(es(event, "/ends_at")).or_else(|| crate::fmt::parse_iso(es(event, "/ended_at")));
             if let (Some(a), Some(b)) = (start, end) {
                 p["duration"] = (b - a).into();
             }
@@ -3188,7 +3219,7 @@ pub(crate) fn handle_notification(
                     })
                     .collect(),
                 ends: end.map(|e| e as u64 * 1000).filter(|_| sub_type != "channel.poll.end"),
-                over: (sub_type == "channel.poll.end").then(|| crate::fmt::unix_now().as_millis() as u64),
+                over: (sub_type == "channel.poll.end").then(crate::fmt::now_ms),
             });
             args.insert("pollId".into(), event["id"].clone());
             args.insert("pollTitle".into(), event["title"].clone());
@@ -3232,8 +3263,8 @@ pub(crate) fn handle_notification(
             let mut p = event.clone();
             p["created_at"] = event["started_at"].clone();
             if let (Some(a), Some(b)) = (
-                crate::engine::rest_parse_iso(es(event, "/started_at")),
-                crate::engine::rest_parse_iso(es(event, "/locks_at")),
+                crate::fmt::parse_iso(es(event, "/started_at")),
+                crate::fmt::parse_iso(es(event, "/locks_at")),
             ) {
                 p["prediction_window"] = (b - a).into();
             }
@@ -3256,11 +3287,10 @@ pub(crate) fn handle_notification(
                         )
                     })
                     .collect(),
-                ends: crate::engine::rest_parse_iso(es(event, "/locks_at"))
+                ends: crate::fmt::parse_iso(es(event, "/locks_at"))
                     .map(|e| e as u64 * 1000)
                     .filter(|_| sub_type != "channel.prediction.end" && sub_type != "channel.prediction.lock"),
-                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock")
-                    .then(|| crate::fmt::unix_now().as_millis() as u64),
+                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock").then(crate::fmt::now_ms),
             });
             args.insert("prediction.LockedAt".into(), event["locked_at"].clone());
             args.insert("prediction.EndedAt".into(), event["ended_at"].clone());
@@ -3456,6 +3486,7 @@ pub(crate) fn handle_notification(
             event_by(&mut args, event, "moderator", "createdBy");
             let perm = event["is_permanent"].as_bool().unwrap_or(true);
             args.insert("reason".into(), es(event, "/reason").into());
+            args.insert("createdAt".into(), created_at(es(event, "/banned_at")).into());
             args.insert("isPermanent".into(), perm.into());
             if perm {
                 go(
@@ -3475,7 +3506,7 @@ pub(crate) fn handle_notification(
             } else {
                 let (from, to) = (es(event, "/banned_at"), es(event, "/ends_at"));
                 args.insert("endsAt".into(), to.into());
-                if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(from), crate::engine::rest_parse_iso(to)) {
+                if let (Some(a), Some(b)) = (crate::fmt::parse_iso(from), crate::fmt::parse_iso(to)) {
                     args.insert("duration".into(), (b - a).into());
                 }
                 // What the chat's own line said (a viewer hears no more than that).
@@ -3499,27 +3530,12 @@ pub(crate) fn handle_notification(
             }
         }
         "channel.unban" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            event_user(&mut args, event, "user");
-            event_by(&mut args, event, "moderator", "createdBy");
-            // EventSub has one unban for both; Streamer.bot has two triggers.
-            go(
-                engine,
-                T_USER_UNBANNED,
-                "User Unbanned",
-                "Twitch/Moderation",
-                "UserUnbanned",
-                &args,
-            );
-            go(
-                engine,
-                T_USER_UNTIMED_OUT,
-                "User Untimed Out",
-                "Twitch/Moderation",
-                "UserUntimedOut",
-                &args,
-            );
+            let args = unban_args(broadcaster, event, event);
+            // channel.unban is one event for both: channel.moderate says which it was. Without it, both.
+            if !MODERATE_ON.get() {
+                unbanned(engine, &args, true);
+                unbanned(engine, &args, false);
+            }
             crate::core::moderation::emit_linked_moderation_event(
                 engine,
                 "twitch",
@@ -3964,13 +3980,22 @@ pub(crate) fn handle_notification(
         }
         "channel.moderate" => {
             crate::core::moderation_activity::event(engine, event);
-            // Only shared chat's: this channel's own come as their own events.
+            // Only shared chat's and unbans: this channel's others come as their own events.
             let source = es(event, "/source_broadcaster_user_id");
             if source.is_empty() || source == broadcaster.user_id {
+                let action = es(event, "/action");
+                if matches!(action, "unban" | "untimeout") {
+                    let args = unban_args(broadcaster, event, &event[action]);
+                    unbanned(engine, &args, action == "unban");
+                }
                 return;
             }
             let action = es(event, "/action");
-            let d = &event[action.replace("shared_chat_", "")];
+            // Twitch sends the details under `shared_chat_ban` and so on; the plain name is the fallback.
+            let d = match &event[action] {
+                Value::Object(_) => &event[action],
+                _ => &event[action.strip_prefix("shared_chat_").unwrap_or(action)],
+            };
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_by(&mut args, event, "moderator", "createdBy");
@@ -4295,6 +4320,15 @@ pub(crate) fn handle_notification(
     }
 }
 
+/// When a moderation happened, as Streamer.bot's `createdAt`: the event's own time, else now.
+fn created_at(at: &str) -> String {
+    if at.is_empty() {
+        crate::fmt::date(&crate::fmt::now(), "o")
+    } else {
+        at.to_string()
+    }
+}
+
 /// A string field of an EventSub event ("" when missing).
 fn es<'a>(e: &'a Value, p: &str) -> &'a str {
     e.pointer(p).and_then(Value::as_str).unwrap_or("")
@@ -4329,6 +4363,36 @@ fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Ob
 }
 
 /// The event's `user_*` (or `{who}_user_*`) as the user arguments.
+/// The viewer count in a Helix `streams` answer (none when the channel is offline).
+fn live_viewers(streams: &Value) -> Option<u64> {
+    streams["data"][0]["viewer_count"].as_u64()
+}
+
+/// The arguments of User Unbanned and User Untimed Out: who (from `user`) and by whom.
+fn unban_args(broadcaster: &TwitchAccount, event: &Value, user: &Value) -> Obj {
+    let mut args = Obj::new();
+    populate_broadcaster_vars(&mut args, broadcaster);
+    event_user(&mut args, user, "user");
+    event_by(&mut args, event, "moderator", "createdBy");
+    args.insert("createdAt".into(), created_at("").into());
+    args
+}
+
+/// User Unbanned (`ban`) or User Untimed Out.
+fn unbanned(engine: &Rc<Engine>, args: &Obj, ban: bool) {
+    let (kind, name, event) = if ban {
+        (T_USER_UNBANNED, "User Unbanned", "UserUnbanned")
+    } else {
+        (T_USER_UNTIMED_OUT, "User Untimed Out", "UserUntimedOut")
+    };
+    go(engine, kind, name, "Twitch/Moderation", event, args);
+}
+
+thread_local! {
+    /// Whether this session has channel.moderate, which tells an unban from a timeout's end.
+    static MODERATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn event_user(args: &mut Obj, e: &Value, who: &str) {
     // The user is `user_id`; the others are `target_user_id`, `moderator_user_id`...
     let pre = if who == "user" {
@@ -4439,7 +4503,7 @@ fn hype_args(args: &mut Obj, e: &Value) {
         }
     }
     if let (Some(a), Some(b)) = (e["started_at"].as_str(), e["expires_at"].as_str()) {
-        if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(a), crate::engine::rest_parse_iso(b)) {
+        if let (Some(a), Some(b)) = (crate::fmt::parse_iso(a), crate::fmt::parse_iso(b)) {
             args.insert("duration".into(), (b - a).into());
         }
     }
@@ -4539,6 +4603,12 @@ fn gift_bomb(engine: &Rc<Engine>, id: &str) {
         args.insert(format!("gift.recipientId{i}"), uid);
     }
     go(engine, code, "Gift Bomb", "Twitch/Subscriptions", "GiftBomb", &args);
+}
+
+/// A Helix chatter as one of Present Viewers' `users`: Streamer.bot's `id`, `userName` and `display`
+/// (`login` too, as Streamerz said before). The chatters list doesn't say their roles.
+fn present_viewer(u: &Value) -> Value {
+    json!({"id": u["user_id"], "userName": u["user_login"], "login": u["user_login"], "display": u["user_name"]})
 }
 
 /// A Helix user as the raid triggers' raidUser* arguments.
@@ -5031,11 +5101,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             continue;
         };
         let live = s["data"][0]["type"] == "live";
-        engine.set_chat_viewers("twitch", s["data"][0]["viewer_count"].as_u64());
+        engine.set_chat_viewers("twitch", live_viewers(&s));
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &broadcaster);
         if want[0] && live {
-            let count = s["data"][0]["viewer_count"].as_u64().unwrap_or(0);
+            let count = live_viewers(&s).unwrap_or(0);
             if viewers != Some(count) {
                 viewers = Some(count);
                 let mut a = args.clone();
@@ -5051,14 +5121,14 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             }
         }
         if want[1] && live && n % 5 == 1 {
-            let q = vec![("broadcaster_id", id), ("moderator_id", id), ("first", "1000")];
+            // Asked as who's logged in: on someone else's channel, its moderator, not its owner.
+            let q = vec![
+                ("broadcaster_id", id),
+                ("moderator_id", "{moderator_id}"),
+                ("first", "1000"),
+            ];
             if let Ok(c) = tw.helix("GET", "chat/chatters", q, None, false, false).await {
-                let users: Vec<Value> = c["data"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|u| json!({"id": u["user_id"], "login": u["user_login"], "display": u["user_name"]}))
-                    .collect();
+                let users: Vec<Value> = c["data"].as_array().into_iter().flatten().map(present_viewer).collect();
                 let mut a = args.clone();
                 a.insert("users".into(), users.into());
                 a.insert("isLive".into(), live.into());
@@ -5080,8 +5150,8 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             {
                 let d = &ad["data"][0];
                 let next = d["next_ad_at"].as_str().unwrap_or("");
-                let at = crate::engine::rest_parse_iso(next).unwrap_or(0);
-                let left = (at - crate::fmt::unix_now().as_secs() as i64) / 60;
+                let at = crate::fmt::parse_iso(next).unwrap_or(0);
+                let left = (at - crate::fmt::now_secs() as i64) / 60;
                 if !next.is_empty() && (0..=5).contains(&left) && warned != next {
                     warned = next.to_string();
                     let mut a = args.clone();
@@ -5266,6 +5336,7 @@ pub(crate) mod tests {
         let watch: &[(u32, &str)] = &[
             (T_SUB, "%tier% %isMultiMonth%"),
             (T_SHARED_CHAT_SUB, "%sourceBroadcasterUsername%"),
+            (T_SHARED_CHAT_USER_BANNED, "%userId% %reason%"),
             (T_CHAT_MODE_EMOTE_ON, "%emoteMode%"),
             (T_CHAT_MODE_SLOW_ON, "%slowModeWaitTime%"),
             (T_CHAT_MODE_SLOW_CHANGED, "%slowModeWaitTime%"),
@@ -5352,6 +5423,11 @@ pub(crate) mod tests {
                 "channel.ban",
                 json!({"user_id": "4", "is_permanent": true, "moderator_user_login": "boss"}),
             );
+            go(
+                "channel.moderate",
+                json!({"action": "shared_chat_ban", "source_broadcaster_user_id": "2",
+                    "shared_chat_ban": {"user_id": "6", "user_login": "sam", "reason": "spam"}}),
+            );
             SEEN.with_borrow_mut(|s| s.title = "old".into());
             go("channel.update", json!({"title": "new", "category_id": ""}));
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -5368,6 +5444,7 @@ pub(crate) mod tests {
             "T 110 1 2 40% Bitsy",
             "T 465 1 badword",
             "T 137 boss",
+            "T 490 6 spam",
             "T 118 old>new True False",
             "T 121 0 2 1",
             "T 121 0 2 2",
@@ -5397,6 +5474,9 @@ pub(crate) mod tests {
     #[test]
     fn parse_colors() {
         assert_eq!(parse_hex_color("#FF8000"), (255, 128, 0));
+        // A sign isn't a digit, and one bad pair spoils only itself.
+        assert_eq!(parse_hex_color("+F+F+F"), (255, 255, 255));
+        assert_eq!(parse_hex_color("#GG0011"), (255, 0, 17));
         assert_eq!(parse_hex_color("1E90FF"), (30, 144, 255));
         assert_eq!(parse_hex_color(""), (255, 255, 255));
     }
@@ -5426,17 +5506,16 @@ pub(crate) mod tests {
         };
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &b);
-        assert_eq!(args["broadcastUser"], "Alice");
-        assert_eq!(args["broadcastUserName"], "alice");
-        assert_eq!(args["broadcastUserId"], "123");
-
         populate_user_vars(&mut args, "456", "bob", "Bob", 3, true);
-        assert_eq!(args["user"], "Bob");
-        assert_eq!(args["userName"], "bob");
-        assert_eq!(args["userId"], "456");
-        assert_eq!(args["userType"], "twitch");
-        assert_eq!(args["isModerator"], true);
-        assert_eq!(args["isSubscribed"], true);
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUserName":"alice","broadcastUserId":"123","#,
+                r#""broadcastIsAffiliate":false,"broadcastIsPartner":false,"user":"Bob","userName":"bob","#,
+                r#""userId":"456","userType":"twitch","isSubscribed":true,"isModerator":true,"isVip":false,"#,
+                r#""badges":[],"badgeCount":0}"#,
+            )
+        );
 
         populate_chat_vars(
             &mut args,
@@ -5719,6 +5798,131 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_raid_start_says_how_many_go_along() {
+        assert_eq!(
+            live_viewers(&json!({"data": [{"type": "live", "viewer_count": 42}]})),
+            Some(42)
+        );
+        assert_eq!(live_viewers(&json!({"data": []})), None);
+    }
+
+    #[test]
+    fn an_unban_and_a_timeout_s_end_fire_their_own_trigger() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "unbans", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": T_USER_UNBANNED, "enabled": true}, {"type": T_USER_UNTIMED_OUT, "enabled": true}],
+                "subActions": [crate::engine::tests::log("T %triggerName% %user% %createdByUsername%")]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let b = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            let moderate = |action: &str, login: &str| {
+                json!({"broadcaster_user_id": "7", "moderator_user_login": "mod", "action": action,
+                    action: {"user_id": "4", "user_login": login, "user_name": login}})
+            };
+            MODERATE_ON.set(true);
+            handle_notification(&engine, &b, &cfg, "channel.moderate", &moderate("untimeout", "ana"));
+            handle_notification(&engine, &b, &cfg, "channel.moderate", &moderate("unban", "bia"));
+            // With channel.moderate, channel.unban fires nothing more.
+            let unban = json!({"user_id": "4", "user_login": "bia", "moderator_user_login": "mod"});
+            handle_notification(&engine, &b, &cfg, "channel.unban", &unban);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            MODERATE_ON.set(false);
+        });
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.contains(&"T User Untimed Out ana mod".to_owned()), "{lines:?}");
+        assert!(lines.contains(&"T User Unbanned bia mod".to_owned()), "{lines:?}");
+    }
+
+    #[test]
+    fn watch_streaks_and_bans_carry_streamer_bot_names() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "names", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": T_WATCH_STREAK, "enabled": true}, {"type": T_USER_BANNED, "enabled": true},
+                    {"type": T_USER_UNBANNED, "enabled": true}],
+                "subActions": [crate::engine::tests::log(
+                    "T %watchStreak% %streak% %channelPointsAwarded% %watchStreakId% %createdAt%"
+                )]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let b = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            let raw = "@display-name=Vlad;id=n1;login=vlad;msg-id=viewermilestone;msg-param-category=watch-streak;msg-param-copoReward=350;msg-param-value=3;user-id=69 :tmi.twitch.tv USERNOTICE #chan :ty";
+            let (kind, e) = crate::irc::event(&crate::irc::parse(raw).unwrap(), "7").unwrap();
+            handle_notification(&engine, &b, &cfg, kind, &e);
+            let ban = json!({"user_id": "4", "is_permanent": true, "banned_at": "2026-01-02T03:04:05Z"});
+            handle_notification(&engine, &b, &cfg, "channel.ban", &ban);
+            handle_notification(&engine, &b, &cfg, "channel.unban", &json!({"user_id": "4"}));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("T 3 3 350 n1 %createdAt%"), "{lines:?}");
+        assert!(lines[1].ends_with("%watchStreakId% 2026-01-02T03:04:05Z"), "{lines:?}");
+        let unban = lines[2].rsplit(' ').next().unwrap();
+        assert!(crate::fmt::parse_iso(unban).is_some(), "an unban says when: {lines:?}");
+    }
+
+    #[test]
+    fn a_dropped_chat_message_is_an_error() {
+        assert_eq!(chat_sent(br#"{"data":[{"message_id":"m1","is_sent":true}]}"#), Ok(()));
+        let dropped = br#"{"data":[{"message_id":"","is_sent":false,"drop_reason":{"code":"msg_duplicate","message":"Your message is identical to the one you sent within the last 30 seconds."}}]}"#;
+        let err = chat_sent(dropped).unwrap_err();
+        assert!(err.contains("identical to the one you sent"), "{err}");
+        let code_only = br#"{"data":[{"is_sent":false,"drop_reason":{"code":"automod_held","message":""}}]}"#;
+        assert!(chat_sent(code_only).unwrap_err().ends_with("automod_held"));
+        // Nothing to say it wasn't sent: it was.
+        assert_eq!(chat_sent(b""), Ok(()));
+    }
+
+    #[test]
+    fn the_bot_session_waits_longer_after_each_short_one() {
+        let secs: Vec<u64> = (0..12).map(|n| bot_retry(n).as_secs()).collect();
+        assert_eq!(secs, [2, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300]);
+        assert_eq!(bot_retry(u32::MAX).as_secs(), 300);
+    }
+
+    #[test]
+    fn present_viewers_use_streamer_bot_names() {
+        let u = present_viewer(&json!({"user_id": "5", "user_login": "ann", "user_name": "Ann"}));
+        assert_eq!(
+            u,
+            json!({"id": "5", "userName": "ann", "login": "ann", "display": "Ann"})
+        );
+    }
+
+    #[test]
+    fn recent_messages_keep_actions_replies_and_escapes() {
+        let me =
+            "@display-name=Ana\\sB;user-id=7;id=x1 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro :\x01ACTION waves\x01";
+        let l = parse_irc_recent_message(me, "1").unwrap();
+        assert_eq!((l.user.as_str(), l.text.as_str(), l.action), ("Ana B", "waves", true));
+        assert_eq!(l.msg_id, "x1");
+        let reply = "@display-name=Bo;reply-parent-display-name=Ana;reply-parent-msg-body=hi\\sthere;user-id=8 :bo!bo@bo.tmi.twitch.tv PRIVMSG #pedro :@Ana yes";
+        let l = parse_irc_recent_message(reply, "1").unwrap();
+        let r = l.reply.as_ref().unwrap();
+        assert_eq!((r.user.as_str(), r.text.as_str()), ("Ana", "hi there"));
+        // The owner, from the id, and the badges.
+        let own = "@badges=broadcaster/1,subscriber/12;user-id=1 :pedro!pedro@pedro.tmi.twitch.tv PRIVMSG #pedro :hey";
+        let l = parse_irc_recent_message(own, "1").unwrap();
+        assert!(l.broadcaster && l.subscriber && !l.moderator);
+        assert_eq!(l.badges.len(), 2);
+        // Only messages: notices and joins aren't.
+        assert!(parse_irc_recent_message(":tmi.twitch.tv USERNOTICE #pedro :hi", "1").is_none());
+        assert!(parse_irc_recent_message(":a!a@a JOIN #pedro", "1").is_none());
+        assert!(parse_irc_recent_message("@id=1 :a!a@a PRIVMSG #pedro :", "1").is_none());
+    }
+
+    #[test]
     fn moderation_and_chat_modes_notifications() {
         let (tx, _rx) = watch::channel(Config::default());
         let cfg = Arc::new(tx);
@@ -5888,5 +6092,36 @@ mod gif_message_tests {
         assert_eq!(standalone_gif(&event, "other"), None);
         let raw = format!("@gifs=0-6|id|{url};id=msg :user!user@host PRIVMSG #channel :[a gif]");
         assert_eq!(parse_irc_recent_message(&raw, "").unwrap().gif, url);
+    }
+
+    #[test]
+    fn chat_message_validation_and_word_boundary_splitting() {
+        assert!(validate_chat_message(&"a".repeat(MAX_CHAT_CHARS)).is_ok());
+        assert!(validate_chat_message(&"a".repeat(MAX_CHAT_CHARS + 1)).is_err());
+        assert!(validate_chat_message(&"😀".repeat(MAX_CHAT_CHARS)).is_ok());
+        assert!(validate_chat_message(&"😀".repeat(MAX_CHAT_CHARS + 1)).is_err());
+
+        // Short and exact-length messages are returned verbatim.
+        assert_eq!(split_chat_message(""), vec![""]);
+        assert_eq!(split_chat_message("hello world"), vec!["hello world"]);
+        let exact = "x".repeat(MAX_CHAT_CHARS);
+        assert_eq!(split_chat_message(&exact), vec![exact]);
+
+        // Splits cleanly on word boundaries, including when a space falls right at the limit.
+        assert_eq!(split_chat_message_at("aaa bbb ccc", 7), vec!["aaa bbb", "ccc"]);
+        assert_eq!(split_chat_message_at("aaa bbbccc", 7), vec!["aaa", "bbbccc"]);
+
+        // Single overlong words and multi-byte emoji split on exact character boundaries.
+        assert_eq!(split_chat_message_at("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(split_chat_message_at("😀😁😂😃😄😅", 4), vec!["😀😁😂😃", "😄😅"]);
+
+        // Multi-chunk 500-char split keeps every chunk within Twitch's limit.
+        let long = vec!["hello"; 250].join(" ");
+        let chunks = split_chat_message(&long);
+        assert!(chunks.len() >= 3, "{chunks:?}");
+        assert!(chunks
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().count() <= MAX_CHAT_CHARS));
+        assert_eq!(chunks.join(" "), long);
     }
 }

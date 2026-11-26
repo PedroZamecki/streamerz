@@ -213,7 +213,7 @@ pub(super) const RULES: &[(&str, &[&str])] = &[
         "hourglass",
         &["delay", "wait", "cooldown", "duration", "pending", "upcoming"],
     ),
-    ("volume-x", &["mute", "musted"]),
+    ("volume-x", &["mute"]),
     (
         "volume-2",
         &[
@@ -562,6 +562,24 @@ pub fn item(title: &str, group: &'static str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// An icon missing from the Lucide table draws nothing in the window.
+    #[test]
+    fn every_icon_named_here_is_drawn() {
+        let lucide = include_str!("../../assets/lucide.rs");
+        let drawn = |icon: &str| lucide.contains(&format!("\"{icon}\","));
+        let mut icons: Vec<&str> = super::RULES.iter().map(|(icon, _)| *icon).collect();
+        for &(code, _) in crate::types::TRIGGERS {
+            icons.push(crate::automation::labels::trigger_icon(code));
+        }
+        for &(code, _, _, _) in crate::types::SUB_ACTION_INFO {
+            icons.push(crate::automation::labels::sub_icon(code));
+        }
+        icons.sort();
+        icons.dedup();
+        let missing: Vec<&str> = icons.into_iter().filter(|icon| !drawn(icon)).collect();
+        assert!(missing.is_empty(), "icons not in assets/lucide.rs: {missing:?}");
+    }
+
     #[test]
     fn platforms_and_apps_wear_their_logos() {
         assert_eq!(super::logo("TikTok"), Some("brands/tiktok.svg"));

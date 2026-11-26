@@ -20,7 +20,8 @@ enum Extra {
     None,
     /// `"type": "stdio"` (Claude Code, VS Code, Crush).
     Stdio,
-    /// OpenCode: `{"type": "local", "command": [exe, args...], "environment": {}, "enabled": true}`.
+    /// OpenCode: `{"type": "local", "command": [exe, args...], "environment": {}}` under `mcp.servers`
+    /// (it connects by default; OpenCode turns one off with `disabled`, it has no `enabled`).
     Opencode,
     /// GitHub Copilot CLI: `"type": "local"` and every tool.
     Copilot,
@@ -543,8 +544,7 @@ impl Server {
 
     fn entry(&self, extra: Extra) -> Value {
         if extra == Extra::Opencode {
-            return json!({"type": "local", "command": [self.command, "--mcp"], "environment": self.env(),
-                "enabled": true});
+            return json!({"type": "local", "command": [self.command, "--mcp"], "environment": self.env()});
         }
         let mut e = json!({"command": self.command, "args": ["--mcp"], "env": self.env()});
         match extra {
@@ -688,29 +688,47 @@ fn strip_jsonc_comments(input: &str) -> String {
     out
 }
 
-fn read_json(file: &Path) -> Result<Value, String> {
-    match std::fs::read(file) {
-        Ok(b) if b.iter().all(u8::is_ascii_whitespace) => Ok(json!({})),
-        Ok(b) => {
-            if let Ok(v) = serde_json::from_slice(&b) {
-                return Ok(v);
-            }
-            let is_jsonc = file.extension().is_some_and(|e| e == "jsonc")
-                || file.to_string_lossy().contains("opencode")
-                || file.to_string_lossy().contains("zed");
-            if is_jsonc {
-                if let Ok(s) = std::str::from_utf8(&b) {
-                    let cleaned = strip_jsonc_comments(s);
-                    if let Ok(v) = serde_json::from_str(&cleaned) {
-                        return Ok(v);
-                    }
-                }
-            }
-            serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display()))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-        Err(e) => Err(format!("{}: {e}", file.display())),
+/// Whether `file` may hold comments (JSONC): OpenCode's and Zed's settings do. Others are refused
+/// when they aren't plain JSON, as rewriting them would drop what the user wrote.
+fn jsonc(file: &Path) -> bool {
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = file
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    file.extension().is_some_and(|e| e == "jsonc") || name.starts_with("opencode") || dir.eq_ignore_ascii_case("zed")
+}
+
+/// The JSON in `file` (an empty object for none), and whether it had comments to strip.
+fn read_json_text(file: &Path) -> Result<(Value, bool), String> {
+    let b = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((json!({}), false)),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    // Windows editors may start the file with a byte order mark, which JSON parsers refuse.
+    let b = b.strip_prefix("\u{FEFF}".as_bytes()).unwrap_or(&b);
+    if b.iter().all(u8::is_ascii_whitespace) {
+        return Ok((json!({}), false));
     }
+    if let Ok(v) = serde_json::from_slice(b) {
+        return Ok((v, false));
+    }
+    if jsonc(file) {
+        if let Ok(s) = std::str::from_utf8(b) {
+            if let Ok(v) = serde_json::from_str(&strip_jsonc_comments(s)) {
+                return Ok((v, true));
+            }
+        }
+    }
+    serde_json::from_slice(b)
+        .map(|v| (v, false))
+        .map_err(|e| format!("{}: {e}", file.display()))
+}
+
+fn read_json(file: &Path) -> Result<Value, String> {
+    read_json_text(file).map(|(v, _)| v)
 }
 
 fn state(format: Format, file: &Path, server: &Server) -> State {
@@ -753,18 +771,44 @@ fn same(have: &Value, want: &Value) -> bool {
     })
 }
 
+/// A TOML table header's key parts (`[ mcp_servers."streamerz" ] # note` is `mcp_servers`,
+/// `streamerz`), or None for a line that isn't one (or an array of tables).
+fn toml_header(line: &str) -> Option<Vec<String>> {
+    let t = line.trim();
+    let inner = t.strip_prefix('[').filter(|r| !r.starts_with('['))?;
+    let (mut parts, mut cur, mut quote) = (Vec::new(), String::new(), None);
+    let mut chars = inner.chars();
+    loop {
+        let c = chars.next()?;
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some('"'), '\\') => cur.extend(chars.next()),
+            (Some(_), _) => cur.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '.') => parts.push(std::mem::take(&mut cur)),
+            (None, ']') => break,
+            (None, c) if c.is_whitespace() => {}
+            (None, _) => cur.push(c),
+        }
+    }
+    parts.push(cur);
+    // Only a comment may follow.
+    let rest = chars.as_str().trim();
+    (rest.is_empty() || rest.starts_with('#')).then_some(parts)
+}
+
 /// Where `[mcp_servers.NAME]` (and its subtables) sits in a TOML text: start and end bytes.
 fn toml_block(text: &str, name: &str) -> Option<(usize, usize)> {
-    let head = format!("[mcp_servers.{name}]");
-    let sub = format!("[mcp_servers.{name}.");
+    let ours = |h: &[String]| h.len() >= 2 && h[0] == "mcp_servers" && h[1] == name;
     let mut at = 0;
     let mut start = None;
     for line in text.split_inclusive('\n') {
         let t = line.trim();
         if t.starts_with('[') {
+            let head = toml_header(t);
             match start {
-                None if t == head => start = Some(at),
-                Some(s) if !t.starts_with(&sub) => return Some((s, at)),
+                None if head.as_deref().is_some_and(|h| h.len() == 2 && ours(h)) => start = Some(at),
+                Some(s) if !head.as_deref().is_some_and(|h| h.len() > 2 && ours(h)) => return Some((s, at)),
                 _ => {}
             }
         }
@@ -773,15 +817,18 @@ fn toml_block(text: &str, name: &str) -> Option<(usize, usize)> {
     start.map(|s| (s, text.len()))
 }
 
-/// Writes `text` to `file` through a file beside it, so the agent never reads half of it.
+/// Writes `text` to `file` through a file beside it, so the agent never reads half of it. A link
+/// (dotfiles kept elsewhere) is followed and stays a link; the file keeps its permissions (Claude
+/// Code's and Codex's may hold keys only the user may read).
 fn write(file: &Path, text: &str) -> Result<(), String> {
-    if let Some(d) = file.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    let tmp = file.with_extension("streamerz-tmp");
-    std::fs::write(&tmp, text)
-        .and_then(|()| std::fs::rename(&tmp, file))
-        .map_err(|e| format!("{}: {e}", file.display()))
+    let err = |e: std::io::Error| format!("{}: {e}", file.display());
+    let target = match std::fs::symlink_metadata(file) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(file).map_err(err)?,
+        _ => file.to_path_buf(),
+    };
+    crate::fileio::make_parent(&target).map_err(err)?;
+    let perms = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    crate::fileio::replace(&target, perms, |f| std::io::Write::write_all(f, text.as_bytes())).map_err(err)
 }
 
 /// Puts Streamerz in `kind`'s config (replacing an older entry), or takes it out. Everything else in
@@ -790,7 +837,7 @@ pub fn set(kind: &Kind, places: &Places, server: &Server, on: bool) -> Result<()
     let file = (kind.file)(places);
     match kind.format {
         Format::Json(key, extra) => {
-            let mut v = read_json(&file)?;
+            let (mut v, commented) = read_json_text(&file)?;
             if !v.is_object() {
                 return Err(format!("{}: not a JSON object", file.display()));
             }
@@ -839,6 +886,14 @@ pub fn set(kind: &Kind, places: &Places, server: &Server, on: bool) -> Result<()
                 return Ok(());
             }
             let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+            if commented {
+                // Written back as plain JSON, its comments go: the file as it was stays beside it.
+                let backup = file.with_extension(format!(
+                    "{}.streamerz-backup",
+                    file.extension().and_then(|e| e.to_str()).unwrap_or("json")
+                ));
+                std::fs::copy(&file, &backup).map_err(|e| format!("{}: {e}", backup.display()))?;
+            }
             write(&file, &(text + "\n"))
         }
         Format::Toml => {
@@ -1084,6 +1139,137 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_order_mark_is_read_past() {
+        let d = tmp("bom");
+        let p = places(&d);
+        let f = d.join(".gemini").join("settings.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "\u{FEFF}{\"theme\": \"dark\"}").unwrap();
+        set(kind("gemini"), &p, &server(None), true).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert_eq!(v["theme"], "dark");
+        assert!(v["mcpServers"]["streamerz"].is_object());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_jsonc_files_have_their_comments_stripped() {
+        assert!(jsonc(Path::new("/h/.config/opencode/opencode.json")));
+        assert!(jsonc(Path::new("/h/x/opencode.jsonc")));
+        assert!(jsonc(Path::new("/h/.config/zed/settings.json")));
+        assert!(jsonc(Path::new("/h/AppData/Roaming/Zed/settings.json")));
+        // A home or user called "zed" or "opencode" doesn't make every file JSONC.
+        assert!(!jsonc(Path::new("/u/zed/.gemini/settings.json")));
+        assert!(!jsonc(Path::new("/u/opencode-fan/.cursor/mcp.json")));
+        let d = tmp("zedhome").join("zed");
+        let p = places(&d);
+        let f = d.join(".gemini").join("settings.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "{ // mine\n}").unwrap();
+        assert!(set(kind("gemini"), &p, &server(None), true).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{ // mine\n}");
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    #[test]
+    fn rewriting_a_commented_file_keeps_the_original_beside_it() {
+        let d = tmp("backup");
+        let p = places(&d);
+        let f = d.join(".config").join("opencode").join("opencode.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        let before = "{\n  // my note\n  \"theme\": \"x\",\n}\n";
+        std::fs::write(&f, before).unwrap();
+        set(kind("opencode"), &p, &server(None), true).unwrap();
+        let backup = f.with_file_name("opencode.json.streamerz-backup");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), before);
+        assert_eq!(read_json(&f).unwrap()["theme"], "x");
+        // Plain JSON: no backup.
+        let g = d.join(".cursor").join("mcp.json");
+        std::fs::create_dir_all(g.parent().unwrap()).unwrap();
+        std::fs::write(&g, "{}").unwrap();
+        set(kind("cursor"), &p, &server(None), true).unwrap();
+        assert!(!g.with_file_name("mcp.json.streamerz-backup").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_config_stays_private_and_a_link_stays_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("perms");
+        let p = places(&d);
+        let f = d.join(".claude.json");
+        std::fs::write(&f, "{\"oauthAccount\": {}}").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        set(kind("claude"), &p, &server(None), true).unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        // Dotfiles kept in another folder: the link is kept, its target changes.
+        let real = d.join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "model = \"x\"\n").unwrap();
+        let link = d.join(".codex").join("config.toml");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        set(kind("codex"), &p, &server(None), true).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real)
+            .unwrap()
+            .contains("[mcp_servers.streamerz]"));
+        assert_eq!(std::fs::read_dir(real.parent().unwrap()).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn toml_headers_are_read_however_they_are_written() {
+        let h = |l: &str| toml_header(l);
+        let parts = |a: &[&str]| Some(a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(h("[mcp_servers.streamerz]"), parts(&["mcp_servers", "streamerz"]));
+        assert_eq!(
+            h(" [ mcp_servers . \"streamerz\" ] # mine"),
+            parts(&["mcp_servers", "streamerz"])
+        );
+        assert_eq!(
+            h("[mcp_servers.'streamerz'.env]"),
+            parts(&["mcp_servers", "streamerz", "env"])
+        );
+        assert_eq!(h("[\"a.b\".c]"), parts(&["a.b", "c"]));
+        assert_eq!(h("[[array.of.tables]]"), None);
+        assert_eq!(h("[unclosed"), None);
+        assert_eq!(h("[a] b = 1"), None);
+        // An entry written with quotes or a comment is replaced, never doubled.
+        let text = "[mcp_servers.\"streamerz\"] # added by hand\ncommand = \"old\"\n\n[mcp_servers.streamerz.env]\nA = \"1\"\n\n[other]\nx = 1\n";
+        let (a, b) = toml_block(text, "streamerz").unwrap();
+        assert_eq!(&text[b..], "[other]\nx = 1\n");
+        assert_eq!(a, 0);
+        assert_eq!(toml_block(text, "streamerz-dev"), None);
+        assert_eq!(toml_block("[mcp_servers.streamerzz]\n", "streamerz"), None);
+        let d = tmp("tomlquoted");
+        let p = places(&d);
+        let f = d.join(".codex").join("config.toml");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, text).unwrap();
+        set(kind("codex"), &p, &server(None), true).unwrap();
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(after.matches("streamerz").count(), 1, "{after}");
+        assert!(after.ends_with("[other]\nx = 1\n"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn comments_and_trailing_commas_come_out_strings_stay() {
+        let s = strip_jsonc_comments(
+            "{\"a\": \"// not a comment\", /* gone */ \"b\": [1, 2,], // end\n \"c\": \"\\\"/*\\\"\",}",
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["a"], "// not a comment");
+        assert_eq!(v["b"], json!([1, 2]));
+        assert_eq!(v["c"], "\"/*\"");
+        // Unclosed ones end the text, without a panic.
+        assert_eq!(strip_jsonc_comments("{} /* open"), "{} ");
+        assert_eq!(strip_jsonc_comments("ünï // ç"), "ünï ");
+    }
+
+    #[test]
     fn opencode_and_copilot_get_their_own_shapes() {
         let s = server(Some("ws://127.0.0.1:8090/"));
         let o = s.entry(Extra::Opencode);
@@ -1179,12 +1365,13 @@ mod tests {
         assert!(v_after["mcp"]["servers"].get("streamerz").is_none());
         assert_eq!(state(kind("opencode").format, &f, &s), State::Ready);
 
-        // Also detects legacy v1 mcp -> streamerz format as Added
-        std::fs::write(
-            &f,
-            json!({ "mcp": { "streamerz": s.entry(Extra::Opencode) } }).to_string(),
-        )
-        .unwrap();
+        // The entry has no `enabled` (OpenCode's switch is `disabled`).
+        assert!(s.entry(Extra::Opencode).get("enabled").is_none());
+
+        // Also detects legacy v1 mcp -> streamerz format as Added, `enabled` and all
+        let mut legacy = s.entry(Extra::Opencode);
+        legacy["enabled"] = true.into();
+        std::fs::write(&f, json!({ "mcp": { "streamerz": legacy } }).to_string()).unwrap();
         assert_eq!(state(kind("opencode").format, &f, &s), State::Added);
 
         // Setting migrates legacy v1 to v2 servers table
@@ -1192,6 +1379,7 @@ mod tests {
         let v_migrated: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         assert!(v_migrated["mcp"]["servers"].get("streamerz").is_some());
         assert!(v_migrated["mcp"].get("streamerz").is_none());
+        assert!(v_migrated["mcp"]["servers"]["streamerz"].get("enabled").is_none());
 
         let _ = std::fs::remove_dir_all(&d);
     }

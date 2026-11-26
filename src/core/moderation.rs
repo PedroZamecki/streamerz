@@ -52,13 +52,6 @@ pub fn find_linked_person(engine: &Engine, query: &str, platform_hint: &str) -> 
     let clean = q.trim_start_matches('@');
     let hint = platform_hint.trim().to_ascii_lowercase();
     let config = engine.config();
-    if let Some(link) = config
-        .moderation_links
-        .iter()
-        .find(|link| link.id == q || link.name.eq_ignore_ascii_case(q))
-    {
-        return Some(link.clone());
-    }
     let field_eq = |stored: &str, candidate: &str| {
         !stored.is_empty()
             && (stored.eq_ignore_ascii_case(candidate)
@@ -66,16 +59,26 @@ pub fn find_linked_person(engine: &Engine, query: &str, platform_hint: &str) -> 
                     .trim_start_matches('@')
                     .eq_ignore_ascii_case(candidate.trim_start_matches('@')))
     };
+    // A platform's ID names a person only on that platform: Twitch and Kick IDs are both numbers.
     if !hint.is_empty() {
-        if let Some(link) = config.moderation_links.iter().find(|link| match hint.as_str() {
-            "twitch" => field_eq(&link.twitch, clean),
-            "kick" => field_eq(&link.kick, clean),
-            "youtube" => field_eq(&link.youtube, q),
-            "tiktok" => field_eq(&link.tiktok, clean),
-            _ => false,
-        }) {
-            return Some(link.clone());
-        }
+        return config
+            .moderation_links
+            .iter()
+            .find(|link| match hint.as_str() {
+                "twitch" => field_eq(&link.twitch, clean),
+                "kick" => field_eq(&link.kick, clean),
+                "youtube" => field_eq(&link.youtube, q),
+                "tiktok" => field_eq(&link.tiktok, clean),
+                _ => false,
+            })
+            .cloned();
+    }
+    if let Some(link) = config
+        .moderation_links
+        .iter()
+        .find(|link| link.id == q || link.name.eq_ignore_ascii_case(q))
+    {
+        return Some(link.clone());
     }
     config
         .moderation_links
@@ -320,7 +323,7 @@ fn link_fingerprint(engine: &Engine, link: &LinkedPerson) -> String {
         bans,
     ))
     .unwrap_or_default();
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    crate::fmt::hex(&Sha256::digest(bytes))
 }
 
 fn form_fingerprint(engine: &Engine, kind: &str) -> String {
@@ -332,18 +335,12 @@ fn form_fingerprint(engine: &Engine, kind: &str) -> String {
     } else {
         account(engine)
     };
-    Sha256::digest(key.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::fmt::hex(&Sha256::digest(key.as_bytes()))
 }
 
 pub fn youtube_ban_ids(engine: &Engine, user: &str) -> Vec<String> {
     let owner = youtube_account(engine);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let mut bans: Vec<String> = engine
         .config()
         .youtube_moderation_bans
@@ -389,10 +386,7 @@ pub fn remember_youtube(engine: &Rc<Engine>, id: &str, user_id: &str, live_chat_
         .broadcaster
         .as_ref()
         .map_or_else(String::new, |a| a.channel_id.clone());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let expires_at = duration.map(|seconds| now.saturating_add(seconds));
     engine.change(|config| {
         config
@@ -686,11 +680,15 @@ fn save_direct(engine: &Rc<Engine>, kind: &str, item: Obj) -> Option<Result<Valu
     }
     let duration = duration.unwrap_or_default();
     Some((|| {
+        let key = account(engine);
         let (generation, twitch) = begin(engine)?;
         let engine = engine.clone();
         tokio::task::spawn_local(async move {
             let result = async {
                 let user_id = twitch.resolve_user_id(&user).await?;
+                if account(&engine) != key {
+                    return Err(tr("moderation.account_changed").into());
+                }
                 let mut data = json!({"user_id": user_id});
                 if duration != 0 {
                     data["duration"] = duration.into();
@@ -1049,7 +1047,7 @@ pub fn kick_ban_event(engine: &Rc<Engine>, channel: &str, data: &Value) {
             s.rows.remove(0);
         }
         s.rows.push(
-            json!({"id": id, "name": data["user"]["username"], "permanent": data["permanent"],
+            json!({"id": id, "generation": s.generation, "name": data["user"]["username"], "permanent": data["permanent"],
             "reason": data["reason"], "moderator": data["banned_by"]["username"], "expires": data["expires_at"]}),
         );
     });
@@ -1064,7 +1062,14 @@ fn kick_unban_observed(engine: &Rc<Engine>, id: &str) -> Result<Value, String> {
         .ok_or_else(|| tr("moderation.kick_select").to_string())?;
     let key = kick_account(engine);
     let observed_generation = KICK_OBSERVED.with_borrow(|s| {
-        (s.account == key && s.rows.iter().any(|row| row["id"].as_u64() == Some(user_id))).then_some(s.generation)
+        if s.account != key {
+            return None;
+        }
+        s.rows
+            .iter()
+            .find(|row| row["id"] == user_id)?
+            .get("generation")?
+            .as_u64()
     });
     let Some(observed_generation) = observed_generation else {
         return Err(tr("moderation.kick_select").into());
@@ -1106,8 +1111,9 @@ fn kick_unban_observed(engine: &Rc<Engine>, id: &str) -> Result<Value, String> {
         });
         if ok && KICK.with_borrow(|s| s.account == key && s.generation == generation) {
             KICK_OBSERVED.with_borrow_mut(|s| {
-                if s.account == key && s.generation == observed_generation {
-                    s.rows.retain(|row| row["id"].as_u64() != Some(user_id));
+                if s.account == key {
+                    s.rows
+                        .retain(|row| row["id"] != user_id || row["generation"] != observed_generation);
                 }
             });
         }
@@ -1288,18 +1294,7 @@ struct Shield {
 thread_local! { static SHIELD: RefCell<Shield> = RefCell::default(); }
 
 pub fn shield_event(engine: &Rc<Engine>, event: &Value, active: bool) {
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     let key = account(engine);
@@ -1561,18 +1556,7 @@ pub fn automod_event(engine: &Rc<Engine>, event: &Value, held: bool) {
         return;
     };
     let key = account(engine);
-    let expected = {
-        let c = engine.config();
-        if c.twitch.channel_id.is_empty() {
-            c.twitch
-                .broadcaster
-                .as_ref()
-                .map_or_else(String::new, |a| a.user_id.clone())
-        } else {
-            c.twitch.channel_id.clone()
-        }
-    };
-    if expected.is_empty() || event["broadcaster_user_id"].as_str() != Some(expected.as_str()) {
+    if !is_current_twitch_channel(engine, event) {
         return;
     }
     AUTOMOD.with_borrow_mut(|queue| {
@@ -1777,7 +1761,7 @@ pub fn supports(domain: &str) -> bool {
     domain == DOMAIN
 }
 
-fn account(engine: &Engine) -> String {
+pub(super) fn account(engine: &Engine) -> String {
     let config = engine.config();
     format!(
         "{}|{}|{}",
@@ -1785,6 +1769,16 @@ fn account(engine: &Engine) -> String {
         config.twitch.channel_id,
         config.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
     )
+}
+
+pub(super) fn is_current_twitch_channel(engine: &Engine, event: &Value) -> bool {
+    let config = engine.config();
+    let expected = if config.twitch.channel_id.is_empty() {
+        config.twitch.broadcaster.as_ref().map_or("", |a| a.user_id.as_str())
+    } else {
+        config.twitch.channel_id.as_str()
+    };
+    !expected.is_empty() && event["broadcaster_user_id"].as_str() == Some(expected)
 }
 
 /// A snapshot belongs to a particular account and channel, and old replies must not replace it.
@@ -2047,10 +2041,7 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
             };
         }
     });
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::fmt::now_secs();
     let youtube_rows: Vec<Value> = engine.config().youtube_moderation_bans.iter().filter(|ban| !youtube_key.is_empty() && ban.channel_id == youtube_key && ban.expires_at.is_none_or(|end| end > now)).map(|ban| {
         json!({"id": ban.id, "name": ban.user_id, "enabled": true, "cells": [ban.user_id, ban.live_chat_id,
             ban.expires_at.map_or_else(|| tr("moderation.banned").to_string(), |expires| crate::fmt::shown_when(expires.min(i64::MAX as u64) as i64))]})
@@ -2213,6 +2204,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_platform_id_matches_only_that_platforms_link() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| {
+                c.moderation_links = vec![
+                    LinkedPerson {
+                        id: "a".into(),
+                        name: "Alice".into(),
+                        kick: "42".into(),
+                        ..Default::default()
+                    },
+                    LinkedPerson {
+                        id: "b".into(),
+                        name: "42".into(),
+                        twitch: "7".into(),
+                        ..Default::default()
+                    },
+                ];
+            });
+            assert!(find_linked_person(&engine, "42", "twitch").is_none());
+            assert_eq!(find_linked_person(&engine, "42", "kick").unwrap().id, "a");
+            assert_eq!(find_linked_person(&engine, "alice", "").unwrap().id, "a");
+            let args = json!({"userType": "Twitch", "userId": "42", "userName": "Alice"});
+            assert!(find_linked_person_from_args(&engine, args.as_object().unwrap()).is_none());
+            // Linking a Twitch ID makes a new person, not a merge into Alice's Kick ID.
+            let bob = link_identity_from_action(&engine, "Bob", "42", "", "", "").unwrap();
+            assert!(bob.id != "a" && bob.kick.is_empty());
+            assert_eq!(find_linked_person(&engine, "Alice", "").unwrap().kick, "42");
+        });
+    }
+
+    #[test]
     fn kick_observed_bans_are_partial_and_unban_by_id() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
@@ -2240,6 +2264,31 @@ mod tests {
             crate::scenario::fakes::uninstall();
             KICK.with_borrow_mut(|s| *s = KickState::default());
             KICK_OBSERVED.with_borrow_mut(|s| *s = KickObserved::default());
+        });
+    }
+
+    #[test]
+    fn kick_observations_only_invalidate_an_unban_for_the_same_user() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|config| config.kick.channel = "owner".into());
+            crate::scenario::fakes::install(&engine, &json!({"kick":{}}), None);
+            let ban = |id, reason| kick_ban_event(&engine, "owner", &json!({"user":{"id":id},"reason":reason}));
+            ban(42, "original");
+            kick_unban_observed(&engine, "42").unwrap();
+            ban(43, "unrelated");
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!KICK_OBSERVED.with_borrow(|s| s.rows.iter().any(|row| row["id"] == 42)));
+            kick_unban_observed(&engine, "43").unwrap();
+            ban(43, "new ban");
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(KICK_OBSERVED.with_borrow(|s| s.rows[0]["reason"].clone()), "new ban");
+            crate::scenario::fakes::uninstall();
         });
     }
 
@@ -2753,6 +2802,33 @@ mod tests {
             drop(calls);
             crate::scenario::fakes::uninstall();
             SNAPSHOT.with_borrow_mut(|s| *s = Snapshot::default());
+        });
+    }
+
+    #[test]
+    fn changing_channel_during_twitch_user_lookup_cancels_the_ban() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.twitch.channel_id = "first".into());
+            let (twitch, mut commands) = crate::twitch::TwitchHandle::detached();
+            engine.set_twitch(twitch);
+            save_direct(
+                &engine,
+                "moderation_twitch_ban",
+                json!({"user":"person","duration":0}).as_object().unwrap().clone(),
+            )
+            .unwrap()
+            .unwrap();
+            let Some(crate::twitch::TwitchCmd::ResolveUserId { resp, .. }) = commands.recv().await else {
+                panic!("expected a user lookup");
+            };
+            engine.change(|c| c.twitch.channel_id = "second".into());
+            resp.send(Ok("42".into())).unwrap();
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert!(commands.try_recv().is_err());
         });
     }
 

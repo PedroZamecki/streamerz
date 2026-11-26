@@ -62,7 +62,7 @@ fn generic(name: &str, format: Option<&str>) -> Option<String> {
         "time" => fmt::date(&t(), format.unwrap_or("hh:mm")),
         "longtime" => fmt::date(&t(), format.unwrap_or("hh:mm:ss")),
         "filedatetime" => fmt::date(&t(), format.unwrap_or("yyyyMMdd.hhmmss")),
-        "unixtime" => fmt::unix_now().as_secs().to_string(),
+        "unixtime" => fmt::now_secs().to_string(),
         "lf" => "\r\n".into(),
         _ => return None,
     })
@@ -83,25 +83,38 @@ fn arg(inner: &str, args: &Obj) -> Option<String> {
     generic(name, format)
 }
 
-/// Replace `open name close` everywhere `look` finds the name; unknown names stay, and their closing
-/// mark can open the next one ("50% off %user%" works).
-fn replace(s: &str, mark: char, look: impl Fn(&str) -> Option<String>) -> String {
+/// Replace `%name%` and `~global~` in a single pass so values substituted from one cannot trigger
+/// substitution of the other. Unknown names stay, and their closing mark can open the next one
+/// ("50% off %user%" works).
+pub fn simple(s: &str, args: &Obj, globals: &Obj) -> String {
+    if !s.contains(['%', '~']) {
+        return s.into();
+    }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(start) = rest.find(mark) {
+    while let Some(start) = rest.find(['%', '~']) {
         out += &rest[..start];
+        let mark = rest.as_bytes()[start] as char;
         let after = &rest[start + 1..];
         match after.find(mark) {
-            Some(end) if end > 0 => match look(&after[..end]) {
-                Some(v) => {
-                    out += &v;
-                    rest = &after[end + 1..];
+            Some(end) if end > 0 => {
+                let inner = &after[..end];
+                let found = if mark == '%' {
+                    arg(inner, args)
+                } else {
+                    globals.get(inner).map(text)
+                };
+                match found {
+                    Some(v) => {
+                        out += &v;
+                        rest = &after[end + 1..];
+                    }
+                    None => {
+                        out.push(mark);
+                        rest = after;
+                    }
                 }
-                None => {
-                    out.push(mark);
-                    rest = after;
-                }
-            },
+            }
             _ => {
                 out.push(mark);
                 rest = after;
@@ -111,53 +124,79 @@ fn replace(s: &str, mark: char, look: impl Fn(&str) -> Option<String>) -> String
     out + rest
 }
 
-/// Arguments and persisted globals only (what `$parse()$` and names of things get).
-pub fn simple(s: &str, args: &Obj, globals: &Obj) -> String {
-    if !s.contains(['%', '~']) {
-        return s.into();
+const INLINE_FUNCS: [&str; 3] = ["math(", "length(", "parse("];
+const MAX_FUNC_DEPTH: usize = 16;
+
+/// Finds the `)$` that closes the inline function starting right after `$name(`, skipping over
+/// nested `$math(`, `$length(` and `$parse(` calls.
+fn find_func_end(after_open: &str) -> Option<usize> {
+    let bytes = after_open.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let tail = &after_open[i + 1..];
+            if let Some(f) = INLINE_FUNCS.iter().find(|f| tail.starts_with(*f)) {
+                depth += 1;
+                i += 1 + f.len();
+                continue;
+            }
+        } else if bytes[i] == b')' && bytes.get(i + 1) == Some(&b'$') {
+            if depth == 0 {
+                return Some(i);
+            }
+            depth -= 1;
+            i += 2;
+            continue;
+        }
+        i += 1;
     }
-    let s = replace(s, '%', |n| arg(n, args));
-    replace(&s, '~', |n| globals.get(n).map(text))
+    None
 }
 
-/// Everything: arguments, persisted globals, then inline functions.
-pub fn expand(s: &str, args: &Obj, globals: &Obj) -> String {
-    let s = simple(s, args, globals);
-    if !s.contains('$') {
-        return s;
+fn expand_funcs(s: &str, args: &Obj, depth: usize) -> String {
+    if depth >= MAX_FUNC_DEPTH || !s.contains('$') {
+        return s.into();
     }
     let mut out = String::with_capacity(s.len());
-    let mut rest = s.as_str();
+    let mut rest = s;
     while let Some(start) = rest.find('$') {
         out += &rest[..start];
         let after = &rest[start + 1..];
-        let call = ["math(", "length(", "parse("]
+        let call = INLINE_FUNCS
             .into_iter()
             .find(|f| after.starts_with(f))
-            .and_then(|f| Some((f, after.find(")$")?)));
+            .and_then(|f| Some((f, find_func_end(&after[f.len()..])?)));
         match call {
-            Some((f, end)) if end >= f.len() => {
-                let inner = &after[f.len()..end];
+            Some((f, end)) => {
+                let raw_inner = &after[f.len()..f.len() + end];
+                let inner = expand_funcs(raw_inner, args, depth + 1);
                 out += &match f {
                     "math(" => {
-                        let v = crate::math::eval(inner);
+                        let v = crate::math::eval(&inner);
                         if v.is_nan() {
                             crate::warn(format!("$math({inner})$: not a valid expression"));
                         }
                         fmt::general(v)
                     }
                     "length(" => inner.encode_utf16().count().to_string(),
-                    _ => args.get(inner).map(text).unwrap_or_default(),
+                    _ => args.get(inner.as_str()).map(text).unwrap_or_default(),
                 };
-                rest = &after[end + 2..];
+                rest = &after[f.len() + end + 2..];
             }
-            _ => {
+            None => {
                 out.push('$');
                 rest = after;
             }
         }
     }
     out + rest
+}
+
+/// Everything: arguments, persisted globals, then inline functions.
+pub fn expand(s: &str, args: &Obj, globals: &Obj) -> String {
+    let s = simple(s, args, globals);
+    expand_funcs(&s, args, 0)
 }
 
 #[cfg(test)]
@@ -196,10 +235,41 @@ mod tests {
         assert_eq!(auto_type("007"), json!(7));
         assert_eq!(auto_type("1234.5678"), json!(1234.5678));
         assert_eq!(auto_type("True"), json!(true));
+        assert_eq!(auto_type("false"), json!(false));
         assert_eq!(auto_type("hello"), json!("hello"));
         assert_eq!(auto_type("1e5"), json!(100000.0));
         assert_eq!(auto_type("NaN"), json!("NaN"));
+        assert_eq!(auto_type("inf"), json!("inf"));
         assert_eq!(auto_type(""), json!(""));
         assert_eq!(text(&json!(1e20)), "1E+20");
+        assert_eq!(number(42.0), json!(42));
+        assert_eq!(number(-0.0), json!(0));
+        assert_eq!(number(1.5), json!(1.5));
+        assert_eq!(number(f64::NAN), Value::Null);
+        assert_eq!(number(f64::INFINITY), Value::Null);
+    }
+
+    #[test]
+    fn single_pass_prevents_global_leak_and_supports_nested_functions() {
+        let args = obj(json!({
+            "rawInput": "look ~secret~",
+            "user": "Ana",
+            "expr": "$math(2+2)$",
+            "emoji": "😀"
+        }));
+        let globals = obj(json!({"secret": "top-secret", "other": "%user%"}));
+        assert_eq!(simple("said: %rawInput%", &args, &globals), "said: look ~secret~");
+        assert_eq!(simple("~other~ %user%", &args, &globals), "%user% Ana");
+        assert_eq!(simple("50% off ~secret~", &args, &globals), "50% off top-secret");
+        assert_eq!(simple("%% %user% ~~ ~secret~", &args, &globals), "%% Ana ~~ top-secret");
+        assert_eq!(expand("$math($length(hello)$ * 2)$", &args, &globals), "10");
+        assert_eq!(expand("$length($math(10+10)$)$", &args, &globals), "2");
+        assert_eq!(expand("$parse(expr)$", &args, &globals), "$math(2+2)$");
+        assert_eq!(expand("$parse(missing)$", &args, &globals), "");
+        // UTF-16 code units, as .NET String.Length counts them.
+        assert_eq!(expand("$length(%emoji%)$", &args, &globals), "2");
+        assert_eq!(expand("$math(1 + 2", &args, &globals), "$math(1 + 2");
+        assert_eq!(expand("$$math(1+1)$", &args, &globals), "$2");
+        assert_eq!(expand("%date:%", &args, &globals), "%date:%");
     }
 }

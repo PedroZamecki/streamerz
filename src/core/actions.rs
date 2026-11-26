@@ -52,8 +52,7 @@ fn group_icon_file(icon: &Value) -> Option<String> {
         .join("group-icons")
         .join(format!("{digest}.{extension}"));
     if !path.is_file() {
-        std::fs::create_dir_all(path.parent()?).ok()?;
-        std::fs::write(&path, bytes).ok()?;
+        crate::fileio::write_atomic(&path, &bytes).ok()?;
     }
     Some(path.to_string_lossy().into_owned())
 }
@@ -285,18 +284,21 @@ fn trigger_index(action: &Action, id: &str) -> Option<usize> {
     }
 }
 
-fn find_sub(list: &[Obj], id: &str, path: &mut Path) -> bool {
-    for (index, sub) in list.iter().enumerate() {
+/// A sub-action's children with their places in its list (an entry that isn't one is skipped, and
+/// keeps its place, as `edit::get` counts them).
+fn kids(sub: &Obj) -> impl Iterator<Item = (usize, &Obj)> {
+    sub.get("subActions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, kid)| kid.as_object().map(|kid| (index, kid)))
+}
+
+fn find_sub<'a>(list: impl Iterator<Item = (usize, &'a Obj)>, id: &str, path: &mut Path) -> bool {
+    for (index, sub) in list {
         path.push(index);
-        if field(sub, "id") == id {
-            return true;
-        }
-        let kids: Vec<Obj> = sub
-            .get("subActions")
-            .and_then(Value::as_array)
-            .map(|kids| kids.iter().filter_map(|kid| kid.as_object().cloned()).collect())
-            .unwrap_or_default();
-        if find_sub(&kids, id, path) {
+        if field(sub, "id") == id || find_sub(kids(sub), id, path) {
             return true;
         }
         path.pop();
@@ -311,26 +313,21 @@ fn sub_path(action: &Action, id: &str) -> Option<Path> {
         return edit::get(&action.sub_actions, &path).map(|_| path);
     }
     let mut path = Path::new();
-    find_sub(&action.sub_actions, id, &mut path).then_some(path)
+    find_sub(action.sub_actions.iter().enumerate(), id, &mut path).then_some(path)
 }
 
-fn sub_nodes(
-    list: &[Obj],
+fn sub_nodes<'a>(
+    list: impl Iterator<Item = (usize, &'a Obj)>,
     path: &mut Path,
     names: &labels::Names,
     ready: &super::requirements::Readiness,
 ) -> Vec<Value> {
     let mut out = Vec::new();
-    for (index, sub) in list.iter().enumerate() {
+    for (index, sub) in list {
         path.push(index);
         let code = edit::kind(sub);
         let off = sub.get("enabled").and_then(Value::as_bool) == Some(false);
         let unsupported = !crate::engine::supported(code as u32);
-        let kids: Vec<Obj> = sub
-            .get("subActions")
-            .and_then(Value::as_array)
-            .map(|kids| kids.iter().filter_map(|kid| kid.as_object().cloned()).collect())
-            .unwrap_or_default();
         let (title, category) = SUB_ACTION_INFO
             .binary_search_by_key(&(code as u32), |entry| entry.0)
             .map(|at| (SUB_ACTION_INFO[at].1, SUB_ACTION_INFO[at].2))
@@ -346,7 +343,7 @@ fn sub_nodes(
                 labels::sub_icon(code as u32)
             },
             off || unsupported,
-            sub_nodes(&kids, path, names, ready),
+            sub_nodes(kids(sub), path, names, ready),
         );
         row["italic"] = (99901..=99904).contains(&code).into();
         row["code"] = code.into();
@@ -418,7 +415,7 @@ fn editor(config: &crate::Config, action: &Action, ready: &super::requirements::
             row
         })
         .collect();
-    let subs = sub_nodes(&action.sub_actions, &mut Vec::new(), &names, ready);
+    let subs = sub_nodes(action.sub_actions.iter().enumerate(), &mut Vec::new(), &names, ready);
     let trigger_buttons = vec![
         picker_for(
             form(button("add", "btn.add", "plus", &[]), "act:trigger_add"),
@@ -892,6 +889,7 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
         W::Command => strict(pairs(config.commands.iter())),
         W::Client => strict(pairs(config.websockets.connections.iter())),
         W::Server => strict(pairs(config.websockets.servers.iter())),
+        W::UserGroupId => strict(pairs(config.groups.iter())),
         W::ObsConnection => strict(pairs(config.obs.connections.iter())),
         W::SlobsConnection => strict(pairs(config.slobs.connections.iter())),
         W::UserGroup => typed(
@@ -1156,20 +1154,13 @@ fn sub_values(code: u32) -> Option<String> {
 }
 
 /// The kinds of the sub-actions that run before the one with `id` (branches included, in order).
-fn kinds_before(subs: &[Obj], id: &str, out: &mut Vec<u32>) -> bool {
-    for sub in subs {
+fn kinds_before<'a>(subs: impl Iterator<Item = (usize, &'a Obj)>, id: &str, out: &mut Vec<u32>) -> bool {
+    for (_, sub) in subs {
         if sub.get("id").and_then(Value::as_str) == Some(id) {
             return true;
         }
         out.push(edit::kind(sub) as u32);
-        let inner: Vec<Obj> = sub
-            .get("subActions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_object().cloned())
-            .collect();
-        if kinds_before(&inner, id, out) {
+        if kinds_before(kids(sub), id, out) {
             return true;
         }
     }
@@ -1290,7 +1281,7 @@ fn automation_form(
             // And what the sub-actions before this one added.
             let mut before = Vec::new();
             let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-            if kinds_before(&action.sub_actions, id, &mut before) {
+            if kinds_before(action.sub_actions.iter().enumerate(), id, &mut before) {
                 for code in before {
                     for name in crate::docs::arguments("subaction", code) {
                         if !available.contains(&name) {
@@ -1768,10 +1759,11 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
         "trigger_add" => {
             let mut trigger = item;
             name_gift(&mut trigger);
-            let id = trigger_id(&trigger, 0);
-            if trigger.get("id").is_none() {
+            // A trigger without an id (typed as JSON) gets one first: the row picked is the new one.
+            if field(&trigger, "id").is_empty() {
                 trigger.insert("id".into(), crate::engine::uuid().into());
             }
+            let id = trigger_id(&trigger, 0);
             edit_action(engine, part(2), |action| {
                 action.triggers.push(trigger);
                 Ok(())
@@ -2450,7 +2442,7 @@ fn deliver(export: &Obj, value: &Value) -> Result<Value, String> {
     let output = crate::model::write_export(export);
     let file = text(value, "file").trim();
     if !file.is_empty() {
-        std::fs::write(file, &output).map_err(|error| {
+        crate::fileio::write_atomic(std::path::Path::new(file), output.as_bytes()).map_err(|error| {
             trf(
                 "dialogs.export.cant_save",
                 &[("file", file), ("error", &error.to_string())],
@@ -2466,17 +2458,50 @@ fn accepted() -> Result<Value, String> {
     Ok(json!({"accepted": true}))
 }
 
-/// Move a sub-action: `to` is the target's id (empty: the end of the list), `before` puts it above.
+/// Whether a sub-action of `kind` may sit in the list at `parent` (the action's own list when empty),
+/// in the list as it is before the move: a case goes only in a Switch, and an If/Else or a Switch
+/// holds only its branches.
+fn fits(list: &[Obj], parent: &[usize], kind: u64) -> bool {
+    let holder = match parent {
+        [] => None,
+        path => match edit::get(list, path) {
+            Some(holder) => Some(edit::kind(holder)),
+            None => return false,
+        },
+    };
+    match kind {
+        99903 => holder == Some(127),
+        kind if edit::fixed(kind) => false,
+        _ => holder.is_none_or(edit::holds_any),
+    }
+}
+
+/// Move the sub-action at `from` to `parent`, before `at`, when it may go there.
+fn move_checked(list: &mut Vec<Obj>, from: &[usize], parent: &[usize], at: usize) -> bool {
+    let Some(kind) = edit::get(list, from).map(edit::kind) else {
+        return false;
+    };
+    fits(list, parent, kind) && edit::move_to(list, from, parent, at)
+}
+
+/// Move a sub-action: `to` is the target's id (empty: the end of the list). It goes into a container
+/// that holds anything, else before the target; a Switch case dropped on a case goes before it, and
+/// on a Switch at its end.
 fn move_sub(action: &mut Action, id: &str, to: &str) -> Result<(), String> {
     let from = sub_path(action, id).ok_or_else(item_gone)?;
+    let moving = edit::get(&action.sub_actions, &from).map(edit::kind);
     let target = if to.is_empty() {
         Some((Vec::new(), usize::MAX))
     } else {
         let path = sub_path(action, to).ok_or_else(item_gone)?;
-        edit::drop_target(&action.sub_actions, &path)
+        match (moving, edit::get(&action.sub_actions, &path).map(edit::kind)) {
+            (Some(99903), Some(127)) => Some((path, usize::MAX)),
+            (Some(99903), Some(99903)) => path.split_last().map(|(last, parent)| (parent.to_vec(), *last)),
+            _ => edit::drop_target(&action.sub_actions, &path),
+        }
     };
     let (parent, at) = target.ok_or_else(item_gone)?;
-    if edit::move_to(&mut action.sub_actions, &from, &parent, at) {
+    if move_checked(&mut action.sub_actions, &from, &parent, at) {
         Ok(())
     } else {
         Err(tr("actions.branch_delete_warning").into())
@@ -2486,23 +2511,23 @@ fn move_sub(action: &mut Action, id: &str, to: &str) -> Result<(), String> {
 fn step(action: &mut Action, id: &str, how: &str) -> Result<(), String> {
     let from = sub_path(action, id).ok_or_else(item_gone)?;
     let (last, parent) = from.split_last().ok_or_else(item_gone)?;
+    let list = &mut action.sub_actions;
     let moved = match how {
-        "up" if *last > 0 => edit::move_to(&mut action.sub_actions, &from, parent, last - 1),
-        "down" => edit::move_to(&mut action.sub_actions, &from, parent, last + 2),
+        "up" if *last > 0 => move_checked(list, &from, parent, last - 1),
+        "down" => move_checked(list, &from, parent, last + 2),
         "in" if *last > 0 => {
             let mut before = parent.to_vec();
             before.push(last - 1);
-            let holds = edit::get(&action.sub_actions, &before).is_some_and(|o| edit::holds_any(edit::kind(o)));
-            holds && edit::move_to(&mut action.sub_actions, &from, &before, usize::MAX)
+            move_checked(list, &from, &before, usize::MAX)
         }
         "out" if !parent.is_empty() => {
-            // Out of a branch means out of its If/Else or Switch too.
+            // Out of a branch (a case too) means out of its If/Else or Switch too.
             let mut up = parent.to_vec();
-            if edit::get(&action.sub_actions, &up).is_some_and(|o| edit::fixed(edit::kind(o))) {
+            if edit::get(list, &up).is_some_and(|o| (99901..=99904).contains(&edit::kind(o))) {
                 up.pop();
             }
             match up.split_last() {
-                Some((index, outer)) => edit::move_to(&mut action.sub_actions, &from, outer, index + 1),
+                Some((index, outer)) => move_checked(list, &from, outer, index + 1),
                 None => false,
             }
         }
@@ -2765,6 +2790,25 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_filters_and_clear_group_forms_save_the_selected_id() {
+        let config = crate::Config {
+            groups: vec![json!({"id": "group-1", "name": "Regulars"})
+                .as_object()
+                .unwrap()
+                .clone()],
+            ..Default::default()
+        };
+        for fields in [schema::trigger_fields(32003), schema::sub_fields(10001)] {
+            let fields = fields.unwrap();
+            let options = form_fields(&config, fields, &Obj::new());
+            assert_eq!(options[0]["choices"], json!([{"id": "group-1", "label": "Regulars"}]));
+            let edit = json!({"field": 0, "value": options[0]["choices"][0]["id"]});
+            let draft = crate::automation::edits::apply(fields, &Obj::new(), &[edit]).unwrap();
+            assert_eq!(draft["groupId"], "group-1");
+        }
+    }
     use crate::servers::answer;
 
     #[test]
@@ -3870,5 +3914,299 @@ mod tests {
             assert!(body.contains("| Field | Key | What it holds |"));
             crate::core::prompts::answer(prompts[0].id, Value::Null).unwrap();
         });
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn leaf(id: &str) -> Value {
+        json!({"id": id, "type": 1009, "enabled": true})
+    }
+    fn holder(id: &str, kind: u64, kids: Vec<Value>) -> Value {
+        json!({"id": id, "type": kind, "enabled": true, "subActions": kids})
+    }
+
+    /// a; Switch s (default d, cases c1 with x, c2); If/Else i (true t with y, false f); Group g with
+    /// z; b.
+    fn sample() -> Action {
+        let mut subs: Vec<Obj> = [
+            leaf("a"),
+            holder(
+                "s",
+                127,
+                vec![
+                    holder("d", 99904, vec![]),
+                    holder("c1", 99903, vec![leaf("x")]),
+                    holder("c2", 99903, vec![]),
+                ],
+            ),
+            holder(
+                "i",
+                120,
+                vec![holder("t", 99901, vec![leaf("y")]), holder("f", 99902, vec![])],
+            ),
+            holder("g", 99900, vec![leaf("z")]),
+            leaf("b"),
+        ]
+        .into_iter()
+        .map(obj)
+        .collect();
+        edit::renumber(&mut subs);
+        Action {
+            id: "act".into(),
+            sub_actions: subs,
+            ..Default::default()
+        }
+    }
+
+    /// Each id with the id of what holds it ("" at the top), in order.
+    fn shape(action: &Action) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        fn go<'a>(list: impl Iterator<Item = (usize, &'a Obj)>, parent: &str, out: &mut Vec<(String, String)>) {
+            for (_, sub) in list {
+                out.push((field(sub, "id").to_owned(), parent.to_owned()));
+                go(kids(sub), field(sub, "id"), out);
+            }
+        }
+        go(action.sub_actions.iter().enumerate(), "", &mut out);
+        out
+    }
+
+    fn holder_of(action: &Action, id: &str) -> String {
+        shape(action)
+            .into_iter()
+            .find(|(this, _)| this == id)
+            .map(|(_, parent)| parent)
+            .unwrap()
+    }
+
+    fn top(action: &Action) -> Vec<String> {
+        action
+            .sub_actions
+            .iter()
+            .map(|sub| field(sub, "id").to_owned())
+            .collect()
+    }
+
+    /// Every sub-action is where Streamer.bot can hold it, and its `index` and `parentId` say so.
+    fn assert_valid(list: &[Value], holder: Option<(&str, u64)>) {
+        for (at, sub) in list.iter().enumerate() {
+            let sub = sub.as_object().unwrap();
+            let kind = edit::kind(sub);
+            assert_eq!(sub["index"], at, "{sub:?}");
+            assert_eq!(
+                sub["parentId"],
+                holder.map_or(Value::Null, |(id, _)| json!(id)),
+                "{sub:?}"
+            );
+            let held_by = holder.map(|(_, kind)| kind);
+            match kind {
+                99901 | 99902 => assert_eq!(held_by, Some(120), "{sub:?}"),
+                99903 | 99904 => assert_eq!(held_by, Some(127), "{sub:?}"),
+                _ => assert!(held_by.is_none_or(edit::holds_any), "{sub:?} in {held_by:?}"),
+            }
+            if let Some(kids) = sub.get("subActions").and_then(Value::as_array) {
+                assert_valid(kids, Some((field(sub, "id"), kind)));
+            }
+        }
+    }
+
+    fn assert_action_valid(action: &Action) {
+        let list: Vec<Value> = action.sub_actions.iter().cloned().map(Value::Object).collect();
+        assert_valid(&list, None);
+    }
+
+    #[test]
+    fn out_of_a_switch_case_lands_after_the_switch() {
+        let mut action = sample();
+        step(&mut action, "x", "out").unwrap();
+        assert_eq!(top(&action), ["a", "s", "x", "i", "g", "b"]);
+        assert_action_valid(&action);
+        // Out of an If/Else branch, the same.
+        step(&mut action, "y", "out").unwrap();
+        assert_eq!(top(&action), ["a", "s", "x", "i", "y", "g", "b"]);
+        assert_action_valid(&action);
+    }
+
+    #[test]
+    fn a_case_stays_in_its_switch() {
+        let mut action = sample();
+        let before = shape(&action);
+        // Into the case above it, or out of the Switch: nothing moves.
+        step(&mut action, "c2", "in").unwrap();
+        step(&mut action, "c1", "out").unwrap();
+        assert_eq!(shape(&action), before);
+        // Dragged to the end of the action, or onto a sub-action outside a Switch: refused.
+        assert!(move_sub(&mut action, "c1", "").is_err());
+        assert!(move_sub(&mut action, "c1", "b").is_err());
+        assert!(move_sub(&mut action, "c1", "g").is_err());
+        assert_eq!(shape(&action), before);
+        // Dropped on another case it goes before it, on a Switch at its end.
+        move_sub(&mut action, "c2", "c1").unwrap();
+        assert_eq!(
+            shape(&action)[1..5],
+            [
+                ("s".to_owned(), "".to_owned()),
+                ("d".to_owned(), "s".to_owned()),
+                ("c2".to_owned(), "s".to_owned()),
+                ("c1".to_owned(), "s".to_owned())
+            ]
+        );
+        move_sub(&mut action, "c2", "s").unwrap();
+        let cases: Vec<String> = kids(&action.sub_actions[1])
+            .map(|(_, kid)| field(kid, "id").to_owned())
+            .collect();
+        assert_eq!(cases, ["d", "c1", "c2"]);
+        assert_action_valid(&action);
+    }
+
+    #[test]
+    fn a_sub_action_never_sits_straight_in_a_switch_or_an_if_else() {
+        let mut action = sample();
+        // Dropped on a Switch or an If/Else, it goes before it.
+        move_sub(&mut action, "b", "s").unwrap();
+        assert_eq!(top(&action), ["a", "b", "s", "i", "g"]);
+        move_sub(&mut action, "b", "i").unwrap();
+        assert_eq!(top(&action), ["a", "s", "b", "i", "g"]);
+        // Moving in with a Switch or an If/Else above does nothing.
+        step(&mut action, "b", "in").unwrap();
+        assert_eq!(top(&action), ["a", "s", "b", "i", "g"]);
+        // Into a case or a branch is fine.
+        move_sub(&mut action, "b", "c2").unwrap();
+        assert_eq!(holder_of(&action, "b"), "c2");
+        move_sub(&mut action, "b", "f").unwrap();
+        assert_eq!(holder_of(&action, "b"), "f");
+        // And in a Group above.
+        move_sub(&mut action, "b", "").unwrap();
+        step(&mut action, "b", "in").unwrap();
+        assert_eq!(holder_of(&action, "b"), "g");
+        assert_action_valid(&action);
+    }
+
+    #[test]
+    fn branches_never_move_and_a_container_never_goes_into_itself() {
+        let mut action = sample();
+        let before = shape(&action);
+        for id in ["d", "t", "f"] {
+            assert!(move_sub(&mut action, id, "").is_err(), "{id}");
+            for how in ["up", "down", "in", "out"] {
+                step(&mut action, id, how).unwrap();
+            }
+        }
+        assert!(move_sub(&mut action, "g", "z").is_err());
+        assert!(move_sub(&mut action, "s", "x").is_err());
+        assert!(move_sub(&mut action, "missing", "").is_err());
+        assert!(move_sub(&mut action, "a", "missing").is_err());
+        assert_eq!(shape(&action), before);
+    }
+
+    #[test]
+    fn up_and_down_swap_neighbours_and_stop_at_the_ends() {
+        let mut action = sample();
+        step(&mut action, "a", "up").unwrap();
+        assert_eq!(top(&action), ["a", "s", "i", "g", "b"]);
+        step(&mut action, "b", "down").unwrap();
+        assert_eq!(top(&action), ["a", "s", "i", "g", "b"]);
+        step(&mut action, "a", "down").unwrap();
+        assert_eq!(top(&action), ["s", "a", "i", "g", "b"]);
+        step(&mut action, "b", "up").unwrap();
+        assert_eq!(top(&action), ["s", "a", "i", "b", "g"]);
+        // Up and then down puts it back.
+        step(&mut action, "i", "up").unwrap();
+        step(&mut action, "i", "down").unwrap();
+        assert_eq!(top(&action), ["s", "a", "i", "b", "g"]);
+        assert_action_valid(&action);
+    }
+
+    /// Any sequence of moves keeps every sub-action (none lost, none copied) and a tree Streamer.bot
+    /// can hold, with each `index` and `parentId` right.
+    #[test]
+    fn random_moves_keep_every_sub_action_and_a_valid_tree() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % below as u64) as usize
+        };
+        let mut action = sample();
+        let mut ids: Vec<String> = shape(&action).into_iter().map(|(id, _)| id).collect();
+        ids.sort();
+        let hows = ["up", "down", "in", "out"];
+        for round in 0..2000 {
+            let id = ids[next(ids.len())].clone();
+            if next(3) == 0 {
+                let to = if next(5) == 0 {
+                    String::new()
+                } else {
+                    ids[next(ids.len())].clone()
+                };
+                let _ = move_sub(&mut action, &id, &to);
+            } else {
+                step(&mut action, &id, hows[next(hows.len())]).unwrap();
+            }
+            let mut now: Vec<String> = shape(&action).into_iter().map(|(id, _)| id).collect();
+            now.sort();
+            assert_eq!(now, ids, "round {round}");
+            assert_action_valid(&action);
+        }
+    }
+
+    #[test]
+    fn index_ids_count_places_as_the_tree_does() {
+        // One entry of the inner list isn't an object: the ids by place still find what they show.
+        let action = Action {
+            sub_actions: vec![obj(json!({"type": 99900, "subActions": ["junk", {"type": 1009}]}))],
+            ..Default::default()
+        };
+        let rows = sub_nodes(
+            action.sub_actions.iter().enumerate(),
+            &mut Vec::new(),
+            &labels::names(&crate::Config::default()),
+            &super::super::requirements::Readiness::default(),
+        );
+        let inner = rows[0]["children"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(inner, "#0.1");
+        let path = sub_path(&action, &inner).unwrap();
+        assert_eq!(edit::get(&action.sub_actions, &path).map(edit::kind), Some(1009));
+    }
+
+    #[test]
+    fn a_trigger_saved_without_an_id_is_the_one_picked() {
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [
+                {"id": "act", "name": "Act", "triggers": [{"id": "first", "type": 101, "enabled": true}]}]}));
+            // An item with no id (the form always gives one; this keeps it right if one ever comes
+            // without).
+            let parts: Vec<String> = ["act", "trigger_add", "act", "101"].map(String::from).to_vec();
+            let saved = save_form(&engine, &parts, obj(json!({"type": 101, "enabled": true}))).unwrap();
+            let config = engine.config();
+            let triggers = &config.actions.actions[0].triggers;
+            assert_eq!(triggers.len(), 2);
+            let new = triggers[1]["id"].as_str().unwrap();
+            assert!(!new.is_empty());
+            assert_eq!(saved["saved"], new, "the new trigger is picked, not the first one");
+        });
+    }
+
+    #[test]
+    fn encoded_kind_parts_round_trip_and_never_hold_a_colon() {
+        let alphabet = ['%', '3', 'A', 'a', ':', '2', '5', 'x', 'é'];
+        let mut seed = 12345u64;
+        for _ in 0..3000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let len = (seed >> 60) as usize;
+            let text: String = (0..len)
+                .map(|at| alphabet[((seed >> (at * 4)) % alphabet.len() as u64) as usize])
+                .collect();
+            let encoded = enc(&text);
+            assert!(!encoded.contains(':'), "{text} -> {encoded}");
+            assert_eq!(dec(&encoded), text, "{encoded}");
+        }
+        let parts = vec!["act".to_owned(), "group_settings".to_owned(), "50%: off".to_owned()];
+        let kind = kind_of(&parts);
+        assert_eq!(context(&json!({"kind": kind})), parts);
     }
 }

@@ -54,6 +54,8 @@ pub struct OverlayPage {
     preview_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Drawn at its own size (scrolling) instead of fitted.
     actual_size: bool,
+    /// How far the picture at its own size is scrolled.
+    preview_scroll: ScrollHandle,
     /// Your scene: a picture of OBS's program scene behind a see-through page.
     scene: Option<Arc<RenderImage>>,
     scene_seq: u64,
@@ -74,6 +76,61 @@ fn text_of(value: &Value) -> String {
         Value::Null => String::new(),
         other => other.to_string(),
     }
+}
+
+/// The checkerboard's squares, the light ones over the dark stage.
+const CHECKER: f32 = 16.;
+const CHECKER_DARK: u32 = 0x2a2a2e;
+const CHECKER_LIGHT: u32 = 0x3a3a3f;
+
+/// The light squares of a checkerboard over `bounds`, the first one dark, to the very edges (the
+/// stage clips the last row and column).
+fn light_squares(bounds: Bounds<Pixels>, cell: f32) -> Vec<Bounds<Pixels>> {
+    let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    if cell <= 0. || width <= 0. || height <= 0. {
+        return Vec::new();
+    }
+    let (columns, rows) = ((width / cell).ceil() as usize, (height / cell).ceil() as usize);
+    let mut squares = Vec::with_capacity(columns * rows / 2 + 1);
+    for row in 0..rows {
+        for column in (0..columns).filter(|column| (row + column) % 2 == 1) {
+            squares.push(Bounds::new(
+                point(
+                    bounds.origin.x + px(column as f32 * cell),
+                    bounds.origin.y + px(row as f32 * cell),
+                ),
+                size(px(cell), px(cell)),
+            ));
+        }
+    }
+    squares
+}
+
+/// Where a point of the window falls on the overlay page, in the page's own pixels: the picture
+/// (`page` wide and high) is fitted in the middle of `stage`, or drawn at its own size from the
+/// stage's corner and scrolled by `scroll` (0 or less, as the toolkit counts it). Nothing when the
+/// point is off the picture or a size is not known yet.
+fn page_point(
+    at: Point<Pixels>,
+    stage: Bounds<Pixels>,
+    page: (f32, f32),
+    actual: bool,
+    scroll: Point<Pixels>,
+) -> Option<(f32, f32)> {
+    let (bw, bh) = (f32::from(stage.size.width), f32::from(stage.size.height));
+    let (pw, ph) = page;
+    if bw <= 0. || bh <= 0. || pw <= 0. || ph <= 0. {
+        return None;
+    }
+    let (scale, ox, oy) = if actual {
+        (1., f32::from(scroll.x), f32::from(scroll.y))
+    } else {
+        let scale = (bw / pw).min(bh / ph);
+        (scale, (bw - pw * scale) / 2., (bh - ph * scale) / 2.)
+    };
+    let x = (f32::from(at.x) - f32::from(stage.origin.x) - ox) / scale;
+    let y = (f32::from(at.y) - f32::from(stage.origin.y) - oy) / scale;
+    (x >= 0. && y >= 0. && x <= pw && y <= ph).then_some((x, y))
 }
 
 /// Bytes from base64 (the picture comes in JSON).
@@ -130,6 +187,7 @@ impl OverlayPage {
             preview_note: tr("overlays.preview.starting").to_owned(),
             preview_bounds: Rc::new(Cell::new(Bounds::default())),
             actual_size: false,
+            preview_scroll: ScrollHandle::new(),
             scene: None,
             scene_seq: 0,
         };
@@ -288,23 +346,15 @@ impl OverlayPage {
     /// A click, the wheel or a key at a point of the preview, sent to the page at its own coordinates.
     fn send_input(&self, mut event: Value, at: Option<Point<Pixels>>) {
         if let Some(at) = at {
-            let bounds = self.preview_bounds.get();
-            let (bw, bh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            let (pw, ph) = self.frame_size;
-            if bw <= 0. || bh <= 0. || pw <= 0. || ph <= 0. {
+            let Some((x, y)) = page_point(
+                at,
+                self.preview_bounds.get(),
+                self.frame_size,
+                self.actual_size,
+                self.preview_scroll.offset(),
+            ) else {
                 return;
-            }
-            let scale = if self.actual_size { 1. } else { (bw / pw).min(bh / ph) };
-            let (ox, oy) = if self.actual_size {
-                (0., 0.)
-            } else {
-                ((bw - pw * scale) / 2., (bh - ph * scale) / 2.)
             };
-            let x = (f32::from(at.x) - f32::from(bounds.origin.x) - ox) / scale;
-            let y = (f32::from(at.y) - f32::from(bounds.origin.y) - oy) / scale;
-            if x < 0. || y < 0. || x > pw || y > ph {
-                return;
-            }
             event["x"] = json!(x);
             event["y"] = json!(y);
         }
@@ -460,29 +510,7 @@ impl OverlayPage {
             let danger = button["danger"] == true;
             let request = json!({"request": "StreamerzCoreAction", "domain": "overlays", "table": "overlay",
                 "action": button["id"], "itemId": self.id(), "id": format!("{}:act", self.route)});
-            window.open_dialog(cx, move |dialog, window, cx| {
-                let request = request.clone();
-                let confirm = Button::new("overlay-confirm")
-                    .label(label.clone())
-                    .on_click(move |_, window, cx| {
-                        send(request.clone());
-                        window.close_dialog(cx);
-                    });
-                let buttons = div()
-                    .flex()
-                    .justify_end()
-                    .gap(px(SPACE_SM))
-                    .child(
-                        Button::new("overlay-confirm-cancel")
-                            .label(tr("dialogs.cancel"))
-                            .on_click(|_, window, cx| super::dialog::dismiss(window, cx)),
-                    )
-                    .child(if danger { confirm.danger() } else { confirm });
-                let footer = super::dialog::footer(None, buttons, cx);
-                super::dialog::shell(dialog, label.clone(), 448., window, cx)
-                    .child(super::dialog::body(question.clone()))
-                    .footer(footer)
-            });
+            super::dialog::confirm(window, cx, label, question, danger, move |_, _| send(request.clone()));
             return;
         }
         if let Some(kind) = button["form"].as_str() {
@@ -497,11 +525,11 @@ impl OverlayPage {
         );
     }
 
-    fn button(&self, index: usize, spec: &Value, cx: &mut Context<Self>) -> Button {
+    fn button(&self, id: impl Into<ElementId>, spec: &Value, cx: &mut Context<Self>) -> Button {
         let spec_for_click = spec.clone();
         let label = spec["label"].as_str().unwrap_or_default().to_owned();
         let icon = spec["icon"].as_str().unwrap_or("circle").to_owned();
-        let button = Button::new(("overlay-button", index))
+        let button = Button::new(id)
             .h(px(CONTROL_HEIGHT))
             .icon(Icon::empty().path(format!("icons/{icon}.svg")).size(px(13.)))
             .on_click(cx.listener(move |page, _, window, cx| page.press(&spec_for_click, window, cx)));
@@ -516,7 +544,7 @@ impl OverlayPage {
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
         let mut bar = div().flex().flex_wrap().items_center().gap(px(SPACE_SM));
         for (index, spec) in self.model["toolbar"].as_array().into_iter().flatten().enumerate() {
-            bar = bar.child(self.button(index, spec, cx));
+            bar = bar.child(self.button(("overlay-button", index), spec, cx));
         }
         bar
     }
@@ -528,7 +556,7 @@ impl OverlayPage {
         let checker = self.background == "transparent" || (self.background == "scene" && self.scene.is_none());
         let back = match self.background {
             "#f4f4f5" => gpui_kit::rgb(0xf4f4f5).into(),
-            "transparent" => gpui_kit::rgb(0x2a2a2e).into(),
+            "transparent" => gpui_kit::rgb(CHECKER_DARK).into(),
             _ => cx.theme().table,
         };
         let mut stage = div()
@@ -547,17 +575,21 @@ impl OverlayPage {
                     .size_full(),
             );
         if checker {
-            // Squares behind a see-through page, as an editor shows transparency.
-            let mut squares = div().absolute().size_full().flex().flex_wrap();
-            for i in 0..600 {
-                let dark = (i / 40 + i % 40) % 2 == 0;
-                squares = squares.child(div().size(px(16.)).bg(if dark {
-                    gpui_kit::rgb(0x2a2a2e)
-                } else {
-                    gpui_kit::rgb(0x3a3a3f)
-                }));
-            }
-            stage = stage.child(squares);
+            // Squares behind a see-through page, as an editor shows transparency: painted, not laid
+            // out, since the page is drawn again for every frame of the preview.
+            stage = stage.child(
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| {
+                        window.paint_quad(fill(bounds, gpui_kit::rgb(CHECKER_DARK)));
+                        for square in light_squares(bounds, CHECKER) {
+                            window.paint_quad(fill(square, gpui_kit::rgb(CHECKER_LIGHT)));
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
         }
         if let (Some(scene), "scene") = (&self.scene, self.background) {
             stage = stage.child(
@@ -571,6 +603,7 @@ impl OverlayPage {
             Some(frame) if self.actual_size => stage.child(
                 div()
                     .id("overlay-preview-scroll")
+                    .track_scroll(&self.preview_scroll)
                     .absolute()
                     .size_full()
                     .overflow_scroll()
@@ -735,11 +768,13 @@ impl OverlayPage {
     /// A line of a section's list: what it is, a quiet detail, and its button.
     fn row(&self, at: usize, row: &Value, cx: &mut Context<Self>) -> AnyElement {
         let mut buttons = div().flex().flex_wrap().justify_end().gap(px(SPACE_XS)).flex_shrink_0();
+        // Ids by row and place, so a row with many buttons never shares one with the next row.
+        let id = |n: usize| ElementId::from(SharedString::from(format!("overlay-row-{at}-button-{n}")));
         if row["button"].is_object() {
-            buttons = buttons.child(self.button(1000 + at * 10, &row["button"], cx).small());
+            buttons = buttons.child(self.button(id(0), &row["button"], cx).small());
         }
         for (n, spec) in row["buttons"].as_array().into_iter().flatten().enumerate() {
-            buttons = buttons.child(self.button(1000 + at * 10 + n + 1, spec, cx).small());
+            buttons = buttons.child(self.button(id(n + 1), spec, cx).small());
         }
         // A picture of the file, else its kind's icon.
         let lead = match row["picture"].as_str() {
@@ -833,8 +868,7 @@ impl OverlayPage {
         let mut column = div().flex().flex_col().gap(px(SPACE_LG)).min_w_0();
         let mut form_drawn = false;
         let mut rows_seen = 0;
-        let sections = self.model["sections"].as_array().cloned().unwrap_or_default();
-        for (index, section) in sections.iter().enumerate() {
+        for (index, section) in self.model["sections"].as_array().into_iter().flatten().enumerate() {
             let mut block = div().flex().flex_col().gap(px(SPACE_SM)).min_w_0();
             if let Some(title) = section["title"].as_str() {
                 block = block.child(
@@ -858,7 +892,8 @@ impl OverlayPage {
             if let Some(buttons) = section["buttons"].as_array() {
                 let mut row = div().flex().flex_wrap().gap(px(SPACE_SM));
                 for (at, spec) in buttons.iter().enumerate() {
-                    row = row.child(self.button(100 * (index + 1) + at, spec, cx));
+                    let id = SharedString::from(format!("overlay-section-{index}-button-{at}"));
+                    row = row.child(self.button(id, spec, cx));
                 }
                 block = block.child(row);
             }
@@ -1073,5 +1108,70 @@ impl Render for OverlayPage {
             )
             .child(header)
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{base64, light_squares, page_point, text_of};
+    use gpui_kit::{point, px, size, Bounds};
+    use serde_json::json;
+
+    #[test]
+    fn the_checkerboard_alternates_over_any_width_and_reaches_the_edges() {
+        // 800 px is 50 squares a row: a fixed 40 a row once drew stripes here, and stopped short.
+        let stage = Bounds::new(point(px(10.), px(20.)), size(px(800.), px(500.)));
+        let squares = light_squares(stage, 16.);
+        let cell = |b: &Bounds<gpui_kit::Pixels>| {
+            (
+                ((f32::from(b.origin.x) - 10.) / 16.) as usize,
+                ((f32::from(b.origin.y) - 20.) / 16.) as usize,
+            )
+        };
+        assert!(squares.iter().map(cell).all(|(column, row)| (column + row) % 2 == 1));
+        // 50 columns by 32 rows (the last one cut by the stage), half of them light.
+        assert_eq!(squares.len(), 50 * 32 / 2);
+        let last = squares.iter().map(|b| f32::from(b.bottom())).fold(0., f32::max);
+        assert!(last >= 520., "{last}");
+        assert!(light_squares(Bounds::default(), 16.).is_empty());
+    }
+
+    #[test]
+    fn a_click_on_the_fitted_preview_lands_on_the_page() {
+        // A 1920x1080 page fitted in 960x720: half size, centred with 90 px above and below.
+        let stage = Bounds::new(point(px(100.), px(50.)), size(px(960.), px(720.)));
+        let at = |x: f32, y: f32| page_point(point(px(x), px(y)), stage, (1920., 1080.), false, Default::default());
+        assert_eq!(at(100., 140.), Some((0., 0.)));
+        assert_eq!(at(580., 410.), Some((960., 540.)));
+        assert_eq!(at(580., 100.), None, "above the picture");
+        assert_eq!(
+            page_point(point(px(1.), px(1.)), stage, (0., 0.), false, Default::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_preview_at_its_own_size_counts_its_scroll() {
+        let stage = Bounds::new(point(px(100.), px(50.)), size(px(960.), px(720.)));
+        let scrolled = point(px(-300.), px(-200.));
+        let at = |x: f32, y: f32| page_point(point(px(x), px(y)), stage, (1920., 1080.), true, scrolled);
+        assert_eq!(at(100., 50.), Some((300., 200.)));
+        assert_eq!(at(1060., 770.), Some((1260., 920.)));
+    }
+
+    #[test]
+    fn base64_decodes_and_ignores_padding_and_line_breaks() {
+        assert_eq!(base64("aGVsbG8="), b"hello");
+        assert_eq!(base64("aGVs\nbG8gd29y\nbGQ="), b"hello world");
+        assert_eq!(base64("/+8="), [0xff, 0xef]);
+        assert!(base64("").is_empty());
+    }
+
+    #[test]
+    fn model_values_show_as_text() {
+        assert_eq!(text_of(&json!("Alerts")), "Alerts");
+        assert_eq!(text_of(&json!(null)), "");
+        assert_eq!(text_of(&json!(1920)), "1920");
+        assert_eq!(text_of(&json!(true)), "true");
     }
 }

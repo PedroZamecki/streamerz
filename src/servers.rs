@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -425,6 +426,10 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
     }
 }
 
+const WEBSOCKET_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_WEBSOCKET_CLIENTS: usize = 128;
+const MAX_WEBSOCKET_PAYLOAD_BYTES: usize = 16 << 20;
+
 /// A custom WebSocket server: each connection gets a sessionId; fires Opened / Message (data) /
 /// Closed, with sessionId and ip.
 async fn custom_server(e: Rc<Engine>, s: Obj) {
@@ -447,32 +452,38 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
         "custom server {name} on ws://{addr}:{port}{}",
         field(&s, "endpoint")
     ));
+    let mut open = tokio::task::JoinSet::new();
     loop {
-        let Ok((tcp, peer)) = l.accept().await else { continue };
-        let (e, s) = (e.clone(), s.clone());
-        tokio::task::spawn_local(async move {
-            let allowed = e.config().websockets.allowed_origins.clone();
-            let Ok((ws, _)) = accept(tcp, field(&s, "endpoint").to_string(), allowed, false).await else {
-                return;
-            };
-            let mut args = Obj::new();
-            args.insert("sessionId".into(), crate::engine::uuid().into());
-            args.insert("ip".into(), peer.ip().to_string().into());
-            ws_event(&e, false, "Open", &s, args.clone());
-            let (_sink, mut stream) = ws.split();
-            while let Some(Ok(m)) = stream.next().await {
-                match frame_text(m) {
-                    Some(Ok(data)) => {
-                        let mut a = args.clone();
-                        a.insert("data".into(), data.into());
-                        ws_event(&e, false, "Message", &s, a);
+        tokio::select! {
+            accepted = l.accept(), if open.len() < MAX_WEBSOCKET_CLIENTS => {
+                let Ok((tcp, peer)) = accepted else { continue };
+                let (e, s) = (e.clone(), s.clone());
+                open.spawn_local(async move {
+                    let allowed = e.config().websockets.allowed_origins.clone();
+                    let Ok((ws, _)) = accept(tcp, field(&s, "endpoint").to_string(), allowed, false).await else {
+                        return;
+                    };
+                    let mut args = Obj::new();
+                    args.insert("sessionId".into(), crate::engine::uuid().into());
+                    args.insert("ip".into(), peer.ip().to_string().into());
+                    ws_event(&e, false, "Open", &s, args.clone());
+                    let (_sink, mut stream) = ws.split();
+                    while let Some(Ok(m)) = stream.next().await {
+                        match frame_text(m) {
+                            Some(Ok(data)) => {
+                                let mut a = args.clone();
+                                a.insert("data".into(), data.into());
+                                ws_event(&e, false, "Message", &s, a);
+                            }
+                            Some(Err(())) => break,
+                            None => {}
+                        }
                     }
-                    Some(Err(())) => break,
-                    None => {}
-                }
+                    ws_event(&e, false, "Close", &s, args);
+                });
             }
-            ws_event(&e, false, "Close", &s, args);
-        });
+            Some(_) = open.join_next(), if !open.is_empty() => {}
+        }
     }
 }
 
@@ -503,12 +514,15 @@ pub fn origin_ok(origin: Option<&str>, fetch_site: Option<&str>, allowed: &str) 
 /// (403). With `bridge`, the TikTok extension's path is open too, to the extension only; the bool
 /// says it's that. The handshake callback's error type is tungstenite's (a whole HTTP response).
 #[allow(clippy::result_large_err)]
-async fn accept(
-    tcp: TcpStream,
+async fn accept<S>(
+    stream: S,
     endpoint: String,
     allowed: String,
     bridge: bool,
-) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, bool), String> {
+) -> Result<(tokio_tungstenite::WebSocketStream<S>, bool), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -537,9 +551,17 @@ async fn accept(
         *r.status_mut() = status;
         Err(r)
     };
-    let ws = tokio_tungstenite::accept_hdr_async(tcp, check)
-        .await
-        .map_err(|e| e.to_string())?;
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(4 << 10)
+        .max_frame_size(Some(MAX_WEBSOCKET_PAYLOAD_BYTES))
+        .max_message_size(Some(MAX_WEBSOCKET_PAYLOAD_BYTES));
+    let ws = tokio::time::timeout(
+        WEBSOCKET_IO_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async_with_config(stream, check, Some(config)),
+    )
+    .await
+    .map_err(|_| "WebSocket handshake timed out".to_owned())?
+    .map_err(|e| e.to_string())?;
     Ok((ws, is_bridge.load(Ordering::Relaxed)))
 }
 
@@ -596,16 +618,28 @@ fn error(id: &Value, msg: &str) -> Value {
     crate::error::StreamerzError::from_message(msg).to_json_response(id)
 }
 
+/// Streamer.bot permits ordinary requests when authentication is optional.
+fn privileged(kind: &str) -> bool {
+    kind.starts_with("Streamerz")
+        || kind.starts_with("Inject")
+        || kind.starts_with("Simulate")
+        || matches!(
+            kind,
+            "SendMessage" | "FireTrigger" | "GetChatOut" | "GetLog" | "GetStatus"
+        )
+}
+
 /// Answer a WebSocket request (not Authenticate, Subscribe or UnSubscribe, which need the
 /// connection). None: an unknown request, answered with just its id.
 pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let get = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
     let persisted = req.get("persisted").and_then(Value::as_bool).unwrap_or(true);
-    Some(match get("request") {
-        "StreamerzPrompts" | "StreamerzAnswerPrompt" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
+    let kind = get("request");
+    if !authed && privileged(kind) && e.config().websockets.enable_auth {
+        return Some(error(&id, "Authentication required to use this method"));
+    }
+    Some(match kind {
         "StreamerzPrompts" => ok(&id, json!({"prompts": crate::core::prompts::list()})),
         "StreamerzAnswerPrompt" => match req["promptId"]
             .as_u64()
@@ -615,9 +649,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             Ok(()) => ok(&id, json!({"answered": true})),
             Err(message) => error(&id, &message),
         },
-        "StreamerzConnection" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzConnection" => match crate::core::connections::apply(e, get("kind"), get("itemId"), get("action")) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
@@ -626,11 +657,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
-        "StreamerzEntityForm" | "StreamerzEditEntity" | "StreamerzEntityDraft" | "StreamerzToggleEntity"
-            if !authed && e.config().websockets.enable_auth =>
-        {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzEntityForm" if crate::core::overlays::handles(get("kind")) => {
             match crate::core::overlays::form_for(e, req) {
                 Ok(value) => ok(&id, value),
@@ -709,18 +735,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 Ok(value) => ok(&id, value),
                 Err(message) => error(&id, &message),
             }
-        }
-        "StreamerzCoreStatus"
-        | "StreamerzAutomationWarnings"
-        | "StreamerzCoreSave"
-        | "StreamerzCoreQuit"
-        | "StreamerzSelectPage"
-        | "StreamerzWindowState"
-        | "StreamerzDismissError"
-        | "StreamerzRetryServer"
-            if !authed && e.config().websockets.enable_auth =>
-        {
-            error(&id, "Authentication required to use this method")
         }
         "StreamerzCoreStatus" => ok(&id, crate::core::status::summary(e)),
         "StreamerzAutomationWarnings" => {
@@ -804,9 +818,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             });
             ok(&id, json!({"saved": true}))
         }
-        "StreamerzCoreAction" | "StreamerzCoreSetting" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzCoreAction" => {
             let result = if crate::core::sections::supports(get("domain")) {
                 crate::core::sections::act(e, get("domain"), get("action"))
@@ -840,23 +851,14 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
-        "StreamerzPreview" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzPreview" => match crate::core::overlays::preview(e, req) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
-        "StreamerzCoreView" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzCoreView" => match crate::core::view::read_request(e, req) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
-        "StreamerzCoreRead" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzCoreRead" => match crate::core::read::read(e, get("domain")) {
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
@@ -990,9 +992,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             let v = e.user_globals_list("twitch", name, Some(get("userId")), persisted);
             ok(&id, json!({"variables": v, "count": v.len()}))
         }
-        "SendMessage" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
-        }
         "SendMessage" => {
             let msg = req
                 .get("message")
@@ -1036,35 +1035,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             ok(&id, json!({}))
         }
         // Streamerz's own: read and write what's set up (actions, commands...), for the MCP server.
-        "StreamerzGet"
-        | "StreamerzSave"
-        | "StreamerzDelete"
-        | "StreamerzCountdown"
-        | "StreamerzOverlays"
-        | "StreamerzOverlayPublish"
-        | "StreamerzSound"
-        | "StreamerzSpeech"
-        | "StreamerzManageActionGroup"
-        | "StreamerzActionGroups"
-        | "StreamerzGroupIcon"
-        | "StreamerzActionExport"
-        | "StreamerzActionImport"
-        | "StreamerzGroupVariables"
-        | "StreamerzSetGroupVariables"
-        | "StreamerzTemplateAdd"
-        | "StreamerzGroupMeta"
-        | "StreamerzSetGroupMeta"
-        | "StreamerzGroupExport"
-        | "StreamerzSaveGroupFiles"
-        | "StreamerzSearchChannels"
-        | "StreamerzTikTokBridge"
-        | "StreamerzTikTokState"
-        | "StreamerzTikTokGifts"
-        | "StreamerzActionHistory"
-            if !authed && e.config().websockets.enable_auth =>
-        {
-            error(&id, "Authentication required to use this method")
-        }
         "StreamerzPlugins" => {
             let on = e.plugins_on();
             let list: Vec<Value> = crate::engine::plugins::installed()
@@ -1075,9 +1045,6 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 })
                 .collect();
             ok(&id, json!({"plugins": list, "folder": crate::engine::plugins::dir()}))
-        }
-        "StreamerzPluginEnable" if !authed && e.config().websockets.enable_auth => {
-            error(&id, "Authentication required to use this method")
         }
         "StreamerzPluginEnable" => {
             let on = req.get("on").and_then(Value::as_bool).unwrap_or(true);
@@ -1358,7 +1325,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                     user: get("user").into(),
                     text: get("text").into(),
                     by: get("by").into(),
-                    until: (secs > 0).then(|| crate::fmt::unix_now().as_millis() as u64 + secs * 1000),
+                    until: (secs > 0).then(|| crate::fmt::now_ms() + secs * 1000),
                 });
             }
             ok(&id, json!({}))
@@ -1367,7 +1334,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         // "seconds" left (0: none), "prediction" and "over" as booleans.
         "InjectPoll" if e.dev() => {
             let flag = |k: &str| req.get(k).and_then(Value::as_bool) == Some(true);
-            let now = crate::fmt::unix_now().as_millis() as u64;
+            let now = crate::fmt::now_ms();
             let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
             e.chat_poll(crate::engine::chatlog::Poll {
                 platform: get("platform").into(),
@@ -1593,7 +1560,7 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
             _ => crate::core::pages::delete_global(e, item_id),
         };
     }
-    if !KINDS.contains(&what) && crate::automation::entities::fields(what).is_none() {
+    if !KINDS.contains(&what) && crate::automation::entities::items(&e.config(), what).is_none() {
         return Err(format!("what: one of {}", KINDS.join(", ")));
     }
     let list = |c: &crate::Config| -> Vec<Value> {
@@ -1756,17 +1723,20 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
     ));
     // The TikTok extension connects here: its files follow this address and version.
     crate::tiktok_bridge::refresh(&e.config());
-    let mut next = 0u64;
+    let mut open = tokio::task::JoinSet::new();
     loop {
-        let Ok((tcp, _)) = l.accept().await else { continue };
-        next += 1;
-        let (e, s, id) = (e.clone(), s.clone(), next);
-        tokio::task::spawn_local(async move {
-            if let Err(err) = connection(&e, &s, tcp, id).await {
-                crate::warn(format!("WebSocket client: {err}"));
+        tokio::select! {
+            accepted = l.accept(), if open.len() < MAX_WEBSOCKET_CLIENTS => {
+                let Ok((tcp, _)) = accepted else { continue };
+                let (e, s, id) = (e.clone(), s.clone(), next_websocket_id());
+                open.spawn_local(async move {
+                    if let Err(err) = connection(&e, &s, tcp, id).await {
+                        crate::warn(format!("WebSocket client: {err}"));
+                    }
+                });
             }
-            e.listen(id, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
-        });
+            Some(_) = open.join_next(), if !open.is_empty() => {}
+        }
     }
 }
 
@@ -1936,114 +1906,67 @@ pub(crate) async fn spotify_request(e: &Rc<Engine>, req: &Value) -> Result<Value
 pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, authed: bool) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let kind = req.get("request").and_then(Value::as_str).unwrap_or("");
+    if auth_required && !authed && privileged(kind) {
+        return error(&id, "Authentication required to use this method");
+    }
     match kind {
-        "StreamerzRunSubaction" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match req.get("item").and_then(Value::as_object).cloned() {
-                    Some(item) => match item.get("type").and_then(Value::as_u64) {
-                        Some(code)
-                            if code <= u32::MAX as u64
-                                && crate::types::name(crate::types::SUB_ACTIONS, code as u32).is_some() =>
-                        {
-                            let (args, outcome) = e.execute_one(code, item).await;
-                            ok(
-                                &id,
-                                json!({"args": args, "executionStatus": outcome.status(), "outcome": outcome}),
-                            )
-                        }
-                        _ => error(&id, "unknown sub-action type"),
-                    },
-                    None => error(&id, "item: an object"),
+        "StreamerzRunSubaction" => match req.get("item").and_then(Value::as_object).cloned() {
+            Some(item) => match item.get("type").and_then(Value::as_u64) {
+                Some(code)
+                    if code <= u32::MAX as u64
+                        && crate::types::name(crate::types::SUB_ACTIONS, code as u32).is_some() =>
+                {
+                    let (args, outcome) = e.execute_one(code, item).await;
+                    ok(
+                        &id,
+                        json!({"args": args, "executionStatus": outcome.status(), "outcome": outcome}),
+                    )
                 }
-            }
-        }
+                _ => error(&id, "unknown sub-action type"),
+            },
+            None => error(&id, "item: an object"),
+        },
 
-        "StreamerzChat" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::core::chat::request(e, req).await {
-                    Ok(v) => ok(&id, v),
-                    Err(err) => error(&id, &err),
-                }
-            }
-        }
-        "StreamerzSearchChannels" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match search_request(e, req).await {
-                    Ok(v) => ok(&id, v),
-                    Err(err) => error(&id, &err),
-                }
-            }
-        }
-        "StreamerzTikTokGifts" if req["refresh"] == true => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::tiktok::gifts::load(e).await {
-                    Ok(value) => ok(&id, crate::tiktok::gifts::with_choices(value)),
-                    Err(err) => error(&id, &err),
-                }
-            }
-        }
-        "StreamerzTikTokBridge" if req["action"] == "login" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match e.tiktok_bridge.login().await {
-                    Ok(()) => ok(&id, crate::tiktok_bridge::status(e)),
-                    Err(err) => error(&id, &err),
-                }
-            }
-        }
+        "StreamerzChat" => match crate::core::chat::request(e, req).await {
+            Ok(v) => ok(&id, v),
+            Err(err) => error(&id, &err),
+        },
+        "StreamerzSearchChannels" => match search_request(e, req).await {
+            Ok(v) => ok(&id, v),
+            Err(err) => error(&id, &err),
+        },
+        "StreamerzTikTokGifts" if req["refresh"] == true => match crate::tiktok::gifts::load(e).await {
+            Ok(value) => ok(&id, crate::tiktok::gifts::with_choices(value)),
+            Err(err) => error(&id, &err),
+        },
+        "StreamerzTikTokBridge" if req["action"] == "login" => match e.tiktok_bridge.login().await {
+            Ok(()) => ok(&id, crate::tiktok_bridge::status(e)),
+            Err(err) => error(&id, &err),
+        },
         "StreamerzSpotifyLocal"
         | "StreamerzSpotifyCurrent"
         | "StreamerzSpotifyQueue"
         | "StreamerzSpotifyFind"
         | "StreamerzSpotifyPlayer"
-        | "StreamerzSpotifyPlayback" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match spotify_request(e, req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => {
-                        if kind != "StreamerzSpotifyLocal" {
-                            crate::spotify::event(e, 99806, &message);
-                        }
-                        error(&id, &message)
-                    }
+        | "StreamerzSpotifyPlayback" => match spotify_request(e, req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => {
+                if kind != "StreamerzSpotifyLocal" {
+                    crate::spotify::event(e, 99806, &message);
                 }
+                error(&id, &message)
             }
-        }
-        "StreamerzOverlay" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::core::overlays::request(e, req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => error(&id, &message),
-                }
-            }
-        }
-        "StreamerzVoice" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match e.voice_request(req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => error(&id, &message),
-                }
-            }
-        }
+        },
+        "StreamerzOverlay" => match crate::core::overlays::request(e, req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzVoice" => match e.voice_request(req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => error(&id, &message),
+        },
         "StreamerzPlatformApi" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else if !e.dev() {
+            if !e.dev() {
                 error(&id, "StreamerzPlatformApi needs STREAMERZ_DEV=1")
             } else {
                 match platform_api(e, req).await {
@@ -2055,40 +1978,20 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
         "StreamerzTemplateCheck"
         | "StreamerzTemplateExport"
         | "StreamerzTemplateInspect"
-        | "StreamerzTemplateImport" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::package::request(e, req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => error(&id, &message),
-                }
-            }
-        }
-        "StreamerzOutputs" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::core::outputs::request(e, req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => error(&id, &message),
-                }
-            }
-        }
-        "StreamerzPreflight" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else {
-                match crate::core::preflight::request(e, req).await {
-                    Ok(fields) => ok(&id, fields),
-                    Err(message) => error(&id, &message),
-                }
-            }
-        }
+        | "StreamerzTemplateImport" => match crate::package::request(e, req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzOutputs" => match crate::core::outputs::request(e, req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzPreflight" => match crate::core::preflight::request(e, req).await {
+            Ok(fields) => ok(&id, fields),
+            Err(message) => error(&id, &message),
+        },
         "StreamerzConnectors" | "StreamerzObsRequest" => {
-            if auth_required && !authed {
-                error(&id, "Authentication required to use this method")
-            } else if kind == "StreamerzConnectors" {
+            if kind == "StreamerzConnectors" {
                 ok(&id, connectors(e))
             } else if !e.dev() {
                 error(&id, "StreamerzObsRequest needs STREAMERZ_DEV=1")
@@ -2103,7 +2006,34 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
     }
 }
 
+fn next_websocket_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Removes subscriptions even when the listener aborts this connection.
+struct Subscription<'a>(&'a Engine, u64);
+
+impl Drop for Subscription<'_> {
+    fn drop(&mut self) {
+        self.0
+            .listen(self.1, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
+    }
+}
+
+async fn send_websocket(
+    sink: &mut (impl futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
+    message: Message,
+) -> Result<(), String> {
+    tokio::time::timeout(WEBSOCKET_IO_TIMEOUT, sink.send(message))
+        .await
+        .map_err(|_| "WebSocket write timed out".to_owned())?
+        .map_err(|error| error.to_string())
+}
+
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
+    let local_peer = tcp.peer_addr().is_ok_and(|peer| peer.ip().to_canonical().is_loopback());
     let bridge = crate::tiktok_bridge::set_up(&e.config());
     let (ws, is_bridge) = accept(tcp, s.endpoint.clone(), s.allowed_origins.clone(), bridge).await?;
     if is_bridge {
@@ -2111,14 +2041,16 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
         return Ok(());
     }
     let (mut sink, mut stream) = ws.split();
-    let (salt, challenge) = (random_b64(), random_b64());
     let mut hello = json!({"timestamp": crate::engine::globals::iso_now(), "session": crate::engine::uuid(),
         "request": "Hello", "info": info(e)});
-    if s.enable_auth {
+    let expected_auth = s.enable_auth.then(|| {
+        let (salt, challenge) = (random_b64(), random_b64());
+        let expected = auth_response(&s.auth_password, &salt, &challenge);
         hello["authentication"] = json!({"salt": salt, "challenge": challenge});
-    }
+        expected
+    });
     let text = |v: Value| Message::Text(v.to_string().into());
-    sink.send(text(hello)).await.map_err(|e| e.to_string())?;
+    send_websocket(&mut sink, text(hello)).await?;
     let close = |reason: &'static str| {
         Message::Close(Some(CloseFrame {
             code: CloseCode::from(4009),
@@ -2126,6 +2058,7 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
         }))
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<str>>();
+    let _subscription = Subscription(e, conn);
     let mut subs = events::Subs::new();
     let mut authed = false;
     loop {
@@ -2138,20 +2071,25 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                 };
                 let req = serde_json::from_str::<Value>(&t).ok().filter(|r| r.get("request").and_then(Value::as_str).is_some());
                 let Some(req) = req else {
-                    sink.send(Message::Text("{ \"error\": \"malformed command\" }".into())).await.map_err(|e| e.to_string())?;
+                    send_websocket(&mut sink, Message::Text("{ \"error\": \"malformed command\" }".into())).await?;
                     continue;
                 };
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
                 let kind = req["request"].as_str().unwrap_or("");
+                if kind == "StreamerzShowWindow" && local_peer {
+                    crate::host::show();
+                    send_websocket(&mut sink, text(ok(&id, json!({"accepted": true})))).await?;
+                    continue;
+                }
                 if s.enable_auth && s.auth_enforce && !authed && kind != "Authenticate" {
-                    let _ = sink.send(close("Authentication required")).await;
+                    let _ = send_websocket(&mut sink, close("Authentication required")).await;
                     return Ok(());
                 }
                 let reply = match kind {
                     "Authenticate" => {
                         let given = req.get("authentication").and_then(Value::as_str).unwrap_or("");
-                        if s.enable_auth && given != auth_response(&s.auth_password, &salt, &challenge) {
-                            let _ = sink.send(close("Authentication failed")).await;
+                        if expected_auth.as_deref().is_some_and(|expected| given != expected) {
+                            let _ = send_websocket(&mut sink, close("Authentication failed")).await;
                             return Ok(());
                         }
                         authed = true;
@@ -2164,7 +2102,7 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         ok(&id, json!({"events": ev}))
                     }
                     // Dev mode: what the window looks like, and where things are (see ui/dev.rs).
-                    "StreamerzUi" if e.dev() => {
+                    "StreamerzUi" if e.dev() && (!s.enable_auth || authed) => {
                         let cmd = req.get("do").and_then(Value::as_str).unwrap_or_default().to_string();
                         if cmd == "toggle" { crate::host::toggle(); ok(&id, json!({"result": "ok"})) }
                         else { match crate::host::dev(cmd) {
@@ -2174,10 +2112,10 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                     }
                     _ => request(e, &req, s.enable_auth, authed).await,
                 };
-                sink.send(text(reply)).await.map_err(|e| e.to_string())?;
+                send_websocket(&mut sink, text(reply)).await?;
             }
-            Some(ev) = rx.recv() => {
-                sink.send(Message::Text(ev.to_string().into())).await.map_err(|e| e.to_string())?;
+            Some(event) = rx.recv() => {
+                send_websocket(&mut sink, Message::Text(event.to_string().into())).await?;
             }
         }
     }
@@ -2356,7 +2294,7 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
         // A Streamerz custom webhook (Streamer.bot's are made on its website): fires Custom Webhook.
         ("POST", path) if path.starts_with("/webhooks/") && path.len() > "/webhooks/".len() => {
             let name = path["/webhooks/".len()..].trim_end_matches('/');
-            e.custom_webhook(&crate::donations::urlencoding_decode(name), body);
+            e.custom_webhook(&crate::commands::url_decode(name), body);
             (200, Some(json!({"status": "ok"})))
         }
         ("POST", path) if path.starts_with("/api/") || path.starts_with("/") => {
@@ -2379,6 +2317,48 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
     }
 }
 
+const MAX_HTTP_HEADER_BYTES: usize = 64 << 10;
+const MAX_HTTP_BODY_BYTES: usize = 1 << 20;
+
+fn http_body_length(headers: &[(&str, &str)]) -> Result<usize, u16> {
+    let mut length = None;
+    for &(name, value) in headers {
+        if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            return Err(400);
+        }
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            if length.is_some() || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(400);
+            }
+            length = Some(value.parse::<usize>().map_err(|_| 413u16)?);
+        }
+    }
+    let length = length.unwrap_or(0);
+    if length > MAX_HTTP_BODY_BYTES {
+        return Err(413);
+    }
+    Ok(length)
+}
+
+async fn read_http_body(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    mut buffered: Vec<u8>,
+    length: usize,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<Vec<u8>> {
+    buffered.truncate(length);
+    let remaining = length - buffered.len();
+    if remaining > 0 {
+        let mut body = reader.take(remaining as u64);
+        tokio::time::timeout_at(deadline, body.read_to_end(&mut buffered)).await??;
+        if buffered.len() != length {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+    }
+    Ok(buffered)
+}
+
 async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -2389,14 +2369,20 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break i;
         }
+        if buf.len() >= MAX_HTTP_HEADER_BYTES {
+            return Ok(());
+        }
         let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
             .await
             .map_err(|_| late())??;
-        if n == 0 || buf.len() > 64 << 10 {
+        if n == 0 {
             return Ok(());
         }
         buf.extend_from_slice(&chunk[..n]);
     };
+    if head_end + 4 > MAX_HTTP_HEADER_BYTES {
+        return Ok(());
+    }
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or("").split(' ');
@@ -2456,20 +2442,17 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             }
         };
     }
-    let len = h("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(1 << 20);
-    let mut body = buf.split_off(head_end + 4);
-    while body.len() < len {
-        let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
-            .await
-            .map_err(|_| late())??;
-        if n == 0 {
-            break;
+    let len = match http_body_length(&headers) {
+        Ok(len) => len,
+        Err(status) => return http_json_response(&mut tcp, status, None).await,
+    };
+    let body = match read_http_body(&mut tcp, buf.split_off(head_end + 4), len, deadline).await {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return http_json_response(&mut tcp, 400, None).await;
         }
-        body.extend_from_slice(&chunk[..n]);
-    }
+        Err(error) => return Err(error),
+    };
     if method == "POST" && path == "/sounds/board/play" {
         let (status, answer) = crate::core::sounds::board_press(e, &body);
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
@@ -2485,10 +2468,15 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }
     let (status, json) = http_answer(e, method, path, &body, h("x-patreon-signature"));
+    http_json_response(&mut tcp, status, json).await
+}
+
+async fn http_json_response(tcp: &mut TcpStream, status: u16, json: Option<Value>) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        413 => "Content Too Large",
         418 => "I'm a teapot",
         _ => "Internal Server Error",
     };
@@ -2541,6 +2529,136 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authoring_rejects_entities_without_a_config_list() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            for (operation, entity) in [("StreamerzSave", "quote"), ("StreamerzDelete", "user_group")] {
+                let request = json!({"request": operation, "id": "edit", "what": entity,
+                    "item": {"id": "sample"}, "itemId": "sample"});
+                let reply = answer(&e, &request, true).unwrap();
+                assert_eq!(reply["id"], "edit");
+                assert_eq!(reply["status"], "error");
+                assert!(reply["error"].as_str().unwrap().starts_with("what: one of "));
+            }
+        });
+    }
+
+    #[test]
+    fn http_body_uses_the_declared_length_and_requires_a_complete_read() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            let body = br#"{"action":{"name":"Example"}}"#;
+            let length = body.len().to_string();
+            assert_eq!(http_body_length(&[("content-length", &length)]), Ok(body.len()));
+            assert_eq!(
+                http_body_length(&[("Content-Length", &(MAX_HTTP_BODY_BYTES + 1).to_string())]),
+                Err(413)
+            );
+            assert_eq!(http_body_length(&[("Transfer-Encoding", "chunked")]), Err(400));
+            assert_eq!(http_body_length(&[("Content-Length", "abc")]), Err(400));
+
+            let mut rest = &body[10..];
+            let received = read_http_body(&mut rest, body[..10].to_vec(), body.len(), deadline)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&received).unwrap()["action"]["name"],
+                "Example"
+            );
+            let mut eof = &[][..];
+            let read_ahead = [body.as_slice(), b"next"].concat();
+            assert_eq!(
+                read_http_body(&mut eof, read_ahead, body.len(), deadline)
+                    .await
+                    .unwrap(),
+                body
+            );
+            assert_eq!(
+                read_http_body(&mut eof, body[..10].to_vec(), body.len(), deadline)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        });
+    }
+
+    #[test]
+    fn websocket_handshakes_apply_the_same_limits_to_the_api_and_bridge() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for (path, bridge) in [("/", false), (crate::tiktok_bridge::PATH, true)] {
+                let (client, server) = tokio::io::duplex(1024);
+                let mut request = format!("ws://localhost{path}").into_client_request().unwrap();
+                if bridge {
+                    let origin = format!("chrome-extension://{}", crate::tiktok_bridge::EXTENSION_ID);
+                    request.headers_mut().insert("origin", origin.parse().unwrap());
+                }
+                let (accepted, connected) = tokio::join!(
+                    accept(server, "/".into(), String::new(), true),
+                    tokio_tungstenite::client_async(request, client),
+                );
+                connected.unwrap();
+                let (socket, is_bridge) = accepted.unwrap();
+                assert_eq!(is_bridge, bridge);
+                let config = socket.get_config();
+                assert_eq!(config.read_buffer_size, 4 << 10);
+                assert_eq!(config.max_frame_size, Some(16 << 20));
+                assert_eq!(config.max_message_size, config.max_frame_size);
+            }
+        });
+    }
+
+    #[test]
+    fn websocket_subscriptions_are_removed_when_the_connection_is_dropped() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let id = next_websocket_id();
+            assert_ne!(id, next_websocket_id());
+            let subscription = Subscription(&e, id);
+            let mut subs = events::Subs::new();
+            events::update(&mut subs, &json!({"General": ["Custom"]}), true);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            e.listen(id, &subs, &tx);
+            e.emit("General", "Custom", || json!({"sequence": 0}));
+            let event: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(event["event"], json!({"source": "General", "type": "Custom"}));
+            assert_eq!(event["data"]["sequence"], 0);
+            drop(subscription);
+            assert!(!e.listening("General", "Custom"));
+        });
+    }
+
+    #[test]
+    fn optional_auth_protects_core_requests_and_allows_compatibility_reads() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            e.change(|c| c.websockets.enable_auth = true);
+            let req = json!({"request": "StreamerzEntitySchema", "id": "core", "kind": "timer"});
+            let denied = request(&e, &req, true, false).await;
+            assert_eq!(denied["id"], "core");
+            assert_eq!(denied["status"], "error");
+            let schema = request(&e, &req, true, true).await;
+            assert_eq!(schema["status"], "ok");
+            assert_eq!(schema["kind"], "timer");
+            let compatible = request(&e, &json!({"request": "GetActions", "id": "actions"}), true, false).await;
+            assert_eq!(
+                compatible,
+                json!({"id": "actions", "count": 0, "actions": [], "status": "ok"})
+            );
+        });
+    }
+
     #[test]
     fn an_answer_keeps_the_requests_id() {
         let answer = ok(&json!("r7"), json!({"id": 3, "durationMs": 10}));

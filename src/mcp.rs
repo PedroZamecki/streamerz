@@ -64,7 +64,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("fire_trigger", "Fire a trigger (code or name) with arguments as its platform would: every action using it runs. Returns how many ran. Needs STREAMERZ_DEV=1.", r#"{"trigger": {"type": ["integer", "string"]}, "args": {"type": "object", "description": "e.g. {\"user\": \"ana\", \"viewers\": 10}"}}"#, &["trigger"]),
     ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "userId": {"type": "string", "description": "A real account's id, so its user card can be tried; the name otherwise"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}, "args": {"type": "object", "description": "More of what the message carries, as the trigger's arguments (messageType, messageRewardId, messageRewardTitle, messageRewardCost, messageRewardImage...)"}}"#, &["platform", "text"]),
-    ("chat", "The Chat page's model and operations, as the app's Chat page uses them. op read: the lines newer than seq (omit seq for all) with the platforms bar; send: text to platform (or all connected) with an optional replySeq; act: delete, timeout (secs), ban (confirmed true skips the prompt), pin (secs 30 to 1800, 0 until the stream ends) or unpin on the line seq; card: a chatter's card from the line seq (lookup true asks the platform and answers pending until done; prefetch true only starts the asking); clear: empty the view; show: hide or show a platform's chat; reconnect: connect platform's chat again; suggest: the commands (after /) or names (after @) for text typed in platform's box, with cursor; view: what the Chat page shows (all, side, or a platform id); sender: send as broadcaster or bot; emotes: the picker tabs and sections for platform (provider tab id, query searches every tab); favorite: toggle an emote (name, url) in the favorites; images: files for picture URLs. Sending in dev mode (STREAMERZ_DEV=1) keeps the message instead of sending.", r#"{"op":{"type":"string","enum":["read","send","act","card","clear","show","view","reconnect","suggest","sender","emotes","favorite","images"]},"seq":{"type":"integer"},"gen":{"type":"integer"},"have":{"type":"integer"},"platform":{"type":"string"},"text":{"type":"string"},"replySeq":{"type":"integer"},"act":{"type":"string","enum":["reply","copy","pin","unpin","delete","timeout","ban"]},"secs":{"type":"integer"},"confirmed":{"type":"boolean"},"shown":{"type":"boolean"},"view":{"type":"string"},"cursor":{"type":"integer"},"lookup":{"type":"boolean"},"prefetch":{"type":"boolean"},"broadcaster":{"type":"boolean"},"urls":{"type":"array","items":{"type":"string"}},"provider":{"type":"string","enum":["favorites","platform","7tv","bttv","ffz","emoji"]},"query":{"type":"string"},"name":{"type":"string"},"url":{"type":"string"}}"#, &["op"]),
+    ("chat", "The Chat page's model and operations, as the app's Chat page uses them. op read: the lines newer than seq (omit seq for all) with the platforms bar; send: text to platform (or all connected) with an optional replySeq; act: delete, timeout (secs), ban (confirmed true skips the prompt), pin (secs 30 to 1800, 0 until the stream ends) or unpin on the line seq; card: a chatter's card from the line seq (lookup true asks the platform and answers pending until done; prefetch true only starts the asking); clear: empty the view; show: hide or show a platform's chat; reconnect: connect platform's chat again; suggest: the commands (after /) or names (after @) for text typed in platform's box, with cursor; view: what the Chat page shows (all, side, or a platform id); sender: send as broadcaster or bot; emotes: the picker tabs and sections for platform (provider tab id, query searches every tab); favorite: toggle an emote (name, url) in the favorites; images: files for picture URLs. Sending in dev mode (STREAMERZ_DEV=1) keeps the message instead of sending.", r#"{"op":{"type":"string","enum":["read","send","act","card","clear","show","view","reconnect","suggest","sender","emotes","favorite","images"]},"seq":{"type":"integer"},"gen":{"type":"integer"},"have":{"type":"integer"},"look":{"type":"integer"},"platform":{"type":"string"},"text":{"type":"string"},"replySeq":{"type":"integer"},"act":{"type":"string","enum":["reply","copy","pin","unpin","delete","timeout","ban"]},"secs":{"type":"integer"},"confirmed":{"type":"boolean"},"shown":{"type":"boolean"},"view":{"type":"string"},"cursor":{"type":"integer"},"lookup":{"type":"boolean"},"prefetch":{"type":"boolean"},"broadcaster":{"type":"boolean"},"urls":{"type":"array","items":{"type":"string"}},"provider":{"type":"string","enum":["favorites","platform","7tv","bttv","ffz","emoji"]},"query":{"type":"string"},"name":{"type":"string"},"url":{"type":"string"}}"#, &["op"]),
     ("chat_out", "The chat messages streamerz would have sent since the last call (dev mode keeps them instead of sending). Needs STREAMERZ_DEV=1.", "{}", &[]),
     ("list_subactions", "Sub-action type codes and names (e.g. 10 TwitchSendMessage), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("describe", "What a sub-action or trigger type does and its fields (JSON key, label, what it holds), plus a new one ready to fill in. Use before writing one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
@@ -137,6 +137,15 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("agent_setup", "Add Streamerz's MCP server to an installed agent's config (or remove it with on: false), as the MCP page does. Everything else in the file is kept.", r#"{"agent": {"type": "string", "description": "Its id, from agents"}, "on": {"type": "boolean", "description": "Default true"}}"#, &["agent"]),
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
+
+const PROTOCOL_VERSION: &str = "2025-06-18";
+
+fn protocol_version(requested: &Value) -> &'static str {
+    match requested.as_str() {
+        Some("2024-11-05") => "2024-11-05",
+        _ => PROTOCOL_VERSION,
+    }
+}
 
 fn tools() -> Value {
     let list: Vec<Value> = TOOLS
@@ -223,6 +232,17 @@ fn validate_arguments(name: &str, args: &Value) -> crate::error::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn chat_request(arguments: &Value) -> Value {
+    let mut request = arguments.clone();
+    if arguments["op"] == "read" {
+        request["request"] = "StreamerzCoreView".into();
+        request["domain"] = "chat".into();
+    } else {
+        request["request"] = "StreamerzChat".into();
+    }
+    request
 }
 
 struct Client {
@@ -388,20 +408,7 @@ impl Client {
                 let out = self.ask(json!({"request": "GetChatOut"})).await?;
                 Ok(json!({"ran": r["ran"], "chatOut": out["messages"]}))
             }
-            "chat" if s("op") == "read" => {
-                let mut request = json!({"request": "StreamerzCoreView", "domain": "chat"});
-                for key in ["seq", "gen", "have"] {
-                    request[key] = a[key].clone();
-                }
-                self.ask(request).await
-            }
-            "chat" => {
-                let mut request = json!({"request": "StreamerzChat", "op": s("op")});
-                for key in ["seq", "platform", "text", "replySeq", "act", "secs", "confirmed", "shown", "view", "cursor", "lookup", "prefetch", "broadcaster", "urls", "provider", "query", "name", "url"] {
-                    request[key] = a[key].clone();
-                }
-                self.ask(request).await
-            }
+            "chat" => self.ask(chat_request(a)).await,
             "chat_out" => self.ask(json!({"request": "GetChatOut"})).await,
             "list_subactions" => {
                 let f = s("filter").to_lowercase();
@@ -639,7 +646,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
         || m["jsonrpc"] != "2.0"
         || !m["method"].is_string()
         || m.get("id")
-            .is_some_and(|id| !id.is_null() && !id.is_string() && !id.is_i64() && !id.is_u64())
+            .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
     {
         return Some(rpc_error(Value::Null, -32600, "Invalid Request"));
     }
@@ -649,7 +656,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
     }
     let result = match m["method"].as_str().unwrap_or("") {
         "initialize" => json!({
-            "protocolVersion": m["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "protocolVersion": protocol_version(&m["params"]["protocolVersion"]),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "Streamerz", "version": crate::brand::VERSION},
             "instructions": "Use guide MCP for setup, tool workflows and limitations. Local tools (guide, docs, \
@@ -664,9 +671,18 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
         "tools/list" => tools(),
         "tools/call" => {
             let p = &m["params"];
+            let Some(name) = p["name"].as_str() else {
+                return Some(rpc_error(id, -32602, "name must be a string"));
+            };
+            if !TOOLS.iter().any(|tool| tool.0 == name) {
+                return Some(rpc_error(id, -32602, &format!("no tool {name}")));
+            }
             let empty = json!({});
             let args = p.get("arguments").unwrap_or(&empty);
-            let (text, failed) = match c.call(p["name"].as_str().unwrap_or(""), args).await {
+            if !args.is_object() {
+                return Some(rpc_error(id, -32602, "arguments must be an object"));
+            }
+            let (text, failed) = match c.call(name, args).await {
                 Ok(v) => (serde_json::to_string(&v).unwrap_or_default(), false),
                 Err(e) => (e.format_mcp(), true),
             };
@@ -728,6 +744,7 @@ mod tests {
                 json!([]),
                 json!({"id": 1, "method": "ping"}),
                 json!({"jsonrpc": "2.0", "id": {}, "method": "ping"}),
+                json!({"jsonrpc": "2.0", "id": null, "method": "ping"}),
             ] {
                 assert_eq!(handle(&mut client, &message).await.unwrap()["error"]["code"], -32600);
             }
@@ -964,6 +981,16 @@ mod tests {
     }
 
     #[test]
+    fn chat_forwards_incremental_read_state() {
+        let args = json!({"op": "read", "seq": 41, "gen": 3, "have": 17, "look": 3});
+        assert!(validate_arguments("chat", &args).is_ok());
+        assert_eq!(
+            chat_request(&args),
+            json!({"request": "StreamerzCoreView", "domain": "chat", "op": "read", "seq": 41, "gen": 3, "have": 17, "look": 3})
+        );
+    }
+
+    #[test]
     fn stream_operations_are_accepted_by_the_advertised_mcp_schemas() {
         assert!(validate_arguments("core_view", &json!({"domain": "stream"})).is_ok());
         assert!(validate_arguments("core_action", &json!({"domain": "stream", "action": "refresh"})).is_ok());
@@ -1003,19 +1030,70 @@ mod tests {
     }
 
     #[test]
+    fn initialize_negotiates_supported_versions() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut client = Client { ws: None, next: 0 };
+            for (requested, expected) in [
+                ("2024-11-05", "2024-11-05"),
+                ("2025-03-26", "2025-06-18"),
+                ("2025-06-18", "2025-06-18"),
+                ("2099-01-01", "2025-06-18"),
+            ] {
+                let reply = handle(
+                    &mut client,
+                    &json!({
+                        "jsonrpc": "2.0", "id": "init", "method": "initialize",
+                        "params": {"protocolVersion": requested}
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["id"], "init");
+                assert_eq!(reply["result"]["protocolVersion"], expected);
+            }
+        });
+    }
+
+    #[test]
+    fn malformed_tool_calls_return_invalid_params() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut client = Client { ws: None, next: 0 };
+            for params in [
+                json!({}),
+                json!({"name": "no_such_tool"}),
+                json!({"name": "get", "arguments": []}),
+            ] {
+                let reply = handle(
+                    &mut client,
+                    &json!({
+                        "jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": params
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["id"], 42);
+                assert_eq!(reply["error"]["code"], -32602);
+                assert!(reply.get("result").is_none());
+            }
+        });
+    }
+
+    #[test]
     fn structured_mcp_tool_error_includes_title_description_and_recommendation() {
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         rt.block_on(async {
             let mut client = Client { ws: None, next: 0 };
             let reply = handle(
                 &mut client,
-                &json!({"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "no_such_tool"}}),
+                &json!({"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "get"}}),
             )
             .await
             .unwrap();
             assert_eq!(reply["result"]["isError"], true);
             let text = reply["result"]["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("no tool no_such_tool"));
+            assert!(text.contains("missing argument what"));
             assert!(text.contains(crate::i18n::tr("error.recommended_prefix")));
         });
     }

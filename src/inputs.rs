@@ -101,9 +101,11 @@ mod tests {
     #[test]
     fn modifier_formatting() {
         assert_eq!(format_modifiers(0), "");
+        assert_eq!(format_modifiers(1), "Alt");
         assert_eq!(format_modifiers(2), "Control");
         assert_eq!(format_modifiers(3), "Control + Alt");
         assert_eq!(format_modifiers(7), "Control + Alt + Shift");
+        assert_eq!(format_modifiers(15), "Control + Alt + Shift + Windows");
     }
 
     #[test]
@@ -111,5 +113,8 @@ mod tests {
         assert_eq!(keyboard_vk("F13"), Some(0x7c));
         assert_eq!(keyboard_vk("return"), Some(0x0d));
         assert_eq!(keyboard_vk(""), None);
+        assert!(simulate_keyboard_press("NoSuchKey", 0)
+            .unwrap_err()
+            .contains("unknown key"));
     }
 }

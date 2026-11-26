@@ -40,7 +40,12 @@ pub fn members(g: &Obj) -> Vec<String> {
 
 /// Whether `g` holds the member `key`.
 pub fn has(g: &Obj, key: &str) -> bool {
-    members(g).iter().any(|m| m == key)
+    g.get("userIds").and_then(Value::as_array).is_some_and(|ids| {
+        ids.iter().any(|m| match m {
+            Value::String(s) => s == key,
+            other => crate::vars::text(other) == key,
+        })
+    })
 }
 
 /// A member's name as last seen, if known.
@@ -53,12 +58,18 @@ pub fn add(g: &mut Obj, key: &str, shown: &str) -> bool {
     let fresh = !has(g, key);
     if fresh {
         let ids = g.entry("userIds").or_insert_with(|| Value::Array(vec![]));
+        if !ids.is_array() {
+            *ids = Value::Array(vec![]);
+        }
         if let Some(ids) = ids.as_array_mut() {
             ids.push(key.into());
         }
     }
     if !shown.is_empty() {
         let names = g.entry("names").or_insert_with(|| Value::Object(Obj::new()));
+        if !names.is_object() {
+            *names = Value::Object(Obj::new());
+        }
         if let Some(names) = names.as_object_mut() {
             names.insert(key.into(), shown.into());
         }
@@ -85,14 +96,24 @@ pub fn migrate(groups: &mut [Obj]) {
         let Some(ids) = g.get_mut("userIds").and_then(Value::as_array_mut) else {
             continue;
         };
-        for id in ids.iter_mut() {
-            let text = crate::vars::text(id);
-            if text.is_empty() || split(&text).is_some() {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids.drain(..) {
+            let text = crate::vars::text(&id);
+            if text.is_empty() {
                 continue;
             }
-            let youtube = text.starts_with("UC") && text.len() == 24;
-            *id = key(if youtube { "youtube" } else { "twitch" }, &text).into();
+            let normalized = if split(&text).is_some() {
+                text
+            } else {
+                let youtube = text.starts_with("UC") && text.len() == 24;
+                key(if youtube { "youtube" } else { "twitch" }, &text)
+            };
+            if seen.insert(normalized.clone()) {
+                out.push(normalized.into());
+            }
         }
+        *ids = out;
     }
 }
 
@@ -120,14 +141,28 @@ mod tests {
 
     #[test]
     fn old_bare_ids_get_their_platform() {
-        let mut groups = vec![json!({"userIds": ["123", "UCabcdefghijklmnopqrstuv", "kick-9", 456]})
-            .as_object()
-            .unwrap()
-            .clone()];
+        let mut groups = vec![
+            json!({"userIds": ["123", "twitch-123", "", "UCabcdefghijklmnopqrstuv", "kick-9", 456]})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ];
         migrate(&mut groups);
         assert_eq!(
             groups[0]["userIds"],
             json!(["twitch-123", "youtube-UCabcdefghijklmnopqrstuv", "kick-9", "twitch-456"])
         );
+    }
+
+    #[test]
+    fn add_recovers_from_corrupt_fields_and_remove_of_missing_is_false() {
+        let mut g = json!({"userIds": "bad", "names": 42}).as_object().unwrap().clone();
+        assert!(!has(&g, "twitch-1"));
+        assert!(add(&mut g, "twitch-1", "Ana"));
+        assert!(has(&g, "twitch-1"));
+        assert_eq!(name(&g, "twitch-1"), Some("Ana"));
+        assert!(!remove(&mut g, "twitch-2"));
+        assert!(remove(&mut g, "twitch-1"));
+        assert!(!has(&g, "twitch-1"));
     }
 }

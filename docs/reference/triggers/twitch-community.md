@@ -340,6 +340,7 @@ None.
 - `broadcastUser`, `broadcastUserName`, `broadcastUserId`: the channel.
 - `raidUser`, `raidUserName`, `raidUserId`: the channel being raided.
 - `raidUserProfileImageURL`, `raidUserProfileImageEscaped`: that channel's picture address, plain and escaped.
+- `viewers`: how many viewers go along (the live count when the raid starts).
 
 ### When
 

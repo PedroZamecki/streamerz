@@ -1,7 +1,7 @@
 //! The rest of Spotify's Web API as sub-actions (99840 to 99875): more player controls, the library,
 //! follows, playlists, the profile, top items and search. Each takes up to two values; the port carries
 //! them as one text, `value` and `extra` split by a new line (`pack` and `unpack`).
-use super::{call, find_at, player_at, request, with_market};
+use super::{call, call_body, find_at, player_at, with_market};
 use crate::commands::url_encode;
 use serde_json::{json, Value};
 
@@ -25,50 +25,26 @@ fn unpack(text: &str) -> (&str, &str) {
     }
 }
 
-/// What a Spotify link, URI or bare id points at: its kind and id.
-pub fn reference(text: &str) -> Option<(String, String)> {
-    let t = text.trim();
-    let ok = |id: &str| id.len() == 22 && id.bytes().all(|c| c.is_ascii_alphanumeric());
-    if let Some(rest) = t.strip_prefix("spotify:") {
-        let (kind, id) = rest.split_once(':')?;
-        return ok(id).then(|| (kind.to_string(), id.to_string()));
-    }
-    if let Some(rest) = t.strip_prefix("https://open.spotify.com/") {
-        let rest = match rest.strip_prefix("intl-") {
-            Some(r) => r.split_once('/')?.1,
-            None => rest,
-        };
-        let (kind, id) = rest.split_once('/')?;
-        let id = id.split(['?', '#', '/']).next()?;
-        return ok(id).then(|| (kind.to_string(), id.to_string()));
-    }
-    None
-}
+pub use super::reference;
 
 /// A playlist's id from a link, URI or the id itself.
 fn playlist_id(text: &str) -> Result<String, String> {
-    match reference(text) {
+    let t = text.trim();
+    match reference(t) {
         Some((kind, id)) if kind == "playlist" => Ok(id),
         Some(_) => Err("That is not a Spotify playlist".into()),
-        None if text.trim().len() == 22 => Ok(text.trim().to_string()),
+        None if super::is_id(t) => Ok(t.to_string()),
         None => Err("Enter a Spotify playlist link, URI or id".into()),
     }
 }
 
 async fn send(base: &str, method: &str, path: &str, token: &str, body: Option<Value>) -> Result<Value, String> {
-    let Some(body) = body else {
-        let r = request(base, method, path, token).await?;
-        return Ok(serde_json::from_slice(&r.body).unwrap_or(Value::Null));
-    };
-    let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-    let headers = [
-        ("Authorization".into(), format!("Bearer {token}")),
-        ("Content-Type".into(), "application/json".into()),
-    ];
-    let r = crate::http::request(method, &format!("{base}{path}"), &headers, &bytes).await?;
-    if !(200..300).contains(&r.status) {
-        return Err(super::failure(r.status, &r.body));
-    }
+    let bytes = body
+        .map(|b| serde_json::to_vec(&b).map_err(|e| e.to_string()))
+        .transpose()?;
+    let r = call_body(base, method, path, token, bytes.as_deref())
+        .await
+        .map_err(|e| e.1)?;
     Ok(serde_json::from_slice(&r.body).unwrap_or(Value::Null))
 }
 
@@ -91,6 +67,7 @@ async fn playing(base: &str, token: &str) -> Result<Value, String> {
 fn track_id(item: &Value) -> Result<String, String> {
     item["id"]
         .as_str()
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "That is a local file, Spotify cannot do this with it".into())
 }
@@ -98,6 +75,7 @@ fn track_id(item: &Value) -> Result<String, String> {
 fn artist_id(item: &Value) -> Result<String, String> {
     item["artists"][0]["id"]
         .as_str()
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "Spotify did not say who the artist is".into())
 }
@@ -180,7 +158,7 @@ pub async fn run(base: &str, token: &str, kind: u32, text: &str) -> Result<Value
             let now = state(base, token).await?["device"]["volume_percent"]
                 .as_i64()
                 .unwrap_or(50);
-            let volume = (now + delta).clamp(0, 100);
+            let volume = now.saturating_add(delta).clamp(0, 100);
             send(
                 base,
                 "PUT",
@@ -194,7 +172,7 @@ pub async fn run(base: &str, token: &str, kind: u32, text: &str) -> Result<Value
         99844 => {
             let delta = number(value, "time")?;
             let now = state(base, token).await?["progress_ms"].as_i64().unwrap_or(0);
-            let to = (now + delta).max(0);
+            let to = now.saturating_add(delta).max(0);
             send(base, "PUT", &format!("/me/player/seek?position_ms={to}"), token, None).await?;
             Ok(json!(to))
         }
@@ -245,7 +223,8 @@ pub async fn run(base: &str, token: &str, kind: u32, text: &str) -> Result<Value
                 99863 => find_at(base, token, extra).await?.uri,
                 _ => {
                     let item = playing(base, token).await?;
-                    item["uri"].as_str().unwrap_or_default().to_string()
+                    let tid = track_id(&item)?;
+                    format!("spotify:track:{tid}")
                 }
             };
             if kind == 99864 {
@@ -320,7 +299,10 @@ pub async fn run(base: &str, token: &str, kind: u32, text: &str) -> Result<Value
         }
         99875 => {
             let item = playing(base, token).await?;
-            let id = item["album"]["id"].as_str().ok_or("Spotify did not say the album")?;
+            let id = item["album"]["id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("Spotify did not say the album")?;
             get(base, token, &format!("/albums/{id}")).await
         }
         _ => Err("Unknown Spotify action".into()),
@@ -385,10 +367,20 @@ mod tests {
             reference(&format!("spotify:artist:{id}")),
             Some(("artist".into(), id.into()))
         );
+        assert_eq!(
+            reference(&format!("spotify:user:demo:playlist:{id}")),
+            Some(("playlist".into(), id.into()))
+        );
+        assert_eq!(
+            reference(&format!("https://open.spotify.com/user/demo/playlist/{id}?si=1")),
+            Some(("playlist".into(), id.into()))
+        );
         assert_eq!(reference("fireworks katy perry"), None);
         assert_eq!(playlist_id(id).unwrap(), id);
         assert!(playlist_id(&format!("spotify:track:{id}")).is_err());
         assert!(playlist_id("nope").is_err());
+        assert!(playlist_id("../../me/tracks?ids=xx").is_err());
+        assert!(playlist_id("this is 22 characters!").is_err());
     }
 
     #[test]
@@ -415,5 +407,73 @@ mod tests {
         assert_eq!(range("long").unwrap(), "long_term");
         assert_eq!(range("").unwrap(), "medium_term");
         assert!(range("year").is_err());
+    }
+
+    #[test]
+    fn relative_volume_seek_and_local_playlist_tracks_are_safe() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let script = [
+                    (
+                        "GET",
+                        "/me/player",
+                        200,
+                        r#"{"device":{"volume_percent":50},"progress_ms":5000}"#,
+                    ),
+                    ("PUT", "/me/player/volume?volume_percent=100", 204, ""),
+                    (
+                        "GET",
+                        "/me/player",
+                        200,
+                        r#"{"device":{"volume_percent":50},"progress_ms":5000}"#,
+                    ),
+                    ("PUT", "/me/player/seek?position_ms=0", 204, ""),
+                    (
+                        "GET",
+                        "/me/player/currently-playing",
+                        200,
+                        r#"{"item":{"uri":"spotify:local:::x:1","id":null}}"#,
+                    ),
+                ];
+                for (method, path, status, body) in script {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut buf = [0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap();
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    assert!(
+                        req.starts_with(&format!("{method} {path} HTTP/1.1\r\n")),
+                        "wanted {method} {path}, got {req}"
+                    );
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    socket.write_all(resp.as_bytes()).await.unwrap();
+                }
+            });
+            // Extreme deltas saturate instead of overflowing i64.
+            assert_eq!(
+                run(&base, "tok", 99843, &i64::MAX.to_string()).await.unwrap(),
+                json!(100)
+            );
+            assert_eq!(run(&base, "tok", 99844, &i64::MIN.to_string()).await.unwrap(), json!(0));
+            // Local file cannot be added to a playlist.
+            let pl = "4cOdK2wGLETKBW3PvgPWqT";
+            let err = run(&base, "tok", 99862, pl).await.unwrap_err();
+            assert!(err.contains("local file"), "{err}");
+            // Empty token fails before sending a body request.
+            assert_eq!(
+                run("http://127.0.0.1:1", "", 99861, "My Playlist").await.unwrap_err(),
+                "Spotify login is required"
+            );
+            server.await.unwrap();
+        });
     }
 }

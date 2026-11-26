@@ -1,5 +1,6 @@
 //! A searchable tree with a button bar and a right-click menu, drawn from any model of nodes and
 //! buttons. The core decides what the rows and buttons mean; a page decides what a press does.
+use super::slot::Slot;
 use crate::i18n::tr;
 use crate::theme::{
     CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
@@ -73,23 +74,8 @@ pub struct TreePane {
     toggled: HashSet<String>,
     options: Options,
     id: SharedString,
-    header_view: Entity<HeaderButtons>,
+    header_view: Entity<Slot<Self>>,
     _subscriptions: Vec<Subscription>,
-}
-
-/// A tree's page-wide buttons, drawn in the page's header.
-pub struct HeaderButtons(WeakEntity<TreePane>);
-impl Render for HeaderButtons {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self
-            .0
-            .upgrade()
-            .and_then(|pane| pane.update(cx, |pane, cx| pane.header_buttons(cx)))
-        {
-            Some(buttons) => buttons,
-            None => div().into_any_element(),
-        }
-    }
 }
 
 fn find<'a>(nodes: &'a Value, id: &str) -> Option<&'a Value> {
@@ -104,23 +90,97 @@ fn find<'a>(nodes: &'a Value, id: &str) -> Option<&'a Value> {
     None
 }
 
-fn compact_of(options: Options, row: usize, per_row: f32, count: f32) -> bool {
-    if options.icons_first && row == 0 {
+/// Collects the ids of every ancestor folder containing `id`.
+fn ancestor_ids(nodes: &Value, id: &str, out: &mut Vec<String>) -> bool {
+    for node in nodes.as_array().into_iter().flatten() {
+        if node["id"] == id {
+            return true;
+        }
+        if ancestor_ids(&node["children"], id, out) {
+            if let Some(ancestor) = node["id"].as_str() {
+                out.push(ancestor.to_owned());
+            }
+            return true;
+        }
+    }
+    false
+}
+
+fn compact_of(options: Options, row: usize, grid_cols: f32) -> bool {
+    if options.compact || (options.icons_first && row == 0) {
         return true;
     }
     if options.width > 0. {
-        return (options.width - SPACE_SM * (count - 1.)) / count < 80.;
+        let cols = grid_cols.max(1.);
+        return (options.width - SPACE_SM * (cols - 1.)) / cols < 80.;
     }
-    let _ = per_row;
-    options.compact
+    false
 }
 
-fn has_folders(nodes: &Value) -> bool {
+pub(super) fn has_folders(nodes: &Value) -> bool {
     nodes
         .as_array()
         .into_iter()
         .flatten()
         .any(|node| node["children"].as_array().is_some_and(|kids| !kids.is_empty()) || node["kind"] == "group")
+}
+
+/// Lightweight display fields extracted from a node without cloning its children subtree.
+struct RowVisual {
+    muted: bool,
+    italic: bool,
+    bold: bool,
+    icon: String,
+    tip: Option<SharedString>,
+    toggle: Option<(bool, String, Value)>,
+    logo: Option<String>,
+    icon_file: Option<String>,
+    note_text: Option<String>,
+    note_icon: String,
+    warn: bool,
+    off: bool,
+}
+
+impl RowVisual {
+    fn from_value(value: Option<&Value>) -> Self {
+        let Some(value) = value else {
+            return Self {
+                muted: false,
+                italic: false,
+                bold: false,
+                icon: "circle".to_owned(),
+                tip: None,
+                toggle: None,
+                logo: None,
+                icon_file: None,
+                note_text: None,
+                note_icon: "circle".to_owned(),
+                warn: false,
+                off: false,
+            };
+        };
+        let muted = value["muted"] == true;
+        Self {
+            muted,
+            italic: value["italic"] == true,
+            bold: value["kind"] == "group" || value["kind"] == "category",
+            icon: value["icon"].as_str().unwrap_or("circle").to_owned(),
+            tip: value["tip"].as_str().map(|tip| SharedString::from(tip.to_owned())),
+            toggle: value["toggle"].is_object().then(|| {
+                (
+                    value["toggle"]["checked"] == true,
+                    value["toggle"]["label"].as_str().unwrap_or_default().to_owned(),
+                    value["toggle"]["action"].clone(),
+                )
+            }),
+            logo: value["logo"].as_str().map(str::to_owned),
+            icon_file: value["iconFile"].as_str().map(str::to_owned),
+            note_text: value["note"]["text"].as_str().map(str::to_owned),
+            note_icon: value["note"]["icon"].as_str().unwrap_or("circle").to_owned(),
+            warn: value["warn"] == true,
+            off: (value["kind"] == "trigger" && muted) || value["off"] == true,
+        }
+    }
 }
 
 fn node_of(value: &Value) -> Node {
@@ -200,10 +260,10 @@ impl TreePane {
                 }
             }));
         }
-        let header_view = {
-            let weak = cx.entity().downgrade();
-            cx.new(|_| HeaderButtons(weak))
-        };
+        let header_view = Slot::new(
+            |pane, _, cx| pane.header_buttons(cx).unwrap_or_else(|| div().into_any_element()),
+            cx,
+        );
         let mut pane = Self {
             model,
             header_view,
@@ -222,7 +282,7 @@ impl TreePane {
     }
 
     /// The page-wide buttons as their own view, for the page's header.
-    pub fn header_view(&self) -> Entity<HeaderButtons> {
+    pub fn header_view(&self) -> Entity<Slot<Self>> {
         self.header_view.clone()
     }
     pub fn selected(&self) -> Option<&Node> {
@@ -289,14 +349,14 @@ impl TreePane {
                                 .as_str()
                                 .is_some_and(|text| text.to_lowercase().contains(query))
                         }));
-                let children = self.items(&node["children"], query);
-                if !own && children.is_empty() {
-                    return None;
-                }
                 // A folder that matches shows everything in it.
                 let children = if own && !query.is_empty() {
                     self.items(&node["children"], "")
                 } else {
+                    let children = self.items(&node["children"], query);
+                    if !own && children.is_empty() {
+                        return None;
+                    }
                     children
                 };
                 let open = !query.is_empty() || (self.toggled.contains(id) == self.options.closed);
@@ -339,6 +399,17 @@ impl TreePane {
             return;
         };
         let node = node_of(value);
+        if self.query(cx).is_empty() {
+            let mut ancestors = Vec::new();
+            ancestor_ids(&self.model["nodes"], id, &mut ancestors);
+            for ancestor in ancestors {
+                if self.options.closed {
+                    self.toggled.insert(ancestor);
+                } else {
+                    self.toggled.remove(&ancestor);
+                }
+            }
+        }
         let wanted: SharedString = id.to_owned().into();
         self.state.update(cx, |state, cx| {
             state.reveal_item(&wanted, gpui_kit::ScrollStrategy::Nearest, cx);
@@ -368,7 +439,7 @@ impl TreePane {
     }
 
     pub fn press(&mut self, spec: Value, node: Option<Node>, cx: &mut Context<Self>) {
-        if enabled(&spec, node.as_ref()) {
+        if !self.options.idle && enabled(&spec, node.as_ref()) {
             cx.emit(PaneEvent::Press { spec, node });
         }
     }
@@ -405,7 +476,7 @@ impl TreePane {
                         _ => label.clone(),
                     })
                     .tooltip(spec["tooltip"].as_str().map_or(label, str::to_owned))
-                    .disabled(!enabled(&spec, None))
+                    .disabled(self.options.idle || !enabled(&spec, None))
                     .on_click(cx.listener(move |pane, _, _, cx| {
                         let node = pane.selected.clone();
                         pane.press(spec.clone(), node, cx)
@@ -418,18 +489,16 @@ impl TreePane {
     /// The button bar. `fill`: the buttons share the row's width (under a tree); otherwise they take the width
     /// of their labels and wrap (the empty state).
     fn buttons(&self, fill: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let empty = self.model["nodes"].as_array().is_none_or(Vec::is_empty);
         let specs: Vec<Value> = self.model["buttons"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|spec| spec["menuOnly"] != true)
             .filter(|spec| !(self.options.in_header && spec["header"] == true))
-            .filter(|spec| !self.model["nodes"].as_array().is_some_and(Vec::is_empty) || enabled(spec, None))
+            .filter(|spec| !empty || enabled(spec, None))
             .filter(|spec| spec["hidden"] != true || enabled(spec, self.selected.as_ref()))
-            .filter(|spec| {
-                !self.model["nodes"].as_array().is_some_and(Vec::is_empty)
-                    || matches!(spec["id"].as_str(), Some("add" | "templates" | "import"))
-            })
+            .filter(|spec| !empty || matches!(spec["id"].as_str(), Some("add" | "templates" | "import")))
             .cloned()
             .collect();
         if specs.is_empty() {
@@ -443,6 +512,7 @@ impl TreePane {
             requested
         };
         let per_row = if fill { per_row } else { specs.len() };
+        let grid_cols = per_row.min(specs.len()).max(1) as f32;
         let mut column = div().flex().flex_col().gap(px(SPACE_SM)).w_full().flex_shrink_0();
         for (row, chunk) in specs.chunks(per_row).enumerate() {
             let mut line = div()
@@ -450,7 +520,7 @@ impl TreePane {
                 .gap(px(SPACE_SM))
                 .w_full()
                 .when(!fill, |line| line.flex_wrap());
-            let compact = fill && compact_of(self.options, row, per_row as f32, chunk.len() as f32);
+            let compact = fill && compact_of(self.options, row, grid_cols);
             for (at, spec) in chunk.iter().enumerate() {
                 let label = spec["label"].as_str().unwrap_or_default().to_owned();
                 let on = !self.options.idle && enabled(spec, self.selected.as_ref());
@@ -503,27 +573,29 @@ impl Render for TreePane {
             move |ix: usize, entry: &gpui_kit::base::TreeEntry, selected: bool, _: &mut Window, cx: &mut App| {
                 let item = entry.item();
                 let node_id = item.id.to_string();
-                let value = weak
+                let visual = weak
                     .upgrade()
-                    .and_then(|pane| find(&pane.read(cx).model["nodes"], &node_id).cloned())
-                    .unwrap_or(Value::Null);
-                let muted = value["muted"] == true;
-                let icon = value["icon"].as_str().unwrap_or("circle").to_owned();
-                let color = if muted {
+                    .map(|pane| RowVisual::from_value(find(&pane.read(cx).model["nodes"], &node_id)))
+                    .unwrap_or_else(|| RowVisual::from_value(None));
+                let color = if visual.muted {
                     cx.theme().muted_foreground
                 } else {
                     cx.theme().foreground
                 };
                 let mut label = div().flex_1().min_w_0().truncate().child(item.label.to_string());
-                if value["italic"] == true {
+                if visual.italic {
                     label = label.italic();
                 }
-                if value["kind"] == "group" || value["kind"] == "category" {
+                if visual.bold {
                     label = label.font_weight(FontWeight::BOLD);
                 }
                 let folder = entry.is_folder();
                 let weak = weak.clone();
                 let toggle_owner = weak.clone();
+                let tip = visual.tip.or_else(|| {
+                    let s = item.label.to_string();
+                    (!s.is_empty()).then(|| SharedString::from(s))
+                });
                 ListItem::new(SharedString::from(format!("{id}-row-{ix}")))
                     .selected(selected)
                     .accessibility_label(item.label.to_string())
@@ -543,40 +615,30 @@ impl Render for TreePane {
                             .gap(px(SPACE_SM))
                             .w_full()
                             // What the row is, on hover (an action: what starts it and what it runs, or full label).
-                            .when_some(
-                                value["tip"]
-                                    .as_str()
-                                    .map(|tip| SharedString::from(tip.to_owned()))
-                                    .or_else(|| {
-                                        let s = item.label.to_string();
-                                        (!s.is_empty()).then(|| SharedString::from(s))
-                                    }),
-                                |line, tip| {
-                                    line.tooltip(move |window, cx| {
-                                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                                    })
-                                },
-                            )
+                            .when_some(tip, |line, tip| {
+                                line.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                })
+                            })
                             .text_size(px(FONT_BODY))
                             .line_height(px(LINE_BODY))
                             .pl(px(entry.depth() as f32 * SPACE_LG))
                             .text_color(color)
-                            .when(value["toggle"].is_object(), |line| {
+                            .when_some(visual.toggle, |line, (checked, toggle_label, action)| {
                                 let weak = toggle_owner.clone();
                                 let node_id = item.id.to_string();
-                                let toggle = value["toggle"].clone();
                                 line.child(
                                     Switch::new(SharedString::from(format!("{id}-toggle-{ix}")))
                                         .small()
-                                        .checked(toggle["checked"] == true)
-                                        .accessibility_label(toggle["label"].as_str().unwrap_or_default().to_owned())
+                                        .checked(checked)
+                                        .accessibility_label(toggle_label)
                                         .on_click(move |_, _, cx| {
                                             cx.stop_propagation();
                                             let _ = weak.update(cx, |pane, cx| {
                                                 let spec = pane.model["buttons"]
                                                     .as_array()
                                                     .and_then(|buttons| {
-                                                        buttons.iter().find(|spec| spec["id"] == toggle["action"])
+                                                        buttons.iter().find(|spec| spec["id"] == action)
                                                     })
                                                     .cloned();
                                                 let node = find(&pane.model["nodes"], &node_id).map(node_of);
@@ -604,15 +666,13 @@ impl Render for TreePane {
                                         )
                                     }),
                             )
-                            .child(match value["iconFile"].as_str() {
+                            .child(match visual.icon_file {
                                 // A platform's or app's logo, in its own colours.
-                                None if value["logo"].is_string() && !muted => {
-                                    img(value["logo"].as_str().unwrap_or_default().to_owned())
-                                        .id(SharedString::from(format!("{id}-logo-{ix}")))
-                                        .size_4()
-                                        .flex_shrink_0()
-                                        .into_any_element()
-                                }
+                                None if visual.logo.is_some() && !visual.muted => img(visual.logo.unwrap_or_default())
+                                    .id(SharedString::from(format!("{id}-logo-{ix}")))
+                                    .size_4()
+                                    .flex_shrink_0()
+                                    .into_any_element(),
                                 // A group's own picture replaces the folder.
                                 Some(file) => img(std::path::PathBuf::from(file))
                                     .id(SharedString::from(format!("{id}-icon-{ix}")))
@@ -622,13 +682,13 @@ impl Render for TreePane {
                                     .object_fit(ObjectFit::Cover)
                                     .into_any_element(),
                                 None => Icon::empty()
-                                    .path(format!("icons/{icon}.svg"))
+                                    .path(format!("icons/{}.svg", visual.icon))
                                     .small()
                                     .into_any_element(),
                             })
                             .child(label)
                             // A quiet count at the right (an action's sub-actions).
-                            .when_some(value["note"]["text"].as_str().map(str::to_owned), |row, text| {
+                            .when_some(visual.note_text, |row, text| {
                                 row.child(
                                     div()
                                         .flex_shrink_0()
@@ -638,19 +698,12 @@ impl Render for TreePane {
                                         .text_size(px(FONT_CAPTION))
                                         .line_height(px(LINE_CAPTION))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            Icon::empty()
-                                                .path(format!(
-                                                    "icons/{}.svg",
-                                                    value["note"]["icon"].as_str().unwrap_or("circle")
-                                                ))
-                                                .size_3(),
-                                        )
+                                        .child(Icon::empty().path(format!("icons/{}.svg", visual.note_icon)).size_3())
                                         .child(text),
                                 )
                             })
                             // Something this item needs isn't ready (the reasons are in its tooltip).
-                            .when(value["warn"] == true, |row| {
+                            .when(visual.warn, |row| {
                                 row.child(
                                     Icon::empty()
                                         .path("icons/triangle-alert.svg")
@@ -658,40 +711,45 @@ impl Render for TreePane {
                                         .text_color(cx.theme().warning),
                                 )
                             })
-                            .when((value["kind"] == "trigger" && muted) || value["off"] == true, |row| {
+                            .when(visual.off, |row| {
                                 row.pr(px(SPACE_LG))
                                     .child(Icon::empty().path("icons/power-off.svg").small())
                             }),
                     )
             }
         };
-        let menu_specs: Vec<Value> = self.model["buttons"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|spec| spec["hidden"] != true || spec["needs"].as_array().is_some_and(|needs| !needs.is_empty()))
-            .cloned()
-            .collect();
         let menu_weak = weak.clone();
-        let rows_model = self.model.clone();
         let list = tree(&self.state, rows).context_menu(move |_, entry, mut menu, _, cx| {
-            let Some(value) = find(&rows_model["nodes"], &entry.item().id).cloned() else {
+            let Some(pane) = menu_weak.upgrade() else {
                 return menu;
             };
-            let node = node_of(&value);
-            let _ = cx;
-            for spec in &menu_specs {
-                if spec["hidden"] == true && !enabled(spec, Some(&node)) {
-                    continue;
-                }
+            let (idle, node, specs) = {
+                let pane = pane.read(cx);
+                let Some(value) = find(&pane.model["nodes"], &entry.item().id) else {
+                    return menu;
+                };
+                let node = node_of(value);
+                let specs: Vec<Value> = pane.model["buttons"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|spec| spec["hidden"] != true || enabled(spec, Some(&node)))
+                    .cloned()
+                    .collect();
+                (pane.options.idle, node, specs)
+            };
+            for spec in specs {
                 let owner = menu_weak.clone();
-                let (pressed, row) = (spec.clone(), node.clone());
+                let label = spec["label"].as_str().unwrap_or_default().to_owned();
+                let icon = spec["icon"].as_str().unwrap_or("circle").to_owned();
+                let disabled = idle || !enabled(&spec, Some(&node));
+                let row = node.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(spec["label"].as_str().unwrap_or_default().to_owned())
-                        .icon(Icon::empty().path(format!("icons/{}.svg", spec["icon"].as_str().unwrap_or("circle"))))
-                        .disabled(!enabled(spec, Some(&node)))
+                    PopupMenuItem::new(label)
+                        .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                        .disabled(disabled)
                         .on_click(move |_, _, cx| {
-                            let (pressed, row) = (pressed.clone(), row.clone());
+                            let (pressed, row) = (spec.clone(), row.clone());
                             let _ = owner.update(cx, |pane, cx| pane.press(pressed, Some(row), cx));
                         }),
                 );
@@ -796,7 +854,6 @@ impl Render for TreePane {
             });
         }
         if empty && self.query(cx).is_empty() {
-            let specs = self.model["buttons"].as_array().cloned().unwrap_or_default();
             let owner = weak.clone();
             let mut state = div()
                 .id("empty-tree-state")
@@ -812,15 +869,32 @@ impl Render for TreePane {
             if let Some(buttons) = self.buttons(false, cx) {
                 state = state.child(buttons);
             }
-            return body.child(state.context_menu(move |mut menu, _, _| {
-                for spec in &specs {
-                    let pressed = spec.clone();
+            return body.child(state.context_menu(move |mut menu, _, cx| {
+                let Some(pane) = owner.upgrade() else {
+                    return menu;
+                };
+                let (idle, specs) = {
+                    let pane = pane.read(cx);
+                    let specs: Vec<Value> = pane.model["buttons"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|spec| spec["hidden"] != true || enabled(spec, None))
+                        .cloned()
+                        .collect();
+                    (pane.options.idle, specs)
+                };
+                for spec in specs {
+                    let label = spec["label"].as_str().unwrap_or_default().to_owned();
+                    let icon = spec["icon"].as_str().unwrap_or("circle").to_owned();
+                    let disabled = idle || !enabled(&spec, None);
                     let owner = owner.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(spec["label"].as_str().unwrap_or_default().to_owned())
-                            .disabled(!enabled(spec, None))
+                        PopupMenuItem::new(label)
+                            .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                            .disabled(disabled)
                             .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |pane, cx| pane.press(pressed.clone(), None, cx));
+                                let _ = owner.update(cx, |pane, cx| pane.press(spec.clone(), None, cx));
                             }),
                     );
                 }
@@ -870,7 +944,7 @@ impl Render for TreePane {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{key_spec, Node};
+    use super::{ancestor_ids, compact_of, enabled, key_spec, Node, Options};
     use serde_json::{json, Value};
 
     fn node(kind: &str) -> Node {
@@ -881,6 +955,67 @@ pub(crate) mod tests {
             detail: Value::Null,
             confirm: Value::Null,
         }
+    }
+
+    #[test]
+    fn compact_of_folds_grid_as_one_and_respects_compact_flag() {
+        let narrow = Options {
+            width: 300.,
+            ..Options::default()
+        };
+        // A 4-column grid at 300px folds every row together (69px per slot < 80px).
+        assert!(compact_of(narrow, 0, 4.));
+        assert!(compact_of(narrow, 1, 4.));
+        // A 2-column grid at 300px keeps labels on every row (146px per slot >= 80px).
+        assert!(!compact_of(narrow, 0, 2.));
+        assert!(!compact_of(narrow, 1, 2.));
+        // Explicit compact stays compact even when width is wide.
+        let forced = Options {
+            compact: true,
+            width: 800.,
+            ..Options::default()
+        };
+        assert!(compact_of(forced, 0, 2.));
+        assert!(compact_of(forced, 1, 2.));
+        // icons_first folds only the first row.
+        let first_only = Options {
+            icons_first: true,
+            width: 800.,
+            ..Options::default()
+        };
+        assert!(compact_of(first_only, 0, 2.));
+        assert!(!compact_of(first_only, 1, 2.));
+    }
+
+    #[test]
+    fn ancestor_ids_finds_nested_folders_and_enabled_checks_needs() {
+        let nodes = json!([
+            {
+                "id": "g1",
+                "kind": "group",
+                "children": [
+                    {
+                        "id": "g2",
+                        "kind": "group",
+                        "children": [
+                            {"id": "a1", "kind": "action"}
+                        ]
+                    }
+                ]
+            }
+        ]);
+        let mut ancestors = Vec::new();
+        assert!(ancestor_ids(&nodes, "a1", &mut ancestors));
+        assert_eq!(ancestors, vec!["g2", "g1"]);
+
+        let mut missing = Vec::new();
+        assert!(!ancestor_ids(&nodes, "unknown", &mut missing));
+        assert!(missing.is_empty());
+
+        let needs_action = json!({"id": "edit", "needs": ["action"]});
+        assert!(enabled(&needs_action, Some(&node("action"))));
+        assert!(!enabled(&needs_action, Some(&node("group"))));
+        assert!(!enabled(&needs_action, None));
     }
 
     #[test]
@@ -1151,6 +1286,74 @@ pub(crate) mod tests {
                 assert!(window.try_find_by_label(no_matches).is_none());
             })
             .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn select_keeps_revealed_ancestor_open_across_set_model_and_idle_blocks_press(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Actions",
+                "nodes": [
+                    {
+                        "id": "g1",
+                        "kind": "group",
+                        "label": "Group 1",
+                        "children": [
+                            {"id": "a1", "kind": "action", "label": "Action 1"}
+                        ]
+                    }
+                ],
+                "buttons": [
+                    {"id": "edit", "label": "Edit", "icon": "pencil", "needs": ["action"]}
+                ]
+            });
+            let (window, pane) = open_tree(
+                model.clone(),
+                true,
+                Options {
+                    closed: true,
+                    ..Options::default()
+                },
+                cx,
+            );
+            let pressed = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let pressed_cb = pressed.clone();
+            cx.update_window(window.into(), |_, window, cx| {
+                cx.subscribe(&pane, move |_, event: &super::super::PaneEvent, _| {
+                    if matches!(event, super::super::PaneEvent::Press { .. }) {
+                        pressed_cb.set(pressed_cb.get() + 1);
+                    }
+                })
+                .detach();
+                window.render_frame(cx);
+
+                // Selecting a child inside a closed folder marks the ancestor expanded so set_model preserves it.
+                pane.update(cx, |pane, cx| pane.select("a1", cx));
+                assert_eq!(pane.read(cx).selected().map(|n| n.id.as_str()), Some("a1"));
+                pane.update(cx, |pane, cx| pane.set_model(model.clone(), cx));
+                assert_eq!(pane.read(cx).selected().map(|n| n.id.as_str()), Some("a1"));
+
+                // Idle panes ignore press events.
+                let spec = model["buttons"][0].clone();
+                let node = pane.read(cx).selected().cloned();
+                pane.update(cx, |pane, cx| {
+                    pane.set_options(
+                        Options {
+                            idle: true,
+                            ..Options::default()
+                        },
+                        cx,
+                    );
+                    pane.press(spec.clone(), node.clone(), cx);
+                });
+                assert_eq!(pressed.get(), 0);
+                pane.update(cx, |pane, cx| {
+                    pane.set_options(Options::default(), cx);
+                    pane.press(spec, node, cx);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert_eq!(pressed.get(), 1);
         }
     }
 }

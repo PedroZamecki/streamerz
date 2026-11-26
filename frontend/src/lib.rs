@@ -155,26 +155,8 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                     )
                 });
                 window.on_window_should_close(cx, move |window, _| {
-                    let (bounds, maximized) = match window.window_bounds() {
-                        WindowBounds::Maximized(b) => (b, true),
-                        WindowBounds::Windowed(b) => (b, false),
-                        WindowBounds::Fullscreen(b) => (b, false),
-                    };
-                    let (x, y, w, h) = (
-                        f32::from(bounds.origin.x) as i32,
-                        f32::from(bounds.origin.y) as i32,
-                        f32::from(bounds.size.width) as i32,
-                        f32::from(bounds.size.height) as i32,
-                    );
-                    if w >= 400 && h >= 300 {
-                        send(json!({
-                            "request": "StreamerzWindowState",
-                            "x": x,
-                            "y": y,
-                            "w": w,
-                            "h": h,
-                            "maximized": maximized,
-                        }));
+                    if let Some(state) = app::window_state(window.window_bounds()) {
+                        send(state);
                     }
                     true
                 });
@@ -215,22 +197,18 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
             let input = input.clone();
             let result = executor
                 .spawn(async move {
-                    let mut line = String::new();
-                    let count = input
-                        .lock()
-                        .map_err(|_| "frontend input lock failed".to_owned())?
-                        .read_line(&mut line)
-                        .map_err(|error| error.to_string())?;
-                    if count == 0 {
-                        return Ok(None);
-                    }
-                    serde_json::from_str::<Value>(&line)
-                        .map(Some)
-                        .map_err(|error| error.to_string())
+                    let mut input = input.lock().map_err(|_| "frontend input lock failed".to_owned())?;
+                    read_message(&mut *input)
                 })
                 .await;
             match result {
-                Ok(Some(value)) => {
+                // A line the window can't read is skipped: one bad message must not close it.
+                Ok(Incoming::Skip(reason)) => {
+                    if !reason.is_empty() {
+                        diag::log_warn(reason);
+                    }
+                }
+                Ok(Incoming::Message(value)) => {
                     // The GPU stopped drawing and the window went on in software: say what draws it now.
                     if diag::RENDERER_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) {
                         cx.update(|cx| report_renderer(window_handle, cx));
@@ -286,7 +264,7 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
                         });
                     }
                 }
-                Ok(None) => {
+                Ok(Incoming::End) => {
                     cx.update(|cx| cx.quit());
                     break;
                 }
@@ -307,6 +285,34 @@ pub fn run() -> Result<(), Box<StreamerzError>> {
         return Err(Box::new(error));
     }
     Ok(())
+}
+
+/// What the next line from the core is.
+#[derive(Debug, PartialEq)]
+enum Incoming {
+    Message(Value),
+    /// A line that is not a message (empty, not JSON, not UTF-8), with why, to log.
+    Skip(String),
+    /// The core closed the pipe.
+    End,
+}
+
+/// Reads one line of the core protocol. Only a failing pipe is an error.
+fn read_message(input: &mut impl BufRead) -> Result<Incoming, String> {
+    let mut line = String::new();
+    match input.read_line(&mut line) {
+        Ok(0) => Ok(Incoming::End),
+        Ok(_) if line.trim().is_empty() => Ok(Incoming::Skip(String::new())),
+        Ok(_) => Ok(serde_json::from_str::<Value>(&line).map_or_else(
+            |error| Incoming::Skip(format!("Skipped an unreadable core message: {error}")),
+            Incoming::Message,
+        )),
+        // The line was read to its end, so the next one starts clean.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(Incoming::Skip(format!(
+            "Skipped a core message that is not UTF-8: {error}"
+        ))),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Tells the core what draws the window (a GPU, or software rendering).
@@ -356,6 +362,33 @@ fn fit(
         ),
     };
     Bounds::new(origin, size)
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::{read_message, Incoming};
+    use serde_json::json;
+
+    #[test]
+    fn a_bad_line_from_the_core_is_skipped_and_the_next_one_read() {
+        let mut input = std::io::Cursor::new(b"{\"id\":1}\nnot json\n\n\xff\xfe\n{\"id\":2}\n".to_vec());
+        assert_eq!(read_message(&mut input), Ok(Incoming::Message(json!({"id": 1}))));
+        assert!(matches!(read_message(&mut input), Ok(Incoming::Skip(reason)) if reason.contains("unreadable")));
+        assert_eq!(read_message(&mut input), Ok(Incoming::Skip(String::new())));
+        assert!(matches!(read_message(&mut input), Ok(Incoming::Skip(reason)) if reason.contains("UTF-8")));
+        assert_eq!(read_message(&mut input), Ok(Incoming::Message(json!({"id": 2}))));
+        assert_eq!(read_message(&mut input), Ok(Incoming::End));
+    }
+
+    #[test]
+    fn a_last_line_without_a_newline_still_counts() {
+        let mut input = std::io::Cursor::new(b"{\"event\":\"core.changed\"}".to_vec());
+        assert_eq!(
+            read_message(&mut input),
+            Ok(Incoming::Message(json!({"event": "core.changed"})))
+        );
+        assert_eq!(read_message(&mut input), Ok(Incoming::End));
+    }
 }
 
 #[cfg(test)]

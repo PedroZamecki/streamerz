@@ -17,7 +17,7 @@ pub fn encode(bytes: &[u8]) -> Result<Value, &'static str> {
         return Err("Choose a PNG or JPEG image");
     };
     Ok(
-        json!({"sha256": Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>(), "format": kind,
+        json!({"sha256": crate::fmt::hex(&Sha256::digest(bytes)), "format": kind,
         "data": base64::engine::general_purpose::STANDARD.encode(bytes)}),
     )
 }
@@ -37,10 +37,26 @@ mod tests {
     #[test]
     fn verifies_content_and_digest() {
         let icon = super::encode(b"\x89PNG\r\n\x1a\ncontent").unwrap();
-        assert!(super::decode(&icon).is_some());
-        let mut tampered = icon;
+        assert_eq!(super::decode(&icon).as_deref(), Some(&b"\x89PNG\r\n\x1a\ncontent"[..]));
+        let mut tampered = icon.clone();
         tampered["sha256"] = "wrong".into();
         assert!(super::decode(&tampered).is_none());
+        let mut wrong_fmt = icon.clone();
+        wrong_fmt["format"] = "jpeg".into();
+        assert!(super::decode(&wrong_fmt).is_none());
+        let mut extra_field = icon;
+        extra_field["extra"] = true.into();
+        assert!(super::decode(&extra_field).is_none());
         assert!(super::encode(b"not an image").is_err());
+
+        let jpg = super::encode(b"\xff\xd8\xff\xe0jpeg").unwrap();
+        assert_eq!(jpg["format"], "jpeg");
+        assert_eq!(super::decode(&jpg).as_deref(), Some(&b"\xff\xd8\xff\xe0jpeg"[..]));
+
+        let mut too_big = b"\x89PNG\r\n\x1a\n".to_vec();
+        too_big.resize(super::MAX_BYTES + 1, 0);
+        assert!(super::encode(&too_big).is_err());
+        let huge_b64 = serde_json::json!({"sha256": "x", "format": "png", "data": "A".repeat(super::MAX_BYTES * 2)});
+        assert!(super::decode(&huge_b64).is_none());
     }
 }

@@ -82,17 +82,14 @@ impl Engine {
         list(&mut known);
         loop {
             tokio::time::sleep(EVERY).await;
-            let before = known.clone();
-            list(&mut known);
-            for (pid, p) in &known {
-                if !before.contains_key(pid) {
-                    self.process_fire(T_STARTED, *pid, p);
+            let seen = list(&mut known);
+            for pid in seen.started {
+                if let Some(p) = known.get(&pid) {
+                    self.process_fire(T_STARTED, pid, p);
                 }
             }
-            for (pid, p) in &before {
-                if !known.contains_key(pid) {
-                    self.process_fire(T_STOPPED, *pid, p);
-                }
+            for (pid, p) in seen.stopped {
+                self.process_fire(T_STOPPED, pid, &p);
             }
         }
     }
@@ -116,17 +113,33 @@ impl Engine {
     }
 }
 
+/// What changed since the last look: the new processes' ids, and the ones gone.
+#[derive(Default)]
+struct Seen {
+    started: Vec<u32>,
+    stopped: Vec<(u32, Proc)>,
+}
+
+/// Take out of `known` the processes no longer running.
+fn forget_gone(known: &mut HashMap<u32, Proc>, running: impl Fn(&u32) -> bool) -> Vec<(u32, Proc)> {
+    let gone: Vec<u32> = known.keys().filter(|pid| !running(pid)).copied().collect();
+    gone.into_iter().filter_map(|pid| known.remove_entry(&pid)).collect()
+}
+
 /// Update `known` to the running processes: gone ones leave, new ones are read.
 #[cfg(target_os = "linux")]
-fn list(known: &mut HashMap<u32, Proc>) {
+fn list(known: &mut HashMap<u32, Proc>) -> Seen {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
+        return Seen::default();
     };
     let now: std::collections::HashSet<u32> = entries
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse().ok())
         .collect();
-    known.retain(|pid, _| now.contains(pid));
+    let mut seen = Seen {
+        stopped: forget_gone(known, |pid| now.contains(pid)),
+        ..Seen::default()
+    };
     for pid in now {
         if known.contains_key(&pid) {
             continue;
@@ -152,7 +165,7 @@ fn list(known: &mut HashMap<u32, Proc>) {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| comm.clone());
-        let name = executable.strip_suffix(".exe").unwrap_or(&executable).to_string();
+        let name = without_exe(&executable).to_string();
         known.insert(
             pid,
             Proc {
@@ -162,11 +175,13 @@ fn list(known: &mut HashMap<u32, Proc>) {
                 parent,
             },
         );
+        seen.started.push(pid);
     }
+    seen
 }
 
 #[cfg(windows)]
-fn list(known: &mut HashMap<u32, Proc>) {
+fn list(known: &mut HashMap<u32, Proc>) -> Seen {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -178,22 +193,29 @@ fn list(known: &mut HashMap<u32, Proc>) {
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return;
+            return Seen::default();
         }
         let mut e: PROCESSENTRY32W = std::mem::zeroed();
         e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut now = HashMap::new();
         let mut ok = Process32FirstW(snap, &mut e) != 0;
         while ok {
-            let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
-            now.insert(
-                e.th32ProcessID,
-                (String::from_utf16_lossy(&e.szExeFile[..len]), e.th32ParentProcessID),
-            );
+            // Exited processes stay in the Toolhelp snapshot with zero threads while an open
+            // handle keeps their PID alive (including a parent's Child handle).
+            if e.cntThreads > 0 {
+                let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
+                now.insert(
+                    e.th32ProcessID,
+                    (String::from_utf16_lossy(&e.szExeFile[..len]), e.th32ParentProcessID),
+                );
+            }
             ok = Process32NextW(snap, &mut e) != 0;
         }
         CloseHandle(snap);
-        known.retain(|pid, _| now.contains_key(pid));
+        let mut seen = Seen {
+            stopped: forget_gone(known, |pid| now.contains_key(pid)),
+            ..Seen::default()
+        };
         for (pid, (executable, parent)) in now {
             if known.contains_key(&pid) {
                 continue;
@@ -208,11 +230,7 @@ fn list(known: &mut HashMap<u32, Proc>) {
                 }
                 CloseHandle(h);
             }
-            let name = executable
-                .strip_suffix(".exe")
-                .or_else(|| executable.strip_suffix(".EXE"))
-                .unwrap_or(&executable)
-                .to_string();
+            let name = without_exe(&executable).to_string();
             known.insert(
                 pid,
                 Proc {
@@ -222,16 +240,67 @@ fn list(known: &mut HashMap<u32, Proc>) {
                     parent,
                 },
             );
+            seen.started.push(pid);
         }
+        seen
     }
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn list(_: &mut HashMap<u32, Proc>) {}
+fn list(_: &mut HashMap<u32, Proc>) -> Seen {
+    Seen::default()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gone_processes_leave_with_what_was_known_of_them() {
+        let mut known: HashMap<u32, Proc> = [(1, "init"), (7, "obs64"), (9, "game")]
+            .into_iter()
+            .map(|(pid, name)| {
+                let p = Proc {
+                    name: name.into(),
+                    ..Proc::default()
+                };
+                (pid, p)
+            })
+            .collect();
+        let mut gone = forget_gone(&mut known, |pid| *pid != 7 && *pid != 9);
+        gone.sort_by_key(|(pid, _)| *pid);
+        assert_eq!(
+            gone.iter().map(|(pid, p)| (*pid, p.name.as_str())).collect::<Vec<_>>(),
+            [(7, "obs64"), (9, "game")]
+        );
+        assert_eq!(known.keys().copied().collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn a_name_loses_its_exe_in_any_case_and_keeps_the_rest() {
+        assert_eq!(without_exe("OBS64.EXE"), "OBS64");
+        assert_eq!(without_exe("game.Exe"), "game");
+        assert_eq!(without_exe("exe"), "exe");
+        assert_eq!(without_exe("sleep"), "sleep");
+        assert_eq!(without_exe("名前.exe"), "名前");
+        assert_eq!(without_exe("é.ex"), "é.ex");
+    }
+
+    #[test]
+    fn a_process_s_arguments_are_streamer_bot_s() {
+        let p = Proc {
+            name: "obs64".into(),
+            executable: "obs64.exe".into(),
+            full_path: "/opt/obs/obs64.exe".into(),
+            parent: 3,
+        };
+        let a = p.args(42);
+        assert_eq!(a["processId"], "42");
+        assert_eq!(a["parentProcessId"], "3");
+        assert_eq!(a["path"], "/opt/obs");
+        assert_eq!(a["fullPath"], "/opt/obs/obs64.exe");
+        assert_eq!(a["executable"], "obs64.exe");
+    }
 
     #[test]
     fn process_names_match_exe_extension_in_any_case() {
@@ -253,7 +322,8 @@ mod tests {
         list(&mut known);
         assert!(known.contains_key(&std::process::id()));
         let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
-        list(&mut known);
+        let seen = list(&mut known);
+        assert!(seen.started.contains(&child.id()));
         let p = known.get(&child.id()).cloned().expect("the new process");
         assert_eq!(p.name, "sleep");
         assert!(p.full_path.ends_with("/sleep"), "{p:?}");
@@ -261,8 +331,13 @@ mod tests {
         assert!(p.is("sleep") && p.is("SLEEP.exe") && p.is("") && !p.is("obs64.exe"));
         child.kill().unwrap();
         child.wait().unwrap();
-        list(&mut known);
+        let seen = list(&mut known);
         assert!(!known.contains_key(&child.id()));
+        assert!(seen
+            .stopped
+            .iter()
+            .any(|(pid, gone)| *pid == child.id() && gone.name == "sleep"));
+        assert!(!seen.started.contains(&child.id()));
     }
     /// The same on Windows, with a program every Windows has.
     #[cfg(windows)]
@@ -276,15 +351,24 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        list(&mut known);
-        let p = known.get(&child.id()).cloned().expect("the new process");
+        let pid = child.id();
+        let seen = list(&mut known);
+        assert!(seen.started.contains(&pid));
+        let p = known.get(&pid).cloned().expect("the new process");
         assert_eq!(p.name.to_lowercase(), "ping", "{p:?}");
         assert!(p.full_path.to_lowercase().ends_with("\\ping.exe"), "{p:?}");
         assert_eq!(p.parent, std::process::id());
         assert!(p.is("ping") && p.is("PING.exe") && !p.is("obs64.exe"));
         child.kill().unwrap();
         child.wait().unwrap();
-        list(&mut known);
-        assert!(!known.contains_key(&child.id()));
+        // Exited process is reported stopped even while `child` still holds its handle.
+        let seen = list(&mut known);
+        drop(child);
+        assert!(!known.contains_key(&pid));
+        assert!(seen
+            .stopped
+            .iter()
+            .any(|(stopped_pid, gone)| *stopped_pid == pid && gone.name.eq_ignore_ascii_case("ping")));
+        assert!(!seen.started.contains(&pid));
     }
 }

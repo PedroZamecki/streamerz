@@ -81,17 +81,8 @@ pub fn clock(secs: u64) -> String {
 
 /// How long since an ISO 8601 time, in seconds (0 when it can't be read or is ahead).
 fn since(iso: &str) -> u64 {
-    let now = crate::fmt::unix_now().as_secs() as i64;
-    super::rest_parse_iso(iso).map_or(0, |t| (now - t).max(0) as u64)
-}
-
-/// Unix seconds as an ISO 8601 UTC time (`2026-11-15T20:00:00Z`).
-fn iso_utc(secs: i64) -> String {
-    let t = super::civil_time(secs);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        t.year, t.month, t.day, t.hour, t.min, t.sec
-    )
+    let now = crate::fmt::now_secs() as i64;
+    crate::fmt::parse_iso(iso).map_or(0, |t| (now - t).max(0) as u64)
 }
 
 /// A date and time as typed: ISO 8601 with its zone, or `2026-11-15 20:00` in local time.
@@ -101,12 +92,8 @@ fn parse_when(text: &str) -> Option<i64> {
         t.push_str(":00");
     }
     let zoned = t.get(19..).is_some_and(|z| z.contains(['Z', 'z', '+', '-']));
-    let secs = super::rest_parse_iso(&t)?;
-    Some(if zoned {
-        secs
-    } else {
-        secs - i64::from(crate::fmt::now().offset)
-    })
+    let secs = crate::fmt::parse_iso(&t)?;
+    Some(if zoned { secs } else { crate::fmt::from_local(secs) })
 }
 
 /// The computer's time zone by its IANA name (Twitch's schedule wants one), else UTC.
@@ -500,7 +487,7 @@ impl Engine {
             t => format!("Tier{}", t.trim_start_matches("tier").trim()),
         };
         let latest = json!({"userName": user, "userLogin": login, "userId": id, "tier": tier, "isGift": kind == 105,
-            "at": iso_utc(crate::fmt::unix_now().as_secs() as i64)});
+            "at": crate::fmt::iso_utc(crate::fmt::now_secs() as i64)});
         self.change(|c| c.twitch.latest_subscriber = Some(latest));
     }
 
@@ -623,8 +610,8 @@ impl Engine {
                 let uid = self.twitch_id(&text("userLogin")).await?;
                 let days = (n(o, "days") as i64).clamp(0, 3650);
                 let started = (days > 0).then(|| {
-                    let at = crate::fmt::unix_now().as_secs() as i64 - days * 86_400;
-                    iso_utc(at)
+                    let at = crate::fmt::now_secs() as i64 - days * 86_400;
+                    crate::fmt::iso_utc(at)
                 });
                 let mut q = vec![("broadcaster_id", uid.as_str()), ("first", "100")];
                 if let Some(at) = &started {
@@ -1077,7 +1064,7 @@ impl Engine {
                     .round()
                     .clamp(30.0, 1380.0) as u64;
                 let mut body = json!({
-                    "start_time": iso_utc(start),
+                    "start_time": crate::fmt::iso_utc(start),
                     "timezone": local_zone(),
                     "duration": minutes.to_string(),
                     "is_recurring": b(o, "recurring", false),
@@ -1140,7 +1127,7 @@ impl Engine {
                 if on {
                     let from = parse_when(&text("start")).ok_or("the start isn't a date and time")?;
                     let to = parse_when(&text("end")).ok_or("the end isn't a date and time")?;
-                    (start, end) = (iso_utc(from), iso_utc(to));
+                    (start, end) = (crate::fmt::iso_utc(from), crate::fmt::iso_utc(to));
                     q.extend([
                         ("vacation_start_time", start.as_str()),
                         ("vacation_end_time", end.as_str()),
@@ -1626,15 +1613,19 @@ impl Engine {
     /// The platforms a sub-action of every platform acts on: those ticked, else the one its trigger
     /// came from.
     fn chosen_platforms(ctx: &Ctx, o: &Obj) -> Vec<String> {
-        let ticked: Vec<String> = o
+        let mut ticked: Vec<String> = Vec::new();
+        for p in o
             .get("platforms")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .filter(|p| PLATFORMS.contains(p))
-            .map(str::to_string)
-            .collect();
+        {
+            if !ticked.iter().any(|t| t == p) {
+                ticked.push(p.to_string());
+            }
+        }
         if !ticked.is_empty() {
             return ticked;
         }
@@ -1703,7 +1694,14 @@ impl Engine {
                 ));
                 continue;
             }
-            let before: Vec<String> = ctx.args.keys().cloned().collect();
+            // Several platforms: each one's stream values are its own, not the one before's (a
+            // platform that fails says none).
+            if multi {
+                for k in STREAM_KEYS {
+                    ctx.args.shift_remove(k);
+                }
+            }
+            let before: std::collections::HashSet<String> = ctx.args.keys().cloned().collect();
             for sub in &subs {
                 let _ = self.one(ctx, sub).await;
             }
@@ -1712,19 +1710,7 @@ impl Engine {
                 let added: Vec<(String, Value)> = ctx
                     .args
                     .iter()
-                    .filter(|(k, _)| {
-                        !before.contains(k)
-                            || matches!(
-                                k.as_str(),
-                                "isLive"
-                                    | "viewerCount"
-                                    | "streamTitle"
-                                    | "streamCategory"
-                                    | "uptime"
-                                    | "uptimeSeconds"
-                                    | "startedAt"
-                            )
-                    })
+                    .filter(|(k, _)| !before.contains(*k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (k, v) in added {
@@ -1904,7 +1890,7 @@ impl Engine {
             thumbnail: get("thumbnail"),
             fields,
             inline: b(o, "inlineFields", false),
-            timestamp: b(o, "timestamp", false).then(|| iso_utc(crate::fmt::unix_now().as_secs() as i64)),
+            timestamp: b(o, "timestamp", false).then(|| crate::fmt::iso_utc(crate::fmt::now_secs() as i64)),
         }
     }
 
@@ -2182,6 +2168,17 @@ impl Engine {
     }
 }
 
+/// The values Get Stream Info gives on every platform.
+const STREAM_KEYS: [&str; 7] = [
+    "isLive",
+    "viewerCount",
+    "streamTitle",
+    "streamCategory",
+    "uptime",
+    "uptimeSeconds",
+    "startedAt",
+];
+
 /// YouTube's video categories a stream can be in: id and name, the picker's order.
 pub const YOUTUBE_CATEGORIES: [(&str, &str); 14] = [
     ("20", "Gaming"),
@@ -2232,6 +2229,79 @@ mod tests {
             assert!(outcome.error.is_none());
             assert!(outcome.warning.unwrap().contains("no platform ticked"));
         });
+    }
+
+    fn obj(v: Value) -> Obj {
+        v.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_platform_ticked_twice_runs_once() {
+        let ctx = Ctx {
+            args: obj(json!({"userType": "Kick"})),
+            group: String::new(),
+        };
+        let o = obj(json!({"platforms": ["twitch", "myspace", "twitch", "kick"]}));
+        assert_eq!(Engine::chosen_platforms(&ctx, &o), ["twitch", "kick"]);
+        // None ticked: where its trigger came from.
+        assert_eq!(Engine::chosen_platforms(&ctx, &obj(json!({}))), ["kick"]);
+        let elsewhere = Ctx {
+            args: obj(json!({"platform": "discord"})),
+            group: String::new(),
+        };
+        assert!(Engine::chosen_platforms(&elsewhere, &obj(json!({}))).is_empty());
+    }
+
+    /// Stream info on several platforms: one that fails says nothing, instead of the platform
+    /// before it's values under its name.
+    #[test]
+    fn a_failed_platform_doesn_t_get_the_one_before_s_stream_values() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        super::super::tests::run(async {
+            let engine = super::super::tests::engine(json!({"actions": []}));
+            let o = obj(json!({"platforms": ["tiktok", "twitch"]}));
+            let (args, _) = engine
+                .execute_with(99731, o, obj(json!({"isLive": true, "viewerCount": 9})), String::new())
+                .await;
+            assert_eq!(args["tiktokIsLive"], false);
+            assert!(!args.contains_key("twitchIsLive"), "{args:?}");
+            assert!(!args.contains_key("twitchViewerCount"), "{args:?}");
+            assert_eq!(args["isLive"], false);
+        });
+    }
+
+    #[test]
+    fn colours_read_as_rrggbb() {
+        assert_eq!(rgb("#ff8800"), "#FF8800");
+        assert_eq!(rgb("  #80ff8800 "), "#FF8800");
+        assert_eq!(rgb("ff8800"), "#FF8800");
+        assert_eq!(rgb("#fff"), "");
+        assert_eq!(rgb("#gg8800"), "");
+        assert_eq!(rgb("#ff88é0"), "");
+    }
+
+    #[test]
+    fn small_helpers_read_what_people_type() {
+        assert_eq!(playlist_id("https://youtube.com/playlist?list=PL123&si=x"), "PL123");
+        assert_eq!(playlist_id(" PL9 "), "PL9");
+        assert_eq!(login(" @Ana "), "Ana");
+        assert_eq!(clock(59), "0:59");
+        assert_eq!(clock(3_661), "1:01:01");
+        assert_eq!(
+            parse_when("2026-11-15T20:00:00Z"),
+            crate::fmt::parse_iso("2026-11-15T20:00:00Z")
+        );
+        assert!(parse_when("tomorrow").is_none());
+        // A local time keeps the offset of its own day, winter or summer.
+        for (typed, iso) in [
+            ("2026-01-15 20:00", "2026-01-15T20:00:00Z"),
+            ("2026-07-15 20:00", "2026-07-15T20:00:00Z"),
+        ] {
+            let naive = crate::fmt::parse_iso(iso).unwrap();
+            assert_eq!(parse_when(typed), Some(crate::fmt::from_local(naive)));
+        }
+        assert_eq!(twitch_extra_scope(592), Some("moderator:manage:automod_settings"));
+        assert_eq!(twitch_extra_scope(10), None);
     }
 
     #[test]

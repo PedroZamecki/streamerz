@@ -90,7 +90,8 @@ streamerz.chat(add, {
   history: Number(settings.history) || 50,
   removed: r => {
     for (const el of chat.children) {
-      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.classList.add("deleted");
+      const samePlatform = !r.platform || (el.dataset.user || "").startsWith(r.platform + ":");
+      if (r.msgId ? (el.dataset.msg === r.msgId && samePlatform) : (r.userId && el.dataset.user === r.platform + ":" + r.userId)) el.classList.add("deleted");
     }
   },
 });

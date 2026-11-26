@@ -34,7 +34,8 @@ impl Irc {
     }
 }
 
-fn unescape(v: &str) -> String {
+/// A tag's value with IRCv3's escapes undone (`\s` a space, `\:` a semicolon...).
+pub(crate) fn unescape(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     let mut chars = v.chars();
     while let Some(c) = chars.next() {
@@ -75,14 +76,23 @@ pub fn parse(raw: &str) -> Option<Irc> {
         rest = r.trim_start();
     }
     let (head, text) = match rest.split_once(" :") {
-        Some((h, t)) => (h, t.to_string()),
-        None => (rest, String::new()),
+        Some((h, t)) => (h, Some(t)),
+        None => (rest, None),
     };
     let mut words = head.split(' ').filter(|w| !w.is_empty());
     m.command = words.next()?.to_string();
     m.target = words.next().unwrap_or("").to_string();
-    m.text = text;
+    // A last parameter without a space may come without its colon ("PRIVMSG #c hi").
+    m.text = text.or_else(|| words.next()).unwrap_or("").to_string();
     Some(m)
+}
+
+/// A `/me` message's text without its CTCP ACTION wrapper, and whether it was one.
+pub(crate) fn split_action(text: &str) -> (&str, bool) {
+    match text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
+        Some(act) => (act, true),
+        None => (text, false),
+    }
 }
 
 /// The emote fragments of `text` from an IRC `emotes` tag (`25:0-4,12-16/1902:6-10`, in characters).
@@ -166,15 +176,8 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
     };
     match m.command.as_str() {
         "PRIVMSG" => {
-            let mut text = m.text.clone();
-            let action = text
-                .strip_prefix("\x01ACTION ")
-                .and_then(|s| s.strip_suffix('\x01'))
-                .map(str::to_string);
-            let is_action = action.is_some();
-            if let Some(act) = action {
-                text = act;
-            }
+            let (text, is_action) = split_action(&m.text);
+            let text = text.to_string();
             let name = m.tag("display-name");
             let badges: Vec<Value> = m
                 .tag("badges")
@@ -210,14 +213,16 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
         }
         // A viewer's watch streak (the one notice that is a reward: it gives channel points).
         "USERNOTICE" if m.tag("msg-id") == "viewermilestone" && m.tag("msg-param-category") == "watch-streak" => {
+            // A notice comes from the server (`:tmi.twitch.tv`): the chatter is in its `login` tag.
+            let login = m.tag("login");
             let name = m.tag("display-name");
-            let name = if name.is_empty() { m.login.as_str() } else { name };
+            let name = if name.is_empty() { login } else { name };
             let count = |k: &str| m.tag(k).parse::<u64>().unwrap_or(0);
             Some((
                 "channel.chat.notification",
                 with(json!({
                     "chatter_user_id": m.tag("user-id"),
-                    "chatter_user_login": m.login,
+                    "chatter_user_login": login,
                     "chatter_user_name": name,
                     "chatter_is_anonymous": false,
                     "color": m.tag("color"),
@@ -265,7 +270,7 @@ pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
     }
     // A ban has no duration; a timeout is for so many seconds.
     let secs = m.tag("ban-duration").parse::<i64>().ok();
-    let at = |t: i64| crate::fmt::date(&crate::engine::civil_time(t), "o");
+    let at = |t: i64| crate::fmt::date(&crate::fmt::civil(t), "o");
     Some(json!({
         "broadcaster_user_id": broadcaster_id,
         "user_id": user,
@@ -276,7 +281,7 @@ pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
         "moderator_user_name": "",
         "reason": "",
         "banned_at": at(now),
-        "ends_at": secs.map_or(String::new(), |d| at(now + d)),
+        "ends_at": secs.map_or(String::new(), |d| at(now.saturating_add(d))),
         "duration": secs,
         "is_permanent": secs.is_none(),
     }))
@@ -286,14 +291,13 @@ pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
 /// chat's own lines carry them, and anyone may read those. Only while `wanted`; no messages are taken from
 /// here (the login's own connection brings those).
 pub async fn watch_bans(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, channel: TwitchAccount) {
-    let mut backoff = 2u64;
+    let mut retries = 0;
     loop {
         match bans_session(&engine, &cfg, &channel).await {
-            Ok(()) => backoff = 2,
+            Ok(()) => retries = 0,
             Err(e) => crate::debug(format!("Twitch: timeouts and bans: {e}")),
         }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(300);
+        tokio::time::sleep(crate::http::reconnect_delay(&mut retries, 300)).await;
     }
 }
 
@@ -342,7 +346,7 @@ async fn bans_session(
                     .map_err(|e| e.to_string())?,
                 "RECONNECT" => return Ok(()),
                 _ => {
-                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    let now = crate::fmt::now_secs() as i64;
                     if let Some(e) = ban_event(&m, &channel.user_id, now) {
                         crate::twitch::notify(engine, channel, cfg, "channel.ban", &e);
                     }
@@ -359,14 +363,14 @@ pub async fn read(
     connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
 ) {
-    let mut backoff = 2u64;
+    let mut retries = 0;
     while wanted.load(Ordering::Relaxed) {
         let channel = cfg.borrow().twitch.channel.trim().to_ascii_lowercase();
         if channel.is_empty() {
             break;
         }
         match session(&engine, &cfg, &connected, &channel).await {
-            Ok(()) => backoff = 2,
+            Ok(()) => retries = 0,
             Err(e) => {
                 crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
                 crate::warn(format!("Twitch: chat without login: {e}"));
@@ -379,8 +383,7 @@ pub async fn read(
         if !wanted.load(Ordering::Relaxed) {
             break;
         }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(60);
+        tokio::time::sleep(crate::http::reconnect_delay(&mut retries, 60)).await;
     }
 }
 
@@ -612,7 +615,7 @@ mod tests {
         );
         let (from, to) = (e["banned_at"].as_str().unwrap(), e["ends_at"].as_str().unwrap());
         assert_eq!(
-            crate::engine::rest_parse_iso(to).unwrap() - crate::engine::rest_parse_iso(from).unwrap(),
+            crate::fmt::parse_iso(to).unwrap() - crate::fmt::parse_iso(from).unwrap(),
             600
         );
         // No duration: a ban, for good.
@@ -633,6 +636,84 @@ mod tests {
         assert_eq!((m.command.as_str(), m.text.as_str()), ("PING", "tmi.twitch.tv"));
         assert!(event(&m, "1").is_none());
         assert!(event(&parse(":tmi.twitch.tv 001 justinfan1 :Welcome").unwrap(), "1").is_none());
+    }
+
+    #[test]
+    fn a_one_word_message_may_come_without_its_colon() {
+        let m = parse(":ana!ana@ana.tmi.twitch.tv PRIVMSG #chan hi").unwrap();
+        assert_eq!((m.target.as_str(), m.text.as_str()), ("#chan", "hi"));
+        assert_eq!(event(&m, "1").unwrap().1["message"]["text"], "hi");
+        // The colon's text wins, spaces and colons inside it kept.
+        let m = parse(":a!a@a PRIVMSG #c :see: this :)").unwrap();
+        assert_eq!(m.text, "see: this :)");
+        assert_eq!(parse(":tmi.twitch.tv 001 justinfan1").unwrap().text, "");
+    }
+
+    #[test]
+    fn a_notice_is_from_its_login_tag_not_the_server() {
+        let raw = "@login=vlad;msg-id=viewermilestone;msg-param-category=watch-streak;user-id=69 :tmi.twitch.tv USERNOTICE #xqc";
+        let (_, e) = event(&parse(raw).unwrap(), "71").unwrap();
+        assert_eq!(e["chatter_user_login"], "vlad");
+        assert_eq!(e["chatter_user_name"], "vlad", "no display name: the login");
+    }
+
+    #[test]
+    fn tags_unescape_and_keep_empty_values() {
+        let m = parse("@a=x\\:y\\sz\\\\;b=;c;d=end\\ :n!n@n PRIVMSG #c :t").unwrap();
+        assert_eq!(m.tag("a"), "x;y z\\");
+        assert_eq!((m.tag("b"), m.tag("c"), m.tag("d")), ("", "", "end"));
+        assert_eq!(m.tag("missing"), "");
+        assert_eq!(m.login, "n");
+        // Tags with nothing after them, or no command, are no line.
+        assert!(parse("@a=1").is_none());
+        assert!(parse(":prefix.only").is_none());
+        assert!(parse("").is_none());
+    }
+
+    #[test]
+    fn actions_unwrap_only_when_whole() {
+        assert_eq!(split_action("\x01ACTION waves\x01"), ("waves", true));
+        assert_eq!(split_action("\x01ACTION waves"), ("\x01ACTION waves", false));
+        assert_eq!(split_action("plain"), ("plain", false));
+    }
+
+    #[test]
+    fn a_huge_ban_duration_does_not_overflow() {
+        let m = parse("@ban-duration=9223372036854775807;target-user-id=9 :tmi.twitch.tv CLEARCHAT #c :bob").unwrap();
+        let e = ban_event(&m, "7", 1_800_000_000).unwrap();
+        assert_eq!(e["is_permanent"], false);
+        assert!(!e["ends_at"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn overlapping_and_unsorted_emotes_are_kept_apart() {
+        // Given out of order, and one overlapping the one before (skipped).
+        let f = fragments("Kappa LUL x", "2:6-8/1:0-4/3:3-7");
+        let kinds: Vec<&str> = f.iter().map(|x| x["text"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["Kappa", " ", "LUL", " x"]);
+        assert_eq!(f[2]["emote"]["id"], "2");
+        // Bad ranges are ignored, the text kept whole.
+        assert_eq!(
+            fragments("hi", "1:a-b/2:1-0/3"),
+            [json!({"type": "text", "text": "hi"})]
+        );
+        assert!(fragments("", "").is_empty());
+    }
+
+    #[test]
+    fn deletions_name_who_and_clears_name_the_channel() {
+        let m = parse("@login=bob;target-msg-id=xyz :tmi.twitch.tv CLEARMSG #chan :bad").unwrap();
+        let (_, e) = event(&m, "1").unwrap();
+        assert_eq!(
+            (e["target_user_login"].as_str(), e["broadcaster_user_login"].as_str()),
+            (Some("bob"), Some("chan"))
+        );
+        let reply = "@reply-parent-msg-id=p1;reply-parent-user-login=ana;reply-parent-display-name=Ana;reply-parent-msg-body=hi\\sall :bo!bo@bo PRIVMSG #c :@Ana yo";
+        let (_, e) = event(&parse(reply).unwrap(), "1").unwrap();
+        assert_eq!(e["reply"]["parent_message_body"], "hi all");
+        assert_eq!(e["reply"]["parent_user_login"], "ana");
+        // No bits tag: no cheer.
+        assert!(e.get("cheer").is_none());
     }
 
     #[test]

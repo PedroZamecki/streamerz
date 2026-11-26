@@ -3,6 +3,7 @@
 
 use super::{b, n, new_state, s, Ctx, Engine};
 use crate::commands::{self, Chat};
+use crate::fmt::{civil, days_from_civil, parse_iso};
 use crate::model::Obj;
 use crate::vars::{self, auto_type, text};
 use serde_json::{json, Value};
@@ -33,68 +34,6 @@ fn obs_color(c: &str) -> i64 {
     };
     let (a, r, g, b2) = (argb >> 24, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
     i64::from(a << 24 | b2 << 16 | g << 8 | r)
-}
-
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
-}
-
-pub(super) fn civil_pub(secs: i64) -> crate::fmt::Time {
-    civil(secs)
-}
-
-/// A UTC civil date and time from Unix seconds.
-fn civil(secs: i64) -> crate::fmt::Time {
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
-    crate::fmt::Time {
-        year,
-        month,
-        day,
-        hour: (rem / 3600) as u32,
-        min: (rem % 3600 / 60) as u32,
-        sec: (rem % 60) as u32,
-        nanos: 0,
-        weekday: (days + 4).rem_euclid(7) as u32,
-        offset: 0,
-    }
-}
-
-pub(super) fn parse_iso_pub(t: &str) -> Option<i64> {
-    parse_iso(t)
-}
-
-/// Unix seconds from an ISO 8601 UTC time as the platforms send it ("2024-08-17T12:34:56Z",
-/// fractions ignored).
-fn parse_iso(t: &str) -> Option<i64> {
-    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
-    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
-    // An offset after the seconds (and any fraction): "+02:00" is two hours ahead of UTC.
-    let tail = t
-        .get(19..)
-        .unwrap_or("")
-        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    let offset = match (tail.get(..1), tail.get(1..3).and_then(|h| h.parse::<i64>().ok())) {
-        (Some(sign @ ("+" | "-")), Some(h)) => {
-            let m = tail.get(4..6).and_then(|m| m.parse::<i64>().ok()).unwrap_or(0);
-            (h * 3600 + m * 60) * if sign == "+" { 1 } else { -1 }
-        }
-        _ => 0,
-    };
-    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? - offset)
 }
 
 /// The calendar time between two Unix times: years, months, days, hours, minutes, seconds.
@@ -161,7 +100,7 @@ fn list(v: Option<&Value>) -> Vec<String> {
 
 /// A Helix poll as Streamer.bot's poll.* arguments.
 pub(crate) fn poll_args(p: &Value, args: &mut Obj) {
-    let now = crate::fmt::unix_now().as_secs() as i64;
+    let now = crate::fmt::now_secs() as i64;
     let started = p["started_at"].as_str().and_then(parse_iso).unwrap_or(now);
     let duration = p["duration"].as_i64().unwrap_or(0);
     let choices = p["choices"].as_array().cloned().unwrap_or_default();
@@ -280,6 +219,24 @@ pub(super) fn state_of(o: &Obj) -> f64 {
     }
 }
 
+/// Seconds someone typed as a wait: never negative, and at most a century (a bigger one, like 1e20,
+/// would overflow the clock and panic).
+fn seconds(secs: f64) -> Duration {
+    Duration::from_secs_f64(if secs > 0.0 { secs.min(3.2e9) } else { 0.0 })
+}
+
+/// The cursor for the page after `page` of a Helix list, if there is one. An empty page or the cursor
+/// it was asked with is the end: following it would ask for the same page forever.
+fn next_cursor(page: &Value, after: &str) -> Option<String> {
+    let next = page["pagination"]["cursor"]
+        .as_str()
+        .filter(|c| !c.is_empty() && *c != after)?;
+    page["data"]
+        .as_array()
+        .is_some_and(|d| !d.is_empty())
+        .then(|| next.to_string())
+}
+
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
@@ -369,7 +326,7 @@ impl Engine {
                 let mut st = self.st.borrow_mut();
                 for (k, secs) in [(&id, n(c, "globalCooldown")), (&user_key, n(c, "userCooldown"))] {
                     if secs > 0.0 {
-                        st.cooldowns.insert(k.clone(), now + Duration::from_secs_f64(secs));
+                        st.cooldowns.insert(k.clone(), now + seconds(secs));
                     }
                 }
             }
@@ -419,9 +376,9 @@ impl Engine {
             }
             let got = tw.helix("GET", path, query, None, false, true).await?;
             items.extend(got["data"].as_array().cloned().unwrap_or_default());
-            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-            if after.is_empty() || items.len() >= 1000 {
-                return Ok(items);
+            match next_cursor(&got, &after) {
+                Some(next) if items.len() < 1000 => after = next,
+                _ => return Ok(items),
             }
         }
     }
@@ -449,9 +406,9 @@ impl Engine {
             if let Some(term) = hit {
                 return Ok(term["id"].as_str().map(str::to_string));
             }
-            after = got["pagination"]["cursor"].as_str().unwrap_or_default().to_string();
-            if after.is_empty() {
-                return Ok(None);
+            match next_cursor(&got, &after) {
+                Some(next) => after = next,
+                None => return Ok(None),
             }
         }
     }
@@ -638,7 +595,7 @@ impl Engine {
             } else {
                 lo
             };
-            tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            tokio::time::sleep(seconds(secs)).await;
             let now = self.st.borrow().chat_lines;
             if lines > 0 && now - seen < lines {
                 continue;
@@ -722,9 +679,10 @@ impl Engine {
                 }
             }
         }
+        let ids: Vec<String> = self.cfg.borrow().groups.iter().map(|g| s(g, "id").to_owned()).collect();
         self.fire(kind, name, "Core/Groups", "streamerbot", &args, |t| {
             let want = s(t, "groupId");
-            want.is_empty() || want == id
+            want.is_empty() || group_is(want, g, &ids)
         });
         self.emit("Group", &name.replace(' ', ""), || {
             let mut d = serde_json::json!({"groupId": id, "groupName": s(g, "name"), "groupBots": b(g, "bots", false)});
@@ -848,10 +806,13 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if self.dev_out("twitch", &text, use_bot) {
-                } else if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw.send_message(text, None, use_bot, fallback).await {
-                        crate::error(e);
+                for chunk in crate::twitch::split_chat_message(&text) {
+                    if self.dev_out("twitch", &chunk, use_bot) {
+                    } else if let Some(tw) = self.twitch() {
+                        if let Err(e) = tw.send_message(chunk, None, use_bot, fallback).await {
+                            crate::error(e);
+                            break;
+                        }
                     }
                 }
             }
@@ -889,10 +850,14 @@ impl Engine {
                 let reply_id = self.expand(ctx, s(o, "replyId"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if self.dev_out("twitch", &text, use_bot) {
-                } else if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw.send_message(text, Some(reply_id), use_bot, fallback).await {
-                        crate::error(e);
+                for (i, chunk) in crate::twitch::split_chat_message(&text).into_iter().enumerate() {
+                    let parent = (i == 0).then(|| reply_id.clone());
+                    if self.dev_out("twitch", &chunk, use_bot) {
+                    } else if let Some(tw) = self.twitch() {
+                        if let Err(e) = tw.send_message(chunk, parent, use_bot, fallback).await {
+                            crate::error(e);
+                            break;
+                        }
                     }
                 }
             }
@@ -1980,7 +1945,7 @@ impl Engine {
                 put("targetIsPartner", (kind == "partner").into());
                 put("createdAt", u["created_at"].clone());
                 if let Some(t) = u["created_at"].as_str().and_then(parse_iso) {
-                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    let now = crate::fmt::now_secs() as i64;
                     put("accountAge", ((now - t) / 86_400).into());
                 }
                 let me = vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", uid.as_str())];
@@ -2056,7 +2021,7 @@ impl Engine {
                 let Some(t) = f["followed_at"].as_str().and_then(parse_iso) else {
                     return;
                 };
-                let now = crate::fmt::unix_now().as_secs() as i64;
+                let now = crate::fmt::now_secs() as i64;
                 let a = age(t, now);
                 let (long, short) = age_text(&a);
                 ctx.args.insert("isFollowing".into(), true.into());
@@ -3384,7 +3349,8 @@ impl Engine {
                 let id = self.simple(ctx, s(o, "groupId"));
                 let mut group = None;
                 self.change(|c| {
-                    if let Some(g) = c.groups.iter_mut().find(|g| s(g, "id") == id) {
+                    let ids: Vec<String> = c.groups.iter().map(|g| s(g, "id").to_owned()).collect();
+                    if let Some(g) = c.groups.iter_mut().find(|g| group_is(&id, g, &ids)) {
                         g.insert("userIds".into(), Value::Array(vec![]));
                         group = Some(g.clone());
                     }
@@ -4928,11 +4894,7 @@ impl Engine {
             8001 => {
                 let event = self.expand(ctx, s(o, "eventName"));
                 let text_val = self.expand(ctx, s(o, "text"));
-                let key = ctx
-                    .args
-                    .get("iftttKey")
-                    .or_else(|| ctx.args.get("key"))
-                    .and_then(Value::as_str);
+                let key = ifttt_key(&ctx.args);
                 let payload = crate::remote::build_ifttt_basic_payload(&text_val);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
                     crate::error(format!("IFTTT: {e}"));
@@ -4948,11 +4910,7 @@ impl Engine {
                     let val_str = self.expand(ctx, &text(v));
                     expanded_args.insert(k.clone(), val_str.into());
                 }
-                let key = ctx
-                    .args
-                    .get("iftttKey")
-                    .or_else(|| ctx.args.get("key"))
-                    .and_then(Value::as_str);
+                let key = ifttt_key(&ctx.args);
                 let payload = crate::remote::build_ifttt_advanced_payload(&expanded_args);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
                     crate::error(format!("IFTTT: {e}"));
@@ -5583,7 +5541,8 @@ impl Engine {
                 if (200..300).contains(&r.status) {
                     r
                 } else {
-                    crate::error(format!("Fetch URL {url}: HTTP {}", r.status));
+                    // Not the address: its path or query can hold a key.
+                    crate::error(format!("Fetch URL: HTTP {}", r.status));
                     // A GET that failed sets nothing, as before; a request with a body still gives its answer.
                     if method == "GET" {
                         return;
@@ -5593,36 +5552,10 @@ impl Engine {
             }
             Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
-        let body = r.text();
-        let auto = b(o, "autoType", false);
-        if !b(o, "parseAsJson", false) {
-            ctx.args.insert(var, if auto { auto_type(&body) } else { body.into() });
-            return;
+        let (json, auto) = (b(o, "parseAsJson", false), b(o, "autoType", false));
+        if let Err(e) = fetch_args(&mut ctx.args, &var, &r.text(), json, auto) {
+            crate::error(format!("Fetch URL: {e}"));
         }
-        let Ok(v) = serde_json::from_str::<Value>(&body) else {
-            return crate::error(format!("Fetch URL {url}: not JSON"));
-        };
-        fn flat(prefix: &str, v: &Value, out: &mut Obj) {
-            match v {
-                Value::Object(m) => {
-                    for (k, x) in m {
-                        flat(&format!("{prefix}.{k}"), x, out);
-                    }
-                }
-                Value::Array(a) => {
-                    for (i, x) in a.iter().enumerate() {
-                        flat(&format!("{prefix}[{i}]"), x, out);
-                    }
-                }
-                Value::Null => {
-                    out.insert(prefix.into(), "".into());
-                }
-                x => {
-                    out.insert(prefix.into(), x.clone());
-                }
-            }
-        }
-        flat(&var, &v, &mut ctx.args);
     }
 
     /// Run a Program, extended: the action's arguments go to its stdin as JSON; its output comes
@@ -5680,8 +5613,10 @@ impl Engine {
             });
             return;
         }
-        feed.await;
-        let out = tokio::time::timeout(Duration::from_secs_f64(wait), child.wait_with_output()).await;
+        // Its input goes in while its output is read, all within the wait: a program that writes before
+        // it reads (or never reads) would otherwise hold the action forever.
+        let run = async { tokio::join!(feed, child.wait_with_output()).1 };
+        let out = tokio::time::timeout(seconds(wait), run).await;
         let Ok(Ok(out)) = out else {
             return crate::error(format!("Run a Program {prog}: didn't finish in {wait} s"));
         };
@@ -5706,6 +5641,39 @@ impl Engine {
             }
         }
     }
+}
+
+/// Fetch URL's variables from an answer: its text, or with Parse as JSON every value (null as empty).
+/// A byte order mark isn't part of the text (.NET drops it too, and JSON can't start with one).
+fn fetch_args(args: &mut Obj, var: &str, body: &str, json: bool, auto: bool) -> Result<(), &'static str> {
+    fn flat(prefix: &str, v: &Value, out: &mut Obj) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    flat(&format!("{prefix}.{k}"), x, out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    flat(&format!("{prefix}[{i}]"), x, out);
+                }
+            }
+            Value::Null => {
+                out.insert(prefix.into(), "".into());
+            }
+            x => {
+                out.insert(prefix.into(), x.clone());
+            }
+        }
+    }
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    if !json {
+        args.insert(var.into(), if auto { auto_type(body) } else { body.into() });
+        return Ok(());
+    }
+    let v = serde_json::from_str::<Value>(body).map_err(|_| "the answer is not JSON")?;
+    flat(var, &v, args);
+    Ok(())
 }
 
 /// Split arguments like a shell: spaces separate, double quotes group, backslash escapes a quote.
@@ -5743,10 +5711,54 @@ fn kick_background_color(h: &str) -> String {
     format!("#{}", &h[start..])
 }
 
+/// Whether a saved `groupId` means group `g`: its ID, else its name when no group has that ID (forms
+/// saved the name before they kept the ID). `ids` are every group's IDs.
+fn group_is(want: &str, g: &Obj, ids: &[String]) -> bool {
+    let want = want.trim();
+    !want.is_empty()
+        && (s(g, "id") == want || (s(g, "name").eq_ignore_ascii_case(want) && !ids.iter().any(|i| i == want)))
+}
+
+fn ifttt_key(args: &Obj) -> Option<&str> {
+    args.get("iftttKey")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())
+        .or_else(|| args.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn a_group_saved_by_its_name_still_matches() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let g = |id: &str, name: &str| json!({"id": id, "name": name}).as_object().cloned().unwrap();
+        let ids = ["g1".to_owned(), "g2".to_owned()];
+        assert!(group_is("g1", &g("g1", "Regulars"), &ids));
+        assert!(group_is(" regulars ", &g("g1", "Regulars"), &ids));
+        assert!(!group_is("", &g("g1", "Regulars"), &ids));
+        // A name that is also another group's ID means that group.
+        assert!(!group_is("g2", &g("g1", "g2"), &ids));
+        // Clear Users From Group and the Cleared trigger, both saved with the name.
+        let mut cleared = action("a1", "cleared", json!([log("T cleared %group.name%")]));
+        cleared["triggers"] = json!([{"groupId": "Regulars", "id": "t1", "type": 32003, "enabled": true}]);
+        let clear = action("a2", "clear", json!([{"type": 10001, "groupId": "regulars"}]));
+        let e = engine(json!({"actions": [cleared, clear]}));
+        e.cfg.send_modify(|c| {
+            c.groups = vec![json!({"id": "g1", "name": "Regulars", "bots": false, "userIds": ["1"]})
+                .as_object()
+                .cloned()
+                .unwrap()];
+        });
+        let out = run(async move {
+            e.queue("a2", Obj::new());
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert!(e.cfg.borrow().groups[0]["userIds"].as_array().unwrap().is_empty());
+        });
+        assert!(out.iter().any(|x| x == "T cleared Regulars"), "{out:?}");
+    }
 
     #[test]
     fn kick_color_handles_unicode() {
@@ -5805,19 +5817,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn dates_and_ages() {
-        assert_eq!(
-            parse_iso("2024-08-17T14:34:56+02:00"),
-            parse_iso("2024-08-17T12:34:56Z")
-        );
-        assert_eq!(
-            parse_iso("2024-08-17T09:34:56.5-03:00"),
-            parse_iso("2024-08-17T12:34:56Z")
-        );
+    fn ages() {
         let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
-        assert_eq!(t, 1_723_898_096);
-        let c = civil(t);
-        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour), (2024, 8, 17, 6, 12));
         let later = parse_iso("2026-06-22T10:38:21Z").unwrap();
         let a = age(t, later);
         assert_eq!(a, [1, 10, 4, 22, 3, 25]);
@@ -5829,6 +5830,67 @@ mod tests {
             ),
             [0, 1, 1, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn helix_pages_end_where_twitch_would_repeat() {
+        let page = |data: Value, cursor: &str| json!({"data": data, "pagination": {"cursor": cursor}});
+        assert_eq!(next_cursor(&page(json!([1]), "b"), "a").as_deref(), Some("b"));
+        assert_eq!(next_cursor(&page(json!([1]), "a"), "a"), None);
+        assert_eq!(next_cursor(&page(json!([]), "b"), "a"), None);
+        assert_eq!(next_cursor(&page(json!([1]), ""), "a"), None);
+        assert_eq!(next_cursor(&json!({"data": [1]}), ""), None);
+    }
+
+    #[test]
+    fn typed_waits_never_overflow() {
+        assert_eq!(seconds(1.5), Duration::from_millis(1500));
+        assert_eq!(seconds(-3.0), Duration::ZERO);
+        assert_eq!(seconds(f64::NAN), Duration::ZERO);
+        assert_eq!(seconds(1e300), seconds(f64::INFINITY));
+        let _ = std::time::Instant::now() + seconds(1e300);
+    }
+
+    /// A program that writes more than a pipe holds before it reads its input still finishes (it used
+    /// to wait forever, with no timeout).
+    #[cfg(unix)]
+    #[test]
+    fn programs_get_input_while_their_output_is_read() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let e = engine(json!({"actions": []}));
+        let big = json!({"big": "x".repeat(300_000)});
+        let mut ctx = Ctx {
+            args: big.as_object().unwrap().clone(),
+            group: String::new(),
+        };
+        let o = json!({"command": "sh", "waitForExit": 20,
+            "arguments": "-c \"head -c 300000 /dev/zero | tr '\\0' a; cat >/dev/null\""});
+        let o = o.as_object().unwrap().clone();
+        run(async { e.run_program(&mut ctx, &o).await });
+        assert_eq!(ctx.args["outputCount"], 1);
+        assert_eq!(ctx.args["output0"].as_str().map(str::len), Some(300_000));
+    }
+
+    #[test]
+    fn fetch_url_variables() {
+        let mut args = Obj::new();
+        fetch_args(
+            &mut args,
+            "r",
+            "\u{feff}{\"a\":{\"b\":[1,null]},\"c\":\"x\"}",
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(args["r.a.b[0]"], 1);
+        assert_eq!(args["r.a.b[1]"], "");
+        assert_eq!(args["r.c"], "x");
+        assert_eq!(args.len(), 3);
+        assert!(fetch_args(&mut args, "bad", "<html>", true, false).is_err());
+        assert_eq!(args.len(), 3);
+        fetch_args(&mut args, "typed", "\u{feff}42", false, true).unwrap();
+        fetch_args(&mut args, "raw", "42", false, false).unwrap();
+        assert_eq!((&args["typed"], &args["raw"]), (&json!(42), &json!("42")));
     }
 
     #[test]
@@ -6146,5 +6208,21 @@ mod tests {
                 "Sub-action {code} must be marked supported"
             );
         }
+    }
+
+    #[test]
+    fn ifttt_key_prefers_ifttt_key_and_falls_back_to_key_arg() {
+        let obj = |v: Value| v.as_object().cloned().unwrap();
+        let both = obj(json!({"iftttKey": "primary", "key": "fallback"}));
+        assert_eq!(ifttt_key(&both), Some("primary"));
+
+        let fallback = obj(json!({"key": "from-key-arg"}));
+        assert_eq!(ifttt_key(&fallback), Some("from-key-arg"));
+
+        let empty_primary = obj(json!({"iftttKey": "", "key": "from-key-arg"}));
+        assert_eq!(ifttt_key(&empty_primary), Some("from-key-arg"));
+
+        let neither = obj(json!({"iftttKey": "", "key": ""}));
+        assert_eq!(ifttt_key(&neither), None);
     }
 }

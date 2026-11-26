@@ -18,7 +18,8 @@ pub struct Found {
 /// A count as people say it: 1.2M, 340K.
 fn compact(n: u64) -> String {
     let tenths = |n: u64, unit: u64| {
-        let t = n * 10 / unit;
+        // Not `n * 10`, which overflows for a huge count.
+        let t = n / (unit / 10);
         if t.is_multiple_of(10) || t >= 100 {
             format!("{}", t / 10)
         } else {
@@ -263,6 +264,14 @@ mod tests {
         assert_eq!(compact(340_000), "340K");
         assert_eq!(compact(8_144_770), "8.1M");
         assert_eq!(compact(2_000_000), "2M");
+        assert_eq!(compact(999), "999");
+        assert_eq!(compact(1_000), "1K");
+        assert_eq!(compact(1_050), "1K");
+        assert_eq!(compact(99_999), "99K");
+        assert_eq!(compact(999_999), "999K");
+        assert_eq!(compact(0), "0");
+        // A count from the network that big used to overflow.
+        assert!(compact(u64::MAX).ends_with('M'));
     }
 
     #[test]

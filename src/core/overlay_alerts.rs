@@ -347,9 +347,10 @@ pub fn made_up(rule: &Value) -> (u32, crate::model::Obj) {
                 args.insert(key.into(), n.clone());
             }
         }
+        // As YouTube's come: the amount as shown, and in millionths (`microAmount`).
         if matches!(code, 4006 | 4007) {
-            args.insert("amount".into(), json!(worth));
-            args.insert("amountMicros".into(), json!((worth * 1e6) as u64));
+            args.insert("amount".into(), json!(format!("${worth:.2}")));
+            args.insert("microAmount".into(), json!((worth * 1e6) as u64));
         }
     }
     (code, args)
@@ -425,7 +426,9 @@ mod tests {
         let (code, _) = made_up(&json!({"when": "Gift sub", "from": "TikTok"}));
         assert_eq!(code, 105, "no TikTok gift sub: the first platform that has it");
         let (code, args) = made_up(&json!({"when": "Super Chat", "from": "YouTube", "min": 20}));
-        assert_eq!((code, args["amountMicros"].clone()), (4006, json!(20_000_000)));
+        assert_eq!((code, args["microAmount"].clone()), (4006, json!(20_000_000)));
+        assert_eq!(args["amount"], "$20.00", "shown as YouTube shows it");
+        assert!(args.get("amountMicros").is_none(), "no key a real Super Chat lacks");
         assert_eq!(made_up(&json!({"when": "Any", "from": "TikTok"})).0, 41004);
     }
 }

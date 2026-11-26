@@ -1,12 +1,29 @@
 // The browser owns the account. TikTok runs in an offscreen frame, never a visible helper tab.
 // Firefox's `browser` answers with promises in every manifest version; Chromium has only `chrome`.
 const ext = globalThis.browser ?? chrome;
-const PAGE = "https://www.tiktok.com/live/history/center";
+const ORIGIN = "https://www.tiktok.com";
+const PAGE = ORIGIN + "/live/history/center";
 const PROTOCOL = 2;
 let ws = null;
 let creating = null;
 let generation = 0;
 let connecting = false;
+let pingTimer = null;
+
+function stopPing() {
+  if (pingTimer != null) { clearInterval(pingTimer); pingTimer = null; }
+}
+
+function disconnect() {
+  stopPing();
+  if (!ws) return;
+  const old = ws;
+  ws = null;
+  generation++;
+  old.onclose = null;
+  try { old.close(); } catch {}
+  closeContext().catch(() => {});
+}
 
 let idleTimer = null;
 function touch() {
@@ -23,7 +40,7 @@ let ffReady = new Promise(resolve => { ffReadyResolve = resolve; });
 
 function setupFirefoxListener() {
   window.addEventListener("message", e => {
-    if (e.source !== ffFrame?.contentWindow || e.data?.streamerz !== true) return;
+    if (e.source !== ffFrame?.contentWindow || e.origin !== ORIGIN || e.data?.streamerz !== true) return;
     if (e.data.ready) { ffReadyResolve?.({ error: e.data.error, code: e.data.code }); return; }
     const p = ffPending.get(e.data.id);
     if (p) { clearTimeout(p.timer); ffPending.delete(e.data.id); p.resolve(e.data.result); }
@@ -40,7 +57,13 @@ async function closeContext() {
   } else if (ffFrame) {
     ffFrame.remove();
     ffFrame = null;
+    const ready = ffReadyResolve;
     ffReadyResolve = null;
+    ready?.({ error: "Streamerz closed" });
+    for (const p of ffPending.values()) {
+      clearTimeout(p.timer);
+      p.resolve({ error: "Streamerz closed" });
+    }
     ffPending.clear();
   }
   await ext.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4, 5, 6] });
@@ -73,8 +96,13 @@ async function context() {
       { id: 6, priority: 1, action: block, condition: { tabIds: [-1], urlFilter: "*sentry*" } },
     ] });
     if (hasOffscreen) {
-      await ext.offscreen.createDocument({ url: "offscreen.html", reasons: ["IFRAME_SCRIPTING"],
-        justification: "Use TikTok's signed requests without opening a tab or window." });
+      try {
+        await ext.offscreen.createDocument({ url: "offscreen.html", reasons: ["IFRAME_SCRIPTING"],
+          justification: "Use TikTok's signed requests without opening a tab or window." });
+      } catch (err) {
+        await ext.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4, 5, 6] }).catch(() => {});
+        throw err;
+      }
     } else {
       ffReady = new Promise(resolve => { ffReadyResolve = resolve; });
       ffFrame = document.createElement("iframe");
@@ -128,11 +156,12 @@ async function handle(m) {
       ffReady.then(() => clearTimeout(timer));
     })]);
     if (state.error) throw Object.assign(new Error(state.error), { code: state.code });
+    if (!ffFrame?.contentWindow) throw new Error("Streamerz closed");
     result = await new Promise(resolve => {
       const id = ++ffNext;
       const timer = setTimeout(() => { ffPending.delete(id); resolve({ error: "TikTok didn't answer. Try again." }); }, 30000);
       ffPending.set(id, { resolve, timer });
-      ffFrame.contentWindow.postMessage({ streamerz: true, id, request: m }, "https://www.tiktok.com");
+      ffFrame.contentWindow.postMessage({ streamerz: true, id, request: m }, ORIGIN);
     });
   }
   if (result?.error) await closeContext();
@@ -173,7 +202,7 @@ async function remember(pairing) {
 async function pairFromOpenTabs() {
   for (const tab of await ext.tabs.query({})) {
     const pairing = pairingFrom(tab.url);
-    if (pairing && await remember(pairing)) { ws?.close(); ws = null; }
+    if (pairing && await remember(pairing)) disconnect();
   }
 }
 
@@ -207,23 +236,33 @@ async function connect() {
   let s;
   try { s = await settings(); }
   finally { connecting = false; }
-  if (!s) return;
-  const socket = new WebSocket(s.url);
+  if (ws || !s) return;
+  let socket;
+  try { socket = new WebSocket(s.url); } catch { return; }
   ws = socket;
   let paired = false;
-  socket.onopen = () => socket.send(JSON.stringify({ op: "hello", token: s.token, protocol: PROTOCOL,
-    version: ext.runtime.getManifest().version }));
+  socket.onopen = () => {
+    if (ws !== socket) return;
+    stopPing();
+    pingTimer = setInterval(() => {
+      if (ws === socket && socket.readyState === WebSocket.OPEN) {
+        try { socket.send('{"op":"ping"}'); } catch {}
+      }
+    }, 20000);
+    socket.send(JSON.stringify({ op: "hello", token: s.token, protocol: PROTOCOL,
+      version: ext.runtime.getManifest().version }));
+  };
   socket.onmessage = async e => {
     let m;
     try { m = JSON.parse(e.data); } catch { return; }
-    if (m.id == null) return;
+    if (!m || typeof m !== "object" || m.id == null) return;
     if (!paired) { paired = true; closeSetupTabs().catch(() => {}); }
     let reply;
     try { reply = await handle(m); } catch (err) { reply = { error: String(err.message || err), code: err.code }; }
     if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: m.id, ...reply }));
   };
   socket.onerror = () => {};
-  socket.onclose = () => { if (ws === socket) { generation++; ws = null; closeContext().catch(() => {}); } };
+  socket.onclose = () => { if (ws === socket) { stopPing(); generation++; ws = null; closeContext().catch(() => {}); } };
 }
 
 // Session changes invalidate identity and signing state, without polling for a login.
@@ -234,15 +273,20 @@ ext.cookies.onChanged.addListener(({ cookie }) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send('{"op":"session_changed"}');
   }).catch(() => {}).finally(() => { resetting = null; });
 });
-setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.send('{"op":"ping"}'); }, 20000);
-ext.alarms.create("streamerz", { periodInMinutes: 1 });
+async function ensureAlarm() {
+  try {
+    if (ext.alarms.get && await ext.alarms.get("streamerz")) return;
+  } catch {}
+  ext.alarms.create("streamerz", { periodInMinutes: 1 });
+}
+ensureAlarm();
 ext.alarms.onAlarm.addListener(connect);
 ext.runtime.onStartup.addListener(connect);
 // Set up opens its tab in the user's existing profile. Retry there immediately, not a minute later.
 ext.tabs.onUpdated.addListener(async (_id, change) => {
   const pairing = pairingFrom(change.url);
   // A new pairing (Streamerz was set up again, or moved to another port) replaces the old connection.
-  if (pairing && await remember(pairing)) { ws?.close(); ws = null; }
+  if (pairing && await remember(pairing)) disconnect();
   if (/^(chrome|edge|brave|vivaldi|opera):\/\/extensions\/?/.test(change.url || "") || SETUP_RE.test(change.url || "")) connect();
 });
 ext.runtime.onInstalled.addListener(async () => {

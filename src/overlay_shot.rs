@@ -31,12 +31,46 @@ pub struct Ask {
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// The browser's own folder for this one picture, removed with it.
-pub(crate) struct Scratch(pub(crate) PathBuf);
+/// A browser started by `launch`, with its own profile folder. `close` ends it; dropped instead (an
+/// error, a request given up), it is killed, and its folder goes once it has ended: a browser still
+/// running would write to the folder again, and on Windows it holds the folder so it can't go.
+pub(crate) struct Browser {
+    child: Option<tokio::process::Child>,
+    pub(crate) profile: PathBuf,
+    pub(crate) name: String,
+}
 
-impl Drop for Scratch {
+impl Browser {
+    /// Leaves the browser `grace` to end by itself (after `Browser.close`), kills it if it hasn't, and
+    /// removes its folder.
+    pub(crate) async fn close(mut self, grace: Duration) {
+        if let Some(mut child) = self.child.take() {
+            if tokio::time::timeout(grace, child.wait()).await.is_err() {
+                let _ = child.kill().await;
+            }
+        }
+    }
+}
+
+impl Drop for Browser {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let profile = std::mem::take(&mut self.profile);
+        let Some(mut child) = self.child.take() else {
+            let _ = std::fs::remove_dir_all(&profile);
+            return;
+        };
+        let _ = child.start_kill();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                    let _ = std::fs::remove_dir_all(&profile);
+                });
+            }
+            Err(_) => {
+                let _ = std::fs::remove_dir_all(&profile);
+            }
+        }
     }
 }
 
@@ -71,36 +105,36 @@ fn console_text(args: &Value) -> String {
 /// Open the page with no window, call `ready` once it is loaded and listening (to send it made-up
 /// events), wait, and take the picture. Gives `{path, width, height, console, errors}`.
 pub async fn take(ask: Ask, ready: impl FnOnce()) -> Result<Value, String> {
-    let (mut child, scratch, name) = launch(ask.width, ask.height, true)?;
+    let browser = launch(ask.width, ask.height, true)?;
     let result = tokio::time::timeout(
         Duration::from_millis(40_000 + ask.wait_ms),
-        drive(&scratch.0, &ask, ready),
+        drive(&browser.profile, &ask, ready),
     )
     .await
-    .unwrap_or_else(|_| Err(format!("{name} took too long to draw the page")));
-    let _ = child.kill().await;
+    .unwrap_or_else(|_| Err(format!("{} took too long to draw the page", browser.name)));
+    browser.close(Duration::ZERO).await;
     result
 }
 
 /// A Chromium browser found on this computer, started with no window, a profile of its own (removed
-/// with the `Scratch`) and its debugging socket open. Gives the process, the profile and its name.
-pub(crate) fn launch(width: u32, height: u32, mute: bool) -> Result<(tokio::process::Child, Scratch, String), String> {
+/// with it) and its debugging socket open.
+pub(crate) fn launch(width: u32, height: u32, mute: bool) -> Result<Browser, String> {
     use crate::browsers::BrowserEngine;
     let browser = crate::browsers::installed()
         .into_iter()
         .find(|b| matches!(b.engine, BrowserEngine::Chromium | BrowserEngine::Edge))
         .ok_or("This needs Chrome, Chromium, Brave or Edge on this computer, and none was found.")?;
-    let scratch = Scratch(std::env::temp_dir().join(format!(
+    let profile = std::env::temp_dir().join(format!(
         "streamerz-shot-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    std::fs::create_dir_all(&scratch.0).map_err(|e| format!("cannot make a folder for the browser: {e}"))?;
+    ));
+    std::fs::create_dir_all(&profile).map_err(|e| format!("cannot make a folder for the browser: {e}"))?;
     let mut command = std::process::Command::new(&browser.exe);
     command
         .arg("--headless=new")
         .arg("--remote-debugging-port=0")
-        .arg(format!("--user-data-dir={}", scratch.0.display()))
+        .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--window-size={width},{height}"))
         .args([
             "--no-first-run",
@@ -119,9 +153,15 @@ pub(crate) fn launch(width: u32, height: u32, mute: bool) -> Result<(tokio::proc
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", browser.name))?;
-    Ok((child, scratch, browser.name.to_string()))
+        .spawn();
+    // Made before the start, so the folder goes also when the browser does not start.
+    let mut started = Browser {
+        child: None,
+        profile,
+        name: browser.name.to_string(),
+    };
+    started.child = Some(child.map_err(|e| format!("cannot start {}: {e}", browser.name))?);
+    Ok(started)
 }
 
 /// Where a browser started by `launch` listens, once it is up: its DevTools WebSocket address.
@@ -303,6 +343,56 @@ mod tests {
         assert_eq!(backdrop("#ff0080"), json!({"r": 255, "g": 0, "b": 128, "a": 1}));
         assert_eq!(backdrop(""), json!({"r": 31, "g": 31, "b": 35, "a": 1}));
         assert_eq!(backdrop("#zzz")["r"], 31);
+    }
+
+    /// A process that waits, in a profile folder of its own, standing in for a browser.
+    #[cfg(target_os = "linux")]
+    fn sleeper(tag: &str) -> (Browser, u32) {
+        let profile = std::env::temp_dir().join(format!("streamerz-shot-test-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("Local State"), "{}").unwrap();
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let browser = Browser {
+            child: Some(child),
+            profile,
+            name: "test".into(),
+        };
+        (browser, pid)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_browser_given_up_is_killed_and_then_its_folder_goes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let (browser, pid) = sleeper("drop");
+            let profile = browser.profile.clone();
+            drop(browser);
+            for _ in 0..250 {
+                if !profile.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(!profile.exists(), "the folder goes");
+            assert!(
+                !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                "the process is gone"
+            );
+
+            let (browser, pid) = sleeper("close");
+            let profile = browser.profile.clone();
+            browser.close(Duration::ZERO).await;
+            assert!(!profile.exists() && !std::path::Path::new(&format!("/proc/{pid}")).exists());
+        });
     }
 
     #[test]

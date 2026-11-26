@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
+
+/// Maximum local image size read by Set Background (16 MiB).
+const MAX_IMAGE_BYTES: u64 = 16 << 20;
 
 pub const T_CONNECTED: u32 = 17002;
 pub const T_DISCONNECTED: u32 = 17003;
@@ -40,6 +44,17 @@ impl Default for Settings {
     }
 }
 
+/// Aborts all active client tasks when the server itself is stopped.
+struct Children(Vec<tokio::task::AbortHandle>);
+
+impl Drop for Children {
+    fn drop(&mut self) {
+        for h in self.0.drain(..) {
+            h.abort();
+        }
+    }
+}
+
 /// The server, until dropped (its task aborted).
 pub async fn run(e: Rc<Engine>, s: Settings) {
     let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
@@ -55,15 +70,25 @@ pub async fn run(e: Rc<Engine>, s: Settings) {
     crate::error::clear_active("server.stream_deck");
     crate::say(format!("Stream Deck server on ws://{}:{}/", s.address, s.port));
     let mut next = IDS;
+    let mut children = Children(Vec::new());
     loop {
-        let Ok((tcp, _)) = l.accept().await else { continue };
+        let tcp = match l.accept().await {
+            Ok((tcp, _)) => tcp,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        children.0.retain(|h| !h.is_finished());
         next += 1;
         let (e, id) = (e.clone(), next);
-        tokio::task::spawn_local(async move {
+        let handle = tokio::task::spawn_local(async move {
             if let Err(err) = connection(&e, tcp, id).await {
                 crate::warn(format!("Stream Deck: {err}"));
             }
-        });
+        })
+        .abort_handle();
+        children.0.push(handle);
     }
 }
 
@@ -91,7 +116,10 @@ impl Drop for Gone {
 }
 
 async fn connection(e: &Rc<Engine>, tcp: tokio::net::TcpStream, id: u64) -> Result<(), String> {
-    let ws = tokio_tungstenite::accept_async(tcp).await.map_err(|x| x.to_string())?;
+    let ws = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::accept_async(tcp))
+        .await
+        .map_err(|_| "WebSocket handshake timed out".to_string())?
+        .map_err(|x| x.to_string())?;
     let (mut sink, mut stream) = ws.split();
     // What the sub-actions push, and the events it subscribed to.
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -113,6 +141,10 @@ async fn connection(e: &Rc<Engine>, tcp: tokio::net::TcpStream, id: u64) -> Resu
             m = stream.next() => {
                 let t = match m {
                     Some(Ok(Message::Text(t))) => t,
+                    Some(Ok(Message::Ping(data))) => {
+                        sink.send(Message::Pong(data)).await.map_err(|x| x.to_string())?;
+                        continue;
+                    }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Ok(()),
                     _ => continue,
                 };
@@ -148,7 +180,12 @@ async fn connection(e: &Rc<Engine>, tcp: tokio::net::TcpStream, id: u64) -> Resu
 /// What a Stream Deck sub-action pushes to the plugin, by its code and fields (already expanded).
 pub fn push(kind: u64, o: &Obj) -> Option<Value> {
     let s = |k: &str| o.get(k).map(crate::vars::text).unwrap_or_default();
-    let state = o.get("state").and_then(Value::as_f64).unwrap_or(0.0) as u64;
+    let state = o
+        .get("state")
+        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|t| t.trim().parse().ok())))
+        .filter(|x| x.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0) as u64;
     let button = s("buttonId");
     let (request, data) = match kind {
         11001 => (
@@ -157,16 +194,24 @@ pub fn push(kind: u64, o: &Obj) -> Option<Value> {
         ),
         11002 => {
             let mut d = json!({"buttonId": button, "state": state});
-            let image = s("image");
-            if !s("color").is_empty() {
-                d["color"] = s("color").into();
+            let color = s("color");
+            if !color.is_empty() {
+                d["color"] = color.into();
             }
-            if image.starts_with("http://") || image.starts_with("https://") {
+            let image = s("image");
+            let lower = image.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
                 d["imageUrl"] = image.into();
             } else if !image.is_empty() {
                 use base64::Engine as _;
-                match std::fs::read(&image) {
-                    Ok(b) => d["imageBase64"] = base64::engine::general_purpose::STANDARD.encode(b).into(),
+                match std::fs::metadata(&image) {
+                    Ok(meta) if meta.len() > MAX_IMAGE_BYTES => {
+                        crate::warn(format!("Stream Deck Set Background: {image}: file is too large"));
+                    }
+                    Ok(_) => match std::fs::read(&image) {
+                        Ok(b) => d["imageBase64"] = base64::engine::general_purpose::STANDARD.encode(b).into(),
+                        Err(err) => crate::warn(format!("Stream Deck Set Background: {image}: {err}")),
+                    },
                     Err(err) => crate::warn(format!("Stream Deck Set Background: {image}: {err}")),
                 }
             }
@@ -180,4 +225,129 @@ pub fn push(kind: u64, o: &Obj) -> Option<Value> {
         _ => return None,
     };
     Some(json!({"request": request, "data": data}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obj(v: Value) -> Obj {
+        v.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn push_formats_all_subactions_and_handles_images() {
+        let m = push(11001, &obj(json!({"buttonId": "b1", "title": "Live", "state": "1"}))).unwrap();
+        assert_eq!(
+            m,
+            json!({"request": "SetTitle", "data": {"buttonId": "b1", "text": "Live", "state": 1}})
+        );
+
+        let url = push(
+            11002,
+            &obj(json!({"buttonId": "b1", "color": "#ff0000", "image": "HTTPS://example.test/a.png", "state": -3})),
+        )
+        .unwrap();
+        assert_eq!(url["request"], "SetImage");
+        assert_eq!(url["data"]["color"], "#ff0000");
+        assert_eq!(url["data"]["imageUrl"], "HTTPS://example.test/a.png");
+        assert_eq!(url["data"]["state"], 0);
+
+        // Local image is base64-encoded.
+        let path = std::env::temp_dir().join(format!("streamerz-sd-{}.bin", crate::engine::uuid()));
+        std::fs::write(&path, b"PNG!").unwrap();
+        let file = push(11002, &obj(json!({"buttonId": "b2", "image": path.to_string_lossy()}))).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(file["data"]["imageBase64"], "UE5HIQ==");
+
+        assert_eq!(
+            push(11004, &obj(json!({"buttonId": "b1", "state": 2}))).unwrap()["request"],
+            "SetState"
+        );
+        assert_eq!(
+            push(11005, &obj(json!({"buttonId": "b1"}))).unwrap()["request"],
+            "ShowAlert"
+        );
+        assert_eq!(
+            push(11006, &obj(json!({"buttonId": "b1"}))).unwrap()["request"],
+            "ShowOk"
+        );
+        assert_eq!(
+            push(11007, &obj(json!({"buttonId": "b1"}))).unwrap()["request"],
+            "ToggleState"
+        );
+        assert_eq!(
+            push(11008, &obj(json!({"buttonId": "b1", "value": "42"}))).unwrap(),
+            json!({"request": "SetValue", "data": {"buttonId": "b1", "value": "42"}})
+        );
+        assert!(push(11003, &obj(json!({}))).is_none());
+    }
+
+    #[test]
+    fn server_handles_doaction_push_and_stops_clients_on_abort() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut up = action("up", "up", json!([log("T sd-up")]));
+        up["triggers"] = json!([{"id": "t1", "type": T_CONNECTED, "enabled": true}]);
+        let mut down = action("down", "down", json!([log("T sd-down")]));
+        down["triggers"] = json!([{"id": "t2", "type": T_DISCONNECTED, "enabled": true}]);
+        let btn = action("btn", "Button", json!([log("T btn %__source% %eventSource%")]));
+        let e = engine(json!({"actions": [up, down, btn]}));
+
+        let out = run(async move {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = probe.local_addr().unwrap().port();
+            drop(probe);
+
+            let srv = tokio::task::spawn_local(run_server(e.clone(), port)).abort_handle();
+            let url = format!("ws://127.0.0.1:{port}/");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let mut ws = loop {
+                match crate::http::ws_connect(&url).await {
+                    Ok((ws, _)) => break ws,
+                    Err(err) if tokio::time::Instant::now() < deadline => {
+                        let _ = err;
+                        tokio::time::sleep(Duration::from_millis(15)).await;
+                    }
+                    Err(err) => panic!("streamdeck server did not accept on {url}: {err}"),
+                }
+            };
+
+            // Subscribe and DoAction work over the Stream Deck link.
+            ws.send(Message::Text(
+                json!({"request": "DoAction", "id": "1", "action": {"id": "btn"}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let v: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+            assert_eq!(v["id"], "1");
+            assert_eq!(v["status"], "ok");
+
+            // Aborting the server task aborts the connected client and triggers Disconnected.
+            srv.abort();
+            tokio::time::sleep(Duration::from_millis(120)).await;
+        });
+        assert!(out.contains(&"T sd-up".to_string()), "{out:?}");
+        assert!(out.contains(&"T btn 17001 streamdeck".to_string()), "{out:?}");
+        assert!(out.contains(&"T sd-down".to_string()), "{out:?}");
+    }
+
+    async fn run_server(e: Rc<Engine>, port: u16) {
+        run(
+            e,
+            Settings {
+                auto_start: true,
+                address: "127.0.0.1".into(),
+                port,
+            },
+        )
+        .await;
+    }
 }

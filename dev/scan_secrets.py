@@ -32,6 +32,7 @@ RULES = {
     "Bearer token": r"[Bb]earer\s+[A-Za-z0-9_.-]{30,}",
     "A person's home folder": r"/home/(?!someone\b|user\b|runner\b|you\b|name\b)[a-z][a-z0-9_-]{2,}/|C:\\\\Users\\\\(?!Public|Default|you|user|name)[A-Za-z][A-Za-z0-9_-]+",
 }
+PATTERNS = {name: re.compile(pattern) for name, pattern in RULES.items()}
 SKIP_FILES = ("Cargo.lock", ".png", ".jpg", ".svg", ".ico", ".gz", ".wasm")
 
 
@@ -42,8 +43,12 @@ def allowed():
     return [re.compile(l.strip()) for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")]
 
 
-def git(*a):
-    return subprocess.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True, errors="replace", check=True).stdout
+def git_command(*args):
+    return ["git", "-C", str(ROOT), *args]
+
+
+def git(*args):
+    return subprocess.run(git_command(*args), capture_output=True, text=True, errors="replace", check=True).stdout
 
 
 def history_baseline():
@@ -74,42 +79,56 @@ def history_baseline():
     return records
 
 
-def scan(diff, allow, baseline=frozenset(), reviewed=None):
-    """Added lines of a `git diff` or `git log -p`: (where, rule, line)."""
-    found, file, commit = [], "?", ""
-    for line in diff.splitlines():
+def scan(lines, allow, baseline=frozenset(), reviewed=None):
+    """Report locations and rules for added lines without printing their contents."""
+    found, file, commit, in_hunk = [], "?", "", False
+    for line in lines:
+        line = line.removesuffix("\n")
         if line.startswith("commit "):
             commit = line[7:].strip()
-        elif line.startswith("+++ b/"):
-            file = line[6:]
-        elif line.startswith("+") and not line.startswith("+++") and not file.endswith(SKIP_FILES):
+            in_hunk = False
+        elif line.startswith("diff --git "):
+            file, in_hunk = "?", False
+        elif line.startswith("+++ ") and not in_hunk:
+            file = line[4:].partition("\t")[0].removeprefix("b/")
+        elif line.startswith("@@ "):
+            in_hunk = True
+        elif in_hunk and line.startswith("+") and not file.rstrip('"').endswith(SKIP_FILES):
             text = line[1:]
-            if any(a.search(text) for a in allow):
-                continue
-            for name, rx in RULES.items():
-                if re.search(rx, text):
+            approved = [m.span() for rx in allow for m in rx.finditer(text)]
+            for name, rx in PATTERNS.items():
+                for match in rx.finditer(text):
+                    if any(start < match.end() and match.start() < end for start, end in approved):
+                        continue
                     fingerprint = (commit, file, name, hashlib.sha256(text.encode()).hexdigest())
                     if name == "A person's home folder" and fingerprint in baseline:
                         if reviewed is not None:
                             reviewed.append(fingerprint)
                         continue
-                    found.append((f"{commit[:8]} {file}".strip(), name, text.strip()[:90]))
+                    found.append((f"{commit[:8]} {file}".strip(), name))
+                    break
     return found
 
 
 def main():
     allow = allowed()
     history = "--history" in sys.argv
-    diff = git("log", "--all", "-p", "--no-color", "--format=commit %H") if history else git("diff", "--cached", "--no-color")
+    scope = ("log", "--all") if history else ("diff", "--cached")
+    diff = git_command(*scope, "-p", "--no-color", "--no-ext-diff", "--no-textconv",
+                       "--src-prefix=a/", "--dst-prefix=b/", *(("--format=commit %H",) if history else ()))
     reviewed = []
-    found = scan(diff, allow, history_baseline() if history else frozenset(), reviewed)
+    baseline = history_baseline() if history else frozenset()
+    with subprocess.Popen(diff, stdout=subprocess.PIPE, text=True, errors="replace") as process:
+        found = scan(process.stdout, allow, baseline, reviewed)
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, diff)
     # A settings file or a database must never be tracked, whatever its content.
-    names = git("log", "--all", "--name-only", "--format=").split() if history else git("diff", "--cached", "--name-only").split()
-    for n in sorted(set(names)):
-        if re.search(r"(^|/)(streamerz\.json(\.bak)?|community\.json|\.env)$", n):
-            found.append((n, "A private file", n))
-    for where, rule, text in found:
-        print(f"{rule}: {where}: {text}")
+    names = git(*scope, "--name-only", "--diff-filter=ACMRT", "-z", *(("--format=",) if history else ()))
+    for name in sorted(set(names.split("\0"))):
+        if Path(name).name in {"streamerz.json", "streamerz.json.bak", "community.json", ".env"}:
+            found.append((repr(name), "A private file"))
+    for where, rule in found:
+        print(f"{rule}: {where}")
     if found:
         print(f"\n{len(found)} finding(s). Remove them, or if they are fake, add a regex to dev/secrets-allow.txt.")
         sys.exit(1)

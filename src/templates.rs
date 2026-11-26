@@ -27,6 +27,14 @@ impl Made {
     /// Add everything to the configuration. Settings start at their defaults, and countdowns the
     /// actions reset start now.
     pub fn add_to(self, c: &mut crate::Config) -> Result<(), String> {
+        // Validate every group and icon before mutating the config so an error leaves it intact.
+        for (_, meta) in &self.groups {
+            meta.validate()?;
+        }
+        let mut encoded_icons = Vec::with_capacity(self.icons.len());
+        for (group, bytes) in self.icons {
+            encoded_icons.push((group, crate::group_icons::encode(&bytes)?));
+        }
         for (group, meta) in self.groups {
             // Pages alone are an overlay: only what has actions is a group of them.
             let overlay = meta.files.iter().any(|f| crate::groups::is_page(&f.name));
@@ -39,8 +47,8 @@ impl Made {
             let values = crate::groups::values(c, &group);
             crate::groups::set_values(c, &group, values)?;
         }
-        for (group, bytes) in self.icons {
-            c.action_group_icons.insert(group, crate::group_icons::encode(&bytes)?);
+        for (group, icon) in encoded_icons {
+            c.action_group_icons.insert(group, icon);
         }
         clock::start_for(c, &self.actions, clock::now_ms());
         c.actions.actions.extend(self.actions);
@@ -135,14 +143,8 @@ fn localized_name(name: &str) -> &str {
 fn action(name: &str, triggers: &[u32], subs: Vec<Obj>) -> Action {
     let mut a = new_action(localized_name(name), crate::i18n::tr("btn.templates"));
     a.triggers = triggers.iter().map(|&t| new_trigger(t)).collect();
-    a.sub_actions = subs
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut s)| {
-            s.insert("index".into(), i.into());
-            s
-        })
-        .collect();
+    a.sub_actions = subs;
+    crate::edit::renumber(&mut a.sub_actions);
     a
 }
 
@@ -417,5 +419,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn add_to_validates_before_mutating_and_renumbers_nested_sub_actions() {
+        // Invalid icon must fail before adding actions or groups.
+        let mut c = crate::Config::default();
+        let mut bad = automation::gift_thanks();
+        bad.icons.push(("Bad".into(), b"not-an-image".to_vec()));
+        assert!(bad.add_to(&mut c).is_err());
+        assert!(c.actions.actions.is_empty());
+        assert!(c.action_groups.is_empty());
+
+        // Automation recipes add cleanly with disabled actions and valid settings.
+        for recipe in [automation::gift_thanks(), automation::reward_source()] {
+            let mut cfg = crate::Config::default();
+            recipe.add_to(&mut cfg).unwrap();
+            assert_eq!(cfg.actions.actions.len(), 1);
+            assert!(!cfg.actions.actions[0].enabled);
+        }
+
+        // Nested sub-actions inside If/Else branches receive parentId and index.
+        let songs = songs::made();
+        let if_else = &songs.actions[0].sub_actions[1];
+        let if_id = if_else["id"].as_str().unwrap();
+        let branch = &if_else["subActions"][0];
+        assert_eq!(branch["parentId"].as_str(), Some(if_id));
+        assert_eq!(branch["index"], 0);
+        assert_eq!(if_else["subActions"][1]["index"], 1);
     }
 }

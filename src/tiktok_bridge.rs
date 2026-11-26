@@ -4,6 +4,7 @@
 //! Streamerz opens nothing for it: the extension connects to the WebSocket server on [`PATH`] with the
 //! token Streamerz wrote next to it, and its hidden context closes when Streamerz does.
 
+use crate::commands::uri_component;
 use crate::engine::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -40,6 +41,13 @@ const PROTOCOL: u64 = 2;
 const MIN_PROTOCOL: u64 = 2;
 /// How long one request in the tab may take (the first one opens and loads it).
 const CALL: Duration = Duration::from_secs(45);
+/// Unauthenticated hello frames are tiny JSON objects (~150 bytes).
+const MAX_HELLO_BYTES: usize = 4096;
+/// Upper bound for one JSON frame from the authenticated extension.
+const MAX_MSG_BYTES: usize = 16 << 20;
+/// Send a WebSocket ping after this much silence; close if nothing answers within PING_GRACE.
+const IDLE_PING: Duration = Duration::from_secs(60);
+const PING_GRACE: Duration = Duration::from_secs(30);
 /// TikTok's chat box takes this many characters.
 const MAX_CHARS: usize = 150;
 
@@ -103,7 +111,10 @@ const COMMON: [&str; 30] = [
 pub fn from_extension(origin: Option<&str>) -> bool {
     origin.is_some_and(|o| {
         let clean = o.trim_end_matches('/');
-        clean.starts_with("chrome-extension://") || clean.starts_with("moz-extension://")
+        let host = clean
+            .strip_prefix("chrome-extension://")
+            .or_else(|| clean.strip_prefix("moz-extension://"));
+        host.is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
     })
 }
 
@@ -119,8 +130,18 @@ pub fn firefox_folder() -> PathBuf {
 
 /// Whether version `a` ("1.2.0") comes before `b`.
 pub fn older(a: &str, b: &str) -> bool {
-    let parts = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(a) < parts(b)
+    let mut ai = a.split('.').map(|n| n.parse::<u64>().unwrap_or(0));
+    let mut bi = b.split('.').map(|n| n.parse::<u64>().unwrap_or(0));
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return false,
+            (x, y) => match x.unwrap_or(0).cmp(&y.unwrap_or(0)) {
+                std::cmp::Ordering::Less => return true,
+                std::cmp::Ordering::Greater => return false,
+                std::cmp::Ordering::Equal => {}
+            },
+        }
+    }
 }
 
 /// The signed Firefox add-on of exactly [`EXTENSION_VERSION`]. Firefox installs only signed add-ons,
@@ -182,7 +203,7 @@ pub async fn firefox_xpi() -> Result<PathBuf, String> {
             &[("version", EXTENSION_VERSION)],
         ));
     }
-    std::fs::write(&path, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+    crate::fileio::write_atomic(&path, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
     Ok(path)
 }
 
@@ -473,7 +494,6 @@ pub fn write_firefox_files(c: &crate::Config) -> Result<PathBuf, String> {
 fn write_dir(dir: &std::path::Path, c: &crate::Config, manifest: Option<&[u8]>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
     let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token, "build": build()});
-    let config = format!("self.STREAMERZ = {settings};\n");
     let config_json = settings.to_string();
     let files = FILES
         .iter()
@@ -487,10 +507,7 @@ fn write_dir(dir: &std::path::Path, c: &crate::Config, manifest: Option<&[u8]>) 
                 },
             )
         })
-        .chain([
-            ("config.js", config.as_bytes()),
-            ("config.json", config_json.as_bytes()),
-        ]);
+        .chain([("config.json", config_json.as_bytes())]);
     for (name, bytes) in files {
         let path = dir.join(name);
         // Unchanged files stay as they are: the browser notices nothing.
@@ -499,6 +516,7 @@ fn write_dir(dir: &std::path::Path, c: &crate::Config, manifest: Option<&[u8]>) 
         }
         write_private(&path, bytes).map_err(|err| format!("can't write {}: {err}", path.display()))?;
     }
+    let _ = std::fs::remove_file(dir.join("config.js"));
     Ok(dir.to_path_buf())
 }
 
@@ -512,17 +530,16 @@ fn build() -> String {
         hash.update(bytes);
     }
     hash.update(FIREFOX_MANIFEST);
-    hash.finalize()[..6].iter().map(|b| format!("{b:02x}")).collect()
+    crate::fmt::hex(&hash.finalize()[..6])
 }
 
-/// Only the owner can read them: config.js holds the token.
+/// Only the owner can read them: config.json holds the token. Written atomically via a temp file.
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    o.open(path)?.write_all(bytes)
+    let private = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    #[cfg(not(unix))]
+    let private = None;
+    crate::fileio::replace(path, private, |f| std::io::Write::write_all(f, bytes))
 }
 
 /// At start, and when the WebSocket server's address changes: the extension's files follow this
@@ -745,25 +762,29 @@ impl Bridge {
             Ok(Ok(v)) => v,
             Ok(Err(_)) => return Err(NOT_CONNECTED.into()),
             Err(_) => {
-                if let Some(l) = self.link.borrow_mut().as_mut() {
-                    l.pending.retain(|_, tx| !tx.is_closed());
+                if self.serial.get() == serial {
+                    if let Some(l) = self.link.borrow_mut().as_mut().filter(|l| l.serial == serial) {
+                        l.pending.retain(|_, tx| !tx.is_closed());
+                    }
+                    self.ready.set(false);
+                    crate::host::changed();
                 }
-                self.ready.set(false);
-                crate::host::changed();
                 return Err("TikTok didn't answer. Try again, or check Accounts > TikTok.".into());
             }
         };
         match v.get("error").and_then(Value::as_str) {
             Some(err) => {
-                self.ready.set(false);
-                self.login_required
-                    .set(v["code"] == "login_required" || err.starts_with("Log in to TikTok"));
-                *self.error.borrow_mut() = err.to_string();
-                crate::host::changed();
+                if self.serial.get() == serial {
+                    self.ready.set(false);
+                    self.login_required
+                        .set(v["code"] == "login_required" || err.starts_with("Log in to TikTok"));
+                    *self.error.borrow_mut() = err.to_string();
+                    crate::host::changed();
+                }
                 Err(err.to_string())
             }
             None => {
-                if v.get("params").is_some() || v.get("status").is_some() {
+                if self.serial.get() == serial && (v.get("params").is_some() || v.get("status").is_some()) {
                     self.ready.set(true);
                     self.error.borrow_mut().clear();
                     crate::host::changed();
@@ -806,7 +827,7 @@ pub(crate) async fn gift_list(e: &Rc<Engine>, room: &str) -> Result<Value, Strin
     params.push(("room_id".into(), room.into()));
     let query = params
         .iter()
-        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .map(|(k, v)| format!("{}={}", uri_component(k), uri_component(v)))
         .collect::<Vec<_>>()
         .join("&");
     let url = format!("https://webcast.tiktok.com/webcast/gift/list/?{query}");
@@ -824,17 +845,6 @@ fn common_params(v: &Value) -> Vec<(String, String)> {
         .filter(|(k, _)| COMMON.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
         .collect()
-}
-
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// TikTok's chat send, as its live page makes it: (URL, JSON body). The page's common query, with the
@@ -868,7 +878,7 @@ pub fn chat_request(
         ("client_start_timestamp_millisecond", now),
     ]);
     query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", uri_component(v))).collect();
     let url = format!("https://webcast.tiktok.com/webcast/room/chat/?{}", q.join("&"));
     let body = json!({"room_id": room, "content": text, "emotes_with_index": "", "input_type": 0,
         "client_start_timestamp_millisecond": now_ms});
@@ -930,8 +940,7 @@ pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
     r
 }
 
-/// Sets stream title on TikTok LIVE for the broadcaster.
-pub async fn set_stream_title(e: &Rc<Engine>, title: &str) -> Result<(), String> {
+async fn webcast_post(e: &Rc<Engine>, endpoint: &str, mut body: Value) -> Result<(), String> {
     if !e.tiktok_connected() {
         return Err("TikTok isn't connected to a live".into());
     }
@@ -941,59 +950,38 @@ pub async fn set_stream_title(e: &Rc<Engine>, title: &str) -> Result<(), String>
         .ok_or("TikTok isn't connected to a live")?;
     let b = &e.tiktok_bridge;
     let params = b.params().await?;
-    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    let mut query: Vec<(&str, String)> = params
+        .iter()
+        .filter(|(k, _)| k != "room_id")
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
     query.push(("room_id", room.clone()));
     query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
-    let url = format!("https://webcast.tiktok.com/webcast/room/update_room/?{}", q.join("&"));
-    let body = json!({"room_id": room, "title": title});
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", uri_component(v))).collect();
+    let url = format!("https://webcast.tiktok.com/webcast/room/{endpoint}/?{}", q.join("&"));
+    body["room_id"] = room.into();
     let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
     let (status, json) = b.fetch(&url, init).await?;
-    answer(status, &json)
+    let r = answer(status, &json);
+    if r.is_err() {
+        b.params.borrow_mut().take();
+    }
+    r
+}
+
+/// Sets stream title on TikTok LIVE for the broadcaster.
+pub async fn set_stream_title(e: &Rc<Engine>, title: &str) -> Result<(), String> {
+    webcast_post(e, "update_room", json!({"title": title})).await
 }
 
 /// Pins a chat comment in TikTok LIVE chat.
 pub async fn pin_comment(e: &Rc<Engine>, comment_id: &str) -> Result<(), String> {
-    if !e.tiktok_connected() {
-        return Err("TikTok isn't connected to a live".into());
-    }
-    let room = e
-        .tiktok()
-        .and_then(|t| t.room_id())
-        .ok_or("TikTok isn't connected to a live")?;
-    let b = &e.tiktok_bridge;
-    let params = b.params().await?;
-    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-    query.push(("room_id", room.clone()));
-    query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
-    let url = format!("https://webcast.tiktok.com/webcast/room/pin_comment/?{}", q.join("&"));
-    let body = json!({"room_id": room, "comment_id": comment_id, "action_type": 1});
-    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
-    let (status, json) = b.fetch(&url, init).await?;
-    answer(status, &json)
+    webcast_post(e, "pin_comment", json!({"comment_id": comment_id, "action_type": 1})).await
 }
 
 /// Unpins the current pinned comment in TikTok LIVE chat.
 pub async fn unpin_comment(e: &Rc<Engine>) -> Result<(), String> {
-    if !e.tiktok_connected() {
-        return Err("TikTok isn't connected to a live".into());
-    }
-    let room = e
-        .tiktok()
-        .and_then(|t| t.room_id())
-        .ok_or("TikTok isn't connected to a live")?;
-    let b = &e.tiktok_bridge;
-    let params = b.params().await?;
-    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-    query.push(("room_id", room.clone()));
-    query.sort_by(|a, b| a.0.cmp(b.0));
-    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
-    let url = format!("https://webcast.tiktok.com/webcast/room/pin_comment/?{}", q.join("&"));
-    let body = json!({"room_id": room, "action_type": 2});
-    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
-    let (status, json) = b.fetch(&url, init).await?;
-    answer(status, &json)
+    webcast_post(e, "pin_comment", json!({"action_type": 2})).await
 }
 
 /// The public reader's room endpoint, signed by the browser when public lookup fails.
@@ -1031,6 +1019,9 @@ pub(crate) fn retry(e: &Rc<Engine>) -> Result<(), String> {
 
 fn warm(e: &Rc<Engine>, serial: u64) {
     let b = &e.tiktok_bridge;
+    if b.serial.get() != serial || !b.is_connected() {
+        return;
+    }
     if b.warming.replace(true) {
         b.refresh_pending.set(true);
         return;
@@ -1094,6 +1085,9 @@ fn warm(e: &Rc<Engine>, serial: u64) {
                 b.error.borrow_mut().clear();
                 b.ready.set(true);
                 let _ = crate::tiktok::gifts::refresh(&e).await;
+                if b.serial.get() != serial || !b.is_connected() {
+                    return;
+                }
                 e.settle_role("tiktok");
                 let user = b.user();
                 if !user.is_empty() && e.config().tiktok.channel.trim().is_empty() {
@@ -1160,7 +1154,13 @@ where
 {
     let (mut sink, mut stream) = ws.split();
     let hello = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
-        Ok(Some(Ok(Message::Text(t)))) => serde_json::from_str::<Value>(&t).unwrap_or(Value::Null),
+        Ok(Some(Ok(Message::Text(t)))) if t.len() <= MAX_HELLO_BYTES => {
+            serde_json::from_str::<Value>(&t).unwrap_or(Value::Null)
+        }
+        Ok(Some(Ok(Message::Text(_)))) => {
+            let _ = sink.close().await;
+            return;
+        }
         _ => return,
     };
     let token = e.config().tiktok.bridge_token.clone();
@@ -1199,24 +1199,61 @@ where
     crate::say("TikTok: the browser extension connected".into());
     crate::host::changed();
     warm(&e, serial);
+    let idle = tokio::time::sleep(IDLE_PING);
+    tokio::pin!(idle);
+    let mut pinged = false;
     loop {
         tokio::select! {
             out = rx.recv() => match out {
                 Some(text) => if sink.send(Message::Text(text.into())).await.is_err() { break },
                 None => break,
             },
+            _ = &mut idle => {
+                if pinged || sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+                pinged = true;
+                idle.as_mut().reset(tokio::time::Instant::now() + PING_GRACE);
+            }
             m = stream.next() => match m {
                 Some(Ok(Message::Text(t))) => {
+                    pinged = false;
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_PING);
+                    if !b.link.borrow().as_ref().is_some_and(|l| l.serial == serial) {
+                        break;
+                    }
+                    if t.len() > MAX_MSG_BYTES {
+                        continue;
+                    }
                     let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
                     if v["op"] == "session_changed" { warm(&e, serial); continue; }
                     let Some(id) = v["id"].as_u64() else { continue };
-                    let waiting = b.link.borrow_mut().as_mut().and_then(|l| l.pending.remove(&id));
+                    let waiting = b
+                        .link
+                        .borrow_mut()
+                        .as_mut()
+                        .filter(|l| l.serial == serial)
+                        .and_then(|l| l.pending.remove(&id));
                     if let Some(w) = waiting {
                         let _ = w.send(v);
                     }
                 }
+                Some(Ok(Message::Ping(payload))) => {
+                    pinged = false;
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_PING);
+                    if sink.send(Message::Pong(payload)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Pong(_))) => {
+                    pinged = false;
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_PING);
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                _ => {}
+                _ => {
+                    pinged = false;
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_PING);
+                }
             },
         }
     }
@@ -1512,5 +1549,167 @@ mod tests {
         assert_eq!(pin_body["action_type"], 1);
         let unpin_body = json!({"room_id": "123456789", "action_type": 2});
         assert_eq!(unpin_body["action_type"], 2);
+    }
+
+    #[test]
+    fn extension_origins_reject_empty_hosts_paths_and_queries() {
+        assert!(from_extension(Some("chrome-extension://abc123/")));
+        assert!(from_extension(Some("moz-extension://1234-abcd")));
+        assert!(!from_extension(Some("chrome-extension://")));
+        assert!(!from_extension(Some("moz-extension://")));
+        assert!(!from_extension(Some("chrome-extension://abc/evil")));
+        assert!(!from_extension(Some("chrome-extension://abc?x=1")));
+        assert!(!from_extension(Some("chrome-extension://abc def")));
+        assert!(!older("1.4", "1.4.0"));
+        assert!(!older("1.4.0", "1.4"));
+        assert!(older("1.4", "1.4.1"));
+    }
+
+    #[test]
+    fn write_private_writes_atomically_with_owner_only_permissions() {
+        let dir = std::env::temp_dir().join(format!("streamerz-bridge-priv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+        std::fs::write(&target, b"old").unwrap();
+        write_private(&target, b"secret-token").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"secret-token");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_rejects_oversized_hello_wrong_token_and_isolates_reconnects() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let token = "ab".repeat(32);
+            e.change(|c| c.tiktok.bridge_token = token.clone());
+
+            let ws_pair = || async {
+                let (client_io, server_io) = tokio::io::duplex(64 << 10);
+                let client_ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                    client_io,
+                    tokio_tungstenite::tungstenite::protocol::Role::Client,
+                    None,
+                )
+                .await;
+                let server_ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                    server_io,
+                    tokio_tungstenite::tungstenite::protocol::Role::Server,
+                    None,
+                )
+                .await;
+                (client_ws, server_ws)
+            };
+
+            // 1. Oversized hello is closed without connecting.
+            let (mut c, s) = ws_pair().await;
+            let server = tokio::task::spawn_local(serve(e.clone(), s));
+            let big = format!(r#"{{"op":"hello","pad":"{}"}}"#, "x".repeat(MAX_HELLO_BYTES + 64));
+            let _ = c.send(Message::Text(big.into())).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), server).await.unwrap();
+            assert!(!e.tiktok_bridge.is_connected());
+
+            // 2. Wrong token records a pairing refusal and stays disconnected.
+            let (mut c, s) = ws_pair().await;
+            let server = tokio::task::spawn_local(serve(e.clone(), s));
+            c.send(Message::Text(
+                json!({"op": "hello", "token": "wrong", "protocol": PROTOCOL, "version": EXTENSION_VERSION})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(2), server).await.unwrap();
+            assert!(!e.tiktok_bridge.is_connected());
+            assert_eq!(*e.tiktok_bridge.refusal_kind.borrow(), Some("pairing"));
+
+            // 3. Valid connection followed by a replacement connection: stale reply on old socket
+            // cannot resolve the new connection's pending call or corrupt its warming flag.
+            let (mut c1, s1) = ws_pair().await;
+            let srv1 = tokio::task::spawn_local(serve(e.clone(), s1));
+            c1.send(Message::Text(
+                json!({"op": "hello", "token": token, "protocol": PROTOCOL, "version": EXTENSION_VERSION})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            // Receive the warm-up "page" request on c1 so we know serve #1 registered Link(serial=1).
+            let req1 = tokio::time::timeout(Duration::from_secs(2), c1.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let req1_id = serde_json::from_str::<Value>(req1.to_text().unwrap()).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+
+            // Connect replacement socket #2 while #1 is still open.
+            let (mut c2, s2) = ws_pair().await;
+            let srv2 = tokio::task::spawn_local(serve(e.clone(), s2));
+            c2.send(Message::Text(
+                json!({"op": "hello", "token": token, "protocol": PROTOCOL, "version": EXTENSION_VERSION})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let req2 = tokio::time::timeout(Duration::from_secs(2), c2.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let req2_id = serde_json::from_str::<Value>(req2.to_text().unwrap()).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(req1_id, req2_id);
+
+            // Send a spoofed/late reply on old socket c1 using the same id.
+            let _ = c1
+                .send(Message::Text(
+                    json!({"id": req1_id, "error": "stale error"}).to_string().into(),
+                ))
+                .await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), srv1).await.unwrap();
+            // Connection #2 is still connected and its pending request was NOT consumed by #1.
+            assert!(e.tiktok_bridge.is_connected());
+            assert!(e
+                .tiktok_bridge
+                .link
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .pending
+                .contains_key(&req2_id));
+
+            let _ = c2.close(None).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), srv2).await.unwrap();
+            assert!(!e.tiktok_bridge.is_connected());
+        });
+    }
+
+    #[test]
+    fn write_dir_writes_config_json_and_removes_legacy_config_js() {
+        let dir = std::env::temp_dir().join(format!("streamerz-bridge-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("config.js");
+        std::fs::write(&legacy, b"self.STREAMERZ = {};\n").unwrap();
+
+        let mut c = crate::Config::default();
+        c.tiktok.bridge_token = "ab".repeat(32);
+        write_dir(&dir, &c, None).unwrap();
+
+        assert!(dir.join("config.json").is_file());
+        assert!(!legacy.exists());
+        let parsed: Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
+        assert_eq!(parsed["token"], c.tiktok.bridge_token);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

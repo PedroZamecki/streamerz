@@ -35,6 +35,28 @@ fn doc_style(cx: &App) -> TextViewStyle {
     style
 }
 
+/// Whether a link in shown text may open: only web pages and mail. The text can come from an imported
+/// action or a plugin, and a `file:` path or another program's own scheme must not start from a click.
+fn opens(url: &str) -> bool {
+    let scheme = url
+        .trim_start()
+        .split_once(':')
+        .map(|(scheme, _)| scheme.to_ascii_lowercase());
+    matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
+}
+
+/// Opens a clicked link the way the toolkit does (a left or middle click, a key, a tap), when [`opens`].
+fn open_link(url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App) {
+    let pressed = match event {
+        ClickEvent::Mouse(click) => matches!(click.up.button, MouseButton::Left | MouseButton::Middle),
+        ClickEvent::Keyboard(_) => true,
+        ClickEvent::Touch(tap) => !tap.long_press,
+    };
+    if pressed && opens(url) {
+        cx.open_url(url);
+    }
+}
+
 /// Full Markdown block for Help and rich notices, using Streamerz's heading scale and inline code tone.
 pub fn view(id: &str, text: impl Into<SharedString>, cx: &App) -> TextView {
     let text: SharedString = text.into();
@@ -45,6 +67,7 @@ pub fn view(id: &str, text: impl Into<SharedString>, cx: &App) -> TextView {
         .text_size(px(FONT_BODY))
         .line_height(px(LINE_BODY))
         .selectable(true)
+        .on_link_click(open_link)
         .style(doc_style(cx))
 }
 
@@ -52,5 +75,35 @@ pub fn view(id: &str, text: impl Into<SharedString>, cx: &App) -> TextView {
 pub fn inline(id: &str, text: impl Into<SharedString>) -> TextView {
     let text: SharedString = text.into();
     let element_id = keyed_id(id, text.as_ref());
-    TextView::markdown(element_id, text).w_full().min_w_0().selectable(true)
+    TextView::markdown(element_id, text)
+        .w_full()
+        .min_w_0()
+        .selectable(true)
+        .on_link_click(open_link)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_web_and_mail_links_open() {
+        for url in [
+            "https://docs.streamer.bot",
+            "HTTP://example.com/a?b=c",
+            " mailto:me@example.com",
+        ] {
+            assert!(super::opens(url), "{url}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "ms-msdt:/id PCWDiagnostic",
+            "javascript:alert(1)",
+            "steam://run/1",
+            "C:\\Windows\\notepad.exe",
+            "/home/user/script.sh",
+            "relative/page",
+            "",
+        ] {
+            assert!(!super::opens(url), "{url}");
+        }
+    }
 }

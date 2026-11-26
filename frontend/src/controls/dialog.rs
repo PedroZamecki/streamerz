@@ -2,7 +2,11 @@
 //! the body, and a footer that holds the buttons, each part set apart from the next by a line. Pages fill
 //! the parts; they never draw a dialog's frame themselves.
 use crate::theme::{CONTROL_HEIGHT, FONT_BODY, LINE_BODY, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
-use gpui_kit::component::{dialog::Dialog, ActiveTheme};
+use gpui_kit::component::{
+    button::{Button, ButtonVariants},
+    dialog::Dialog,
+    ActiveTheme, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -118,9 +122,49 @@ pub fn dismiss(window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
 }
 
+/// Asks before an operation (Delete, Remove): `question` in the body, Cancel and a button named
+/// `label` (red when `danger`) that runs `on_confirm` and closes the dialog. The buttons are one
+/// group named for screen readers and the UI checks (`action-confirmation`), the same on every page.
+pub fn confirm(
+    window: &mut Window,
+    cx: &mut App,
+    label: String,
+    question: String,
+    danger: bool,
+    on_confirm: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    let on_confirm = std::rc::Rc::new(on_confirm);
+    window.open_dialog(cx, move |dialog, window, cx| {
+        let run = on_confirm.clone();
+        let confirm = Button::new("confirm-action")
+            .label(label.clone())
+            .on_click(move |_, window, cx| {
+                run(window, cx);
+                window.close_dialog(cx);
+            });
+        let buttons = div()
+            .id("action-confirmation")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(label.clone())
+            .flex()
+            .justify_end()
+            .gap(px(SPACE_SM))
+            .child(
+                Button::new("cancel-action")
+                    .label(crate::i18n::tr("dialogs.cancel"))
+                    .on_click(|_, window, cx| dismiss(window, cx)),
+            )
+            .child(if danger { confirm.danger() } else { confirm });
+        let buttons = footer(None, buttons, cx);
+        shell(dialog, label.clone(), 448., window, cx)
+            .child(body(question.clone()))
+            .footer(buttons)
+    });
+}
+
 /// The footer of a dialog that only shows something: its Close button.
 pub fn close_footer(cx: &App) -> Div {
-    use gpui_kit::component::button::Button;
     footer(
         None,
         Button::new("dialog-close")
@@ -129,6 +173,72 @@ pub fn close_footer(cx: &App) -> Div {
             .on_click(|_, window, cx| dismiss(window, cx)),
         cx,
     )
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod confirm_tests {
+    use gpui_kit::component::WindowExt;
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, IntoElement, Render, Role, TestAppContext, WindowBounds, WindowOptions,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_confirmation_is_named_and_runs_its_operation_once_asked(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(800.), px(600.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                |_, cx| cx.new(|_| Host),
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let done = Rc::new(Cell::new(0));
+        let counted = done.clone();
+        cx.update_window(window.into(), |_, window, cx| {
+            super::confirm(
+                window,
+                cx,
+                "Delete overlay".into(),
+                "Delete Alerts?".into(),
+                true,
+                move |_, _| counted.set(counted.get() + 1),
+            );
+            window.render_frame(cx);
+            let group = window.find("action-confirmation");
+            assert_eq!(group.role(), Some(Role::Group));
+            assert_eq!(group.label(), Some("Delete overlay"));
+            assert!(window.has_active_dialog(cx));
+            window.click("confirm-action", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            assert_eq!(done.get(), 1);
+            assert!(!window.has_active_dialog(cx));
+        })
+        .unwrap();
+    }
 }
 
 #[cfg(test)]

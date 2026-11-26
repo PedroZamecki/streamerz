@@ -1,4 +1,5 @@
 //! Twitch chat protections, edited against a freshly checked snapshot.
+use super::moderation::account;
 use crate::{
     automation::schema::{F, W},
     engine::Engine,
@@ -41,15 +42,6 @@ struct State {
 }
 thread_local! { static STATE: RefCell<State> = RefCell::default(); }
 
-fn account(engine: &Engine) -> String {
-    let c = engine.config();
-    format!(
-        "{}|{}|{}",
-        c.twitch.channel,
-        c.twitch.channel_id,
-        c.twitch.broadcaster.as_ref().map_or("", |a| &a.user_id)
-    )
-}
 fn begin(engine: &Rc<Engine>) -> Result<(u64, crate::twitch::TwitchHandle), String> {
     let twitch = engine
         .twitch()
@@ -265,6 +257,9 @@ fn save(engine: &Rc<Engine>, item: &Obj) -> Result<Value, String> {
             if get(&twitch).await? != baseline {
                 return Err(tr("moderation.chat_changed").into());
             }
+            if account(&engine) != key {
+                return Err(tr("moderation.account_changed").into());
+            }
             normalize(
                 &twitch
                     .helix(
@@ -316,6 +311,23 @@ pub fn table(engine: &Rc<Engine>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_distinguishes_disabled_delay_from_an_unavailable_setting() {
+        let mut response = json!({"data":[{"emote_mode":false,"subscriber_mode":false,"unique_chat_mode":false,
+            "follower_mode":false,"slow_mode":false}]});
+        let hidden = normalize(&response).unwrap();
+        assert_eq!(hidden["delay_available"], false);
+        response["data"][0]["non_moderator_chat_delay"] = false.into();
+        let disabled = normalize(&response).unwrap();
+        assert_eq!(disabled["delay_available"], true);
+        assert_eq!(disabled["non_moderator_chat_delay_duration"], 2);
+        response["data"][0]["non_moderator_chat_delay"] = true.into();
+        assert!(normalize(&response).is_err());
+        response["data"][0]["non_moderator_chat_delay_duration"] = 4.into();
+        assert_eq!(normalize(&response).unwrap()["non_moderator_chat_delay_duration"], 4);
+        assert!(normalize(&json!({"data":[]})).is_err());
+    }
 
     #[test]
     fn external_change_does_not_get_overwritten() {

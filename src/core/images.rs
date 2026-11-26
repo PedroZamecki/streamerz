@@ -14,6 +14,12 @@ const AT_ONCE: usize = 6;
 const KEEP_BYTES: u64 = 50 * 1024 * 1024;
 /// Extensions a picture is stored with, as sniffed from its first bytes.
 const EXTENSIONS: [&str; 5] = ["png", "gif", "webp", "jpg", "svg"];
+/// The most one picture may take (an emote or a badge is a few KB, a big animated one a few MB).
+const MAX_PICTURE: u64 = 8 * 1024 * 1024;
+/// How long one download may take in all, so a server that trickles can't keep a slot.
+const DOWNLOAD_TIME: std::time::Duration = std::time::Duration::from_secs(60);
+/// How much of a file is read to tell what kind of picture it is.
+const SNIFF_BYTES: usize = 512;
 
 thread_local! {
     /// Pictures on disk, by URL (this thread is the engine's: every request comes through it).
@@ -29,10 +35,7 @@ fn dir() -> PathBuf {
 }
 
 fn stem(url: &str) -> String {
-    Sha256::digest(url.as_bytes())[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::fmt::hex(&Sha256::digest(url.as_bytes())[..12])
 }
 
 /// The extension a picture's bytes call for (none: not a picture).
@@ -43,7 +46,7 @@ fn sniff(bytes: &[u8]) -> Option<&'static str> {
         [0xFF, 0xD8, ..] => Some("jpg"),
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
         _ => {
-            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_lowercase();
+            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(SNIFF_BYTES)]).to_lowercase();
             (head.contains("<svg") || head.contains("<?xml")).then_some("svg")
         }
     }
@@ -92,13 +95,16 @@ fn lookup_on_disk(url: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// The file named `stem`, whatever kind of picture it is.
+/// The file named `stem`, whatever kind of picture it is (an empty one is not a picture).
 fn on_disk(stem: &str) -> Option<PathBuf> {
-    let folder = dir();
+    on_disk_in(&dir(), stem)
+}
+
+fn on_disk_in(folder: &std::path::Path, stem: &str) -> Option<PathBuf> {
     EXTENSIONS
         .into_iter()
         .map(|extension| folder.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+        .find(|path| path.metadata().is_ok_and(|m| m.is_file() && m.len() > 0))
 }
 
 fn fetch(url: String, stem: String) {
@@ -109,22 +115,49 @@ fn fetch(url: String, stem: String) {
     });
 }
 
-/// Puts `url` on disk as `stem` and its kind; the bytes written, or `None` when it isn't a picture.
-async fn download(url: &str, stem: &str) -> Option<u64> {
-    let _one = FETCHING.acquire().await;
-    let response = crate::http::request("GET", url, &[], b"").await.ok()?;
-    if response.status != 200 {
+/// The first bytes of a file, to tell what it holds.
+fn head(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(SNIFF_BYTES);
+    std::fs::File::open(path)
+        .ok()?
+        .take(SNIFF_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+/// The kind of picture a finished download holds: none when it didn't all arrive (a half picture
+/// would stay broken for good), wasn't a 200, or isn't a picture.
+fn kept(download: &crate::http::Download, part: &std::path::Path) -> Option<&'static str> {
+    if download.status != 200 || !download.complete {
         return None;
     }
-    let extension = sniff(&response.body)?;
+    sniff(&head(part)?)
+}
+
+/// Puts `url` on disk as `stem` and its kind; the bytes written, or `None` when it isn't a picture.
+/// It goes to the file a piece at a time, so a picture never sits in memory.
+async fn download(url: &str, stem: &str) -> Option<u64> {
+    let _one = FETCHING.acquire().await;
     let folder = dir();
-    let file = folder.join(format!("{stem}.{extension}"));
+    std::fs::create_dir_all(&folder).ok()?;
     let part = folder.join(format!("{stem}.part"));
-    // Whole or nothing: a half-written file would be a broken picture for good.
-    std::fs::create_dir_all(&folder)
-        .and_then(|()| std::fs::write(&part, &response.body))
-        .and_then(|()| std::fs::rename(&part, &file))
-        .ok()?;
+    let got = tokio::time::timeout(DOWNLOAD_TIME, crate::http::download(url, &[], &part, MAX_PICTURE)).await;
+    let got = match got {
+        Ok(Ok(got)) => kept(&got, &part).map(|extension| (extension, got.len)),
+        _ => None,
+    };
+    // Whole or nothing.
+    let Some((extension, len)) = got else {
+        let _ = std::fs::remove_file(&part);
+        return None;
+    };
+    // Not flushed to the disk first: that would hold up the whole program for each picture. A
+    // power cut can leave an empty one, which `on_disk` treats as missing.
+    if crate::fileio::commit(&part, &folder.join(format!("{stem}.{extension}"))).is_err() {
+        return None;
+    }
     let count = ARRIVED.with(|arrived| {
         arrived.set(arrived.get() + 1);
         arrived.get()
@@ -132,7 +165,7 @@ async fn download(url: &str, stem: &str) -> Option<u64> {
     if count % 200 == 1 {
         prune(&folder, KEEP_BYTES);
     }
-    Some(response.body.len() as u64)
+    Some(len)
 }
 
 /// The most the pictures put on disk ahead of time may take: under the folder's budget, so what a
@@ -263,6 +296,51 @@ mod tests {
         prune(&folder, 150);
         assert!(!folder.join("old.png").exists() && !folder.join("mid.png").exists());
         assert!(folder.join("new.png").exists());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    fn finished(status: u16, complete: bool) -> crate::http::Download {
+        crate::http::Download {
+            status,
+            len: 8,
+            complete,
+            sha256: String::new(),
+            magic: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_whole_picture_answered_with_200_is_kept() {
+        let folder = std::env::temp_dir().join(format!("streamerz-images-kept-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let png = folder.join("a.part");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\n").unwrap();
+        assert_eq!(kept(&finished(200, true), &png), Some("png"));
+        // Cut off (the connection closed early, or it was bigger than a picture may be).
+        assert_eq!(kept(&finished(200, false), &png), None);
+        assert_eq!(kept(&finished(404, true), &png), None);
+        let page = folder.join("b.part");
+        std::fs::write(&page, b"<html>not found</html>").unwrap();
+        assert_eq!(kept(&finished(200, true), &page), None);
+        // An SVG is told by its first bytes only, however long it is.
+        let svg = folder.join("c.part");
+        let mut long = b"<svg xmlns=\"http://www.w3.org/2000/svg\">".to_vec();
+        long.resize(4 * SNIFF_BYTES, b' ');
+        std::fs::write(&svg, &long).unwrap();
+        assert_eq!(head(&svg).unwrap().len(), SNIFF_BYTES);
+        assert_eq!(kept(&finished(200, true), &svg), Some("svg"));
+        assert_eq!(kept(&finished(200, true), &folder.join("missing.part")), None);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn an_empty_picture_left_by_a_power_cut_is_fetched_again() {
+        let folder = std::env::temp_dir().join(format!("streamerz-images-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.png"), b"").unwrap();
+        assert_eq!(on_disk_in(&folder, "a"), None);
+        std::fs::write(folder.join("a.gif"), b"GIF89a").unwrap();
+        assert_eq!(on_disk_in(&folder, "a"), Some(folder.join("a.gif")));
         let _ = std::fs::remove_dir_all(&folder);
     }
 

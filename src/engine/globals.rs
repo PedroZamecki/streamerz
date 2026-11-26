@@ -52,6 +52,11 @@ fn put(values: &mut Obj, writes: &mut Obj, name: &str, v: &Option<Value>, now: &
     }
 }
 
+/// A value as a number: a number, or a text that reads as one ("5" set without Auto Type).
+fn as_number(v: &Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str().and_then(crate::fmt::parse_number))
+}
+
 fn obj_mut<'a>(o: &'a mut Obj, k: &str) -> &'a mut Obj {
     let v = o.entry(k).or_insert_with(|| Value::Object(Obj::new()));
     if !v.is_object() {
@@ -143,11 +148,18 @@ impl Engine {
         let new = match n(o, "source") as i64 {
             0 if b(o, "autoType", false) => Some(auto_type(&value)),
             0 => Some(value.into()),
+            // Left empty, it adds or takes 1 (Streamer.bot's Increment and Decrement).
             op @ (1 | 2) => {
-                let Some(by) = auto_type(&value).as_f64() else { return };
+                let by = if value.trim().is_empty() {
+                    Some(1.0)
+                } else {
+                    as_number(&auto_type(&value))
+                };
+                let Some(by) = by else { return };
                 let cur = self
                     .read_global(&name, persisted, user.as_ref())
-                    .and_then(|v| v.as_f64());
+                    .as_ref()
+                    .and_then(as_number);
                 let by = if op == 1 { by } else { -by };
                 Some(vars::number(cur.unwrap_or(0.0) + by))
             }
@@ -159,7 +171,8 @@ impl Engine {
     /// A global as a number (0 when it isn't one), for the Counter sub-action.
     pub(super) fn global_number(&self, name: &str, persisted: bool) -> f64 {
         self.read_global(name, persisted, None)
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(crate::fmt::parse_number)))
+            .as_ref()
+            .and_then(as_number)
             .unwrap_or(0.0)
     }
 
@@ -319,6 +332,7 @@ impl Engine {
             let mut st = self.st.borrow_mut();
             let st = &mut *st;
             put(&mut st.temp, &mut st.temp_writes, name, &None, &now);
+            crate::host::changed();
         }
         let mut args = Obj::new();
         args.insert("global.name".into(), name.into());

@@ -299,4 +299,22 @@ mod tests {
             RecoveryAction::Respawn
         );
     }
+
+    #[test]
+    fn a_crash_exactly_a_window_old_still_counts() {
+        let mut rec = CrashRecovery::default();
+        let t0 = Instant::now();
+        assert_eq!(rec.record_crash(t0), RecoveryAction::Respawn);
+        assert_eq!(rec.record_crash(t0 + Duration::from_secs(1)), RecoveryAction::Respawn);
+        assert_eq!(rec.record_crash(t0 + CrashRecovery::WINDOW), RecoveryAction::Stop);
+        // Crashes keep being counted while stopped: the budget comes back only after a quiet window.
+        assert_eq!(
+            rec.record_crash(t0 + CrashRecovery::WINDOW + Duration::from_secs(1)),
+            RecoveryAction::Stop
+        );
+        assert_eq!(
+            rec.record_crash(t0 + CrashRecovery::WINDOW * 4),
+            RecoveryAction::Respawn
+        );
+    }
 }

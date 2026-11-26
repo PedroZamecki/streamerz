@@ -49,6 +49,7 @@ let settings = streamerz.settings;
 let slices = [];
 let turned = 0;   // How far the wheel has turned in all, in degrees.
 let busy = false;
+let dirty = false;
 let hide = 0;
 
 streamerz.onSettings(s => {
@@ -63,10 +64,12 @@ streamerz.onSettings(s => {
     ? s.slices
     : String(s.slices || "").split("\n").map(label => ({ label, weight: 1 }));
   slices = rows
+    .filter(Boolean)
     .map(r => ({ label: String(r.label || "").trim(), weight: Math.max(0, Number(r.weight) || 0) }))
     .filter(r => r.label && r.weight > 0);
   if (slices.length < 2) slices = [{ label: "Yes", weight: 1 }, { label: "No", weight: 1 }];
-  if (!busy) draw();
+  if (busy) dirty = true;
+  else draw();
   // With "Hide after" at 0 the wheel is always there.
   if (!(Number(s.hideAfter) > 0)) stage.classList.remove("away");
 });
@@ -118,6 +121,7 @@ function draw() {
 streamerz.on("wheel.spin", (who, old) => {
   if (old || busy) return;
   busy = true;
+  const isTest = streamerz.testing;
   clearTimeout(hide);
   result.classList.remove("on");
   stage.classList.remove("away");
@@ -138,12 +142,13 @@ streamerz.on("wheel.spin", (who, old) => {
     const user = typeof who === "string" && who ? who : "";
     result.textContent = slice.label;
     result.classList.add("on");
-    if (settings.announce !== false) {
+    if (!isTest && settings.announce !== false) {
       const text = String(settings.message || "{user} spun the wheel: {result}")
-        .replace("{user}", user || "Someone").replace("{result}", slice.label);
+        .replace("{user}", () => user || "Someone").replace("{result}", () => slice.label);
       streamerz.say(text).catch(e => streamerz.log("The wheel could not write in the chat: " + e.message));
     }
     busy = false;
+    if (dirty) { dirty = false; draw(); }
     const after = Number(settings.hideAfter) || 0;
     if (after > 0) hide = setTimeout(() => stage.classList.add("away"), after * 1000);
   }, seconds * 1000 + 300);

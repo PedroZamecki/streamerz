@@ -454,13 +454,14 @@ async fn web(f: Rc<Fakes>, l: tokio::net::TcpListener) {
                             .then(|| v.trim().parse::<usize>().ok())?
                     })
                     .unwrap_or(0);
-                while buf.len() < end + 4 + len {
+                let total = end.saturating_add(4).saturating_add(len);
+                while buf.len() < total {
                     match sock.read(&mut chunk).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     }
                 }
-                let body = buf[end + 4..].to_vec();
+                let body = buf[end + 4..total.min(buf.len())].to_vec();
                 break (head, body);
             };
             let line = head.lines().next().unwrap_or("");
@@ -515,22 +516,26 @@ impl crate::ports::ObsPort for Obs {
     fn send_batch<'a>(
         &'a self,
         connection_id: Option<&'a str>,
-        _halt_on_failure: bool,
+        halt_on_failure: bool,
         requests: Vec<Value>,
     ) -> crate::ports::Fut<'a, Result<Vec<Value>, String>> {
-        let out = requests
-            .iter()
-            .map(|r| {
-                let t = r["requestType"].as_str().unwrap_or("");
-                let detail = json!({"connection": connection_id, "data": r["requestData"], "batch": true});
-                let (ok, data) = match self.0.call("obs", t, detail, json!({})) {
-                    Ok(v) => (true, v),
-                    Err(e) => (false, json!({"comment": e})),
-                };
-                json!({"requestType": t, "requestStatus": {"result": ok, "code": if ok { 100 } else { 600 }},
-                       "responseData": data})
-            })
-            .collect();
+        let mut out = Vec::with_capacity(requests.len());
+        for r in &requests {
+            let t = r["requestType"].as_str().unwrap_or("");
+            let detail = json!({"connection": connection_id, "data": r["requestData"], "batch": true});
+            let (ok, data) = match self.0.call("obs", t, detail, json!({})) {
+                Ok(v) => (true, v),
+                Err(e) => (false, json!({"comment": e})),
+            };
+            out.push(json!({
+                "requestType": t,
+                "requestStatus": {"result": ok, "code": if ok { 100 } else { 600 }},
+                "responseData": data,
+            }));
+            if halt_on_failure && !ok {
+                break;
+            }
+        }
         Box::pin(async move { Ok(out) })
     }
     fn is_connected(&self, _: Option<&str>) -> bool {

@@ -22,10 +22,14 @@
 streamerz.onSettings(s => {
   pads.replaceChildren();
   for (const [i, pad] of (s.pads || []).entries()) {
-    const b = Object.assign(document.createElement("button"), { textContent: pad.label || pad.sound });
+    const b = Object.assign(document.createElement("button"), { textContent: pad.label || pad.sound || "" });
+    let off = 0;
     b.onclick = () => {
+      clearTimeout(off);
       b.classList.add("on");
-      streamerz.publish(streamerz.group + ".play", { pad: i, at: Date.now() }).finally(() => setTimeout(() => b.classList.remove("on"), 150));
+      streamerz.publish(streamerz.group + ".play", { pad: i, at: Date.now() })
+        .catch(e => streamerz.log("Sound board: " + e.message))
+        .finally(() => { off = setTimeout(() => b.classList.remove("on"), 150); });
     };
     pads.append(b);
   }

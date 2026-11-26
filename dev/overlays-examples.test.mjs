@@ -1,0 +1,728 @@
+// Run with node --test dev/overlays-examples.test.mjs. No browser or running app needed.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import { readFileSync } from "node:fs";
+
+function readExample(rel) {
+  const html = readFileSync(new URL("../assets/examples/" + rel, import.meta.url), "utf8");
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  return { html, script: scripts.at(-1)[1] };
+}
+
+function makeEl(tag, id = "") {
+  const classes = new Set();
+  const styles = Object.create(null);
+  const listeners = new Map();
+  const el = {
+    tagName: tag.toUpperCase(),
+    id,
+    className: "",
+    textContent: "",
+    innerHTML: "",
+    value: "",
+    hidden: false,
+    disabled: false,
+    offsetWidth: 100,
+    offsetHeight: 40,
+    clientWidth: 400,
+    clientHeight: 300,
+    scrollHeight: 300,
+    scrollTop: 0,
+    dataset: {},
+    children: [],
+    parentNode: null,
+    get isConnected() { return this._connected !== false; },
+    get firstChild() { return this.children[0] || null; },
+    get firstElementChild() { return this.children.find(c => typeof c !== "string") || null; },
+    get lastElementChild() { return [...this.children].reverse().find(c => typeof c !== "string") || null; },
+    style: {
+      cssText: "",
+      setProperty(k, v) { styles[k] = v; },
+      getPropertyValue(k) { return styles[k] || ""; },
+      _styles: styles,
+    },
+    classList: {
+      add(...cs) { cs.forEach(c => classes.add(c)); },
+      remove(...cs) { cs.forEach(c => classes.delete(c)); },
+      contains(c) { return classes.has(c); },
+      toggle(c, force) {
+        if (force === undefined) return classes.has(c) ? (classes.delete(c), false) : (classes.add(c), true);
+        if (force) classes.add(c); else classes.delete(c);
+        return !!force;
+      },
+    },
+    append(...nodes) {
+      for (const n of nodes) {
+        if (n && typeof n === "object") {
+          if (n._fragment) { this.append(...n.children); continue; }
+          n.parentNode = this;
+          n._connected = true;
+        }
+        this.children.push(n);
+      }
+    },
+    prepend(...nodes) {
+      for (const n of [...nodes].reverse()) {
+        if (n && typeof n === "object") { n.parentNode = this; n._connected = true; }
+        this.children.unshift(n);
+      }
+    },
+    replaceChildren(...nodes) {
+      for (const c of this.children) if (c && typeof c === "object") { c.parentNode = null; c._connected = false; }
+      this.children = [];
+      this.append(...nodes);
+    },
+    remove() {
+      this._connected = false;
+      if (this.parentNode) {
+        const idx = this.parentNode.children.indexOf(this);
+        if (idx >= 0) this.parentNode.children.splice(idx, 1);
+        this.parentNode = null;
+      }
+    },
+    addEventListener(type, fn, opts) {
+      const list = listeners.get(type) || [];
+      list.push({ fn, once: !!opts?.once });
+      listeners.set(type, list);
+    },
+    dispatch(type) {
+      const list = [...(listeners.get(type) || [])];
+      for (const item of list) {
+        if (item.once) {
+          const cur = listeners.get(type) || [];
+          const i = cur.indexOf(item);
+          if (i >= 0) cur.splice(i, 1);
+        }
+        item.fn({ target: this });
+      }
+    },
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+    querySelectorAll(sel) {
+      const parts = sel.trim().split(/\s+/);
+      const matchPart = (node, part) => {
+        if (!node || typeof node !== "object") return false;
+        if (part.startsWith(".")) {
+          const cls = part.slice(1);
+          return node.classList.contains(cls) || String(node.className || "").split(/\s+/).includes(cls);
+        }
+        return node.tagName === part.toUpperCase();
+      };
+      const find = (root, part) => {
+        const out = [];
+        const walk = node => {
+          for (const c of node.children || []) {
+            if (c && typeof c === "object") {
+              if (matchPart(c, part)) out.push(c);
+              walk(c);
+            }
+          }
+        };
+        walk(root);
+        return out;
+      };
+      let roots = [this];
+      for (const part of parts) {
+        const next = [];
+        for (const r of roots) next.push(...find(r, part));
+        roots = next;
+      }
+      return roots;
+    },
+    setAttribute(k, v) { this[k] = v; },
+    getAttribute(k) { return this[k] ?? null; },
+    removeAttribute(k) { delete this[k]; },
+  };
+  return el;
+}
+
+function harness({ settings = {}, ids = [], speak, say, actions } = {}) {
+  const byId = Object.create(null);
+  for (const id of ids) byId[id] = makeEl("div", id);
+  const timers = new Map();
+  const intervals = new Map();
+  const rafs = new Map();
+  let nextTimer = 0, nextInterval = 0, nextRaf = 0;
+  let now = 1_000_000;
+  const listeners = { settings: [], chat: [], removed: [], alerts: [], topics: new Map(), events: new Map(), controls: new Map() };
+  const published = [], said = [], logged = [], audios = [];
+
+  class MockAudio {
+    constructor(src) {
+      this.src = src;
+      this.volume = 1;
+      this.muted = false;
+      this.paused = false;
+      this.ended = false;
+      this.duration = 2;
+      this._listeners = new Map();
+      audios.push(this);
+    }
+    play() { this.played = true; return Promise.resolve(); }
+    pause() { this.paused = true; }
+    addEventListener(type, fn) { (this._listeners.get(type) || this._listeners.set(type, []).get(type)).push(fn); }
+  }
+
+  class MockImage {
+    constructor() { this.tagName = "IMG"; this.className = ""; this.style = {}; this.classList = makeEl("img").classList; }
+  }
+
+  const streamerz = {
+    settings: structuredClone(settings),
+    group: "Demo",
+    testing: false,
+    state: Object.create(null),
+    platforms: {
+      twitch: { name: "Twitch", color: "#9146ff" },
+      youtube: { name: "YouTube", color: "#ff0033" },
+      kick: { name: "Kick", color: "#53fc18" },
+      tiktok: { name: "TikTok", color: "#fe2c55" },
+    },
+    asset: p => "http://127.0.0.1:7474/overlays/-/" + p,
+    logo: p => "http://127.0.0.1:7474/overlays/-/brands/" + p + ".svg",
+    icon: n => "http://127.0.0.1:7474/overlays/-/icons/" + n + ".svg",
+    css: () => "",
+    place: el => el,
+    animate: () => Promise.resolve(),
+    words: line => { const f = { _fragment: true, children: [line.text || ""] }; return f; },
+    avatar: () => Promise.resolve(""),
+    line: line => {
+      const el = makeEl("div");
+      el.className = "sz-line sz-" + line.platform;
+      el.dataset.msg = line.msgId || "";
+      el.dataset.user = line.platform + ":" + (line.userId || "");
+      el.textContent = (line.user || "") + ": " + (line.text || "");
+      return el;
+    },
+    onSettings(fn) { listeners.settings.push(fn); fn(this.settings); return this; },
+    chat(fn, opts = {}) {
+      listeners.chat.push(fn);
+      if (opts.removed) listeners.removed.push(opts.removed);
+      return this;
+    },
+    alerts(fn) { listeners.alerts.push(fn); return this; },
+    on(topic, fn) {
+      const list = listeners.topics.get(topic) || [];
+      list.push(fn);
+      listeners.topics.set(topic, list);
+      return this;
+    },
+    song(fn) { return this.on("song", fn); },
+    position(s) {
+      if (!s) return 0;
+      const played = s.playing && s.at ? now - s.at : 0;
+      return (s.positionMs || 0) + Math.max(0, played);
+    },
+    event(name, fn) {
+      const list = listeners.events.get(name) || [];
+      list.push(fn);
+      listeners.events.set(name, list);
+      return this;
+    },
+    control(name, fn) {
+      const list = listeners.controls.get(name) || [];
+      list.push(fn);
+      listeners.controls.set(name, list);
+      return this;
+    },
+    publish(topic, value) { published.push({ topic, value }); return Promise.resolve(); },
+    say(text, opts) {
+      said.push({ text, opts });
+      return say ? say(text, opts) : Promise.resolve();
+    },
+    log(text) { logged.push(text); return Promise.resolve(); },
+    speak(text, opts) { return speak ? speak(text, opts) : Promise.resolve(new MockAudio("/speech/1")); },
+    actions() { return actions ? actions() : Promise.resolve([]); },
+    set() { return Promise.resolve(); },
+  };
+
+  const document = {
+    body: makeEl("body"),
+    documentElement: makeEl("html"),
+    getElementById: id => byId[id] || null,
+    createElement: tag => makeEl(tag),
+    createElementNS: (_, tag) => makeEl(tag),
+  };
+
+  const window = {};
+  const globals = {
+    window,
+    document,
+    streamerz,
+    Audio: MockAudio,
+    Image: MockImage,
+    URL,
+    location: { href: "http://127.0.0.1:7474/overlays/Demo/index.html" },
+    innerWidth: 1280,
+    innerHeight: 720,
+    Date: Object.assign(function (...a) { return new Date(...a); }, { now: () => now }),
+    performance: { now: () => now },
+    getComputedStyle: () => ({ fontSize: "24px" }),
+    setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms, at: now + (ms || 0) }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    setInterval(fn, ms) { const id = ++nextInterval; intervals.set(id, { fn, ms }); return id; },
+    clearInterval(id) { intervals.delete(id); },
+    requestAnimationFrame(fn) { const id = ++nextRaf; rafs.set(id, fn); return id; },
+    cancelAnimationFrame(id) { rafs.delete(id); },
+    addEventListener() {},
+    console,
+    ...byId,
+  };
+
+  const ctx = vm.createContext(globals);
+  return {
+    ctx, window, document, streamerz, byId, timers, intervals, rafs, listeners,
+    published, said, logged, audios, MockAudio,
+    advance(ms) { now += ms; },
+    setNow(t) { now = t; },
+    runDueTimers() {
+      for (const [id, t] of [...timers.entries()]) {
+        if (t.at <= now) { timers.delete(id); t.fn(); }
+      }
+    },
+    emitSettings(next) {
+      Object.assign(streamerz.settings, next);
+      for (const fn of listeners.settings) fn(streamerz.settings);
+    },
+    emitTopic(topic, val, old = false) {
+      for (const fn of listeners.topics.get(topic) || []) fn(val, old);
+    },
+    emitEvent(name, val) {
+      for (const fn of listeners.events.get(name) || []) fn(val, name);
+    },
+    emitControl(name, val, old) {
+      for (const fn of listeners.controls.get(name) || []) fn(val, old);
+    },
+    emitChat(line) { for (const fn of listeners.chat) fn(line); },
+    emitRemoved(r) { for (const fn of listeners.removed) fn(r); },
+    emitAlert(a) { for (const fn of listeners.alerts) fn(a); },
+  };
+}
+
+test("alert-box: queue never deadlocks without animationend, mutes voice, and guards prototype keys", async () => {
+  const { script } = readExample("alert-box/files/index.html");
+  let resolveSpeak;
+  const h = harness({
+    ids: ["stage", "extra"],
+    settings: {
+      platforms: ["twitch", "tiktok"],
+      mode: "One at a time",
+      gap: 0,
+      animMs: 200,
+      animOut: "Fade",
+      volume: 100,
+      untilSound: true,
+      cardHtml: "<b>%user%</b> <i>%constructor%</i>",
+      rules: [
+        { when: "Follow", from: "Any", min: 0, max: 0, text: "%user% followed", sound: "chime.wav", say: "Hi %user%", volume: 80, seconds: 2, weight: 1 },
+        { when: "TikTok gift", from: "Any", min: 0, max: 0, text: "%user% sent %gift%", sound: "", say: "", volume: 80, seconds: 2, weight: 1 },
+      ],
+    },
+    speak: () => new Promise(r => { resolveSpeak = r; }),
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Take two alerts; first shows, second waits.
+  h.emitAlert({ kind: "follow", platform: "twitch", user: "<img onerror=x>", args: {} });
+  h.emitAlert({ kind: "follow", platform: "twitch", user: "Bob", args: {} });
+  assert.equal(h.window.alertBox.showing.length, 1);
+  assert.equal(h.window.alertBox.waiting.length, 1);
+  // Card HTML escapes user input and leaves prototype names untouched.
+  const card = h.byId.stage.children[0];
+  assert.equal(card.innerHTML.includes("<img"), false);
+  assert.match(card.innerHTML, /&#60;img onerror=x&#62;/);
+  assert.match(card.innerHTML, /%constructor%/);
+
+  // Non-finite audio duration must not shorten the alert timer to 0ms.
+  const audio = h.audios[0];
+  audio.duration = Infinity;
+  audio.onloadedmetadata();
+  assert.equal(h.window.alertBox.showing.length, 1);
+
+  // Voice arrives and mute control mutes both audio and voice.
+  const voice = new h.MockAudio("/speech/1");
+  voice.durationMs = 1500;
+  resolveSpeak(voice);
+  await new Promise(r => setImmediate(r));
+  h.window.alertBox.control({ do: "mute" });
+  assert.equal(audio.muted, true);
+  assert.equal(voice.muted, true);
+  h.window.alertBox.control({ do: "unmute" });
+  assert.equal(audio.muted, false);
+  assert.equal(voice.muted, false);
+
+  // Skip without firing animationend: fallback timer must advance the queue to Bob.
+  h.window.alertBox.control({ do: "skip" });
+  h.advance(500);
+  h.runDueTimers();
+  assert.equal(h.window.alertBox.showing.length, 1);
+  assert.equal(h.window.alertBox.showing[0].a.user, "Bob");
+  assert.equal(h.window.alertBox.waiting.length, 0);
+
+  // A TikTok combo arriving while the prior combo card is already leaving starts a new alert.
+  h.window.alertBox.control({ do: "clear" });
+  h.advance(500);
+  h.runDueTimers();
+  h.emitAlert({ kind: "gift", platform: "tiktok", user: "Dee", userId: "d1", args: { giftId: 1, giftName: "Rose", repeatCount: 1 } });
+  h.window.alertBox.control({ do: "skip" }); // now leaving, not yet gone
+  h.emitAlert({ kind: "gift", platform: "tiktok", user: "Dee", userId: "d1", args: { giftId: 1, giftName: "Rose", repeatCount: 2 } });
+  assert.equal(h.window.alertBox.waiting.length, 1);
+});
+
+test("chat-aloud: serializes async speak calls, cancels on disable/skip, and bounds queue", async () => {
+  const { script } = readExample("chat-aloud/files/index.html");
+  const pending = [];
+  const h = harness({
+    ids: ["caption"],
+    settings: { platforms: ["twitch"], prefix: "%user% says", volume: 100, skipCommands: true, skipLinks: true, maxLength: 200 },
+    speak: text => new Promise(resolve => {
+      const a = new h.MockAudio("/speech/" + pending.length);
+      pending.push({ text, audio: a, resolve: () => resolve(a) });
+    }),
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Two messages arrive while first speak() is still pending: second must wait, not overlap.
+  h.emitChat({ platform: "twitch", user: "a$&b", text: "first message" });
+  h.emitChat({ platform: "twitch", user: "bob", text: "second message" });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].text, "a$&b says first message");
+
+  // Turning reading off while synthesis is in flight cancels playback and clears the queue.
+  h.emitControl("on", false);
+  pending[0].resolve();
+  await new Promise(r => setImmediate(r));
+  assert.equal(pending[0].audio.played, undefined);
+  assert.equal(pending.length, 1);
+
+  // Messages arriving while off are dropped.
+  h.emitChat({ platform: "twitch", user: "carol", text: "ignored while off" });
+  h.emitControl("on", true);
+  assert.equal(pending.length, 1);
+});
+
+test("chat: cancels fade timers on trim and isolates cross-platform moderation", () => {
+  const { script } = readExample("chat/files/index.html");
+  const h = harness({
+    ids: ["chat"],
+    settings: { platforms: ["twitch", "kick"], max: 2, fadeAfter: 10 },
+  });
+  vm.runInContext(script, h.ctx);
+
+  h.emitChat({ platform: "twitch", user: "a", userId: "1", msgId: "m1", text: "one" });
+  h.emitChat({ platform: "kick", user: "b", userId: "2", msgId: "m1", text: "two" });
+  assert.equal(h.timers.size, 4);
+
+  // Deleting msgId "m1" on twitch must not remove kick's msgId "m1", and must clear twitch's timers.
+  h.emitRemoved({ platform: "twitch", msgId: "m1", userId: "" });
+  assert.equal(h.byId.chat.children.length, 1);
+  assert.equal(h.byId.chat.children[0].dataset.user, "kick:2");
+  assert.equal(h.timers.size, 2);
+
+  // Empty msgId + empty userId must not wipe unrelated messages.
+  h.emitChat({ platform: "kick", user: "c", userId: "", msgId: "", text: "no id" });
+  h.emitRemoved({ platform: "kick", msgId: "", userId: "" });
+  assert.equal(h.byId.chat.children.length, 2);
+
+  // Trimming when max is exceeded clears timers of trimmed messages.
+  h.emitChat({ platform: "twitch", user: "d", userId: "3", msgId: "m3", text: "three" });
+  assert.equal(h.byId.chat.children.length, 2);
+  assert.equal(h.timers.size, 4);
+});
+
+test("danmaku and emote-wall: handle zero-width sources, fallback cleanup, and moderation", () => {
+  const dan = readExample("danmaku/files/index.html");
+  const h = harness({ ids: ["sky"], settings: { platforms: ["twitch"], speed: 5, most: 10 } });
+  h.byId.sky.clientWidth = 0;
+  vm.runInContext(dan.script, h.ctx);
+  // Zero width + zero offsetWidth must not lock a lane with Infinity.
+  const origLine = h.streamerz.line;
+  h.streamerz.line = l => { const el = origLine(l); el.offsetWidth = 0; return el; };
+  h.emitChat({ platform: "twitch", user: "a", userId: "1", msgId: "1", text: "hi" });
+  assert.equal(h.byId.sky.children.length, 1);
+  h.advance(7000);
+  h.runDueTimers();
+  assert.equal(h.byId.sky.children.length, 0);
+
+  // Emote wall handles missing platforms array and cleans up on fallback timer.
+  const ew = readExample("emote-wall/files/index.html");
+  const h2 = harness({ ids: ["wall"], settings: { seconds: 3, most: 10 } });
+  vm.runInContext(ew.script, h2.ctx);
+  h2.emitChat({ platform: "twitch", user: "a", msgId: "1", parts: [{ e: "Kappa", u: "https://e/1.png" }] });
+  assert.equal(h2.byId.wall.children.length, 1);
+  assert.equal(h2.byId.wall.children[0].dataset.user, "twitch:");
+  h2.advance(5000);
+  h2.runDueTimers();
+  assert.equal(h2.byId.wall.children.length, 0);
+});
+
+test("now-playing: runs progress interval only while playing and ignores stale cover loads", () => {
+  const { script } = readExample("now-playing/files/index.html");
+  const h = harness({
+    ids: ["stage", "card", "back", "cover", "words", "label", "title", "artist", "album", "progress", "now", "track", "bar", "end"],
+    settings: { hideWhenPaused: false, showFor: 0 },
+  });
+  h.byId.back.append(makeEl("i"), makeEl("i"));
+  for (const id of ["title", "artist", "album"]) h.byId[id].append(makeEl("span"));
+  vm.runInContext(script, h.ctx);
+
+  assert.equal(h.intervals.size, 0, "no interval before a song arrives");
+  h.emitTopic("song", { title: "One", artist: "A", playing: true, durationMs: 120000, positionMs: 0, at: 1_000_000, cover: 'https://c/a"b.png' });
+  assert.equal(h.intervals.size, 1);
+  assert.equal(h.byId.cover.style.backgroundImage, 'url("https://c/a\\"b.png")');
+
+  // Pausing stops the interval immediately.
+  h.emitTopic("song", { title: "One", artist: "A", playing: false, durationMs: 120000, positionMs: 5000, at: 1_005_000 });
+  assert.equal(h.intervals.size, 0);
+
+  // Null song payload does not throw.
+  h.emitTopic("song", null);
+  assert.equal(h.intervals.size, 0);
+});
+
+test("countdown-to and starting-soon: schedule zero timers when idle or ended", () => {
+  const ct = readExample("countdown-to/files/index.html");
+  const h = harness({ ids: ["card", "title", "time"], settings: { target: 0, done: "Go!", title: "Soon" } });
+  vm.runInContext(ct.script, h.ctx);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0, "idle countdown-to uses no timers");
+
+  // Setting a future target schedules one tick, and reaching 0 stops ticking.
+  h.emitSettings({ target: 1_000_000 + 2000 });
+  assert.equal(h.byId.time.textContent, "0:02");
+  assert.equal(h.timers.size, 1);
+  h.advance(2000);
+  h.runDueTimers();
+  assert.equal(h.byId.time.textContent, "Go!");
+  assert.equal(h.timers.size, 0, "ended countdown-to stops ticking");
+
+  // Starting soon stops ticking once minutes reach 0.
+  const ss = readExample("starting-soon/files/index.html");
+  const h2 = harness({ ids: ["picture", "title", "subtitle", "clock", "dots", "music"], settings: { minutes: 0, done: "Live!" } });
+  h2.byId.music.pause = () => {};
+  h2.byId.music.play = () => Promise.resolve();
+  vm.runInContext(ss.script, h2.ctx);
+  assert.equal(h2.intervals.size, 0);
+  assert.equal(h2.timers.size, 0, "starting-soon with minutes=0 runs no timers");
+});
+
+test("poll and poll dock: skip chat announcements during Test, use zero idle timers, and show dock errors", () => {
+  const p = readExample("poll/files/index.html");
+  const h = harness({ ids: ["stage", "poll", "clock", "question", "choices", "how"], settings: { seconds: 10, announce: true } });
+  vm.runInContext(p.script, h.ctx);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0, "idle poll uses no timers");
+
+  // Test poll must not announce to real chat on start or end.
+  h.streamerz.testing = true;
+  h.emitTopic("poll.start", "Dinner? | Pizza | Pasta", false);
+  h.streamerz.testing = false;
+  assert.equal(h.said.length, 0);
+  assert.equal(h.timers.size, 1);
+  h.emitTopic("poll.end", 1, false);
+  assert.equal(h.said.length, 0);
+
+  // Real poll announces start and winner (handling $& safely in winner text).
+  h.emitTopic("poll.start", "Prize? | Win $& Cash | Hat", false);
+  assert.equal(h.said.length, 1);
+  h.emitChat({ platform: "twitch", user: "ana", userId: "", text: "1" });
+  h.emitTopic("poll.end", 2, false);
+  assert.equal(h.said.length, 2);
+  assert.match(h.said[1].text, /Win \$& Cash won with 1 of 1 votes/);
+
+  // Poll dock shows validation error outside the hidden #state box and stops ticking when over.
+  const d = readExample("poll/files/dock.html");
+  const h2 = harness({ ids: ["question", "options", "seconds", "start", "end", "error", "state", "title", "rows", "note"] });
+  h2.byId.state.hidden = true;
+  vm.runInContext(d.script, h2.ctx);
+  assert.equal(h2.intervals.size, 0);
+  h2.byId.start.onclick();
+  assert.match(h2.byId.error.textContent, /two choices/);
+  assert.equal(h2.byId.state.hidden, true);
+  h2.emitTopic("poll.state", { question: "Q?", options: [{ text: "A", total: 1 }], votes: 1, endsAt: 999_000, over: true });
+  assert.equal(h2.timers.size, 0, "dock stops ticking once poll is over");
+});
+
+test("wheel: skips chat announcement during Test and redraws slice updates after spin", () => {
+  const { script } = readExample("wheel/files/index.html");
+  const h = harness({
+    ids: ["stage", "title", "wheel", "result"],
+    settings: {
+      spinSeconds: 2,
+      announce: true,
+      slices: [{ label: "A", weight: 1 }, { label: "B", weight: 1 }],
+    },
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Spin during Test must not post to real chat.
+  h.streamerz.testing = true;
+  h.emitTopic("wheel.spin", "tester", false);
+  h.streamerz.testing = false;
+
+  // Update slices mid-spin: redraw is deferred until spin completes so slice.from/to are never undefined.
+  h.emitSettings({ slices: [{ label: "Win $&", weight: 1 }, { label: "Gold", weight: 3 }] });
+  h.advance(2500);
+  h.runDueTimers();
+  assert.equal(h.said.length, 0);
+
+  // Next real spin uses redrawn slices without NaN rotation and announces safely.
+  h.emitTopic("wheel.spin", "ana", false);
+  for (const fn of h.rafs.values()) fn(h.ctx.performance.now());
+  assert.equal(h.byId.wheel.style.transform.includes("NaN"), false);
+  h.advance(2500);
+  h.runDueTimers();
+  assert.equal(h.said.length, 1);
+});
+
+test("scene-banner: rapid scene changes do not hide the newer scene", async () => {
+  const { script } = readExample("scene-banner/files/index.html");
+  const leaves = [];
+  const h = harness({
+    ids: ["banner"],
+    settings: {
+      seconds: 2,
+      banners: [{ scene: "BRB", text: "Be right back" }, { scene: "Live", text: "Now live" }],
+      enter: { name: "fade" },
+      leave: { name: "fade" },
+    },
+  });
+  h.byId.banner.hidden = true;
+  h.streamerz.animate = (el, anim, opts) => {
+    if (opts?.out) return new Promise(r => leaves.push(r));
+    return Promise.resolve();
+  };
+  vm.runInContext(script, h.ctx);
+
+  h.emitEvent("ObsStudio.SceneChanged", { sceneName: "BRB" });
+  assert.equal(h.byId.banner.hidden, false);
+  assert.equal(h.byId.banner.textContent, "Be right back");
+
+  // Auto-hide starts leaving, then a new scene arrives before leave completes.
+  h.advance(2000);
+  h.runDueTimers();
+  assert.equal(leaves.length, 1);
+
+  h.emitEvent("ObsStudio.SceneChanged", { sceneName: "Live" });
+  assert.equal(leaves.length, 2);
+  // First leave resolves late: must NOT hide the banner.
+  leaves[0]();
+  await new Promise(r => setImmediate(r));
+  // Second leave resolves: banner shows "Now live".
+  leaves[1]();
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.byId.banner.hidden, false);
+  assert.equal(h.byId.banner.textContent, "Now live");
+});
+
+test("song-queue: switching topics does not register duplicate listeners", () => {
+  const { script } = readExample("song-queue/files/index.html");
+  const h = harness({
+    ids: ["title", "rows", "empty"],
+    settings: { topic: "q.a", rows: 5, title: "Queue", empty: "None" },
+  });
+  vm.runInContext(script, h.ctx);
+  assert.equal(h.listeners.topics.get("q.a").length, 1);
+
+  h.emitSettings({ topic: "q.b" });
+  h.emitSettings({ topic: "q.a" });
+  assert.equal(h.listeners.topics.get("q.a").length, 1);
+  assert.equal(h.listeners.topics.get("q.b").length, 1);
+});
+
+test("sound-board player: cleans up playing Set when play rejects or errors", async () => {
+  const { script } = readExample("sound-board/files/player.html");
+  const h = harness({
+    settings: { overlap: false, pads: [{ sound: "bad.wav", volume: 80 }] },
+  });
+  let failNext = true;
+  const BaseAudio = h.MockAudio;
+  h.ctx.Audio = class extends BaseAudio {
+    play() {
+      if (failNext) { failNext = false; return Promise.reject(new Error("blocked")); }
+      return super.play();
+    }
+  };
+  vm.runInContext(script, h.ctx);
+
+  h.emitTopic("Demo.play", { pad: 0, at: 1 }, false);
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.logged.length, 1);
+  // A second play with overlap=false should not pause the already-removed failed audio.
+  h.emitTopic("Demo.play", { pad: 0, at: 2 }, false);
+  assert.equal(h.audios[0].paused, false);
+});
+
+test("tiktok-gifts: enforces minCoins on ongoing combos and supports coins fallback", () => {
+  const { script } = readExample("tiktok-gifts/files/index.html");
+  const h = harness({
+    ids: ["list"],
+    settings: { minCoins: 10, bigFrom: 50, most: 4, seconds: 5, text: "sent {gift}" },
+  });
+  vm.runInContext(script, h.ctx);
+
+  // Ongoing combo below minCoins must not appear yet.
+  h.emitEvent("TikTok.Gift", { user: "Ana", userId: "u1", giftId: 1, giftName: "Rose", diamondCount: 1, repeatCount: 3, repeatEnd: false });
+  assert.equal(h.byId.list.children.length, 0);
+
+  // Once total reaches minCoins, the pill appears with full count.
+  h.emitEvent("TikTok.Gift", { user: "Ana", userId: "u1", giftId: 1, giftName: "Rose", diamondCount: 1, repeatCount: 10, repeatEnd: false });
+  assert.equal(h.byId.list.children.length, 1);
+
+  // Gift with coins only (no diamondCount) also passes.
+  h.emitEvent("TikTok.Gift", { user: "Bo", userId: "u2", giftId: 2, giftName: "Star", coins: 20, repeatCount: 1, repeatEnd: true });
+  assert.equal(h.byId.list.children.length, 2);
+});
+
+test("viewers: cancels overlapping rAF animations and guards null payload", () => {
+  const { script } = readExample("viewers/files/index.html");
+  const h = harness({ ids: ["row"], settings: { animationMs: 500, platforms: ["twitch"] } });
+  vm.runInContext(script, h.ctx);
+
+  h.emitTopic("viewers", { total: 10, twitch: 10, youtube: null, kick: null, tiktok: null });
+  const firstCount = h.rafs.size;
+  assert.equal(firstCount, 2); // total + twitch
+  // Rapid second update cancels prior rAFs rather than doubling them.
+  h.emitTopic("viewers", { total: 20, twitch: 20, youtube: null, kick: null, tiktok: null });
+  assert.equal(h.rafs.size, 2);
+  // Null payload does not throw.
+  h.emitTopic("viewers", null);
+});
+
+test("control-dock, top-gifters, goal and credits handle edge inputs safely", async () => {
+  // control-dock: overlapping loads keep only the latest response and clear stale error.
+  const cd = readExample("control-dock/files/dock.html");
+  const resolvers = [];
+  const h1 = harness({
+    ids: ["grid", "note", "reload"],
+    actions: () => new Promise(r => resolvers.push(r)),
+  });
+  vm.runInContext(cd.script, h1.ctx);
+  h1.byId.reload.onclick();
+  resolvers[1]([{ id: "2", name: "New", enabled: true }]);
+  await new Promise(r => setImmediate(r));
+  resolvers[0]([{ id: "1", name: "Old", enabled: true }]);
+  await new Promise(r => setImmediate(r));
+  assert.equal(h1.byId.grid.children.length, 1);
+  assert.equal(h1.byId.grid.children[0].textContent, "New");
+  assert.equal(h1.byId.note.textContent, "");
+
+  // top-gifters: numeric user names sort without throwing.
+  const tg = readExample("top-gifters/files/index.html");
+  const h2 = harness({ ids: ["title", "rows", "empty"], settings: { rows: 5, period: "1", title: "Top" } });
+  vm.runInContext(tg.script, h2.ctx);
+  h2.streamerz.testing = true;
+  h2.emitTopic("gifters.preview", [{ user: 123, count: 5 }, { user: "Ana", count: 5 }]);
+  assert.equal(h2.byId.rows.children.length, 2);
+
+  // goal: TikTok coins falls back to diamondCount * repeatCount.
+  const gl = readExample("goal/files/index.html");
+  const h3 = harness({
+    ids: ["goal", "title", "fill", "numbers", "reached"],
+    settings: { counts: "TikTok coins", target: 100, current: 0, title: "{current}/{target}", platforms: ["tiktok"] },
+  });
+  vm.runInContext(gl.script, h3.ctx);
+  h3.streamerz.testing = true;
+  h3.emitAlert({ kind: "gift", platform: "tiktok", args: { diamondCount: 5, repeatCount: 4 } });
+  assert.equal(h3.byId.title.textContent, "20/100");
+});

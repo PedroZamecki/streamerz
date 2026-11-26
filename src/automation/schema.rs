@@ -29,7 +29,10 @@ pub enum W {
     FileWatcher,
     FileTail,
     Command,
+    /// A user group's name, typed or picked.
     UserGroup,
+    /// A user group's id, picked by name.
+    UserGroupId,
     Client,
     Server,
     ObsConnection,
@@ -98,6 +101,7 @@ impl W {
             FileTail => "file tail id".into(),
             Command => "command id".into(),
             UserGroup => "user group name".into(),
+            UserGroupId => "user group id".into(),
             Client => "WebSocket client id".into(),
             Server => "WebSocket server id".into(),
             ObsConnection => "OBS connection id".into(),
@@ -130,6 +134,10 @@ pub type F = (&'static str, &'static str, W);
 pub fn preserved_fields(kind: u64) -> &'static [&'static str] {
     match kind {
         5 => &["overwrite", "count"],
+        10 => &["pin", "pinToStreamEnd"],
+        22 | 35012 => &["present", "includeFrom", "groups"],
+        25 => &["text", "preferredAccount", "color"],
+        1020 => &["logLevel"],
         _ => &[],
     }
 }
@@ -209,9 +217,6 @@ pub const WHILE_OPS: &[&str] = &[
 const STATE: &[&str] = &["field.enable", "field.disable", "field.toggle"];
 const WHO: &[&str] = &["field.global", "field.user", "field.target_user"];
 const PERSISTED: &[&str] = &["field.any", "field.persisted", "field.temporary"];
-// Serilog's levels.
-const LEVELS: &[&str] = &["field.verbose", "field.debug", "field.information", "field.warning"];
-
 /// A plugin's fields (a sub-action's, or its settings) as a form's; made once for each `key`.
 pub fn plugin_fields(key: &str, fields: &[crate::engine::plugins::Field]) -> &'static [F] {
     use std::collections::HashMap;
@@ -912,8 +917,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         10 => &[
             ("text", "field.message", Multi),
-            ("pin", "field.pin_message", Bool),
-            ("pinToStreamEnd", "field.pin_to_stream_end", Bool),
             ("useBot", "field.send_from_bot_account", Bool),
             ("fallback", "field.fallback_to_broadcaster", Bool),
         ],
@@ -960,12 +963,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         | 570
         | 575
         | 578 => &[],
-        22 => &[
-            ("present", "field.present_users_only", Bool),
-            ("count", "field.count", Int),
-            ("includeFrom", "field.include_from", Text),
-            ("groups", "field.groups", Lines),
-        ],
+        22 | 35012 => &[("count", "field.count", Int)],
         23 => &[
             ("text", "field.announcement", Multi),
             // Twitch's own names, as it stores them.
@@ -977,11 +975,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("useBot", "field.send_from_bot_account", Bool),
             ("fallback", "field.fallback_to_broadcaster", Bool),
         ],
-        25 => &[
-            ("text", "field.text", Multi),
-            ("preferredAccount", "field.preferred_account", Text),
-            ("color", "field.color", Text),
-        ],
+        25 => &[],
         27 => &[("status", "field.shield_mode", Bool)],
         28 => &[
             ("status", "field.follower_mode", Bool),
@@ -1252,10 +1246,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         1015 => &[("groupName", "field.group", CommandGroup)],
         1016 => &[("actionId", "field.action", Action)],
         1017 => &[("groupName", "field.group", ActionGroup)],
-        1020 => &[
-            ("logLevel", "field.level", Pick(LEVELS)),
-            ("message", "field.message", Multi),
-        ],
+        1020 => &[("message", "field.message", Multi)],
         1022 => &[
             ("actionQueueId", "field.queue", Queue),
             ("state", "field.state", Pick(&["field.blocking", "field.non_blocking"])),
@@ -1297,7 +1288,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("subActionId", "field.sub_action", Sub),
             ("weight", "field.weight", Num),
         ],
-        10001 => &[("groupId", "field.group", UserGroup)],
+        10001 => &[("groupId", "field.group", UserGroupId)],
         401 => &[
             ("connectionId", "field.connection", SlobsConnection),
             ("sceneName", "field.scene_empty_active", Text),
@@ -1605,12 +1596,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         35010 => &[],
         35011 => &[("userLogin", "tools.who", Who)],
-        35012 => &[
-            ("present", "field.present_users_only", Bool),
-            ("count", "field.count", Int),
-            ("includeFrom", "field.include_from", Int),
-            ("groups", "field.groups_one_per_line", Lines),
-        ],
         35020..=35022 => &[("userLogin", "tools.who", Who), ("groupName", "field.group_name", Text)],
         35030 => &[("title", "field.title", Text)],
         35031 => &[
@@ -2008,6 +1993,8 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
 
 /// A core trigger's fields; None when it has no form.
 pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
+    let code = u32::try_from(kind).ok()?;
+    crate::types::name(crate::types::TRIGGERS, code)?;
     Some(match kind {
         401 | 402 => &[("commandId", "field.command", Command)],
         701 => &[("timerId", "field.timer", Timer)],
@@ -2032,7 +2019,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         2001..=2003 => &[("serverId", "field.server", Server)],
         18001 => &[("eventName", "field.event_name", Text)],
         18002 => &[("triggerName", "field.trigger_name", Text)],
-        32001..=32005 => &[("groupId", "field.group_none_any", UserGroup)],
+        32001..=32005 => &[("groupId", "field.group_none_any", UserGroupId)],
         14001 | 14002 | 14005 | 14006 | 14007 | 14008 => {
             &[("connectionId", "field.connection_empty_any", ObsConnection)]
         }
@@ -2116,7 +2103,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         501..=504 => &[("watcherId", "field.watcher_none_any", FileWatcher)],
         511 => &[("tailId", "field.file_tail_none_any", FileTail)],
         703 | 704 => &[("processName", "field.process_name", Text)],
-        code if crate::docs::available("trigger", code as u32) => &[],
+        _ if crate::docs::available("trigger", code) => &[],
         _ => return None,
     })
 }
@@ -2139,6 +2126,71 @@ pub(crate) fn parse_duration_field(value: &str, unit: u64) -> Result<Value, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn available_form_keys_have_consumers_and_preserved_keys_stay_in_json() {
+        // This catches orphaned keys, including when an engine reader is renamed or removed.
+        // A matching literal is only a first check. Behavior tests cover individual readers.
+        fn collect_rust(dir: &std::path::Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap();
+                if path.is_dir() {
+                    if name != "automation" {
+                        collect_rust(&path, out);
+                    }
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && !["types.rs", "edit.rs", "docs.rs", "mcp.rs"].contains(&name)
+                {
+                    let source = std::fs::read_to_string(path).unwrap();
+                    let production = source
+                        .split_once("\n#[cfg(test)]\nmod tests {")
+                        .map_or(source.as_str(), |(production, _)| production);
+                    out.push_str(production);
+                }
+            }
+        }
+
+        let mut source = String::new();
+        collect_rust(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
+            &mut source,
+        );
+        let keys = source
+            .split('"')
+            .filter(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+            .collect::<std::collections::HashSet<_>>();
+        for (kind, table, schema) in [
+            (
+                "subaction",
+                crate::types::SUB_ACTIONS,
+                sub_fields as fn(u64) -> Option<&'static [F]>,
+            ),
+            ("trigger", crate::types::TRIGGERS, trigger_fields),
+        ] {
+            for &(code, name) in table {
+                let code64 = u64::from(code);
+                let fields = schema(code64).unwrap_or_default();
+                for &(key, _, _) in fields {
+                    if kind == "subaction" {
+                        assert!(
+                            !preserved_fields(code64).contains(&key),
+                            "{name} exposes inert field {key}"
+                        );
+                    }
+                    if !key.is_empty() && crate::docs::available(kind, code) {
+                        assert!(keys.contains(key), "{kind} {code} {name} has no consumer for {key}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_trigger_does_not_inherit_a_known_types_schema() {
+        assert!(trigger_fields(101).is_some());
+        assert!(trigger_fields(u64::from(u32::MAX) + 1 + 101).is_none());
+    }
 
     /// Every field's label and every choice is a translation key, so the form reads in the user's
     /// language (names that stay as they are: platforms, HTTP methods, numbers).
@@ -2171,6 +2223,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every form of a stored type, with its code and whether it's a sub-action's.
+    fn every_form() -> Vec<(u64, bool, &'static [F])> {
+        let mut out = Vec::new();
+        for code in 0..100_000u64 {
+            if let Some(fields) = sub_fields(code) {
+                out.push((code, true, fields));
+            }
+            if let Some(fields) = trigger_fields(code) {
+                out.push((code, false, fields));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_form_never_repeats_a_key() {
+        for (code, sub, fields) in every_form() {
+            let mut seen = std::collections::HashSet::new();
+            for (key, _, _) in fields {
+                assert!(
+                    key.is_empty() || seen.insert(*key),
+                    "{code} (sub-action {sub}) repeats {key}"
+                );
+            }
+        }
+    }
+
+    /// A form for a code the tables don't have is never shown: its code is a typo.
+    #[test]
+    fn every_form_belongs_to_a_known_type() {
+        let mut unknown = Vec::new();
+        for (code, sub, _) in every_form() {
+            let table = if sub {
+                crate::types::SUB_ACTIONS
+            } else {
+                crate::types::TRIGGERS
+            };
+            if crate::types::name(table, code as u32).is_none() {
+                unknown.push((code, sub));
+            }
+        }
+        assert!(unknown.is_empty(), "forms for unknown codes: {unknown:?}");
     }
 
     #[test]

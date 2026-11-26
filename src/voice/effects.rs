@@ -15,7 +15,10 @@ fn parse_wav(wav: &[u8]) -> Option<(u32, u16, Vec<f32>)> {
     let mut bits = 0u16;
     while at + 8 <= wav.len() {
         let size = u32::from_le_bytes(wav[at + 4..at + 8].try_into().ok()?) as usize;
-        let end = (at + 8 + size).min(wav.len());
+        let end = (at + 8).checked_add(size)?;
+        if end > wav.len() {
+            return None;
+        }
         match &wav[at..at + 4] {
             b"fmt " if end >= at + 24 => {
                 let format = u16::from_le_bytes(wav[at + 8..at + 10].try_into().ok()?);
@@ -27,10 +30,13 @@ fn parse_wav(wav: &[u8]) -> Option<(u32, u16, Vec<f32>)> {
                 bits = u16::from_le_bytes(wav[at + 22..at + 24].try_into().ok()?);
             }
             b"data" => {
-                if rate == 0 || channels == 0 || bits != 16 {
+                if !(1..=384_000).contains(&rate) || channels == 0 || channels > 32 || bits != 16 {
                     return None;
                 }
                 let raw = &wav[at + 8..end];
+                if !raw.len().is_multiple_of(usize::from(channels) * 2) {
+                    return None;
+                }
                 let mut samples = Vec::with_capacity(raw.len() / 2);
                 for &[lo, hi] in raw.as_chunks::<2>().0 {
                     let s = i16::from_le_bytes([lo, hi]);
@@ -40,35 +46,19 @@ fn parse_wav(wav: &[u8]) -> Option<(u32, u16, Vec<f32>)> {
             }
             _ => {}
         }
-        at += 8 + size + (size & 1);
+        at = end.checked_add(size & 1)?;
     }
     None
 }
 
 /// Encodes mono or multi-channel `f32` samples into a 16-bit PCM WAV.
-fn write_wav(rate: u32, channels: u16, samples: &[f32]) -> Vec<u8> {
-    let data = (samples.len() * 2) as u32;
-    let mut out = Vec::with_capacity(44 + data as usize);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&channels.to_le_bytes());
-    out.extend_from_slice(&rate.to_le_bytes());
-    out.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
-    out.extend_from_slice(&(channels * 2).to_le_bytes());
-    out.extend_from_slice(&16u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data.to_le_bytes());
-    for &s in samples {
-        let clamped = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
-        out.extend_from_slice(&((clamped * 32767.0) as i16).to_le_bytes());
-    }
-    out
+fn write_wav(rate: u32, channels: u16, samples: &[f32]) -> Result<Vec<u8>, String> {
+    let mut out = crate::sound::pcm_wav_header(rate, channels, samples.len())?;
+    out.extend(samples.iter().flat_map(|&s| crate::sound::pcm16(s).to_le_bytes()));
+    Ok(out)
 }
 
-/// Resamples a WAV by `pitch` (e.g. `1.2` raises pitch by 20% and shortens by 20%; when paired
+/// Resamples a WAV by `pitch` (e.g. `1.2` raises pitch by 20% and divides the duration by 1.2; when paired
 /// with asking a neural model for `speed / pitch`, pitch shifts while speaking tempo stays constant).
 pub fn apply_pitch(wav: Vec<u8>, pitch: f64) -> Vec<u8> {
     if !pitch.is_finite() || (pitch - 1.0).abs() < 0.01 {
@@ -87,22 +77,22 @@ pub fn apply_pitch(wav: Vec<u8>, pitch: f64) -> Vec<u8> {
     let mut out = Vec::with_capacity(out_frames * ch);
     for i in 0..out_frames {
         let src = (i as f64) * pitch;
-        let idx = (src as usize).min(frames - 2);
+        let idx = src as usize;
         let frac = (src - idx as f64) as f32;
         for c in 0..ch {
             let a = samples[idx * ch + c];
-            let b = samples[(idx + 1) * ch + c];
+            let b = samples[(idx + 1).min(frames - 1) * ch + c];
             out.push(a + (b - a) * frac);
         }
     }
-    write_wav(rate, channels, &out)
+    write_wav(rate, channels, &out).unwrap_or(wav)
 }
 
 /// Applies a named effect (`echo`, `radio`, `robot`) to a 16-bit PCM WAV. Unknown or empty effect
 /// returns the WAV unchanged.
 pub fn apply_effect(wav: Vec<u8>, effect: &str) -> Vec<u8> {
     let effect = effect.trim().to_ascii_lowercase();
-    if effect.is_empty() || effect == "none" {
+    if !matches!(effect.as_str(), "echo" | "radio" | "robot") {
         return wav;
     }
     let Some((rate, channels, samples)) = parse_wav(&wav) else {
@@ -162,19 +152,17 @@ pub fn apply_effect(wav: Vec<u8>, effect: &str) -> Vec<u8> {
             // Ring modulation at 85 Hz blended with a short 11 ms metallic comb resonator.
             let delay = ((rate as f32) * 0.011).round().max(1.0) as usize;
             let mut out = vec![0.0f32; samples.len()];
-            let mut comb = vec![0.0f32; samples.len()];
             for i in 0..frames {
                 let carrier = (i as f32 / rate as f32 * 85.0 * std::f32::consts::TAU).sin();
                 for c in 0..ch {
                     let x = samples[i * ch + c];
                     let ringed = x * (0.45 + 0.55 * carrier);
                     let fb = if i >= delay {
-                        comb[(i - delay) * ch + c] * 0.52
+                        out[(i - delay) * ch + c] * 0.52
                     } else {
                         0.0
                     };
                     let y = (ringed * 0.72 + fb).clamp(-1.0, 1.0);
-                    comb[i * ch + c] = y;
                     out[i * ch + c] = y;
                 }
             }
@@ -182,7 +170,7 @@ pub fn apply_effect(wav: Vec<u8>, effect: &str) -> Vec<u8> {
         }
         _ => return wav,
     };
-    write_wav(rate, channels, &out)
+    write_wav(rate, channels, &out).unwrap_or(wav)
 }
 
 #[cfg(test)]
@@ -197,6 +185,23 @@ mod tests {
         assert_eq!((rate, ch), (24_000, 1));
         assert_eq!(samples.len(), 1920);
         assert_eq!(apply_pitch(wav.clone(), 1.0), wav);
+    }
+
+    #[test]
+    fn pitch_holds_the_last_frame_without_extrapolating() {
+        let wav = write_wav(24_000, 2, &[0.0, 0.5, 0.5, 0.0]).unwrap();
+        let shifted = apply_pitch(wav, 0.5);
+        let (_, _, samples) = parse_wav(&shifted).unwrap();
+        assert_eq!(samples, [0.0, 0.5, 0.25, 0.25, 0.5, 0.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn effects_leave_truncated_or_incomplete_audio_unchanged() {
+        let mut wav = write_wav(24_000, 2, &[0.0, 0.5]).unwrap();
+        wav.pop();
+        assert_eq!(apply_effect(wav.clone(), "echo"), wav);
+        wav[40..44].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(apply_effect(wav.clone(), "robot"), wav);
     }
 
     #[test]

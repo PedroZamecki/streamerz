@@ -214,7 +214,7 @@ fn speak(req: &Value, l: &Loaded) -> Result<(i32, Vec<u8>), String> {
         .tts
         .generate_with_config::<fn(&[f32], f32) -> bool>(text, &config, None)
         .ok_or("the voice said nothing")?;
-    Ok((audio.sample_rate(), wav(audio.samples(), audio.sample_rate())))
+    Ok((audio.sample_rate(), wav(audio.samples(), audio.sample_rate())?))
 }
 
 /// Kokoro's voices file. When `mix` is given, writes a same-sized `voices-mixed.bin` beside it with
@@ -265,7 +265,15 @@ fn mix_slot_zero(bytes: &mut [u8], parts: &[(usize, f32)]) -> Result<(), String>
 }
 
 /// A 16-bit mono WAV of `samples`.
-fn wav(samples: &[f32], rate: i32) -> Vec<u8> {
+fn wav(samples: &[f32], rate: i32) -> Result<Vec<u8>, String> {
+    const MAX_AUDIO_BYTES: usize = 64 << 20;
+    if samples.len() > (MAX_AUDIO_BYTES - 44) / 2 {
+        return Err("speech audio is too large".into());
+    }
+    let rate = u32::try_from(rate)
+        .ok()
+        .filter(|&r| r != 0)
+        .ok_or("invalid speech sample rate")?;
     let data = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + data as usize);
     out.extend_from_slice(b"RIFF");
@@ -274,16 +282,17 @@ fn wav(samples: &[f32], rate: i32) -> Vec<u8> {
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&(rate as u32).to_le_bytes());
-    out.extend_from_slice(&(rate as u32 * 2).to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes());
     out.extend_from_slice(&2u16.to_le_bytes());
     out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data.to_le_bytes());
     for s in samples {
-        out.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        let pcm = if s.is_finite() { (s * 32768.0).round() as i16 } else { 0 };
+        out.extend_from_slice(&pcm.to_le_bytes());
     }
-    out
+    Ok(out)
 }
 
 fn beside(path: &Path, ext: &str) -> PathBuf {
@@ -302,6 +311,21 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     let part = beside(into, "part");
     let _ = std::fs::remove_dir_all(&part);
     std::fs::create_dir_all(&part).map_err(|e| format!("{}: {e}", part.display()))?;
+    let result = unpack_into(archive, &part, MAX_UNPACK_BYTES).and_then(|()| {
+        match std::fs::remove_dir_all(into) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", into.display())),
+        }
+        std::fs::rename(&part, into).map_err(|e| format!("{}: {e}", into.display()))
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&part);
+    }
+    result
+}
+
+fn unpack_into(archive: &Path, part: &Path, max_bytes: u64) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
     let entries = tar.entries().map_err(|e| e.to_string())?;
@@ -319,24 +343,29 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
         match entry.header().entry_type() {
             tar::EntryType::Directory => std::fs::create_dir_all(&to).map_err(|e| e.to_string())?,
             tar::EntryType::Regular => {
+                let remaining = max_bytes - total_written;
+                if entry.size() > remaining {
+                    return Err("voice archive exceeds maximum extracted size".into());
+                }
                 if let Some(parent) = to.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
-                let remaining = MAX_UNPACK_BYTES.saturating_sub(total_written);
                 let mut f = std::fs::File::create(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+                let entry_size = entry.size();
                 let mut limited = entry.take(remaining + 1);
                 let copied = std::io::copy(&mut limited, &mut f).map_err(|e| format!("{}: {e}", to.display()))?;
-                total_written = total_written.saturating_add(copied);
-                if total_written > MAX_UNPACK_BYTES {
-                    let _ = std::fs::remove_dir_all(&part);
+                if copied > remaining {
                     return Err("voice archive exceeds maximum extracted size".into());
                 }
+                if copied != entry_size {
+                    return Err("voice archive ended before the file was complete".into());
+                }
+                total_written += copied;
             }
             _ => {}
         }
     }
-    let _ = std::fs::remove_dir_all(into);
-    std::fs::rename(&part, into).map_err(|e| format!("{}: {e}", into.display()))
+    Ok(())
 }
 
 /// The file in `dir` named `prefix…suffix`, the int8 one first when there are both.
@@ -427,14 +456,19 @@ mod tests {
 
     #[test]
     fn wav_header_matches_samples_and_rate() {
-        let data = wav(&[0.0, 1.0, -1.0, 2.0], 24_000);
+        let data = wav(&[0.0, 1.0, -1.0, 2.0, -2.0, f32::NAN], 24_000).unwrap();
+        assert!(wav(&[], 0).is_err());
+        assert!(wav(&[], -1).is_err());
+        assert_eq!(data.len(), 56);
+        assert_eq!(&data[4..8], &48u32.to_le_bytes());
         assert_eq!(&data[0..4], b"RIFF");
         assert_eq!(&data[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(data[24..28].try_into().unwrap()), 24_000);
-        assert_eq!(u32::from_le_bytes(data[40..44].try_into().unwrap()), 8);
+        assert_eq!(u32::from_le_bytes(data[40..44].try_into().unwrap()), 12);
         assert_eq!(i16::from_le_bytes(data[46..48].try_into().unwrap()), 32767);
-        assert_eq!(i16::from_le_bytes(data[48..50].try_into().unwrap()), -32767);
+        assert_eq!(i16::from_le_bytes(data[48..50].try_into().unwrap()), i16::MIN);
         assert_eq!(i16::from_le_bytes(data[50..52].try_into().unwrap()), 32767);
+        assert_eq!(&data[52..56], &[0, 128, 0, 0]);
     }
 
     #[test]
@@ -487,6 +521,21 @@ mod tests {
             builder.finish().unwrap();
         }
         let dest = tmp.join("out");
+        let small = tmp.join("small");
+        std::fs::create_dir(&small).unwrap();
+        assert!(unpack_into(&archive_path, &small, 9)
+            .unwrap_err()
+            .contains("maximum extracted size"));
+        assert!(!small.join("sub/model.onnx").exists());
+
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("old"), b"old model").unwrap();
+        let broken = tmp.join("broken.tar.bz2");
+        std::fs::write(&broken, b"not an archive").unwrap();
+        assert!(unpack(&broken, &dest).is_err());
+        assert!(!beside(&dest, "part").exists());
+        assert_eq!(std::fs::read(dest.join("old")).unwrap(), b"old model");
+
         unpack(&archive_path, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a b c\n");
         assert_eq!(std::fs::read(dest.join("sub/model.onnx")).unwrap(), b"onnx");

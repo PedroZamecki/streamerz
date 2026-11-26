@@ -99,7 +99,7 @@ function amount(a) {
     case "raid": return n(g.viewers);
     case "giftbomb": return n(g.gifts) || n(g.count);
     case "resub": return n(g.cumulative) || n(g.cumulativeMonths) || n(g.months);
-    case "superchat": case "supersticker": return n(g.amount) || n(g.amountMicros) / 1e6;
+    case "superchat": case "supersticker": return n(g.microAmount) / 1e6 || n(g.amount);
     case "gift": return n(g.coins) || n(g.diamondCount) * (n(g.repeatCount) || 1);
     default: return n(g.amount) || n(g.count) || n(g.months);
   }
@@ -142,6 +142,7 @@ const showing = [];
 const last = [];
 let paused = false;
 let resting = false;
+let restTimer = 0;
 
 function take(a) {
   if (!a || !a.kind) return;
@@ -152,7 +153,7 @@ function take(a) {
   if (S.combos !== false && a.kind === "gift" && a.platform === "tiktok") {
     const same = x => x.a.kind === "gift" && x.a.userId === a.userId &&
       (x.a.args || {}).giftId === (a.args || {}).giftId;
-    const shown = showing.find(same) || waiting.find(same);
+    const shown = showing.find(x => !x.leaving && same(x)) || waiting.find(same);
     if (shown) return grow(shown, a);
   }
   const rule = pick(a);
@@ -201,7 +202,7 @@ function seconds(item) {
 
 // A rule's words with the alert's filled in, as plain text (for the voice).
 function said(text, w) {
-  return String(text).replace(/%(\w+)%/g, (all, k) => (k in w ? w[k] : all));
+  return String(text).replace(/%(\w+)%/g, (all, k) => (Object.hasOwn(w, k) ? w[k] : all));
 }
 
 // --- Drawing one alert. --------------------------------------------------------------------------
@@ -221,7 +222,7 @@ function title(text, w) {
   el.className = "title";
   for (const part of String(text || "%user%: %event%").split(/(%\w+%)/)) {
     const key = /^%(\w+)%$/.exec(part);
-    if (!key || !(key[1] in w)) { el.append(part); continue; }
+    if (!key || !Object.hasOwn(w, key[1])) { el.append(part); continue; }
     const span = document.createElement("span");
     if (key[1] === "user" || key[1] === "amount" || key[1] === "gift") span.className = "hl";
     span.textContent = w[key[1]];
@@ -233,7 +234,7 @@ function title(text, w) {
 // A rule's own HTML (Code: Card HTML): the %words% are filled in as text, never as HTML.
 function custom(html, w) {
   const escape = s => String(s).replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
-  return html.replace(/%(\w+)%/g, (all, k) => k in w ? escape(w[k]) : all);
+  return html.replace(/%(\w+)%/g, (all, k) => Object.hasOwn(w, k) ? escape(w[k]) : all);
 }
 
 function show(item) {
@@ -275,9 +276,10 @@ function show(item) {
 
   if (rule.sound) {
     const audio = new Audio(rule.sound);
-    audio.volume = Math.min(1, (Number(rule.volume ?? 80) / 100) * (Number(S.volume ?? 100) / 100));
+    audio.volume = Math.max(0, Math.min(1, ((Number(rule.volume ?? 80) || 0) / 100) * ((Number(S.volume ?? 100) || 0) / 100)));
     audio.muted = !!S.muted;
     audio.onloadedmetadata = () => {
+      if (item.leaving || !Number.isFinite(audio.duration)) return;
       item.soundMs = audio.duration * 1000;
       clearTimeout(item.timer);
       item.timer = setTimeout(() => leave(item), seconds(item));
@@ -291,7 +293,7 @@ function show(item) {
       .speak(said(rule.say, w), rule.voice ? { voice: rule.voice } : {})
       .then(voice => {
         if (item.leaving) return;
-        voice.volume = Math.min(1, Number(S.volume ?? 100) / 100);
+        voice.volume = Math.max(0, Math.min(1, (Number(S.volume ?? 100) || 0) / 100));
         voice.muted = !!S.muted;
         item.voice = voice;
         item.voiceMs = voice.durationMs || 0;
@@ -320,18 +322,28 @@ function leave(item) {
   void el.offsetWidth;
   el.classList.add("going");
   el.style.animationName = out;
+  let done = false, fallback = 0;
   const gone = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(fallback);
     el.remove();
-    showing.splice(showing.indexOf(item), 1);
+    const idx = showing.indexOf(item);
+    if (idx >= 0) showing.splice(idx, 1);
     const gap = (Number(S.gap) || 0) * 1000;
     if (gap) {
       resting = true;
-      setTimeout(() => { resting = false; pump(); }, gap);
+      clearTimeout(restTimer);
+      restTimer = setTimeout(() => { resting = false; restTimer = 0; pump(); }, gap);
     }
     pump();
     streamerz.publish(topic("state"), state());
   };
-  if (out === "None") gone(); else el.addEventListener("animationend", gone, { once: true });
+  if (out === "None") gone();
+  else {
+    el.addEventListener("animationend", gone, { once: true });
+    fallback = setTimeout(gone, (Number(S.animMs) || 600) + 250);
+  }
 }
 
 // --- Settings, controls and Test. ----------------------------------------------------------------
@@ -362,16 +374,15 @@ function control(value, old) {
   switch (value.do || value) {
     case "pause": paused = true; break;
     case "resume": paused = false; pump(); break;
-    case "skip": showing.slice().forEach(leave); break;
-    case "clear": waiting.length = 0; showing.slice().forEach(leave); break;
+    case "skip": clearTimeout(restTimer); resting = false; showing.slice().forEach(leave); break;
+    case "clear": clearTimeout(restTimer); resting = false; waiting.length = 0; showing.slice().forEach(leave); break;
     case "replay": if (last[0]) { waiting.unshift({ ...last[0], at: Date.now() }); pump(); } break;
-    case "mute": S.muted = true; showing.forEach(i => i.audio && (i.audio.muted = true)); break;
-    case "unmute": S.muted = false; showing.forEach(i => i.audio && (i.audio.muted = false)); break;
+    case "mute": S.muted = true; showing.forEach(i => { if (i.audio) i.audio.muted = true; if (i.voice) i.voice.muted = true; }); break;
+    case "unmute": S.muted = false; showing.forEach(i => { if (i.audio) i.audio.muted = false; if (i.voice) i.voice.muted = false; }); break;
   }
   streamerz.publish(topic("state"), state());
 }
 
-look(S);
 streamerz.onSettings(look);
 streamerz.on(topic(), control);
 streamerz.alerts(take);

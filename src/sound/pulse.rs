@@ -22,7 +22,10 @@ struct BufferAttr {
     fragsize: u32,
 }
 
-const FLOAT32LE: c_int = 5;
+#[cfg(target_endian = "little")]
+const FLOAT32_NE: c_int = 5;
+#[cfg(target_endian = "big")]
+const FLOAT32_NE: c_int = 6;
 const PLAYBACK: c_int = 1;
 /// What the server keeps ahead: 60 ms, so a stop or a volume change is heard at once.
 const AHEAD_MS: u32 = 60;
@@ -101,7 +104,7 @@ pub struct Pulse {
 pub fn open(device: &str) -> Result<Box<dyn Output>, String> {
     let api = api()?;
     let spec = SampleSpec {
-        format: FLOAT32LE,
+        format: FLOAT32_NE,
         rate: RATE,
         channels: CHANNELS as u8,
     };
@@ -155,10 +158,14 @@ impl Output for Pulse {
         Ok(())
     }
 
-    fn drain(&mut self) {
+    fn drain(&mut self) -> Result<(), String> {
         let mut error = 0;
         // SAFETY: the stream is open.
-        unsafe { (self.api.drain)(self.stream, &mut error) };
+        if unsafe { (self.api.drain)(self.stream, &mut error) } < 0 {
+            Err(said(self.api, error))
+        } else {
+            Ok(())
+        }
     }
 }
 

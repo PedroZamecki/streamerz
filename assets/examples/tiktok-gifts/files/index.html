@@ -87,7 +87,8 @@ const el = (tag, cls, text) => {
 streamerz.event("TikTok.Gift", g => {
   const count = Math.max(1, Number(g.repeatCount) || 1);
   const each = Number(g.diamondCount) || 0;
-  if (each * count < (Number(settings.minCoins) || 0) && g.repeatEnd !== false) return;
+  const total = each ? each * count : Number(g.coins) || 0;
+  if (total < (Number(settings.minCoins) || 0)) return;
 
   const key = g.userId + ":" + g.giftId;
   let pill = open.get(key);
@@ -97,12 +98,14 @@ streamerz.event("TikTok.Gift", g => {
     face.hidden = settings.showAvatar === false;
     if (g.profilePictureUrl) {
       const img = new Image();
-      img.onload = () => face.replaceChildren(img);
+      img.onload = () => { if (pill.isConnected) face.replaceChildren(img); };
       img.src = g.profilePictureUrl;
     }
     const words = el("div", "words");
     // The line under the name: the setting's words, with {gift} and {user} filled in.
-    const what = String(settings.text || "sent {gift}").replace("{gift}", g.giftName || "a gift").replace("{user}", g.user || "");
+    const what = String(settings.text || "sent {gift}")
+      .replace("{gift}", () => g.giftName || "a gift")
+      .replace("{user}", () => g.user || "");
     words.append(el("div", "name", g.user), el("div", "what", what));
     const coins = el("div", "coins");
     coins.hidden = settings.showCoins === false;
@@ -128,7 +131,6 @@ streamerz.event("TikTok.Gift", g => {
     void counter.offsetWidth; // Read once so the animation starts again.
     counter.classList.add("bump");
   }
-  const total = each * count;
   pill.coins.replaceChildren();
   const coin = new Image();
   coin.src = streamerz.icon("coins", "#ffd54a");

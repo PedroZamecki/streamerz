@@ -36,12 +36,32 @@ pub struct ExtensionInstall {
     pub expected_folder: Option<bool>,
 }
 
+fn extension_setting<'a>(value: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+    value.get("extensions")?.get("settings")?.get(id)
+}
+
 fn disabled_extension(setting: &serde_json::Value) -> bool {
     setting["state"].as_i64() == Some(0)
         || setting["disable_reasons"]
             .as_array()
             .is_some_and(|items| !items.is_empty())
         || setting["disable_reasons"].as_i64().is_some_and(|reason| reason != 0)
+}
+
+/// Interns dynamically discovered browser folder names once so repeated `installed()` calls never leak.
+fn intern_name(name: &str) -> &'static str {
+    static CACHE: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(mut cache) = CACHE.lock() {
+        if let Some(&existing) = cache.iter().find(|&&s| s == name) {
+            return existing;
+        }
+        if cache.len() < 64 {
+            let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+            cache.push(leaked);
+            return leaked;
+        }
+    }
+    "Chromium"
 }
 
 impl Browser {
@@ -283,7 +303,7 @@ const KNOWN: [Known; 20] = [
 /// The browsers installed, in the order above (the most used first), plus dynamically discovered Chromium variants.
 pub fn installed() -> Vec<Browser> {
     let mut browsers: Vec<Browser> = KNOWN.iter().filter_map(find).collect();
-    for extra in scan_dynamic_chromium() {
+    for extra in scan_dynamic_chromium(&browsers) {
         if !browsers.iter().any(|b| b.data == extra.data || b.exe == extra.exe) {
             browsers.push(extra);
         }
@@ -413,9 +433,9 @@ fn registry_app_path(program: &str) -> Option<PathBuf> {
             )
         };
         if res == 0 && size > 2 {
-            let len = (size as usize / 2).saturating_sub(1);
+            let len = (size as usize / 2).min(buf.len());
             let s = String::from_utf16_lossy(&buf[..len]);
-            let path = PathBuf::from(s.trim_matches('"'));
+            let path = PathBuf::from(s.trim_end_matches('\0').trim_matches('"'));
             if path.is_file() && windows_path_suffix(&path.to_string_lossy(), program) {
                 return Some(path);
             }
@@ -540,7 +560,7 @@ fn is_valid_chromium_browser_dir(dir: &Path) -> bool {
 
 /// Dynamically discovers any installed Chromium browser profiles (e.g. custom or unlisted forks)
 /// not already listed in [`KNOWN`].
-fn scan_dynamic_chromium() -> Vec<Browser> {
+fn scan_dynamic_chromium(known: &[Browser]) -> Vec<Browser> {
     let mut extra = Vec::new();
     #[cfg(not(windows))]
     {
@@ -557,13 +577,13 @@ fn scan_dynamic_chromium() -> Vec<Browser> {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
+                if known.iter().any(|b| b.data == path) {
+                    continue;
+                }
                 if path.is_dir() && path.join("Local State").is_file() && is_valid_chromium_browser_dir(&path) {
                     let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                         continue;
                     };
-                    if NON_BROWSERS.iter().any(|nb| dir_name.to_ascii_lowercase().contains(nb)) {
-                        continue;
-                    }
                     if let Some(exe) = on_path(dir_name).or_else(|| on_path("chromium")) {
                         let exe_name = exe
                             .file_name()
@@ -573,9 +593,8 @@ fn scan_dynamic_chromium() -> Vec<Browser> {
                         if NON_BROWSERS.iter().any(|nb| exe_name.contains(nb)) {
                             continue;
                         }
-                        let name: &'static str = Box::leak(dir_name.to_string().into_boxed_str());
                         extra.push(Browser {
-                            name,
+                            name: intern_name(dir_name),
                             engine: BrowserEngine::Chromium,
                             exe,
                             data: path,
@@ -593,6 +612,9 @@ fn scan_dynamic_chromium() -> Vec<Browser> {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let user_data = path.join("User Data");
+                    if known.iter().any(|b| b.data == user_data) {
+                        continue;
+                    }
                     if user_data.is_dir()
                         && user_data.join("Local State").is_file()
                         && is_valid_chromium_browser_dir(&user_data)
@@ -605,9 +627,8 @@ fn scan_dynamic_chromium() -> Vec<Browser> {
                         }
                         let exe_candidate = path.join("Application").join("chrome.exe");
                         if exe_candidate.is_file() {
-                            let name: &'static str = Box::leak(dir_name.to_string().into_boxed_str());
                             extra.push(Browser {
-                                name,
+                                name: intern_name(dir_name),
                                 engine: BrowserEngine::Chromium,
                                 exe: exe_candidate,
                                 data: user_data,
@@ -628,31 +649,40 @@ fn firefox_profiles(base: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut result = Vec::new();
-    for section in ini.split('[').skip(1) {
-        let Some((header, body)) = section.split_once(']') else {
-            continue;
-        };
-        if !header.starts_with("Profile") {
-            continue;
-        }
-        let mut path = None;
-        let mut relative = true;
-        for line in body.lines() {
-            if let Some((key, value)) = line.trim().split_once('=') {
-                match key {
-                    "Path" => path = Some(value.trim()),
-                    "IsRelative" => relative = value.trim() != "0",
-                    _ => {}
+    let mut in_profile = false;
+    let mut path: Option<&str> = None;
+    let mut relative = true;
+    let mut finish = |in_profile: bool, path: &mut Option<&str>, relative: &mut bool| {
+        if in_profile {
+            if let Some(p) = path.take().filter(|p| !p.is_empty()) {
+                let full = if *relative { base.join(p) } else { PathBuf::from(p) };
+                if full.join("prefs.js").is_file() {
+                    result.push(full);
                 }
             }
         }
-        if let Some(path) = path {
-            let path = if relative { base.join(path) } else { PathBuf::from(path) };
-            if path.join("prefs.js").is_file() {
-                result.push(path);
+        *path = None;
+        *relative = true;
+    };
+    for line in ini.lines() {
+        let trimmed = line.trim();
+        if let Some(header) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            finish(in_profile, &mut path, &mut relative);
+            in_profile = header.starts_with("Profile");
+            continue;
+        }
+        if !in_profile {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            match key.trim() {
+                "Path" => path = Some(value.trim()),
+                "IsRelative" => relative = value.trim() != "0",
+                _ => {}
             }
         }
     }
+    finish(in_profile, &mut path, &mut relative);
     result
 }
 
@@ -666,23 +696,15 @@ impl Browser {
                 found.extend(firefox_profiles(base));
             }
         }
-        let Ok(dir) = dir else {
-            if !found.is_empty() {
-                return found;
-            }
-            // Opera keeps one profile in the data folder itself.
-            return if self.data.join("Preferences").is_file() {
-                vec![self.data.clone()]
-            } else {
-                Vec::new()
-            };
-        };
-        found.extend(
-            dir.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.join("Preferences").is_file() || p.join("prefs.js").is_file()),
-        );
-        if self.data.join("Preferences").is_file() {
+        if let Ok(dir) = dir {
+            found.extend(
+                dir.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.join("Preferences").is_file() || p.join("prefs.js").is_file()),
+            );
+        }
+        // Opera keeps one profile in the data folder itself, and Tor Browser points straight at its profile.
+        if self.data.join("Preferences").is_file() || self.data.join("prefs.js").is_file() {
             found.push(self.data.clone());
         }
         found.sort();
@@ -717,11 +739,8 @@ impl Browser {
                 ]
                 .iter()
                 .find_map(|id| {
-                    let setting = value.pointer(&format!("/extensions/settings/{id}"))?;
-                    let off = setting["state"].as_i64() == Some(0)
-                        || setting["disable_reasons"].as_array().is_some_and(|r| !r.is_empty())
-                        || setting["disable_reasons"].as_i64().is_some_and(|r| r != 0);
-                    if off {
+                    let setting = extension_setting(&value, id)?;
+                    if disabled_extension(setting) {
                         return None;
                     }
                     // "anckd.../1.2.0_0": the version is the folder's name.
@@ -779,7 +798,7 @@ impl Browser {
                     crate::tiktok_bridge::EDGE_PRODUCT_ID,
                     crate::tiktok_bridge::EXTENSION_ID,
                 ] {
-                    let Some(setting) = value.pointer(&format!("/extensions/settings/{ext_id}")) else {
+                    let Some(setting) = extension_setting(&value, ext_id) else {
                         continue;
                     };
                     if !seen.insert(ext_id.to_owned()) {
@@ -856,14 +875,22 @@ impl Browser {
         }
         c.arg(url).env_remove("GDK_BACKEND");
         #[cfg(not(windows))]
-        if let Some(root) = self.data.ancestors().nth(
-            KNOWN
-                .iter()
-                .find(|k| k.0 == self.name)
-                .map_or(1, |k| Path::new(k.4).components().count()),
-        ) {
-            // A development instance's isolated XDG path must not select a fresh browser profile.
-            c.env("XDG_CONFIG_HOME", root);
+        {
+            let rel = KNOWN.iter().find(|k| k.0 == self.name).map(|k| k.4);
+            let xdg_depth = match (self.is_firefox_based(), rel) {
+                (false, Some(r)) => Some(Path::new(r).components().count()),
+                (false, None) => Some(1),
+                (true, Some(r)) => {
+                    let stripped = r.trim_start_matches('.');
+                    // Only set XDG_CONFIG_HOME when data lives under an XDG config root, not ~/.mozilla or ~/.zen.
+                    (stripped != r && self.data.ends_with(stripped)).then(|| Path::new(stripped).components().count())
+                }
+                (true, None) => None,
+            };
+            if let Some(root) = xdg_depth.and_then(|d| self.data.ancestors().nth(d)) {
+                // A development instance's isolated XDG path must not select a fresh browser profile.
+                c.env("XDG_CONFIG_HOME", root);
+            }
         }
         if std::env::var_os("APPIMAGE").is_some() {
             c.env_remove("LD_LIBRARY_PATH").env_remove("LD_PRELOAD");
@@ -944,6 +971,7 @@ impl Browser {
             }
             #[cfg(target_os = "linux")]
             if let Some(exe_name) = self.exe.file_name().and_then(|n| n.to_str()) {
+                let canon_exe = self.exe.canonicalize().ok();
                 if let Ok(entries) = std::fs::read_dir("/proc") {
                     for entry in entries.flatten() {
                         let path = entry.path();
@@ -954,18 +982,15 @@ impl Browser {
                         if !is_process_alive(pid) {
                             continue;
                         }
+                        if let (Some(want), Ok(actual)) = (&canon_exe, std::fs::read_link(path.join("exe"))) {
+                            if actual == *want {
+                                return true;
+                            }
+                        }
                         let Ok(comm) = std::fs::read_to_string(path.join("comm")) else {
                             continue;
                         };
-                        let c = comm.trim();
-                        if c.eq_ignore_ascii_case(exe_name)
-                            || (self.is_firefox_based()
-                                && (c.contains("firefox")
-                                    || c.contains("zen")
-                                    || c.contains("floorp")
-                                    || c.contains("librewolf")
-                                    || c.contains("waterfox")))
-                        {
+                        if linux_comm_matches(&comm, exe_name) {
                             return true;
                         }
                     }
@@ -976,13 +1001,20 @@ impl Browser {
         #[cfg(windows)]
         {
             let lockfile = self.data.join("lockfile");
-            if lockfile.is_file() {
-                if std::fs::OpenOptions::new().write(true).open(&lockfile).is_err() {
-                    return true;
+            if lockfile.is_file() && std::fs::OpenOptions::new().write(true).open(&lockfile).is_err() {
+                return true;
+            }
+            if self.is_firefox_based() {
+                for profile in self.profiles() {
+                    let parent_lock = profile.join("parent.lock");
+                    if parent_lock.is_file() && std::fs::OpenOptions::new().write(true).open(&parent_lock).is_err() {
+                        return true;
+                    }
                 }
             }
             if let Some(exe_name) = self.exe.file_name().and_then(|n| n.to_str()) {
                 let exe_path = self.exe.to_string_lossy();
+                let mut buf = vec![0u16; 4096];
                 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
                 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
                     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -1008,10 +1040,10 @@ impl Browser {
                                     let process =
                                         OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
                                     if !process.is_null() {
-                                        let mut buf = [0u16; 32768];
                                         let mut size = buf.len() as u32;
                                         if QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut size) != 0 {
-                                            image = Some(String::from_utf16_lossy(&buf[..size as usize]));
+                                            let n = (size as usize).min(buf.len());
+                                            image = Some(String::from_utf16_lossy(&buf[..n]));
                                         }
                                         CloseHandle(process);
                                     }
@@ -1043,13 +1075,9 @@ pub fn file_url(path: &Path) -> String {
     if !normalized.starts_with('/') {
         out.push('/');
     }
-    for b in normalized.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~' | b':') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
+    crate::commands::percent_into(&mut out, &normalized, |b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~' | b':')
+    });
     out
 }
 
@@ -1070,26 +1098,73 @@ fn is_process_alive(pid: u32) -> bool {
     true
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn linux_comm_matches(comm: &str, exe_name: &str) -> bool {
+    let c = comm.trim();
+    if c.is_empty() || exe_name.is_empty() {
+        return false;
+    }
+    // Linux /proc/<pid>/comm is truncated to 15 bytes (TASK_COMM_LEN - 1).
+    let truncated = exe_name.get(..15).unwrap_or(exe_name);
+    if c.eq_ignore_ascii_case(exe_name) || c.eq_ignore_ascii_case(truncated) {
+        return true;
+    }
+    for suffix in ["-bin", "-browser", "-stable"] {
+        if let Some(base) = exe_name.strip_suffix(suffix) {
+            if !base.is_empty() && c.eq_ignore_ascii_case(base) {
+                return true;
+            }
+            if !base.is_empty() && c.eq_ignore_ascii_case(&format!("{base}-bin")) {
+                return true;
+            }
+        }
+    }
+    c.eq_ignore_ascii_case(&format!("{exe_name}-bin"))
+}
+
 #[cfg(not(windows))]
 fn running_profile(dir: &Path) -> bool {
-    let Some(pid) = std::fs::read_link(dir.join("SingletonLock"))
+    if let Some(pid) = std::fs::read_link(dir.join("SingletonLock"))
         .ok()
         .and_then(|p| p.to_str()?.rsplit_once('-')?.1.parse::<u32>().ok())
-    else {
-        return false;
-    };
-    // A Flatpak sandbox doesn't see the host's processes: the browser's socket says it runs.
-    #[cfg(target_os = "linux")]
-    if crate::sandbox::flatpak() {
-        return dir.join("SingletonSocket").exists();
-    }
-    #[cfg(target_os = "linux")]
-    return is_process_alive(pid);
-    #[cfg(not(target_os = "linux"))]
     {
-        let _ = pid;
-        dir.join("SingletonSocket").exists()
+        // A Flatpak sandbox doesn't see the host's processes: the browser's socket says it runs.
+        #[cfg(target_os = "linux")]
+        if crate::sandbox::flatpak() {
+            return dir.join("SingletonSocket").exists();
+        }
+        #[cfg(target_os = "linux")]
+        if is_process_alive(pid) {
+            return true;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            if dir.join("SingletonSocket").exists() {
+                return true;
+            }
+        }
     }
+    // Firefox-family profiles hold a `lock` symlink whose target ends with `:+<pid>`.
+    if let Some(pid) = std::fs::read_link(dir.join("lock"))
+        .ok()
+        .and_then(|p| p.to_str()?.rsplit_once(":+")?.1.parse::<u32>().ok())
+    {
+        #[cfg(target_os = "linux")]
+        if crate::sandbox::flatpak() {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        if is_process_alive(pid) {
+            return true;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the profile at `dir` lists the extension `id` (its settings say which ones it has).
@@ -1098,8 +1173,7 @@ fn profile_has(dir: &Path, id: &str) -> bool {
         std::fs::read_to_string(dir.join(f)).is_ok_and(|t| {
             serde_json::from_str::<serde_json::Value>(&t)
                 .ok()
-                .and_then(|v| v.pointer(&format!("/extensions/settings/{id}")).cloned())
-                .is_some()
+                .is_some_and(|v| extension_setting(&v, id).is_some())
         })
     })
 }
@@ -1424,5 +1498,92 @@ mod tests {
         assert!(is_valid_chromium_browser_dir(&custom_dir));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn firefox_ini_handles_brackets_in_values_and_single_dir_profiles() {
+        let root = std::env::temp_dir().join(format!("sz-ff-brackets-{}", std::process::id()));
+        let prof = root.join("abc.default");
+        std::fs::create_dir_all(&prof).unwrap();
+        std::fs::write(prof.join("prefs.js"), "").unwrap();
+        std::fs::write(
+            root.join("profiles.ini"),
+            "[Profile0]\nName=Work [Dev]\nIsRelative=1\nPath=abc.default\n[Profile1]\nIsRelative=1\nPath=\n",
+        )
+        .unwrap();
+        assert_eq!(firefox_profiles(&root), vec![prof.clone()]);
+
+        // Tor Browser points directly at its profile directory containing prefs.js.
+        let tor = Browser {
+            name: "Tor Browser",
+            engine: BrowserEngine::Firefox,
+            exe: "/tor".into(),
+            data: prof.clone(),
+            extensions_page: "about:addons",
+        };
+        assert_eq!(tor.profiles(), vec![prof]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn linux_process_matching_avoids_cross_browser_and_substring_false_positives() {
+        assert!(linux_comm_matches("firefox", "firefox"));
+        assert!(linux_comm_matches("firefox-bin", "firefox"));
+        assert!(linux_comm_matches("firefox", "firefox-bin"));
+        assert!(linux_comm_matches("zen-bin", "zen"));
+        assert!(linux_comm_matches("google-chrome-s", "google-chrome-stable"));
+        assert!(!linux_comm_matches("zen-bin", "firefox"));
+        assert!(!linux_comm_matches("firefox", "zen"));
+        assert!(!linux_comm_matches("zenity", "zen"));
+        assert!(!linux_comm_matches("ryzenadj", "zen"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn firefox_lock_symlink_and_dotdir_xdg_env() {
+        let root = std::env::temp_dir().join(format!("sz-ff-lock-{}", std::process::id()));
+        let dot_ff = root.join(".mozilla/firefox");
+        let prof = dot_ff.join("p1.default");
+        std::fs::create_dir_all(&prof).unwrap();
+        std::fs::write(prof.join("prefs.js"), "").unwrap();
+        let ff = Browser {
+            name: "Mozilla Firefox",
+            engine: BrowserEngine::Firefox,
+            exe: "/nonexistent-firefox".into(),
+            data: dot_ff.clone(),
+            extensions_page: "about:addons",
+        };
+        assert!(!ff.is_running());
+        let lock = prof.join("lock");
+        std::os::unix::fs::symlink(format!("127.0.1.1:+{}", std::process::id()), &lock).unwrap();
+        assert!(ff.is_running());
+        let _ = std::fs::remove_file(&lock);
+
+        // Dot-folder under HOME must not override XDG_CONFIG_HOME to HOME.
+        let cmd = ff.command("https://example.com");
+        assert!(cmd.get_envs().all(|(k, _)| k != "XDG_CONFIG_HOME"));
+
+        // XDG-based Firefox folder sets XDG_CONFIG_HOME to its config root.
+        let xdg_ff = Browser {
+            data: root.join(".config/mozilla/firefox"),
+            ..ff
+        };
+        let cmd2 = xdg_ff.command("https://example.com");
+        let xdg = cmd2
+            .get_envs()
+            .find(|(k, _)| *k == "XDG_CONFIG_HOME")
+            .and_then(|(_, v)| v)
+            .map(PathBuf::from);
+        assert_eq!(xdg, Some(root.join(".config")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intern_name_reuses_allocation_and_extension_setting_handles_special_ids() {
+        let a = intern_name("CustomBrowser");
+        let b = intern_name("CustomBrowser");
+        assert!(std::ptr::eq(a, b));
+        let prefs = serde_json::json!({"extensions": {"settings": {"a/b~1": {"state": 1}}}});
+        assert!(extension_setting(&prefs, "a/b~1").is_some());
     }
 }

@@ -783,6 +783,71 @@ mod tests {
             let _ = std::fs::remove_file(report_path);
         });
     }
+
+    #[test]
+    fn only_diagnostic_frames_are_kept_by_the_backend() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut crash = None;
+        // What draws the window is remembered, a software device said so.
+        let before = renderer();
+        assert!(handle_diag_request(
+            &json!({"request": "FrontendRenderer", "device": "llvmpipe", "software": true}),
+            &mut crash
+        ));
+        assert_eq!(renderer(), Some(("llvmpipe".to_owned(), true)));
+        assert!(handle_diag_request(&json!({"request": "FrontendRenderer"}), &mut crash));
+        assert_eq!(renderer(), Some(("an unknown device".to_owned(), false)));
+        if let Ok(mut kept) = RENDERER.lock() {
+            *kept = before;
+        }
+        // Empty log lines and steps are dropped, but the frame is still a diagnostic one.
+        assert!(handle_diag_request(
+            &json!({"request": "FrontendLog", "text": "  "}),
+            &mut crash
+        ));
+        assert!(handle_diag_request(
+            &json!({"request": "FrontendStep", "kind": "fact"}),
+            &mut crash
+        ));
+        assert!(crash.is_none());
+        // Anything else goes on to the application requests.
+        for request in [
+            json!({"request": "StreamerzCoreView"}),
+            json!({"request": 7}),
+            json!({}),
+        ] {
+            assert!(!handle_diag_request(&request, &mut crash), "{request}");
+        }
+    }
+
+    #[test]
+    fn every_event_family_has_its_own_bit_and_window_commands_none() {
+        use crate::host::Event;
+        let changes = Changes::default();
+        let families = [
+            Event::Changed,
+            Event::Chat,
+            Event::Log,
+            Event::Image,
+            Event::Theme,
+            Event::Input,
+            Event::Dev,
+            Event::Show,
+            Event::Preview,
+        ];
+        let mut seen = 0u32;
+        for event in families {
+            changes.mark(event);
+            let bit = changes.topics.swap(0, Ordering::AcqRel);
+            assert_eq!(bit.count_ones(), 1);
+            assert_eq!(seen & bit, 0, "two families share a bit");
+            seen |= bit;
+        }
+        for event in [Event::Toggle, Event::Reopen, Event::Restart, Event::Quit] {
+            changes.mark(event);
+            assert_eq!(changes.topics.load(Ordering::Acquire), 0);
+        }
+    }
 }
 
 #[cfg(test)]

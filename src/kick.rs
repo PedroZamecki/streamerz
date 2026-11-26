@@ -8,10 +8,12 @@
 use crate::commands::Chat;
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::{ask, ConnectionCommand, Handle, ReplyErrors};
 use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -123,6 +125,19 @@ pub struct KickConfig {
     pub bot: Option<KickAccount>,
 }
 
+impl KickConfig {
+    fn refresh_target(&mut self, bot: bool, login: &KickAccount, credentials: (&str, &str)) -> Option<&mut KickToken> {
+        if (self.client_id.as_str(), self.client_secret.as_str()) != credentials {
+            return None;
+        }
+        let account = if bot { &mut self.bot } else { &mut self.broadcaster };
+        account
+            .as_mut()
+            .filter(|a| a.user_id == login.user_id && a.token == login.token)
+            .map(|a| &mut a.token)
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KickAccount {
@@ -226,203 +241,141 @@ pub struct KickStatus {
     pub chatroom_id: Option<u64>,
 }
 
-#[derive(Clone)]
-pub struct KickHandle {
-    tx: mpsc::UnboundedSender<KickCmd>,
-    connected: Arc<AtomicBool>,
+pub type KickHandle = Handle<KickCmd>;
+
+impl ConnectionCommand for KickCmd {
+    const CONNECT: Self = Self::Connect;
+    const DISCONNECT: Self = Self::Disconnect;
 }
 
+const REPLY_ERRORS: ReplyErrors = ReplyErrors::new("Kick runner is down");
+
 impl KickHandle {
-    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
-    pub fn detached() -> (Self, mpsc::UnboundedReceiver<KickCmd>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        (KickHandle { tx, connected }, rx)
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-
-    pub fn connect(&self) {
-        let _ = self.tx.send(KickCmd::Connect);
-    }
-
-    pub fn disconnect(&self) {
-        let _ = self.tx.send(KickCmd::Disconnect);
-    }
-
-    pub fn send(&self, cmd: KickCmd) {
-        let _ = self.tx.send(cmd);
+    /// A test's handle that dropped its connection (Disconnect keeps the handle).
+    #[cfg(test)]
+    pub fn set_connected(&self, on: bool) {
+        self.state.store(on, Ordering::Relaxed)
     }
 
     pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SendMessage {
-                text: text.to_string(),
-                use_bot,
-                fallback,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SendMessage {
+            text: text.to_string(),
+            use_bot,
+            fallback,
+            resp,
+        })
+        .await
     }
 
     pub async fn reply_message(&self, text: &str, reply_id: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::ReplyToMessage {
-                text: text.to_string(),
-                reply_id: reply_id.to_string(),
-                use_bot,
-                fallback,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::ReplyToMessage {
+            text: text.to_string(),
+            reply_id: reply_id.to_string(),
+            use_bot,
+            fallback,
+            resp,
+        })
+        .await
     }
 
     pub async fn api(&self, method: &'static str, path: &str, body: Option<Value>) -> Result<Value, String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::Api {
-                method,
-                path: path.to_string(),
-                body,
-                resp,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::Api {
+            method,
+            path: path.to_string(),
+            body,
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_title(&self, title: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelTitle {
-                title: title.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelTitle {
+            title: title.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_category(&self, category_id: u64, category_name: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelCategory {
-                category_id,
-                category_name: category_name.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelCategory {
+            category_id,
+            category_name: category_name.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_tags(&self, tags: Vec<String>) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelTags { tags, resp: resp_tx })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelTags { tags, resp }).await
     }
 
     pub async fn start_ad_break(&self, duration_seconds: u64) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::StartAdBreak {
-                duration_seconds,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::StartAdBreak {
+            duration_seconds,
+            resp,
+        })
+        .await
     }
 
     pub async fn get_ad_status(&self) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::GetAdStatus { resp: resp_tx })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::GetAdStatus { resp }).await
     }
 
     pub async fn ban_user(&self, user_login: &str, reason: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::BanUser {
-                user_login: user_login.to_string(),
-                reason: reason.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::BanUser {
+            user_login: user_login.to_string(),
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn ban_user_id(&self, user_id: u64, duration: Option<u64>, reason: &str) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::BanUserId {
-                user_id,
-                duration,
-                reason: reason.to_string(),
-                resp,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::BanUserId {
+            user_id,
+            duration,
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn unban_user(&self, user_login: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnbanUser {
-                user_login: user_login.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnbanUser {
+            user_login: user_login.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn unban_user_id(&self, user_id: u64) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnbanUserId { user_id, resp })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnbanUserId { user_id, resp }).await
     }
 
     pub async fn timeout_user(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::TimeoutUser {
-                user_login: user_login.to_string(),
-                duration,
-                reason: reason.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::TimeoutUser {
+            user_login: user_login.to_string(),
+            duration,
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn untimeout_user(&self, user_login: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnTimeoutUser {
-                user_login: user_login.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnTimeoutUser {
+            user_login: user_login.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn delete_message(&self, message_id: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::DeleteMessage {
-                message_id: message_id.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::DeleteMessage {
+            message_id: message_id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn get_status(&self) -> KickStatus {
@@ -437,10 +390,7 @@ impl KickHandle {
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let connected = Arc::new(AtomicBool::new(false));
-    let handle = KickHandle {
-        tx,
-        connected: connected.clone(),
-    };
+    let handle = KickHandle::new(tx, connected.clone());
 
     let runner = Runner {
         engine,
@@ -455,8 +405,8 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle
 }
 
 /// A task that hasn't ended yet.
-fn running(task: &Option<tokio::task::JoinHandle<()>>) -> bool {
-    task.as_ref().is_some_and(|t| !t.is_finished())
+fn running(task: &Option<crate::emote_events::Abort>) -> bool {
+    task.as_ref().is_some_and(|t| !t.0.is_finished())
 }
 
 struct Runner {
@@ -464,7 +414,7 @@ struct Runner {
     cfg: Arc<watch::Sender<Config>>,
     rx: mpsc::UnboundedReceiver<KickCmd>,
     connected: Arc<AtomicBool>,
-    read_task: Option<tokio::task::JoinHandle<()>>,
+    read_task: Option<crate::emote_events::Abort>,
     /// The channel (slug) and its broadcaster user id, looked up once.
     ids: std::cell::RefCell<Option<(String, u64)>>,
 }
@@ -605,37 +555,20 @@ impl Runner {
             return;
         }
 
+        crate::say(format!("Kick: connecting (@{channel})..."));
+
         let engine = self.engine.clone();
         let cfg = self.cfg.clone();
         let connected = self.connected.clone();
-
-        crate::say(format!("Kick: connecting (@{channel})..."));
-
-        self.read_task = Some(tokio::task::spawn_local(async move {
-            run_pusher_loop(engine, cfg, connected).await;
-        }));
+        let reader = run_pusher_loop_url(engine.clone(), cfg.clone(), connected.clone(), KICK_PUSHER_URL, false);
+        self.read_task = Some(crate::emote_events::Abort(tokio::task::spawn_local(monitor_pusher(
+            engine, &cfg, connected, reader,
+        ))));
     }
 
     fn disconnect(&mut self) {
-        if let Some(task) = self.read_task.take() {
-            task.abort();
-        }
-        self.engine.chat_polls_clear("kick");
-        self.engine.chat_unpinned("kick", "");
-        crate::host::polls_changed();
-        if self.connected.swap(false, Ordering::Relaxed) {
-            crate::say("Kick: disconnected".into());
-            let args = Obj::new();
-            self.engine.fire(
-                T_KICK_DISCONNECTED,
-                "KickBroadcasterChatDisconnected",
-                "Kick",
-                "kick",
-                &args,
-                |_| true,
-            );
-            self.engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
-        }
+        drop(self.read_task.take());
+        disconnect_pusher(&self.engine, &self.connected);
     }
 
     /// A user id from a login: every Kick user has a channel whose slug is their name.
@@ -810,8 +743,52 @@ impl Runner {
     }
 }
 
-async fn run_pusher_loop(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, connected: Arc<AtomicBool>) {
-    run_pusher_loop_url(engine, cfg, connected, KICK_PUSHER_URL, false).await;
+/// Watch only while a reader is active. A broadcaster logout cancels even an in-flight read.
+fn monitor_pusher(
+    engine: Rc<Engine>,
+    cfg: &watch::Sender<Config>,
+    connected: Arc<AtomicBool>,
+    reader: impl Future<Output = ()>,
+) -> impl Future<Output = ()> {
+    let mut config = cfg.subscribe();
+    let mut signed_in = config.borrow().kick.broadcaster.is_some();
+    async move {
+        let logout = async {
+            let _ = config
+                .wait_for(|c| {
+                    let was_signed_in = signed_in;
+                    signed_in = c.kick.broadcaster.is_some();
+                    was_signed_in && !signed_in
+                })
+                .await;
+        };
+        tokio::select! {
+            biased;
+            () = logout => disconnect_pusher(&engine, &connected),
+            () = reader => {}
+        }
+    }
+}
+
+fn disconnect_pusher(engine: &Rc<Engine>, connected: &AtomicBool) {
+    engine.chat_polls_clear("kick");
+    engine.chat_unpinned("kick", "");
+    engine.set_chat_viewers("kick", None);
+    crate::host::polls_changed();
+    if connected.swap(false, Ordering::Relaxed) {
+        crate::host::changed();
+        crate::say("Kick: disconnected".into());
+        let args = Obj::new();
+        engine.fire(
+            T_KICK_DISCONNECTED,
+            "KickBroadcasterChatDisconnected",
+            "Kick",
+            "kick",
+            &args,
+            |_| true,
+        );
+        engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
+    }
 }
 
 /// Deletes a chat message, as the broadcaster.
@@ -839,84 +816,69 @@ pub async fn token(
     bot: bool,
     fallback: bool,
 ) -> Result<String, String> {
+    token_with(
+        engine,
+        cfg,
+        bot,
+        fallback,
+        crate::oauth::token,
+        crate::secrets::is_locked,
+    )
+    .await
+}
+
+async fn token_with(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    bot: bool,
+    fallback: bool,
+    exchange: impl AsyncFnOnce(&str, &[(&str, &str)]) -> Result<crate::oauth::Token, String>,
+    locked: impl Fn() -> bool,
+) -> Result<String, String> {
     let _one = REFRESH.lock().await;
-    let pick = |c: &Config, bot: bool| {
-        if bot { &c.kick.bot } else { &c.kick.broadcaster }
-            .clone()
-            .filter(|a| !a.token.access_token.is_empty())
-    };
     let (acc, bot) = {
         let c = cfg.borrow();
-        match (pick(&c, bot), fallback) {
-            (Some(a), _) => (a, bot),
-            (None, true) => (
-                pick(&c, !bot).ok_or_else(|| {
-                    if crate::secrets::is_locked() {
-                        "System keyring is locked; unlock it to use saved Kick login"
-                    } else {
-                        "No Kick account logged in"
-                    }
-                })?,
-                !bot,
-            ),
-            (None, false) => {
-                if crate::secrets::is_locked() {
-                    return Err("System keyring is locked; unlock it to use saved Kick login".into());
-                }
-                // An account that's there but has lost its login (not one never made).
-                if (if bot { &c.kick.bot } else { &c.kick.broadcaster }).is_some() {
-                    crate::notify::login_needed("Kick", bot);
-                }
-                return Err(format!(
-                    "Kick {} isn't logged in",
-                    if bot { "bot" } else { "broadcaster" }
-                ));
-            }
-        }
+        crate::oauth::select_account(
+            &c.kick.broadcaster,
+            &c.kick.bot,
+            bot,
+            fallback,
+            "Kick",
+            |a| &a.token.access_token,
+            locked,
+        )?
     };
-    if !crate::oauth::stale(acc.token.expires_at) || acc.token.refresh_token.is_empty() {
+    if !crate::oauth::needs_refresh(acc.token.expires_at, &acc.token.refresh_token) {
         return Ok(acc.token.access_token);
     }
     let (id, secret) = {
         let c = cfg.borrow();
         (c.kick.client_id.clone(), c.kick.client_secret.clone())
     };
-    let t = crate::oauth::token(
-        KICK_TOKEN_URL,
-        &[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &acc.token.refresh_token),
-            ("client_id", &id),
-            ("client_secret", &secret),
-        ],
-    )
+    crate::oauth::Refresh {
+        platform: "Kick",
+        url: KICK_TOKEN_URL,
+        bot,
+        credentials: (&id, &secret),
+    }
+    .run(engine, &acc.token.refresh_token, exchange, kick_oauth_error, |c| {
+        c.kick
+            .refresh_target(bot, &acc, (&id, &secret))
+            .map(|token| (&mut token.access_token, &mut token.refresh_token, &mut token.expires_at))
+    })
     .await
-    .map_err(|e| {
-        // The server turned the refresh token down (not a network failure): it needs a new login.
-        if e.contains("HTTP 400") || e.contains("HTTP 401") {
-            crate::notify::login_needed("Kick", bot);
-        }
-        format!("Kick token refresh: {e}")
-    })?;
-    let new = KickToken {
-        access_token: t.access.clone(),
-        refresh_token: if t.refresh.is_empty() {
-            acc.token.refresh_token
-        } else {
-            t.refresh
-        },
-        expires_at: t.expires_at,
-    };
-    engine.change(|c| {
-        if let Some(a) = if bot {
-            c.kick.bot.as_mut()
-        } else {
-            c.kick.broadcaster.as_mut()
-        } {
-            a.token = new;
-        }
-    });
-    Ok(t.access)
+}
+
+/// The OAuth endpoint may include request details in its error body.
+fn kick_oauth_error(error: &str) -> String {
+    let status = error
+        .strip_prefix("token request failed (HTTP ")
+        .and_then(|s| s.split_once(')'))
+        .and_then(|(code, _)| code.parse::<u16>().ok());
+    status.map_or_else(
+        || "Kick token request failed".into(),
+        |code| format!("Kick token request failed (HTTP {code})"),
+    )
 }
 
 /// Log in through the browser with the user's own Kick app (client ID and secret in the config,
@@ -957,7 +919,8 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>, bot: bool) -> Result<KickAc
             ("code_verifier", &verifier),
         ],
     )
-    .await?;
+    .await
+    .map_err(|error| kick_oauth_error(&error))?;
     let (user_id, username) = fetch_kick_user(&t.access).await?;
     Ok(KickAccount {
         user_id,
@@ -968,6 +931,16 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>, bot: bool) -> Result<KickAc
             expires_at: t.expires_at,
         },
     })
+}
+
+fn api_url(path: &str) -> Result<String, String> {
+    if path.starts_with("https://api.kick.com/public/v2/") {
+        Ok(path.to_owned())
+    } else if path.starts_with('/') {
+        Ok(format!("{KICK_API_BASE}{path}"))
+    } else {
+        Err("Kick: expected a public API path".into())
+    }
 }
 
 /// One official API call: the JSON answer, or Kick's error message.
@@ -983,12 +956,7 @@ async fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Resu
         }
         None => Vec::new(),
     };
-    // A path under /public/v1, or a whole URL (the v2 endpoints).
-    let url = if path.starts_with("https://") {
-        path.to_string()
-    } else {
-        format!("{KICK_API_BASE}{path}")
-    };
+    let url = api_url(path)?;
     let r = crate::http::request(method, &url, &headers, &body).await?;
     let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
     if (200..300).contains(&r.status) {
@@ -1007,7 +975,7 @@ pub fn kick_emotes(text: &str) -> Vec<(String, String)> {
         let Some(j) = rest[i..].find(']') else { break };
         let tag = &rest[i..i + j + 1];
         if let Some((id, name)) = tag[7..tag.len() - 1].split_once(':') {
-            if id.bytes().all(|b| b.is_ascii_digit()) {
+            if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
                 if !name.is_empty() {
                     crate::emotes::remember_kick_tag(name, id);
                 }
@@ -1056,98 +1024,99 @@ pub async fn run_pusher_loop_url(
     pusher_url: &str,
     run_once: bool,
 ) {
-    engine.set_chat_modes("kick", None);
     let channel = cfg.borrow().kick.channel.trim().to_lowercase();
-    let chatroom_id = cfg.borrow().kick.chatroom_id;
-    let channel_id = cfg.borrow().kick.channel_id;
-
+    if channel.is_empty() {
+        return;
+    }
+    engine.set_chat_modes("kick", None);
+    cache_sub_badges(&Value::Null);
     let is_live_pusher = pusher_url == KICK_PUSHER_URL && !run_once;
-    // Resolve channel_id, chatroom_id, and custom subscriber badge images
-    let (c_id, cr_id) = if is_live_pusher || channel_id.is_none() || chatroom_id.is_none() {
-        let url = format!("https://kick.com/api/v2/channels/{channel}");
-        let headers = [("Accept".to_string(), "application/json".to_string())];
-        let details = if is_live_pusher || (channel_id.is_none() && !run_once) {
-            crate::http::request("GET", &url, &headers, b"").await.ok()
-        } else {
-            None
-        };
-        let parsed = details
-            .as_ref()
-            .filter(|r| r.status == 200)
-            .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
-        if let Some(v) = &parsed {
-            cache_sub_badges(&v["subscriber_badges"]);
-            engine.set_chat_modes("kick", kick_chat_modes(&v["chatroom"]));
-        }
-        let cid = parsed
-            .as_ref()
-            .and_then(|v| v.pointer("/id").and_then(Value::as_u64))
-            .or(channel_id)
-            .unwrap_or(1);
-        let crid = parsed
-            .as_ref()
-            .and_then(|v| v.pointer("/chatroom/id").and_then(Value::as_u64))
-            .or(chatroom_id)
-            .unwrap_or(cid);
-        if channel_id != Some(cid) || chatroom_id != Some(crid) {
-            engine.change(|c| {
-                c.kick.channel_id = Some(cid);
-                c.kick.chatroom_id = Some(crid);
-            });
-        }
-        (cid, crid)
-    } else {
-        (channel_id.unwrap_or(1), chatroom_id.unwrap_or(1))
-    };
-
+    let mut recent = RecentPusherEvents::default();
     let mut failures = 0u32;
-    let mut first_connection = true;
     loop {
-        if !first_connection && is_live_pusher {
+        let cached_ids = {
+            let c = cfg.borrow();
+            if !c.kick.channel.trim().eq_ignore_ascii_case(&channel) {
+                return;
+            }
+            (c.kick.channel_id, c.kick.chatroom_id)
+        };
+        let details = if is_live_pusher {
             engine.set_chat_modes("kick", None);
             let url = format!("https://kick.com/api/v2/channels/{channel}");
             let headers = [("Accept".to_string(), "application/json".to_string())];
-            if let Ok(response) = crate::http::request("GET", &url, &headers, b"").await {
-                if response.status == 200 {
-                    if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
-                        engine.set_chat_modes("kick", kick_chat_modes(&value["chatroom"]));
-                    }
-                }
+            crate::http::request("GET", &url, &headers, b"")
+                .await
+                .ok()
+                .filter(|r| r.status == 200)
+                .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        } else {
+            None
+        };
+        let Some((c_id, cr_id)) = pusher_ids(details.as_ref(), cached_ids) else {
+            if failures == 0 {
+                crate::core::status::record_failure("kick", crate::core::status::Failure::Connect);
+                crate::warn(format!("Kick: could not find the chatroom for @{channel}"));
             }
+            if run_once {
+                return;
+            }
+            failures = failures.saturating_add(1);
+            tokio::time::sleep(crate::http::backoff(failures)).await;
+            continue;
+        };
+        if !cfg.borrow().kick.channel.trim().eq_ignore_ascii_case(&channel) {
+            return;
         }
-        first_connection = false;
-        match crate::http::ws_connect(pusher_url).await {
-            Ok((ws, _)) => {
-                let (mut sink, mut stream) = ws.split();
-
-                // Wait for connection established
-                let mut established = false;
-                while let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_secs(15), stream.next()).await {
-                    if let Message::Text(txt) = msg {
-                        if let Ok(val) = serde_json::from_str::<Value>(&txt) {
-                            if val["event"].as_str() == Some("pusher:connection_established") {
-                                established = true;
-                                break;
-                            }
-                            if val["event"].as_str() == Some("pusher:error") {
-                                crate::error(format!(
-                                    "Kick: Pusher refused: {}",
-                                    val["data"]["message"].as_str().unwrap_or("")
-                                ));
-                                break;
+        if let Some(v) = &details {
+            cache_sub_badges(&v["subscriber_badges"]);
+            engine.set_chat_modes("kick", kick_chat_modes(&v["chatroom"]));
+        }
+        if cached_ids != (Some(c_id), Some(cr_id)) {
+            engine.change(|c| {
+                c.kick.channel_id = Some(c_id);
+                c.kick.chatroom_id = Some(cr_id);
+            });
+        }
+        let handshake = tokio::time::timeout(Duration::from_secs(15), async {
+            let (mut ws, _) = crate::http::ws_connect(pusher_url).await.map_err(|e| e.to_string())?;
+            loop {
+                let msg = ws.next().await.ok_or("Pusher disconnected during handshake")?;
+                match msg.map_err(|e| e.to_string())? {
+                    Message::Text(txt) => {
+                        if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                            match v["event"].as_str() {
+                                Some("pusher:connection_established") => break,
+                                Some("pusher:error") => {
+                                    let data = pusher_data(&v["data"]);
+                                    return Err(format!("Pusher refused the connection (code {})", data["code"]));
+                                }
+                                _ => {}
                             }
                         }
                     }
+                    Message::Close(_) => return Err("Pusher closed during handshake".into()),
+                    _ => {}
                 }
-
-                if !established {
-                    crate::core::status::record_failure("kick", crate::core::status::Failure::Handshake);
-                    crate::warn("Kick: connection established handshake failed".into());
-                    failures += 1;
-                    tokio::time::sleep(crate::http::backoff(failures)).await;
-                    continue;
-                }
-                failures = 0;
+            }
+            for c in [
+                format!("chatrooms.{cr_id}.v2"),
+                format!("channel.{c_id}"),
+                format!("channel.{c_id}.v2"),
+                format!("chatroom_{cr_id}"),
+                format!("channel_{c_id}"),
+            ] {
+                let sub = json!({"event": "pusher:subscribe", "data": {"auth": "", "channel": c}});
+                ws.send(Message::Text(sub.to_string().into()))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(ws)
+        })
+        .await;
+        match handshake {
+            Ok(Ok(mut ws)) => {
+                let opened = tokio::time::Instant::now();
 
                 connected.store(true, Ordering::Relaxed);
                 crate::core::status::clear_failure("kick");
@@ -1156,10 +1125,10 @@ pub async fn run_pusher_loop_url(
                 engine.settle_role("kick");
                 // The channel's rewards, for the editors' pickers and the price in the chat: kick.com's own
                 // list (no login needed), then the broadcaster's through the API when logged in.
-                if is_live_pusher {
+                let _rewards = is_live_pusher.then(|| {
                     let (e, channel) = (engine.clone(), channel.clone());
                     let broadcaster = cfg.borrow().kick.broadcaster.is_some();
-                    tokio::task::spawn_local(async move {
+                    crate::emote_events::Abort(tokio::task::spawn_local(async move {
                         let h = [("Accept".to_string(), "application/json".to_string())];
                         let url = format!("https://kick.com/api/v2/channels/{channel}/rewards");
                         if let Some(r) = crate::http::request("GET", &url, &h, b"")
@@ -1174,12 +1143,12 @@ pub async fn run_pusher_loop_url(
                                 known_rewards(&v);
                             }
                         }
-                    });
-                }
-                if is_live_pusher {
+                    }))
+                });
+                let _history = is_live_pusher.then(|| {
                     let e_hist = engine.clone();
                     let ch_hist = channel.clone();
-                    tokio::task::spawn_local(async move {
+                    crate::emote_events::Abort(tokio::task::spawn_local(async move {
                         let (hist, pin) = fetch_kick_recent_messages(c_id, &ch_hist).await;
                         e_hist.chat_welcome("kick", hist);
                         // What was pinned before Streamerz joined.
@@ -1187,8 +1156,8 @@ pub async fn run_pusher_loop_url(
                             Some(p) => e_hist.chat_pinned(p),
                             None => e_hist.chat_unpinned("kick", ""),
                         }
-                    });
-                }
+                    }))
+                });
 
                 let mut args = Obj::new();
                 args.insert("channel".into(), channel.clone().into());
@@ -1203,7 +1172,8 @@ pub async fn run_pusher_loop_url(
                     |_| true,
                 );
                 engine.emit("Kick", "BroadcasterChatConnected", || json!(args));
-                if let Some(b) = cfg.borrow().kick.broadcaster.clone() {
+                let broadcaster = cfg.borrow().kick.broadcaster.clone();
+                if let Some(b) = broadcaster {
                     let mut a = Obj::new();
                     kick_user(&mut a, &json!({"id": b.user_id, "username": b.username}));
                     kick(
@@ -1215,34 +1185,14 @@ pub async fn run_pusher_loop_url(
                     );
                 }
 
-                // Subscribe to channels
-                let sub_chatroom = json!({
-                    "event": "pusher:subscribe",
-                    "data": { "auth": "", "channel": format!("chatrooms.{cr_id}.v2") }
-                });
-                let sub_channel = json!({
-                    "event": "pusher:subscribe",
-                    "data": { "auth": "", "channel": format!("channel.{c_id}") }
-                });
-                let sub_channel_v2 = json!({
-                    "event": "pusher:subscribe",
-                    "data": { "auth": "", "channel": format!("channel.{c_id}.v2") }
-                });
-
-                let _ = sink.send(Message::Text(sub_chatroom.to_string().into())).await;
-                let _ = sink.send(Message::Text(sub_channel.to_string().into())).await;
-                let _ = sink.send(Message::Text(sub_channel_v2.to_string().into())).await;
-                // kick.com's page also listens on these (follows, subs, live and title changes).
-                for c in [format!("chatroom_{cr_id}"), format!("channel_{c_id}")] {
-                    let sub = json!({"event": "pusher:subscribe", "data": {"auth": "", "channel": c}});
-                    let _ = sink.send(Message::Text(sub.to_string().into())).await;
-                }
                 let uid = cfg.borrow().kick.broadcaster.as_ref().map(|b| b.user_id);
-                let _extras = crate::emote_events::Abort(tokio::task::spawn_local(kick_extras(
-                    engine.clone(),
-                    channel.clone(),
-                    uid,
-                )));
+                let _extras = is_live_pusher.then(|| {
+                    crate::emote_events::Abort(tokio::task::spawn_local(kick_extras(
+                        engine.clone(),
+                        channel.clone(),
+                        uid,
+                    )))
+                });
 
                 // Message processing loop. A connection that dies without a close (a network change, a
                 // sleeping laptop) just goes quiet: after a silent minute ask the server, and when even
@@ -1250,13 +1200,16 @@ pub async fn run_pusher_loop_url(
                 let mut probed = false;
                 loop {
                     let wait = if probed { PONG_WAIT } else { IDLE_PROBE };
-                    let msg_res = match tokio::time::timeout(wait, stream.next()).await {
+                    let msg_res = match tokio::time::timeout(wait, ws.next()).await {
                         Ok(Some(m)) => m,
                         Ok(None) => break,
                         Err(_) if !probed => {
                             probed = true;
                             let ping = json!({ "event": "pusher:ping", "data": {} });
-                            if sink.send(Message::Text(ping.to_string().into())).await.is_err() {
+                            if !tokio::time::timeout(PONG_WAIT, ws.send(Message::Text(ping.to_string().into())))
+                                .await
+                                .is_ok_and(|r| r.is_ok())
+                            {
                                 break;
                             }
                             continue;
@@ -1281,15 +1234,31 @@ pub async fn run_pusher_loop_url(
                                 let event_name = v["event"].as_str().unwrap_or("");
                                 if event_name == "pusher:ping" {
                                     let pong = json!({ "event": "pusher:pong", "data": {} });
-                                    let _ = sink.send(Message::Text(pong.to_string().into())).await;
+                                    if !tokio::time::timeout(PONG_WAIT, ws.send(Message::Text(pong.to_string().into())))
+                                        .await
+                                        .is_ok_and(|r| r.is_ok())
+                                    {
+                                        break;
+                                    }
                                     continue;
                                 }
 
-                                handle_kick_event(&engine, &channel, event_name, &v["data"]);
+                                if event_name.starts_with("pusher:") || event_name.starts_with("pusher_internal:") {
+                                    continue;
+                                }
+                                let data = pusher_data(&v["data"]);
+                                if recent.first(event_name, &data) {
+                                    handle_kick_event(&engine, &channel, event_name, &data);
+                                }
                             }
                         }
                         Message::Ping(data) => {
-                            let _ = sink.send(Message::Pong(data)).await;
+                            if !tokio::time::timeout(PONG_WAIT, ws.send(Message::Pong(data)))
+                                .await
+                                .is_ok_and(|r| r.is_ok())
+                            {
+                                break;
+                            }
                         }
                         Message::Close(_) => {
                             crate::core::status::record_failure("kick", crate::core::status::Failure::Closed);
@@ -1300,6 +1269,11 @@ pub async fn run_pusher_loop_url(
                     }
                 }
 
+                failures = if opened.elapsed() >= IDLE_PROBE + PONG_WAIT {
+                    1
+                } else {
+                    failures.saturating_add(1)
+                };
                 connected.store(false, Ordering::Relaxed);
                 crate::host::changed();
                 let args = Obj::new();
@@ -1313,13 +1287,16 @@ pub async fn run_pusher_loop_url(
                 );
                 engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
             }
-            Err(e) => {
-                failures += 1;
-                // The same line for every try of an outage would fill the log.
-                if failures == 1 {
+            error => {
+                if failures == 0 {
+                    let reason = match error {
+                        Ok(Err(e)) => e,
+                        _ => "timed out".into(),
+                    };
                     crate::core::status::record_failure("kick", crate::core::status::Failure::Connect);
-                    crate::warn(format!("Kick: connection error: {e}, retrying"));
+                    crate::warn(format!("Kick: connection error: {reason}, retrying"));
                 }
+                failures = failures.saturating_add(1);
             }
         }
 
@@ -1327,6 +1304,52 @@ pub async fn run_pusher_loop_url(
             break;
         }
         tokio::time::sleep(crate::http::backoff(failures.max(1))).await;
+    }
+}
+
+/// Use IDs from the same source so a partial response cannot mix two channels.
+fn pusher_ids(details: Option<&Value>, cached: (Option<u64>, Option<u64>)) -> Option<(u64, u64)> {
+    let valid = |c, r| match (c, r) {
+        (Some(c), Some(r)) if c != 0 && r != 0 => Some((c, r)),
+        _ => None,
+    };
+    details
+        .and_then(|v| valid(v["id"].as_u64(), v["chatroom"]["id"].as_u64()))
+        .or_else(|| valid(cached.0, cached.1))
+}
+
+fn pusher_data(data: &Value) -> std::borrow::Cow<'_, Value> {
+    match data {
+        Value::String(s) => std::borrow::Cow::Owned(serde_json::from_str(s).unwrap_or_default()),
+        v => std::borrow::Cow::Borrowed(v),
+    }
+}
+
+/// Kick can send the same event on more than one subscribed channel.
+#[derive(Default)]
+struct RecentPusherEvents {
+    latest: std::collections::HashSet<String>,
+    previous: std::collections::HashSet<String>,
+}
+
+impl RecentPusherEvents {
+    fn first(&mut self, event: &str, data: &Value) -> bool {
+        let event = event.trim_start_matches("App\\Events\\");
+        if event != "ChatMessageEvent" {
+            return true;
+        }
+        let Some(id) = data["id"].as_str().filter(|id| !id.is_empty()) else {
+            return true;
+        };
+        if self.latest.contains(id) || self.previous.contains(id) {
+            return false;
+        }
+        if self.latest.len() == 256 {
+            self.previous.clear();
+            std::mem::swap(&mut self.latest, &mut self.previous);
+        }
+        self.latest.insert(id.to_owned());
+        true
     }
 }
 
@@ -1460,7 +1483,7 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
 
     let raw_emotes = kick_emotes(raw_content);
     let (text, emotes) = crate::engine::chatlog::normalize_line_emotes("kick", raw_content.to_string(), &raw_emotes);
-    let secs = data["created_at"].as_str().and_then(crate::engine::rest_parse_iso);
+    let secs = data["created_at"].as_str().and_then(crate::fmt::parse_iso);
     let time = secs.map_or_else(String::new, crate::engine::chatlog::local_hhmm);
 
     // A reply's parent (the metadata is sometimes JSON in a string).
@@ -1551,7 +1574,7 @@ async fn fetch_kick_recent_messages(
 pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
     let m = &d["message"];
     let id = m["id"].as_str().filter(|s| !s.is_empty())?;
-    let now = crate::fmt::unix_now().as_millis() as u64;
+    let now = crate::fmt::now_ms();
     let secs = d["duration"]
         .as_u64()
         .or_else(|| d["duration"].as_str().and_then(|s| s.parse().ok()))
@@ -1559,8 +1582,9 @@ pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
     let ends = ["finish_at", "finishs_at", "expires_at"]
         .iter()
         .find_map(|k| d[*k].as_str())
-        .and_then(crate::engine::rest_parse_iso)
-        .map(|s| s as u64 * 1000);
+        .and_then(crate::fmt::parse_iso)
+        .and_then(|s| u64::try_from(s).ok())
+        .and_then(|s| s.checked_mul(1000));
     let by = ["pinnedBy", "pinned_by"]
         .iter()
         .find_map(|k| d[*k]["username"].as_str())
@@ -1577,7 +1601,7 @@ pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
             .collect::<Vec<_>>()
             .join(" "),
         by: by.into(),
-        until: ends.or_else(|| secs.map(|s| now + s * 1000)),
+        until: ends.or_else(|| secs.and_then(|s| s.checked_mul(1000)?.checked_add(now))),
     })
 }
 
@@ -1604,25 +1628,23 @@ fn kick(engine: &Rc<Engine>, code: u32, name: &str, ev: &str, args: &Obj) {
 /// Streamer.bot's KickUser variables from a Kick user object (`id`, `username`, `slug`).
 fn kick_user(args: &mut Obj, u: &Value) {
     let name = u["username"].as_str().unwrap_or("");
-    args.insert("user".into(), name.into());
-    args.insert(
-        "userName".into(),
-        u["slug"].as_str().unwrap_or(&name.to_lowercase()).into(),
+    crate::platform_args::user(
+        args,
+        "kick",
+        u["id"].clone(),
+        u["slug"].as_str().unwrap_or(&name.to_lowercase()),
+        name,
     );
-    args.insert("userId".into(), u["id"].clone());
-    args.insert("userType".into(), "kick".into());
 }
 
 /// KickBroadcaster variables, from the account logged in (or the channel read).
 fn kick_broadcaster(engine: &Rc<Engine>, args: &mut Obj, channel: &str) {
     let c = engine.config();
     let (name, id) = match &c.kick.broadcaster {
-        Some(b) => (b.username.clone(), Value::from(b.user_id)),
-        None => (channel.to_string(), Value::Null),
+        Some(b) => (b.username.as_str(), Value::from(b.user_id)),
+        None => (channel, Value::Null),
     };
-    args.insert("broadcastUser".into(), name.clone().into());
-    args.insert("broadcastUsername".into(), name.to_lowercase().into());
-    args.insert("broadcastUserId".into(), id);
+    crate::platform_args::broadcaster(args, "broadcastUsername", id, name.to_lowercase(), Some(name));
 }
 
 /// The stream's category and timing as Streamer.bot's names.
@@ -1670,17 +1692,18 @@ fn kick_chat_modes(value: &Value) -> Option<crate::engine::ChatModes> {
 }
 
 pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_val: &Value) {
-    let data: Value = match data_val {
-        Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
-        v => v.clone(),
-    };
+    let data = pusher_data(data_val);
+    let data = data.as_ref();
+    if !data.is_object() {
+        return;
+    }
     let mut args = Obj::new();
     kick_broadcaster(engine, &mut args, channel);
     let now = || crate::fmt::date(&crate::fmt::now(), "o");
     // The Pusher event names, with and without their PHP namespace.
     match event.trim_start_matches("App\\Events\\") {
         "ChatroomUpdatedEvent" => {
-            let modes = kick_chat_modes(&data);
+            let modes = kick_chat_modes(data);
             engine.set_chat_modes("kick", modes);
             let enabled = |key: &str| data[key].as_bool().or_else(|| data[key]["enabled"].as_bool());
             if let Some(m) = modes {
@@ -1833,7 +1856,8 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             if name.is_empty() || data["followed"] == false {
                 return;
             }
-            kick_user(&mut args, &json!({"username": name, "id": data["user_id"]}));
+            let id = data.get("user_id").or_else(|| data.get("id"));
+            kick_user(&mut args, &json!({"username": name, "id": id}));
             args.insert("followersCount".into(), data["followersCount"].clone());
             kick(engine, T_KICK_FOLLOW, "KickFollow", "Follow", &args);
         }
@@ -1885,7 +1909,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             let l = if data["livestream"].is_object() {
                 &data["livestream"]
             } else {
-                &data
+                data
             };
             let title = l["session_title"]
                 .as_str()
@@ -1992,7 +2016,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             }
         }
         "PinnedMessageCreatedEvent" => {
-            if let Some(p) = kick_pin(&data) {
+            if let Some(p) = kick_pin(data) {
                 args.insert("messageId".into(), p.msg_id.clone().into());
                 args.insert("user".into(), p.user.clone().into());
                 args.insert("message".into(), p.text.clone().into());
@@ -2049,7 +2073,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             );
         }
         "UserBannedEvent" => {
-            crate::core::moderation::kick_ban_event(engine, channel, &data);
+            crate::core::moderation::kick_ban_event(engine, channel, data);
             let id = &data["user"]["id"];
             engine.chat_remove(
                 "kick",
@@ -2076,7 +2100,10 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
                 );
             } else {
                 // Pusher gives minutes; Streamer.bot's duration is seconds.
-                args.insert("duration".into(), (data["duration"].as_u64().unwrap_or(0) * 60).into());
+                args.insert(
+                    "duration".into(),
+                    (data["duration"].as_u64().unwrap_or(0).saturating_mul(60)).into(),
+                );
                 kick(engine, T_KICK_USER_TIMED_OUT, "KickUserTimedOut", "UserTimedOut", &args);
                 crate::core::moderation::emit_linked_moderation_event(
                     engine,
@@ -2155,6 +2182,7 @@ pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u6
         _ => None,
     };
     let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let (mut n, mut last) = (0u64, None);
     loop {
         tick.tick().await;
@@ -2252,6 +2280,40 @@ mod tests {
     }
 
     #[test]
+    fn kick_user_and_broadcaster_argument_bytes() {
+        let mut config = Config::default();
+        config.kick.broadcaster = Some(KickAccount {
+            user_id: 123,
+            username: "Alice".into(),
+            ..Default::default()
+        });
+        let cfg = Arc::new(watch::channel(config).0);
+        let engine = Engine::new(cfg.clone(), |_| {});
+        let mut args = Obj::new();
+        kick_broadcaster(&engine, &mut args, "Ignored");
+        kick_user(&mut args, &json!({"username": "Bob", "id": 456, "slug": "bob-chat"}));
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUsername":"alice","broadcastUserId":123,"#,
+                r#""user":"Bob","userName":"bob-chat","userId":456,"userType":"kick"}"#,
+            )
+        );
+
+        cfg.send_modify(|config| config.kick.broadcaster = None);
+        args.clear();
+        kick_broadcaster(&engine, &mut args, "Alice");
+        kick_user(&mut args, &json!({"username": "Bob"}));
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            concat!(
+                r#"{"broadcastUser":"Alice","broadcastUsername":"alice","broadcastUserId":null,"#,
+                r#""user":"Bob","userName":"bob","userId":null,"userType":"kick"}"#,
+            )
+        );
+    }
+
+    #[test]
     fn test_clean_kick_channel() {
         assert_eq!(clean_kick_channel("https://kick.com/streamer"), "streamer");
         assert_eq!(clean_kick_channel("http://www.kick.com/@mychannel/"), "mychannel");
@@ -2262,6 +2324,258 @@ mod tests {
     use super::*;
 
     #[test]
+    fn broadcaster_logout_cancels_kick_reader() {
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let connected = Arc::new(AtomicBool::new(true));
+            let (send, recv) = oneshot::channel::<()>();
+            let reader = async move {
+                let _ = recv.await;
+            };
+            let mut monitor = std::pin::pin!(monitor_pusher(engine, &cfg, connected.clone(), reader));
+            assert!(
+                futures_util::poll!(&mut monitor).is_pending(),
+                "public reader can start unsigned"
+            );
+            cfg.send_modify(|c| {
+                c.kick.broadcaster = Some(KickAccount::default());
+                c.kick.bot = Some(KickAccount::default());
+            });
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            cfg.send_modify(|c| c.kick.bot = None);
+            assert!(
+                futures_util::poll!(&mut monitor).is_pending(),
+                "bot logout leaves chat running"
+            );
+            cfg.send_modify(|c| c.kick.broadcaster = None);
+            assert!(futures_util::poll!(&mut monitor).is_ready());
+            assert!(send.is_closed(), "the in-flight reader was dropped");
+            assert!(!connected.load(Ordering::Relaxed));
+        });
+    }
+
+    #[test]
+    fn oauth_selects_the_account_and_keeps_login_errors() {
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let unused = async |_: &str, _: &[(&str, &str)]| panic!("should not refresh");
+            assert_eq!(
+                token_with(&engine, &cfg, true, false, unused, || false).await,
+                Err("Kick bot isn't logged in".into())
+            );
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Err("No Kick account logged in".into())
+            );
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || true).await,
+                Err("System keyring is locked; unlock it to use saved Kick login".into())
+            );
+            cfg.send_modify(|c| {
+                c.kick.broadcaster = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "broadcaster".into(),
+                        expires_at: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                c.kick.bot = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "bot".into(),
+                        expires_at: u64::MAX,
+                        refresh_token: "unused".into(),
+                    },
+                    ..Default::default()
+                });
+            });
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Ok("bot".into())
+            );
+            cfg.send_modify(|c| c.kick.bot.as_mut().unwrap().token.access_token.clear());
+            assert_eq!(
+                token_with(&engine, &cfg, true, true, unused, || false).await,
+                Ok("broadcaster".into())
+            );
+        });
+    }
+
+    #[test]
+    fn oauth_refresh_uses_the_selected_account_and_preserves_the_latest_login() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            cfg.send_modify(|c| {
+                c.kick.client_id = " app ".into();
+                c.kick.client_secret = " placeholder ".into();
+                c.kick.broadcaster = Some(KickAccount {
+                    token: KickToken {
+                        access_token: "old".into(),
+                        refresh_token: "original".into(),
+                        expires_at: 1,
+                    },
+                    ..Default::default()
+                });
+            });
+            for (before, refresh, after) in [("original", "", "original"), ("original", "rotated", "rotated")] {
+                let exchange = async |url: &str, form: &[(&str, &str)]| {
+                    assert_eq!(url, KICK_TOKEN_URL);
+                    assert_eq!(
+                        form,
+                        &[
+                            ("grant_type", "refresh_token"),
+                            ("refresh_token", before),
+                            ("client_id", " app "),
+                            ("client_secret", " placeholder "),
+                        ]
+                    );
+                    Ok(crate::oauth::Token {
+                        access: "refreshed".into(),
+                        refresh: refresh.into(),
+                        expires_at: 60,
+                    })
+                };
+                assert_eq!(
+                    token_with(&engine, &cfg, true, true, exchange, || false).await,
+                    Ok("refreshed".into())
+                );
+                {
+                    let config = cfg.borrow();
+                    let token = &config.kick.broadcaster.as_ref().unwrap().token;
+                    assert_eq!(
+                        (
+                            token.access_token.as_str(),
+                            token.refresh_token.as_str(),
+                            token.expires_at
+                        ),
+                        ("refreshed", after, 60)
+                    );
+                    assert!(config.kick.bot.is_none());
+                }
+            }
+            let exchange = async |_: &str, _: &[(&str, &str)]| Err("token request failed (HTTP 500): detail".into());
+            assert_eq!(
+                token_with(&engine, &cfg, false, false, exchange, || false).await,
+                Err("Kick token request failed (HTTP 500)".into())
+            );
+            let exchange = async |_: &str, _: &[(&str, &str)]| {
+                cfg.send_modify(|c| c.kick.broadcaster.as_mut().unwrap().token.access_token = "replacement".into());
+                Ok(crate::oauth::Token {
+                    access: "superseded".into(),
+                    refresh: "other".into(),
+                    expires_at: 50,
+                })
+            };
+            assert_eq!(
+                token_with(&engine, &cfg, false, false, exchange, || false).await,
+                Err("Kick: login changed during token refresh".into())
+            );
+            let config = cfg.borrow();
+            let token = &config.kick.broadcaster.as_ref().unwrap().token;
+            assert_eq!(
+                (token.access_token.as_str(), token.refresh_token.as_str()),
+                ("replacement", "rotated")
+            );
+        });
+    }
+
+    #[test]
+    fn oauth_refresh_requires_the_same_account_and_credentials() {
+        let mut config = KickConfig {
+            client_id: "app".into(),
+            client_secret: "placeholder".into(),
+            broadcaster: Some(KickAccount {
+                user_id: 123,
+                token: KickToken {
+                    access_token: "old".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let login = config.broadcaster.clone().unwrap();
+        let credentials = ("app", "placeholder");
+        assert!(config.refresh_target(false, &login, credentials).is_some());
+        assert!(config.refresh_target(true, &login, credentials).is_none());
+        config.broadcaster.as_mut().unwrap().token.access_token = "new".into();
+        assert!(config.refresh_target(false, &login, credentials).is_none());
+        config.broadcaster = None;
+        assert!(config.refresh_target(false, &login, credentials).is_none());
+        config.broadcaster = Some(login.clone());
+        config.client_id = "another-app".into();
+        assert!(config.refresh_target(false, &login, credentials).is_none());
+    }
+
+    #[test]
+    fn oauth_error_keeps_the_status_and_drops_the_body() {
+        assert_eq!(
+            kick_oauth_error("token request failed (HTTP 401): unexpected private details"),
+            "Kick token request failed (HTTP 401)"
+        );
+        assert_eq!(kick_oauth_error("request timed out"), "Kick token request failed");
+    }
+
+    #[test]
+    fn kick_api_url_keeps_bearer_requests_on_the_api_host() {
+        assert_eq!(api_url("/channels").unwrap(), "https://api.kick.com/public/v1/channels");
+        assert!(api_url("https://api.kick.com/public/v2/categories").is_ok());
+        assert!(api_url("https://example.invalid/channels").is_err());
+    }
+
+    #[test]
+    fn pusher_channel_lookup_requires_two_real_ids() {
+        let details = json!({"id": 442, "chatroom": {"id": 935}});
+        assert_eq!(pusher_ids(Some(&details), (None, None)), Some((442, 935)));
+        assert_eq!(pusher_ids(Some(&json!({"id": 442})), (None, Some(7))), None);
+        assert_eq!(pusher_ids(Some(&json!({"id": 442})), (Some(4), Some(7))), Some((4, 7)));
+        assert_eq!(pusher_ids(None, (Some(4), Some(0))), None);
+    }
+
+    #[test]
+    fn pusher_deduplicates_chat_ids_across_subscription_formats() {
+        let first = json!({
+            "event": r"App\Events\ChatMessageEvent", "channel": "chatrooms.935.v2",
+            "data": r#"{"id":"message-1","content":"hey","sender":{"id":42,"username":"Ana"}}"#
+        });
+        let second = json!({
+            "event": "ChatMessageEvent", "channel": "chatroom_935",
+            "data": {"id":"message-1","content":"hey","sender":{"id":42,"username":"Ana"}}
+        });
+        let mut recent = RecentPusherEvents::default();
+        assert!(recent.first(first["event"].as_str().unwrap(), &pusher_data(&first["data"])));
+        assert!(!recent.first(second["event"].as_str().unwrap(), &pusher_data(&second["data"])));
+        assert!(recent.first("ChatMessageEvent", &json!({"id": "message-2", "content": "hey"})));
+        assert!(recent.first("FollowersUpdated", &json!({"id": 42})));
+        assert!(recent.first("FollowersUpdated", &json!({"id": 42})));
+    }
+
+    #[test]
+    fn invalid_pin_end_does_not_wrap_or_panic() {
+        for payload in [
+            json!({"message": {"id": "p1"}, "duration": u64::MAX}),
+            json!({"message": {"id": "p1"}, "finish_at": "1969-12-31T23:59:59Z"}),
+        ] {
+            assert_eq!(kick_pin(&payload).unwrap().until, None);
+        }
+    }
+
+    #[test]
+    fn kick_emotes_ignore_empty_ids() {
+        assert_eq!(
+            kick_emotes("hi [emote::Bad] [emote:99:Good]"),
+            [(
+                "[emote:99:Good]".into(),
+                "https://files.kick.com/emotes/99/fullsize".into()
+            )]
+        );
+    }
+
+    #[test]
     fn kick_pins_with_and_without_an_end() {
         let d = json!({"message": {"id": "m1", "content": "hi [emote:37226:KEKW]", "sender": {"username": "Ana"}},
             "duration": "120", "pinnedBy": {"username": "Mod"}});
@@ -2270,7 +2584,7 @@ mod tests {
             (p.user.as_str(), p.text.as_str(), p.by.as_str()),
             ("Ana", "hi KEKW", "Mod")
         );
-        let left = p.until.unwrap() - crate::fmt::unix_now().as_millis() as u64;
+        let left = p.until.unwrap() - crate::fmt::now_ms();
         assert!((110_000..=120_000).contains(&left));
         let open = kick_pin(&json!({"message": {"id": "m2", "content": "x"}})).unwrap();
         assert!(open.until.is_none());
@@ -2286,9 +2600,11 @@ mod tests {
             .unwrap();
         tokio::task::LocalSet::new().block_on(&rt, async {
             assert!(!running(&None));
-            let task = Some(tokio::task::spawn_local(std::future::pending::<()>()));
+            let task = Some(crate::emote_events::Abort(tokio::task::spawn_local(
+                std::future::pending::<()>(),
+            )));
             assert!(running(&task));
-            task.as_ref().unwrap().abort();
+            task.as_ref().unwrap().0.abort();
             tokio::task::yield_now().await;
             assert!(!running(&task));
         });

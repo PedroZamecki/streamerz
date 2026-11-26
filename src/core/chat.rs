@@ -248,12 +248,11 @@ fn build_parts(text: &str, lookup: Lookup, big_word: Option<usize>) -> Vec<Value
 }
 
 /// What a line's words are made of (see `build_parts`).
-fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
+fn parts(line: &Line) -> Vec<Value> {
     let text = flat(&line.text);
     if line.deleted {
         return vec![json!({"t": text})];
     }
-    let _ = engine;
     crate::emotes::want_personal(&line.platform, &line.user_id);
     // A gigantified message draws its last emote big.
     let last = if line.huge {
@@ -332,17 +331,22 @@ pub fn preview(engine: &Rc<Engine>, platform: &str, text: &str) -> Vec<Value> {
 
 /// The badges a chatter wears: key, the name to show, the picture (empty: draw an icon instead).
 fn badges(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
-    let roles: Vec<(String, String)> = [
-        ("broadcaster", line.broadcaster),
-        ("moderator", line.moderator && !line.broadcaster),
-        ("vip", line.vip),
-        ("subscriber", line.subscriber),
-    ]
-    .into_iter()
-    .filter(|role| role.1)
-    .map(|role| (role.0.to_owned(), String::new()))
-    .collect();
-    let wearing = if line.badges.is_empty() { &roles } else { &line.badges };
+    let roles;
+    let wearing = if line.badges.is_empty() {
+        roles = [
+            ("broadcaster", line.broadcaster),
+            ("moderator", line.moderator && !line.broadcaster),
+            ("vip", line.vip),
+            ("subscriber", line.subscriber),
+        ]
+        .into_iter()
+        .filter(|role| role.1)
+        .map(|role| (role.0.to_owned(), String::new()))
+        .collect();
+        &roles
+    } else {
+        &line.badges
+    };
     wearing
         .iter()
         .take(6)
@@ -471,7 +475,7 @@ fn line_model(engine: &Rc<Engine>, line: &Line, youtube_tag: bool, can_reply: bo
             put("badges", list.into());
         }
     }
-    put("parts", parts(engine, line).into());
+    put("parts", parts(line).into());
     if !line.gif.is_empty() {
         put("gif", line.gif.clone().into());
     }
@@ -560,25 +564,27 @@ struct Show {
 /// names of who chatted while an `@` is. `start` is where the word being typed begins (in characters), so
 /// a pick replaces it; `more` means typing goes on after the pick.
 pub fn suggest(users: &[String], platform: &str, text: &str, cursor: usize, commercials: bool) -> Value {
-    let before: String = text.chars().take(cursor).collect();
-    let start = before
-        .rfind(char::is_whitespace)
-        .map_or(0, |at| at + before[at..].chars().next().map_or(1, char::len_utf8));
+    let end = text.char_indices().nth(cursor).map_or(text.len(), |(index, _)| index);
+    let before = &text[..end];
+    let start = before.len() - before.rsplit(char::is_whitespace).next().unwrap_or_default().len();
     let token = &before[start..];
     let mention = token.starts_with('@');
-    let mut rows: Vec<Value> = if let Some(prefix) = token.strip_prefix('@') {
+    let rows: Vec<Value> = if let Some(prefix) = token.strip_prefix('@') {
+        let prefix = prefix.to_lowercase();
         users
             .iter()
-            .filter(|name| name.to_lowercase().starts_with(&prefix.to_lowercase()))
+            .map(|name| name.trim_start_matches('@'))
+            .filter(|name| !name.is_empty() && name.to_lowercase().starts_with(&prefix))
+            .take(7)
             .map(|name| json!({"fill": format!("@{name}"), "title": format!("@{name}"), "args": "", "about": tr("chat.mention_hint"), "more": true}))
             .collect()
     } else {
         crate::slash::suggestions(text, platform, commercials)
             .into_iter()
+            .take(7)
             .map(|row| json!({"fill": row.fill, "title": row.title, "args": row.args, "about": tr(row.about), "more": row.more}))
             .collect()
     };
-    rows.truncate(7);
     json!({"mention": mention, "start": before[..start].chars().count(), "rows": rows,
         "header": tr(if mention { "chat.mention_header" } else { "slash.header" }).to_uppercase()})
 }
@@ -802,10 +808,15 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let hidden = hidden(engine);
     let hidden_ids: Vec<&str> = hidden.iter().map(String::as_str).collect();
     let cleared = CLEARED.get();
-    let asked = request.get("seq").and_then(Value::as_u64);
+    let head = engine.chat_last_seq();
+    let asked = request.get("seq").and_then(Value::as_u64).filter(|seq| *seq <= head);
     let client_gen = request.get("gen").and_then(Value::as_u64).unwrap_or(0);
     // What lines look like changes with the options: a view drawn with other ones starts over.
-    let look = u64::from(!config.window.chat_no_time)
+    let visibility = PLATFORMS.iter().enumerate().fold(0, |mask, (at, p)| {
+        mask | (u64::from(hidden_ids.contains(p)) << (at + 3))
+    });
+    let look = visibility
+        | u64::from(!config.window.chat_no_time)
         | u64::from(!config.window.chat_no_badges) << 1
         | u64::from(config.window.chat_youtube_tag) << 2;
     let (generation, mut reset, mut lines) = engine.chat_sync(client_gen, asked.unwrap_or(0).max(cleared));
@@ -821,7 +832,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     if asked.is_none() {
         reset = true;
     }
-    if reset && engine.chat_last_seq() > 0 {
+    if reset && head > 0 {
         lines = engine.chat_sync(u64::MAX, 0).2;
     }
     let first_kept = lines
@@ -849,7 +860,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let connected = list
         .iter()
         .any(|platform| platform["present"] == true && platform["connected"] == true);
-    let now_ms = crate::fmt::unix_now().as_millis() as u64;
+    let now_ms = crate::fmt::now_ms();
     let pins: Vec<Value> = engine
         .chat_pins()
         .iter()
@@ -932,26 +943,38 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 /// The line a request is about: one in the chat (`seq`), or a person of the Community (`platform` and
 /// `userId`), who stands for their latest line, or for what the Community knows of them.
 fn line_of(engine: &Rc<Engine>, request: &Value) -> Result<Line, String> {
+    let platform = request["platform"].as_str().filter(|p| !p.is_empty());
+    if let Some(platform) = platform.filter(|p| !PLATFORMS.contains(p)) {
+        return Err(format!("unknown platform {platform}"));
+    }
     if let Some(seq) = request["seq"].as_u64() {
         return engine
             .chat_line(seq)
+            .filter(|line| platform.is_none_or(|p| p == line.platform))
             .ok_or_else(|| "that line has left the chat".to_owned());
     }
     if let Some(msg_id) = request["msgId"].as_str().filter(|m| !m.is_empty()) {
-        let platform = request["platform"].as_str().unwrap_or_default();
+        let platform = platform.ok_or("platform: the message's platform")?;
         return Ok(Line {
             platform: platform.to_owned(),
             msg_id: msg_id.to_owned(),
             ..Default::default()
         });
     }
-    if let Some(user) = request["user"].as_str().filter(|u| !u.is_empty()) {
-        let username = user.trim_start_matches('@');
-        let platform = request["platform"].as_str().filter(|p| !p.is_empty());
+    if let Some(user) = request["user"]
+        .as_str()
+        .filter(|u| !u.is_empty() && request["userId"].is_null())
+    {
+        let username = user.trim().trim_start_matches('@');
+        let folded = username.to_lowercase();
         let (_, _, lines) = engine.chat_sync(u64::MAX, 0);
         if let Some(l) = lines.into_iter().rev().find(|l| {
             (platform.is_none() || platform == Some(l.platform.as_str()))
-                && (l.user.eq_ignore_ascii_case(username) || l.user_id.eq_ignore_ascii_case(username))
+                && (l.user_id == username
+                    || l.handle
+                        .as_deref()
+                        .is_some_and(|handle| handle.trim_start_matches('@').to_lowercase() == folded)
+                    || l.user.trim_start_matches('@').to_lowercase() == folded)
         }) {
             return Ok(l);
         }
@@ -973,7 +996,7 @@ fn line_of(engine: &Rc<Engine>, request: &Value) -> Result<Line, String> {
                 }
             }
         }
-        let plat = platform.filter(|p| PLATFORMS.contains(p)).unwrap_or("twitch");
+        let plat = platform.unwrap_or("twitch");
         return Ok(Line {
             platform: plat.to_owned(),
             user_id: username.to_owned(),
@@ -1151,7 +1174,8 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 .find(|provider| *provider == Provider::Platform)
         })
         .unwrap_or(providers[0]);
-    let as_broadcaster = sender(engine, &config, platform).0["role"] == "broadcaster";
+    let sender = sender(engine, &config, platform).0;
+    let as_broadcaster = sender["role"] == "broadcaster";
     let favorites = &config.window.favorite_emotes;
     let query = request["query"].as_str().unwrap_or_default().trim().to_lowercase();
     let found: Vec<EmoteSection> = if query.is_empty() {
@@ -1199,14 +1223,19 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         .iter()
         .map(|provider| json!({"id": id(*provider), "label": provider.label(platform)}))
         .collect();
-    let who = match sender(engine, &config, platform).0["name"].as_str() {
+    let who = match sender["name"].as_str() {
         Some(name) => trf("chat.as_sender_prefix", &[("name", name)]),
         None => String::new(),
     };
+    let frequent = most_used(&config, platform, |used| {
+        preview(engine, &used.platform, &used.name)
+            .iter()
+            .any(|part| part["e"] == used.name.as_str())
+    });
     Ok(json!({"emotes": {
         "platform": platform, "tabs": tabs, "active": id(active), "sections": found, "query": query,
         "favorites": favorites.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-        "frequent": most_used(engine, &config, platform), "frequentEmpty": tr("emotes.most_used_empty"),
+        "frequent": frequent, "frequentEmpty": tr("emotes.most_used_empty"),
         "help": format!("{who}{}", tr("chat.emote_picker_help")), "empty": tr("picker.no_matches"),
         "search": tr("chat.search_emotes"), "title": tr("chat.emote_btn_tooltip"),
     }}))
@@ -1214,7 +1243,7 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 
 /// The emotes counted for `platform` ("all": every platform's) that can still be sent there, most used
 /// first: a row's worth.
-fn most_used(engine: &Rc<Engine>, config: &crate::Config, platform: &str) -> Vec<Value> {
+fn most_used(config: &crate::Config, platform: &str, can_send: impl Fn(&crate::EmoteUse) -> bool) -> Vec<Value> {
     let mut used: Vec<&crate::EmoteUse> = config
         .window
         .emote_use
@@ -1224,13 +1253,8 @@ fn most_used(engine: &Rc<Engine>, config: &crate::Config, platform: &str) -> Vec
     used.sort_by_key(|used| std::cmp::Reverse(used.count));
     let mut names = std::collections::HashSet::new();
     used.into_iter()
-        .filter(|used| names.insert(used.name.as_str()))
-        // An emote the user no longer has (a subscription ended) leaves the row.
-        .filter(|used| {
-            preview(engine, &used.platform, &used.name)
-                .iter()
-                .any(|part| part["e"] == used.name.as_str())
-        })
+        // An unavailable entry must not hide the same emote from a different platform.
+        .filter(|used| !names.contains(used.name.as_str()) && can_send(used) && names.insert(used.name.as_str()))
         .take(MOST_USED_SHOWN)
         .map(|used| json!([used.name, used.url]))
         .collect()
@@ -1286,7 +1310,15 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         return Err(tr("chat.sending_disabled").to_owned());
     }
     let target = request["platform"].as_str().unwrap_or("all");
-    let reply = request["replySeq"].as_u64().and_then(|seq| engine.chat_line(seq));
+    let reply_seq = request["replySeq"].as_u64();
+    let (reply, stale_reply_notice) = match reply_seq {
+        Some(seq) => match engine.chat_line(seq) {
+            Some(line) if !line.deleted && !line.note && !line.welcome => (Some(line), None),
+            Some(line) if line.deleted => (None, Some(tr("chat.reply_deleted").to_owned())),
+            _ => (None, Some(tr("chat.reply_left_log").to_owned())),
+        },
+        None => (None, None),
+    };
     let config = engine.config();
     let filter_targets: Option<Vec<String>> = request["targets"]
         .as_array()
@@ -1321,12 +1353,16 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     {
         return Err(unavailable(engine, target));
     }
+    if to.contains(&"twitch") && !crate::slash::is_command(&text) {
+        crate::twitch::validate_chat_message(&text)?;
+    }
     if to.contains(&"tiktok") {
         let outgoing = engine.chat_reply_text("tiktok", text.clone(), reply.as_ref());
         crate::tiktok_bridge::validate_message(&outgoing)?;
     }
     let use_bot_override = request["use_bot"].as_bool();
     let fallback = request["fallback"].as_bool().unwrap_or(true);
+    let note_platform = to[0];
     let mut sent = Vec::new();
     for platform in to {
         let bot = use_bot_override.unwrap_or_else(|| !engine.sends_as_broadcaster(platform));
@@ -1336,6 +1372,9 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }
     }
     drop(config);
+    if let Some(notice) = &stale_reply_notice {
+        engine.chat_note(note_platform, notice.clone());
+    }
     let counted: Vec<(&str, Vec<Value>)> = PLATFORMS
         .into_iter()
         .filter(|platform| sent.contains(platform))
@@ -1349,7 +1388,11 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             }
         });
     }
-    Ok(json!({"sent": sent}))
+    let mut out = json!({"sent": sent});
+    if let Some(notice) = stale_reply_notice {
+        out["notice"] = notice.into();
+    }
+    Ok(out)
 }
 
 /// Why nothing can be sent to `platform` now.
@@ -1441,6 +1484,9 @@ fn card_extra(engine: &Rc<Engine>, line: &Line, act: &str) {
 /// A message's moderation. Banning asks first through a core prompt unless `confirmed`.
 fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let line = line_of(engine, request)?;
+    if request["user"].is_string() && request["seq"].is_null() && request["userId"].is_null() {
+        return Err("seq or platform and userId: the chatter to moderate".into());
+    }
     let act = request["act"].as_str().unwrap_or_default();
     if matches!(act, "unban" | "mod" | "unmod") {
         if !card_extras(engine, &line).contains(&act) {
@@ -1449,23 +1495,14 @@ fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         card_extra(engine, &line, act);
         return Ok(json!({"accepted": true}));
     }
-    if (act == "unpin" || act == "pin") && !line.msg_id.is_empty() {
-        let (me, _) = crate::roles::get(&line.platform);
-        if me.moderates() {
-            let moderation = if act == "unpin" {
-                Moderate::Unpin
-            } else {
-                let seconds = request["secs"].as_u64().unwrap_or(0);
-                if seconds != 0 && !(30..=1800).contains(&seconds) {
-                    return Err("secs: 30 to 1800, or 0 until the stream ends".into());
-                }
-                Moderate::Pin((seconds > 0).then_some(seconds))
-            };
-            engine.moderate(&line, moderation);
-            return Ok(json!({"accepted": true}));
-        }
-    }
-    if !actions(&line, true).contains(&act) {
+    // A Twitch pin can be managed from the pin banner, even after its line left the log.
+    let pin = matches!(act, "pin" | "unpin")
+        && line.platform == "twitch"
+        && !line.msg_id.is_empty()
+        && !line.deleted
+        && !line.local
+        && crate::roles::get("twitch").0.moderates();
+    if !pin && !actions(&line, true).contains(&act) {
         return Err(format!("{act} is not possible on that line"));
     }
     let moderation = match act {
@@ -1480,8 +1517,9 @@ fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }
         "timeout" => {
             let seconds = request["secs"].as_u64().unwrap_or(0);
-            if !(1..=1_209_600).contains(&seconds) {
-                return Err("secs: 1 to 1209600".into());
+            let max = if line.platform == "kick" { 604_800 } else { 1_209_600 };
+            if !(1..=max).contains(&seconds) {
+                return Err(format!("secs: 1 to {max}"));
             }
             Moderate::Timeout(seconds)
         }
@@ -1874,6 +1912,89 @@ mod tests {
             text: text.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn suggestions_follow_unicode_cursors_and_keep_one_at_sign() {
+        let users = vec!["@Ágata".to_owned(), "ÁLICE".to_owned(), "Ana".to_owned()];
+        let model = suggest(&users, "youtube", "🚀　@á afterward", 4, false);
+        assert_eq!(model["start"], 2);
+        assert_eq!(model["rows"][0]["fill"], "@Ágata");
+        assert_eq!(model["rows"][1]["fill"], "@ÁLICE");
+        assert_eq!(model["rows"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_changed_platform_filter_resets_even_when_the_line_count_matches() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|c| {
+                c.window.chat.save_history = true;
+                c.window.chat_hidden = vec!["twitch".into()];
+            });
+            engine
+                .inject_chat("kick", "bo", "12", "viewer", "first", &json!({}))
+                .unwrap();
+            engine
+                .inject_chat("twitch", "ana", "13", "viewer", "second", &json!({}))
+                .unwrap();
+            let prior = &read(&engine, &json!({})).unwrap()["chat"];
+            assert_eq!(prior["lines"][0]["platform"], "kick");
+            engine.change(|c| c.window.chat_hidden = vec!["kick".into()]);
+            let read_cursor = |seq| {
+                read(
+                    &engine,
+                    &json!({"seq": seq, "gen": prior["gen"], "look":prior["look"], "have":1}),
+                )
+                .unwrap()
+            };
+            let current = &read_cursor(prior["seq"].clone())["chat"];
+            assert_eq!(current["reset"], true);
+            assert_eq!(current["lines"][0]["platform"], "twitch");
+            let restarted = &read_cursor(json!(u64::MAX))["chat"];
+            assert_eq!(restarted["reset"], true);
+            assert_eq!(restarted["seq"], current["seq"]);
+        });
+    }
+
+    #[test]
+    fn kick_chat_moderation_uses_the_selected_id_and_limits_timeout_duration() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.change(|c| c.window.chat.save_history = true);
+            engine
+                .inject_chat("kick", "OldName", "42", "viewer", "hello", &json!({}))
+                .unwrap();
+            let seq = engine.chat_last_seq();
+            crate::roles::set("kick", crate::roles::Role::Broadcaster, "7");
+            let fakes = crate::scenario::fakes::install(&engine, &json!({"kick":{}}), None);
+            assert!(act(
+                &engine,
+                &json!({"seq":seq, "platform":"twitch", "act":"ban", "confirmed":true})
+            )
+            .is_err());
+            assert!(act(
+                &engine,
+                &json!({"platform":"kick", "user":"OldName", "act":"ban", "confirmed":true})
+            )
+            .is_err());
+            assert!(act(&engine, &json!({"seq":seq, "act":"pin"})).is_err());
+            assert!(act(&engine, &json!({"seq":seq, "act":"timeout", "secs":604801})).is_err());
+            act(&engine, &json!({"seq":seq, "act":"timeout", "secs":604800})).unwrap();
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            let calls = fakes.calls.borrow();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["call"], "banId");
+            assert_eq!(calls[0]["userId"], 42);
+            assert_eq!(calls[0]["duration"], 604800);
+            crate::roles::clear("kick");
+            crate::scenario::fakes::uninstall();
+        });
     }
 
     #[test]
@@ -2602,6 +2723,30 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_frequent_emote_does_not_hide_a_sendable_copy() {
+        let mut config = crate::Config::default();
+        let name = "SharedEmote";
+        let url = "https://example.test/emote.png";
+        config.window.emote_use = vec![
+            crate::EmoteUse {
+                platform: "twitch".into(),
+                name: name.into(),
+                url: url.into(),
+                count: 10,
+            },
+            crate::EmoteUse {
+                platform: "kick".into(),
+                name: name.into(),
+                url: url.into(),
+                count: 5,
+            },
+        ];
+        let can_send = |used: &crate::EmoteUse| used.platform == "kick";
+        assert_eq!(most_used(&config, "all", can_send), [json!([name, url])]);
+        assert!(most_used(&config, "twitch", can_send).is_empty());
+    }
+
+    #[test]
     fn a_pins_time_left_reads_as_a_clock() {
         assert_eq!(left_clock(125_000), "2:05");
         assert_eq!(left_clock(1), "0:01");
@@ -2620,7 +2765,7 @@ mod tests {
                 title: "Best color?".into(),
                 prediction: false,
                 choices: vec![("Red".into(), 10), ("Blue".into(), 30)],
-                ends: Some(crate::fmt::unix_now().as_millis() as u64 + 60_000),
+                ends: Some(crate::fmt::now_ms() + 60_000),
                 over: None,
             };
             engine.chat_poll(poll);
@@ -2678,6 +2823,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(card_at["card"]["user"], "PedroZamecki");
+            engine
+                .inject_chat("youtube", "@Ágata", "UCaBc", "viewer", "hello", &json!({}))
+                .unwrap();
+            let card = request_sync(&engine, json!({"op":"card", "platform":"youtube", "user":"@ágata"})).unwrap();
+            assert_eq!(card["card"]["userId"], "UCaBc");
         });
     }
 
@@ -2692,6 +2842,108 @@ mod tests {
             // A kick emote token preview
             let kick_tag_preview = preview(&engine, "all", "[emote:4055795:GnomeDisco]");
             assert!(!kick_tag_preview.is_empty());
+        });
+    }
+
+    #[test]
+    fn chat_send_enforces_twitch_500_char_limit_and_allows_slash_commands() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                    display_name: "Owner".into(),
+                    ..Default::default()
+                });
+            });
+            engine.simulate_chat_connection("twitch", Some(true));
+
+            let ok_500 = "a".repeat(500);
+            assert!(request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": ok_500})).is_ok());
+
+            let too_long = "a".repeat(501);
+            let err = request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": too_long})).unwrap_err();
+            assert_eq!(err, tr("chat.twitch_too_long"));
+
+            let long_emoji = "😀".repeat(501);
+            assert_eq!(
+                request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_emoji})).unwrap_err(),
+                tr("chat.twitch_too_long")
+            );
+
+            // /me goes out as a chat message and stays subject to the 500-char limit.
+            let long_me = format!("/me {}", "a".repeat(500));
+            assert_eq!(
+                request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_me})).unwrap_err(),
+                tr("chat.twitch_too_long")
+            );
+
+            // Real slash commands bypass the plain chat length limit.
+            let long_cmd = format!("/announce {}", "a".repeat(505));
+            assert!(request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": long_cmd})).is_ok());
+        });
+    }
+
+    #[test]
+    fn stale_or_deleted_reply_falls_back_to_plain_send_and_notifies_user() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                    display_name: "Owner".into(),
+                    ..Default::default()
+                });
+            });
+            engine.simulate_chat_connection("twitch", Some(true));
+
+            // 1. Reply to a seq that is no longer in the chat log.
+            let res = request_sync(
+                &engine,
+                json!({"op": "send", "platform": "twitch", "text": "hello anyway", "replySeq": 999_999}),
+            )
+            .unwrap();
+            assert_eq!(res["sent"], json!(["twitch"]));
+            assert_eq!(res["notice"], tr("chat.reply_left_log"));
+            let out = engine.dev_take().unwrap();
+            assert!(out
+                .iter()
+                .any(|m| m["platform"] == "twitch" && m["text"] == "hello anyway"));
+            let lines = read(&engine, &json!({})).unwrap()["chat"]["lines"].clone();
+            assert!(lines
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["note"] == true && l["text"] == tr("chat.reply_left_log")));
+
+            // 2. Reply to a line that was deleted while replying.
+            engine
+                .inject_chat("twitch", "Ana", "ana", "viewer", "gone soon", &json!({}))
+                .unwrap();
+            let seq = engine.chat_last_seq();
+            let line = engine.chat_line(seq).unwrap();
+            engine.chat_remove("twitch", &line.msg_id, "");
+            let res = request_sync(
+                &engine,
+                json!({"op": "send", "platform": "twitch", "text": "after delete", "replySeq": seq}),
+            )
+            .unwrap();
+            assert_eq!(res["sent"], json!(["twitch"]));
+            assert_eq!(res["notice"], tr("chat.reply_deleted"));
+            let out = engine.dev_take().unwrap();
+            assert!(out
+                .iter()
+                .any(|m| m["platform"] == "twitch" && m["text"] == "after delete"));
+            let lines = read(&engine, &json!({})).unwrap()["chat"]["lines"].clone();
+            assert!(lines
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["note"] == true && l["text"] == tr("chat.reply_deleted")));
         });
     }
 }

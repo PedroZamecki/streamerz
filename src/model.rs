@@ -53,6 +53,9 @@ const BOM: &[u8] = b"\xef\xbb\xbf";
 /// Export strings: base64 of this, then the gzipped JSON.
 const MAGIC: &[u8] = b"SBAE";
 
+/// Largest decompressed import JSON accepted (stops gzip bombs).
+const MAX_IMPORT_BYTES: usize = 32 * 1024 * 1024;
+
 /// JSON as Newtonsoft.Json writes it: indented (2 spaces, \r\n) for exports, compact for the data
 /// files. ponytail: doubles past 1e16 or under 1e-5 come out as 1e20, Newtonsoft writes 1E+20;
 /// Streamer.bot's numbers (weights, counts) never get there.
@@ -98,8 +101,12 @@ pub fn unpack(s: &str) -> Result<Vec<u8>, String> {
     let gz = raw.strip_prefix(MAGIC).ok_or("not a Streamer.bot import string")?;
     let mut json = Vec::new();
     flate2::read::GzDecoder::new(gz)
+        .take((MAX_IMPORT_BYTES + 1) as u64)
         .read_to_end(&mut json)
         .map_err(|e| format!("broken import string ({e})"))?;
+    if json.len() > MAX_IMPORT_BYTES {
+        return Err("import string is too large".into());
+    }
     Ok(json)
 }
 
@@ -175,6 +182,21 @@ mod tests {
     fn rejects_other_strings() {
         assert!(unpack("hello").is_err());
         assert!(unpack(&base64::engine::general_purpose::STANDARD.encode("XXXXabc")).is_err());
+        assert!(unpack(&base64::engine::general_purpose::STANDARD.encode("SBAEnot-gzip")).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_gzip_bomb() {
+        let mut gz = flate2::GzBuilder::new()
+            .operating_system(0)
+            .write(MAGIC.to_vec(), flate2::Compression::fast());
+        let chunk = vec![b' '; 1024 * 1024];
+        for _ in 0..33 {
+            gz.write_all(&chunk).unwrap();
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let err = unpack(&encoded).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
     }
 
     /// The real thing, when available: every export string (one per line) and actions.json in

@@ -84,15 +84,21 @@ function fly(line) {
   el.style.top = lane * tall + "px";
   // It is clear of the right edge once it has moved its own width.
   const speed = (sky.clientWidth + el.offsetWidth) / (seconds * 1000);
-  lanes[lane] = now + (el.offsetWidth + 40) / speed;
+  if (speed > 0) lanes[lane] = now + (el.offsetWidth + 40) / speed;
 
-  el.addEventListener("animationend", () => el.remove());
+  const clean = () => { clearTimeout(el._timer); el.remove(); };
+  el._timer = setTimeout(clean, (seconds + 1) * 1000);
+  el.addEventListener("animationend", clean, { once: true });
 }
 
 streamerz.chat(fly, {
   removed: r => {
     for (const el of [...sky.children]) {
-      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.remove();
+      const samePlatform = !r.platform || (el.dataset.user || "").startsWith(r.platform + ":");
+      if (r.msgId ? (el.dataset.msg === r.msgId && samePlatform) : (r.userId && el.dataset.user === r.platform + ":" + r.userId)) {
+        clearTimeout(el._timer);
+        el.remove();
+      }
     }
   },
 });

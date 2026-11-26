@@ -117,9 +117,33 @@ pub fn snapshot() -> serde_json::Value {
 
 /// The text of `key` with each `{name}` in it replaced by its value in `args`.
 pub fn trf(key: &'static str, args: &[(&str, &str)]) -> String {
-    args.iter().fold(tr(key).to_string(), |s, (name, value)| {
-        s.replace(&format!("{{{name}}}"), value)
-    })
+    fill(tr(key), args)
+}
+
+/// `text` with each `{name}` replaced by its value in `args`, in one pass: a value that holds a
+/// `{name}` itself (a chatter's message, a title) is kept as it is. Unknown names stay.
+fn fill(text: &str, args: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after
+            .find('}')
+            .and_then(|close| Some((close, args.iter().find(|(n, _)| *n == &after[..close])?.1)))
+        {
+            Some((close, value)) => {
+                out.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -208,6 +232,22 @@ mod tests {
     fn placeholders_are_filled() {
         // Any key works for the mechanics: a missing one shows as itself.
         assert_eq!(trf("{n} of {total}", &[("n", "2"), ("total", "5")]), "2 of 5");
+    }
+
+    #[test]
+    fn a_value_with_braces_is_not_filled_again() {
+        // A chatter named "{total}" stays "{total}".
+        assert_eq!(
+            fill("{n} of {total}", &[("n", "{total}"), ("total", "5")]),
+            "{total} of 5"
+        );
+        assert_eq!(fill("{a}{a}", &[("a", "x")]), "xx");
+        assert_eq!(fill("{unknown} {a}", &[("a", "x")]), "{unknown} x");
+        assert_eq!(fill("open { and {a", &[("a", "x")]), "open { and {a");
+        assert_eq!(fill("{{a}}", &[("a", "x")]), "{x}");
+        assert_eq!(fill("ünï {a} 😀", &[("a", "çã")]), "ünï çã 😀");
+        assert_eq!(fill("", &[("a", "x")]), "");
+        assert_eq!(fill("{}", &[("", "empty")]), "empty");
     }
 
     #[test]

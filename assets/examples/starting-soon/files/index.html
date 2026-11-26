@@ -41,6 +41,7 @@
 // gets each as an address to load, so it goes straight into a CSS url() or an <audio>.
 let settings = streamerz.settings;
 const opened = Date.now();
+let timer = 0;
 
 streamerz.onSettings(s => {
   settings = s;
@@ -53,13 +54,13 @@ streamerz.onSettings(s => {
   title.textContent = s.title || "";
   subtitle.textContent = s.subtitle || "";
   subtitle.hidden = !s.subtitle;
-  picture.style.backgroundImage = s.background ? 'url("' + s.background + '")' : "";
+  picture.style.backgroundImage = s.background ? 'url("' + String(s.background).replace(/["\\]/g, "\\$&") + '")' : "";
   // A new song starts over; the same one keeps playing at the new volume.
   if (music.getAttribute("src") !== (s.music || "")) {
     if (s.music) music.src = s.music;
     else music.removeAttribute("src");
   }
-  music.volume = Math.min(1, (Number(s.volume) || 0) / 100);
+  music.volume = Math.max(0, Math.min(1, (Number(s.volume) || 0) / 100));
   if (s.music) music.play().catch(() => streamerz.log("The music did not start: in OBS, tick Control audio via OBS or allow autoplay"));
   else music.pause();
   tick();
@@ -67,6 +68,8 @@ streamerz.onSettings(s => {
 
 // The countdown from when the page opened (when its scene is shown, if the source refreshes then).
 function tick() {
+  clearTimeout(timer);
+  timer = 0;
   const minutes = Number(settings.minutes) || 0;
   clock.hidden = !minutes;
   dots.hidden = !!minutes;
@@ -75,8 +78,8 @@ function tick() {
   const s = Math.ceil(left / 1000);
   clock.textContent = left ? Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") : settings.done || "";
   clock.classList.toggle("over", !left);
+  if (left > 0) timer = setTimeout(tick, left % 1000 || 1000);
 }
-setInterval(tick, 250);
 </script>
 </body>
 </html>

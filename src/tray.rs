@@ -19,6 +19,8 @@ static REFRESH: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::
 static TRAY_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 #[cfg(windows)]
 const WM_SOFTWARE: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+#[cfg(windows)]
+const SHOW_INSTANCE: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 /// The Software rendering setting changed (or is read at start): the tray's check follows it.
 pub fn show_software(on: bool) {
@@ -314,6 +316,7 @@ pub async fn run(ui: Sender) {
     // Win32 delivers tray clicks to the thread that created the icon, so it gets its own
     // thread with a message loop.
     std::thread::spawn(move || {
+        watch_session_end();
         let open = MenuItem::new(tr("tray.show_hide"), true, None);
         let software = CheckMenuItem::new(
             tr("settings.software_render"),
@@ -327,9 +330,7 @@ pub async fn run(ui: Sender) {
             crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         };
-        if let Err(e) = menu.append_items(&[&open, &software, &PredefinedMenuItem::separator(), &close]) {
-            return fail(e.to_string());
-        }
+        let menu_result = menu.append_items(&[&open, &software, &PredefinedMenuItem::separator(), &close]);
         let (open_id, software_id, close_id) = (open.id().clone(), software.id().clone(), close.id().clone());
         let menu_ui = ui.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
@@ -354,8 +355,11 @@ pub async fn run(ui: Sender) {
             }
         }));
 
-        let tray = Icon::from_rgba(icon(taskbar_dark()).to_vec(), SIZE as u32, SIZE as u32)
+        let tray = menu_result
             .map_err(|e| e.to_string())
+            .and_then(|()| {
+                Icon::from_rgba(icon(taskbar_dark()).to_vec(), SIZE as u32, SIZE as u32).map_err(|e| e.to_string())
+            })
             .and_then(|icon| {
                 TrayIconBuilder::new()
                     .with_icon(icon)
@@ -365,11 +369,13 @@ pub async fn run(ui: Sender) {
                     .build()
                     .map_err(|e| e.to_string())
             });
-        watch_session_end();
-        // Kept alive by the message loop below.
+        // Keep handling the hidden window even if the tray icon is unavailable.
         let _tray = match tray {
-            Ok(t) => t,
-            Err(e) => return fail(e),
+            Ok(t) => Some(t),
+            Err(e) => {
+                fail(e);
+                None
+            }
         };
 
         // SAFETY: no pointers.
@@ -403,6 +409,10 @@ fn watch_session_end() {
         CreateWindowExW, DefWindowProcW, RegisterClassW, WM_ENDSESSION, WNDCLASSW,
     };
     unsafe extern "system" fn listen(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if m == SHOW_INSTANCE {
+            crate::host::show();
+            return 0;
+        }
         if m == WM_ENDSESSION && w != 0 {
             crate::say("Windows is ending the session: saving and quitting".into());
             crate::engine::shutdown_and_wait();
@@ -411,20 +421,23 @@ fn watch_session_end() {
         // SAFETY: the arguments Windows gave this procedure, passed on unchanged.
         unsafe { DefWindowProcW(h, m, w, l) }
     }
-    let name: Vec<u16> = "StreamerzSession".encode_utf16().chain([0]).collect();
-    // SAFETY: a window class and a never-shown window of this thread, whose message loop runs below;
-    // `name` outlives both calls (the class copies it).
+    let title = if crate::brand::IS_DEV {
+        windows::core::w!("Streamerz Dev")
+    } else {
+        INSTANCE_TITLE
+    };
+    // SAFETY: the strings are static and the window belongs to this thread's message loop.
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let mut class: WNDCLASSW = std::mem::zeroed();
         class.lpfnWndProc = Some(listen);
         class.hInstance = module;
-        class.lpszClassName = name.as_ptr();
+        class.lpszClassName = SESSION_CLASS.as_ptr();
         RegisterClassW(&class);
         CreateWindowExW(
             0,
-            name.as_ptr(),
-            name.as_ptr(),
+            SESSION_CLASS.as_ptr(),
+            title.as_ptr(),
             0,
             0,
             0,
@@ -435,6 +448,26 @@ fn watch_session_end() {
             module,
             std::ptr::null(),
         );
+    }
+}
+
+#[cfg(windows)]
+const SESSION_CLASS: windows::core::PCWSTR = windows::core::w!("StreamerzSession");
+#[cfg(windows)]
+const INSTANCE_TITLE: windows::core::PCWSTR = windows::core::w!("Streamerz");
+
+/// Raise the production window without depending on any server settings.
+#[cfg(windows)]
+pub fn show_existing() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, PostMessageW, ASFW_ANY};
+    // SAFETY: the search strings are static, and the message carries no pointers.
+    unsafe {
+        let window = FindWindowW(SESSION_CLASS.as_ptr(), INSTANCE_TITLE.as_ptr());
+        if window.is_null() {
+            return false;
+        }
+        AllowSetForegroundWindow(ASFW_ANY);
+        PostMessageW(window, SHOW_INSTANCE, 0, 0) != 0
     }
 }
 

@@ -27,7 +27,7 @@ impl LocalTrack {
         } else {
             0
         };
-        self.position_ms.abs_diff(before.position_ms + played) > 1500
+        self.position_ms.abs_diff(before.position_ms.saturating_add(played)) > 1500
     }
 
     /// What the pages listening to the `song` topic get.
@@ -105,21 +105,31 @@ fn keep_cover(bytes: Vec<u8>) -> String {
 }
 
 #[cfg(windows)]
-struct Apartment;
+struct Apartment {
+    uninit: bool,
+}
 
 #[cfg(windows)]
 impl Apartment {
     fn new() -> Result<Self, String> {
-        unsafe { windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED) }
-            .map_err(|e| crate::fmt::win_error(&e))?;
-        Ok(Self)
+        // RPC_E_CHANGED_MODE (0x80010106): thread already initialized in another apartment mode.
+        const RPC_E_CHANGED_MODE: windows::core::HRESULT = windows::core::HRESULT(0x8001_0106_u32 as i32);
+        match unsafe {
+            windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED)
+        } {
+            Ok(()) => Ok(Self { uninit: true }),
+            Err(e) if e.code() == RPC_E_CHANGED_MODE => Ok(Self { uninit: false }),
+            Err(e) => Err(crate::fmt::win_error(&e)),
+        }
     }
 }
 
 #[cfg(windows)]
 impl Drop for Apartment {
     fn drop(&mut self) {
-        unsafe { windows::Win32::System::WinRT::RoUninitialize() }
+        if self.uninit {
+            unsafe { windows::Win32::System::WinRT::RoUninitialize() }
+        }
     }
 }
 
@@ -143,18 +153,19 @@ async fn read_session(
     use windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status;
     let sessions = manager.GetSessions().map_err(|e| crate::fmt::win_error(&e))?;
     for session in &sessions {
-        let id = session
-            .SourceAppUserModelId()
-            .map_err(|e| crate::fmt::win_error(&e))?
-            .to_string();
-        if !is_spotify(&id) {
+        let Ok(id) = session.SourceAppUserModelId() else {
+            continue;
+        };
+        if !is_spotify(&id.to_string()) {
             continue;
         }
-        let media = session
-            .TryGetMediaPropertiesAsync()
-            .map_err(|e| crate::fmt::win_error(&e))?
-            .await
-            .map_err(|e| crate::fmt::win_error(&e))?;
+        // A session that closed mid-read disappears; treat it as gone rather than failing the monitor.
+        let Ok(op) = session.TryGetMediaPropertiesAsync() else {
+            continue;
+        };
+        let Ok(media) = op.await else {
+            continue;
+        };
         // Where the song is: the player says it when it changes (a pause, a seek, a new song).
         let (mut duration_ms, mut position_ms, mut at_ms) = (0, 0, 0);
         if let Ok(timeline) = session.GetTimelineProperties() {
@@ -165,19 +176,25 @@ async fn read_session(
             // 100 ns since 1601, as ms since 1970.
             at_ms = timeline
                 .LastUpdatedTime()
-                .map(|t| (t.UniversalTime / 10_000 - 11_644_473_600_000).max(0) as u64)
+                .map(|t| (t.UniversalTime / 10_000).saturating_sub(11_644_473_600_000).max(0) as u64)
                 .unwrap_or(0);
         }
         if at_ms == 0 {
-            at_ms = crate::fmt::unix_now().as_millis() as u64;
+            at_ms = crate::fmt::now_ms();
         }
         let cover = match thumbnail(&media).await {
             Some(bytes) => keep_cover(bytes),
             None => String::new(),
         };
+        let Ok(title) = media.Title() else {
+            continue;
+        };
+        let Ok(artist) = media.Artist() else {
+            continue;
+        };
         return Ok(Some(LocalTrack {
-            title: media.Title().map_err(|e| crate::fmt::win_error(&e))?.to_string(),
-            artist: media.Artist().map_err(|e| crate::fmt::win_error(&e))?.to_string(),
+            title: title.to_string(),
+            artist: artist.to_string(),
             playing: session
                 .GetPlaybackInfo()
                 .and_then(|p| p.PlaybackStatus())
@@ -249,29 +266,28 @@ impl Subscriptions {
         }
         let sessions = self.manager.GetSessions().map_err(|e| crate::fmt::win_error(&e))?;
         for session in &sessions {
-            let id = session
-                .SourceAppUserModelId()
-                .map_err(|e| crate::fmt::win_error(&e))?
-                .to_string();
-            if !is_spotify(&id) {
+            let Ok(id) = session.SourceAppUserModelId() else {
+                continue;
+            };
+            if !is_spotify(&id.to_string()) {
                 continue;
             }
             let send = tx.clone();
-            let media = session
-                .MediaPropertiesChanged(&TypedEventHandler::new(move |_, _| {
-                    let _ = send.send(false);
-                    Ok(())
-                }))
-                .map_err(|e| crate::fmt::win_error(&e))?;
+            let Ok(media) = session.MediaPropertiesChanged(&TypedEventHandler::new(move |_, _| {
+                let _ = send.send(false);
+                Ok(())
+            })) else {
+                continue;
+            };
             let send = tx.clone();
             let playback = match session.PlaybackInfoChanged(&TypedEventHandler::new(move |_, _| {
                 let _ = send.send(false);
                 Ok(())
             })) {
                 Ok(token) => token,
-                Err(error) => {
+                Err(_) => {
                     let _ = session.RemoveMediaPropertiesChanged(media);
-                    return Err(error.to_string());
+                    continue;
                 }
             };
             // A seek: the song's place changed and nothing else did.
@@ -351,7 +367,7 @@ async fn read(c: &zbus::Connection) -> Result<Option<LocalTrack>, String> {
     let bus = zbus::fdo::DBusProxy::new(c).await.map_err(|e| e.to_string())?;
     let name = zbus::names::BusName::try_from(NAME).map_err(|e| e.to_string())?;
     // Ask first: a proxy to a name nobody owns may start something.
-    if !bus.name_has_owner(name).await.map_err(|e| e.to_string())? {
+    if !bus.name_has_owner(name.clone()).await.map_err(|e| e.to_string())? {
         return Ok(None);
     }
     // Asked each time and never remembered: the player doesn't say when the song's place moves on.
@@ -366,8 +382,26 @@ async fn read(c: &zbus::Connection) -> Result<Option<LocalTrack>, String> {
         .build()
         .await
         .map_err(err)?;
-    let status: String = p.get_property("PlaybackStatus").await.map_err(err)?;
-    let meta: HashMap<String, OwnedValue> = p.get_property("Metadata").await.map_err(err)?;
+    let status: String = match p.get_property("PlaybackStatus").await {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = err(e);
+            if is_bus_gone(&msg) || !bus.name_has_owner(name.clone()).await.unwrap_or(false) {
+                return Ok(None);
+            }
+            return Err(msg);
+        }
+    };
+    let meta: HashMap<String, OwnedValue> = match p.get_property("Metadata").await {
+        Ok(m) => m,
+        Err(e) => {
+            let msg = err(e);
+            if is_bus_gone(&msg) || !bus.name_has_owner(name).await.unwrap_or(false) {
+                return Ok(None);
+            }
+            return Err(msg);
+        }
+    };
     let position: i64 = p.get_property("Position").await.unwrap_or(0);
     let text = |k: &str| {
         meta.get(k)
@@ -396,7 +430,7 @@ async fn read(c: &zbus::Connection) -> Result<Option<LocalTrack>, String> {
             .unwrap_or_default(),
         duration_ms: length / 1000,
         position_ms: (position.max(0) / 1000) as u64,
-        at_ms: crate::fmt::unix_now().as_millis() as u64,
+        at_ms: crate::fmt::now_ms(),
     }))
 }
 
@@ -450,6 +484,15 @@ pub async fn monitor(engine: std::rc::Rc<crate::engine::Engine>) -> Result<(), S
     Ok(())
 }
 
+#[cfg_attr(windows, allow(dead_code))]
+fn is_bus_gone(error: &str) -> bool {
+    error.contains("ServiceUnknown")
+        || error.contains("NameHasNoOwner")
+        || error.contains("NoReply")
+        || error.contains("UnknownObject")
+        || error.contains("UnknownInterface")
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_spotify(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
@@ -479,8 +522,20 @@ mod tests {
     #[test]
     fn matches_spotify_sessions_without_matching_other_players() {
         assert!(super::is_spotify("Spotify.exe"));
+        assert!(super::is_spotify("C:\\Program Files\\Spotify\\Spotify.exe"));
         assert!(super::is_spotify("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"));
         assert!(!super::is_spotify("NotSpotify.exe"));
+        assert!(!super::is_spotify(""));
+    }
+
+    #[test]
+    fn dbus_vanished_errors_are_recognized() {
+        assert!(super::is_bus_gone(
+            "org.freedesktop.DBus.Error.ServiceUnknown: The name was not provided"
+        ));
+        assert!(super::is_bus_gone("org.freedesktop.DBus.Error.NoReply"));
+        assert!(super::is_bus_gone("org.freedesktop.DBus.Error.UnknownObject"));
+        assert!(!super::is_bus_gone("org.freedesktop.DBus.Error.AccessDenied"));
     }
 
     #[test]
@@ -515,6 +570,9 @@ mod tests {
         // Paused, it stays where it was.
         assert!(!at(30_000, 10_000, false).jumped(&at(30_000, 0, false)));
         assert!(at(5_000, 10_000, false).jumped(&at(30_000, 0, false)));
+        // Extreme timestamps/positions never overflow.
+        assert!(!at(u64::MAX, 20_000, true).jumped(&at(u64::MAX, 10_000, true)));
+        assert!(!at(30_000, 5_000, true).jumped(&at(30_000, 10_000, true)));
         let song = at(1_000, 5, true).song();
         assert_eq!(
             (song["positionMs"].as_u64(), song["at"].as_u64()),

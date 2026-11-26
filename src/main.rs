@@ -48,10 +48,12 @@ mod overlay_preview;
 mod overlay_shot;
 mod overlays;
 mod package;
+mod platform_args;
 pub mod ports;
 pub mod remote;
 mod rewards;
 pub mod roles;
+mod runner;
 mod sandbox;
 mod scenario;
 mod search;
@@ -689,7 +691,7 @@ fn log(level: Level, line: String) {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
         }
-        s.log.push_back((level, fmt::unix_now().as_secs() as i64, line));
+        s.log.push_back((level, fmt::now_secs() as i64, line));
         s.logged += 1;
     });
     host::logged();
@@ -939,64 +941,21 @@ fn write_value(path: &Path, mut v: serde_json::Value) -> std::io::Result<()> {
             let _ = std::fs::create_dir_all(parent);
         }
     }
-    let tmp = with(path, ".tmp");
     secrets::seal(&mut v);
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
-    // Only the owner can read it: it may hold logins (see secrets.rs).
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    let mut f = o.open(&tmp)?;
-    #[cfg(unix)]
-    f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    f.write_all(serde_json::to_string_pretty(&v).unwrap_or_default().as_bytes())?;
-    f.sync_all()?;
     match std::fs::copy(path, with(path, ".bak")) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    retry_rename(
-        || std::fs::rename(&tmp, path),
-        || std::thread::sleep(std::time::Duration::from_millis(50)),
-    )
-}
-
-fn retry_rename(mut rename: impl FnMut() -> std::io::Result<()>, mut wait: impl FnMut()) -> std::io::Result<()> {
-    for _ in 0..4 {
-        match rename() {
-            Ok(()) => return Ok(()),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
-                ) || (cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))) =>
-            {
-                wait();
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    rename()
-}
-
-#[cfg(test)]
-#[test]
-fn settings_rename_retries_a_transient_failure() {
-    let mut attempts = 0;
-    let mut waits = 0;
-    retry_rename(
-        || {
-            attempts += 1;
-            if attempts < 3 {
-                Err(std::io::ErrorKind::PermissionDenied.into())
-            } else {
-                Ok(())
-            }
-        },
-        || waits += 1,
-    )
-    .unwrap();
-    assert_eq!((attempts, waits), (3, 2));
+    // Only the owner can read it: it may hold logins (see secrets.rs).
+    #[cfg(unix)]
+    let private = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    #[cfg(not(unix))]
+    let private = None;
+    fileio::replace(path, private, |f| {
+        let mut w = std::io::BufWriter::new(f);
+        serde_json::to_writer_pretty(&mut w, &v)?;
+        w.flush()
+    })
 }
 
 fn save(c: &Config) -> std::io::Result<()> {
@@ -1224,8 +1183,7 @@ fn extension_folder_for(config: &Path, source: Option<&Path>, cache: Option<&Pat
         (Some(source), Some(cache)) => {
             use sha2::Digest;
             let id = sha2::Sha256::digest(source.to_string_lossy().as_bytes());
-            let id: String = id[..6].iter().map(|b| format!("{b:02x}")).collect();
-            cache.join(id).join("tiktok-extension")
+            cache.join(fmt::hex(&id[..6])).join("tiktok-extension")
         }
         _ => config.with_file_name("tiktok-extension"),
     }
@@ -1428,12 +1386,23 @@ fn main() {
         };
         match lock {
             Ok(lock) => Some(lock),
-            Err(e) => {
-                // Already running (in the tray, most likely): bring its window up unless started with --hidden.
-                if !args.iter().any(|a| a == "--hidden") && !instance::show_running(&resolve_config_path(path.clone()))
-                {
+            // Already running (in the tray, most likely): bring its window up unless started with --hidden.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if args.iter().any(|a| a == "--hidden") {
+                    return;
+                }
+                // The tray thread's window answers even when the WebSocket server is off.
+                #[cfg(windows)]
+                if tray::show_existing() {
+                    return;
+                }
+                if !instance::show_running(&resolve_config_path(path)) {
                     eprintln!("Streamerz could not acquire its instance lock: {e}");
                 }
+                return;
+            }
+            Err(e) => {
+                eprintln!("Streamerz could not acquire its instance lock: {e}");
                 return;
             }
         }
@@ -1821,7 +1790,9 @@ mod tests {
         assert!(!c.dark && c.rest["future"] == serde_json::json!([1, 2]));
         assert!(std::fs::read_to_string(with(&path, ".bak")).unwrap().contains("future"));
         assert!(std::fs::read_to_string(&path).unwrap().contains("future"));
-        assert!(!with(&path, ".tmp").exists());
+        // No temp file left beside it.
+        let temp = |e: std::fs::DirEntry| e.file_name().to_string_lossy().starts_with(".streamerz.json.");
+        assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(temp));
         // Broken: the .bak is used and the broken file left alone.
         std::fs::write(&path, "{broken").unwrap();
         assert!(!load_from(&path).dark);

@@ -16,6 +16,7 @@ pub struct Entry {
 }
 
 /// `- Key: value` under a section's title.
+#[cfg(test)]
 fn field<'a>(section: &'a str, key: &str) -> Option<&'a str> {
     section
         .lines()
@@ -24,7 +25,8 @@ fn field<'a>(section: &'a str, key: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// The entries of one file.
+/// The entries of one file (build.rs indexes them the same way, into `REFERENCE`).
+#[cfg(test)]
 fn entries_in(file: &'static str, text: &str) -> Vec<Entry> {
     text.split("\n## ")
         .skip(1)
@@ -48,7 +50,8 @@ fn entries_in(file: &'static str, text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// Every entry of the reference.
+/// Every entry of the reference, parsed from the files (to check `REFERENCE` against).
+#[cfg(test)]
 pub fn entries() -> Vec<Entry> {
     DOCS.iter()
         .filter(|(p, _)| p.starts_with("reference/") && !p.ends_with("README.md"))
@@ -56,11 +59,21 @@ pub fn entries() -> Vec<Entry> {
         .collect()
 }
 
-/// The page of a `kind` ("subaction" or "trigger") by its code.
-pub fn entry(kind: &str, code: u32) -> Option<Entry> {
-    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
-    let (kind, code, file, start, end) = REFERENCE[at];
-    let text = &DOCS[file].1[start..end];
+/// Where the page of a `kind` and `code` is in [`REFERENCE`].
+fn index(kind: &str, code: u32) -> Option<usize> {
+    REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()
+}
+
+/// The text of the page at `at` in [`REFERENCE`].
+fn text_at(at: usize) -> &'static str {
+    let (_, _, file, start, end) = REFERENCE[at];
+    &DOCS[file].1[start..end]
+}
+
+/// The page at `at` in [`REFERENCE`].
+fn entry_at(at: usize) -> Option<Entry> {
+    let (kind, code, file, _, _) = REFERENCE[at];
+    let text = text_at(at);
     Some(Entry {
         kind,
         code,
@@ -70,11 +83,14 @@ pub fn entry(kind: &str, code: u32) -> Option<Entry> {
     })
 }
 
+/// The page of a `kind` ("subaction" or "trigger") by its code.
+pub fn entry(kind: &str, code: u32) -> Option<Entry> {
+    entry_at(index(kind, code)?)
+}
+
 /// Borrow compiled reference text without parsing or allocating the other pages.
 pub fn text(kind: &str, code: u32) -> Option<&'static str> {
-    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
-    let (_, _, file, start, end) = REFERENCE[at];
-    Some(&DOCS[file].1[start..end])
+    Some(text_at(index(kind, code)?))
 }
 
 /// A reference page split for in-app Help: title for the dialog header, leading metadata lines, and
@@ -201,9 +217,11 @@ pub fn guides() -> Vec<&'static str> {
 
 /// A guide by name (with or without `.md`, any case).
 pub fn guide(name: &str) -> Option<&'static str> {
-    let want = name.trim().trim_end_matches(".md").to_lowercase();
+    // Lower case first, so "GUIDE.MD" loses its extension too.
+    let want = name.trim().to_lowercase();
+    let want = want.trim_end_matches(".md");
     DOCS.iter()
-        .find(|(p, _)| p.trim_end_matches(".md").to_lowercase() == want)
+        .find(|(p, _)| p.to_lowercase().trim_end_matches(".md") == want)
         .map(|(_, t)| *t)
 }
 
@@ -213,14 +231,17 @@ pub fn search(query: &str) -> Vec<Entry> {
     if words.is_empty() {
         return Vec::new();
     }
-    let mut found: Vec<(usize, Entry)> = entries()
-        .into_iter()
-        .filter_map(|e| {
-            let (title, text) = (e.title.to_lowercase(), e.text.to_lowercase());
-            words.iter().all(|w| text.contains(w)).then(|| {
-                let in_title = words.iter().filter(|w| title.contains(w.as_str())).count();
-                (words.len() - in_title, e)
-            })
+    // From the index: only the pages found are copied out.
+    let mut found: Vec<(usize, Entry)> = (0..REFERENCE.len())
+        .filter_map(|at| {
+            let text = text_at(at).to_lowercase();
+            if !words.iter().all(|w| text.contains(w)) {
+                return None;
+            }
+            let e = entry_at(at)?;
+            let title = e.title.to_lowercase();
+            let in_title = words.iter().filter(|w| title.contains(w.as_str())).count();
+            Some((words.len() - in_title, e))
         })
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.title.cmp(&b.1.title)));
@@ -318,6 +339,37 @@ mod tests {
                 e.file
             );
         }
+    }
+
+    #[test]
+    fn search_needs_every_word_and_ranks_title_matches_first() {
+        assert!(search("").is_empty() && search("   ").is_empty());
+        assert!(search("zzqqxx-not-a-word").is_empty());
+        let found = search("TikTok GIFT");
+        assert!(!found.is_empty());
+        for e in &found {
+            let text = e.text.to_lowercase();
+            assert!(text.contains("tiktok") && text.contains("gift"), "{}", e.title);
+        }
+        // Title matches first: the number of words missing from the title never goes down.
+        let missing = |e: &Entry| {
+            let t = e.title.to_lowercase();
+            ["tiktok", "gift"].iter().filter(|w| !t.contains(*w)).count()
+        };
+        assert!(found.windows(2).all(|p| missing(&p[0]) <= missing(&p[1])));
+        assert!(found.iter().any(|e| (e.kind, e.code) == ("trigger", 41002)));
+        // Non-ASCII queries are fine.
+        let _ = search("ünïcödé 😀 ação");
+    }
+
+    #[test]
+    fn a_guide_is_found_by_name_in_any_case() {
+        let names = guides();
+        assert!(!names.is_empty() && names.iter().all(|n| !n.starts_with("reference/")));
+        let first = names[0];
+        assert_eq!(guide(first), guide(&first.to_uppercase()));
+        assert_eq!(guide(first.trim_end_matches(".md")), guide(first));
+        assert!(guide("no such guide").is_none());
     }
 
     #[test]

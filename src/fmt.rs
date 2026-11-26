@@ -108,9 +108,27 @@ pub fn shown_patterns() -> (String, String) {
     let d = if d.is_empty() {
         l.short_date.clone()
     } else {
-        d.replace('/', "'/'")
+        literal_slashes(&d)
     };
     (d, if t.is_empty() { l.short_time.clone() } else { t })
+}
+
+/// A pattern with each `/` outside quotes and escapes written as a plain slash (`\/`).
+fn literal_slashes(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 4);
+    let (mut quote, mut escaped) = (None, false);
+    for c in p.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quote.is_none() => escaped = true,
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            _ if Some(c) == quote => quote = None,
+            '/' if quote.is_none() => out.push('\\'),
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The system's short date and time patterns.
@@ -132,10 +150,10 @@ pub fn shown_time(t: &Time) -> String {
 /// An ISO 8601 time ("2024-08-17T12:34:56-03:00") as the user reads it, in local time: the date, and
 /// the time after it with `time`. Empty when it isn't one.
 pub fn shown_iso(iso: &str, time: bool) -> String {
-    let Some(secs) = crate::engine::rest_parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
+    let Some(secs) = parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
         return String::new();
     };
-    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    let t = local_time(secs);
     if time {
         format!("{} {}", shown_date(&t), shown_time(&t))
     } else {
@@ -145,13 +163,34 @@ pub fn shown_iso(iso: &str, time: bool) -> String {
 
 /// Unix seconds as the user reads a date and a time.
 pub fn shown_when(secs: i64) -> String {
-    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    let t = local_time(secs);
     format!("{} {}", shown_date(&t), shown_time(&t))
 }
 
 /// Unix seconds as the user reads a time of day (chat lines).
 pub fn shown_clock(secs: i64) -> String {
-    shown_time(&crate::engine::civil_time(secs + i64::from(now().offset)))
+    shown_time(&local_time(secs))
+}
+
+/// Unix seconds as a local date and time, with the offset in effect then (not now's: a time from
+/// before a daylight saving change keeps its own hour).
+pub fn local_time(secs: i64) -> Time {
+    let offset = offset_at(secs);
+    Time {
+        offset,
+        ..civil(secs + i64::from(offset))
+    }
+}
+
+/// Unix seconds of a local date and time, given as seconds since 1970 read as if it were UTC, with the
+/// offset in effect at that moment (not now's).
+pub fn from_local(naive: i64) -> i64 {
+    from_local_with(naive, offset_at)
+}
+
+fn from_local_with(naive: i64, offset_at: impl Fn(i64) -> i32) -> i64 {
+    let guess = naive - i64::from(offset_at(naive));
+    naive - i64::from(offset_at(guess))
 }
 
 pub fn locale() -> &'static Locale {
@@ -197,7 +236,7 @@ fn os_locale() -> Locale {
             .to_string_lossy()
             .into_owned()
     };
-    out.dec = get(0x10000);
+    keep(&mut out.dec, get(0x10000));
     out.group = get(0x10001);
     // CRNCYSTR: "-" before the number, "+" after, "." in place of the decimal point.
     let c = get(0x4000f);
@@ -217,11 +256,7 @@ fn os_locale() -> Locale {
     out.am = get(0x20026);
     out.pm = get(0x20027);
     out.short_date = strftime_to_net(&get(0x20029));
-    out.date_sep = out
-        .short_date
-        .chars()
-        .find(|c| !c.is_alphanumeric())
-        .map_or("/".into(), String::from);
+    out.date_sep = date_separator(&out.short_date);
     out.short_date = out.short_date.replace(&out.date_sep, "/");
     out.long_time = strftime_to_net(&get(0x2002a));
     out.short_time = out.long_time.replace(":ss", "").replace(".ss", "");
@@ -240,31 +275,49 @@ fn os_locale() -> Locale {
         let n = unsafe { GetLocaleInfoEx(std::ptr::null(), t, buf.as_mut_ptr(), buf.len() as i32) };
         String::from_utf16_lossy(&buf[..(n.max(1) - 1) as usize])
     };
-    out.dec = get(0x0E);
+    keep(&mut out.dec, get(0x0E));
     out.group = get(0x0F);
-    out.currency = get(0x14);
+    keep(&mut out.currency, get(0x14));
     let pos = get(0x1B); // 0 "$1", 1 "1$", 2 "$ 1", 3 "1 $"
     out.currency_after = pos == "1" || pos == "3";
     out.currency_space = pos == "2" || pos == "3";
-    out.date_sep = get(0x1D);
+    keep(&mut out.date_sep, get(0x1D));
     for i in 0..12 {
-        out.months[i] = get(0x38 + i as u32);
-        out.months_abbr[i] = get(0x44 + i as u32);
+        keep(&mut out.months[i], get(0x38 + i as u32));
+        keep(&mut out.months_abbr[i], get(0x44 + i as u32));
     }
     // Windows starts its day names on Monday.
     for i in 0..7 {
-        out.days[(i + 1) % 7] = get(0x2A + i as u32);
-        out.days_abbr[(i + 1) % 7] = get(0x31 + i as u32);
+        keep(&mut out.days[(i + 1) % 7], get(0x2A + i as u32));
+        keep(&mut out.days_abbr[(i + 1) % 7], get(0x31 + i as u32));
     }
+    // 24 hour locales may have no AM and PM: kept empty, as .NET has them.
     out.am = get(0x28);
     out.pm = get(0x29);
-    out.short_date = get(0x1F);
-    out.long_date = get(0x20);
-    out.long_time = get(0x1003);
-    out.short_time = get(0x79);
+    keep(&mut out.short_date, get(0x1F));
+    keep(&mut out.long_time, get(0x1003));
+    keep(&mut out.short_time, get(0x79));
     out.set_order();
-    out.long_date = get(0x20);
+    keep(&mut out.long_date, get(0x20));
     out
+}
+
+/// Sets `field` to what the OS said, unless it said nothing (a failed call): the default stays.
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+fn keep(field: &mut String, value: String) {
+    if !value.is_empty() {
+        *field = value;
+    }
+}
+
+/// The date separator of a short date pattern: its first character that isn't a letter, a digit
+/// or an escape ("/" when there is none).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn date_separator(pattern: &str) -> String {
+    pattern
+        .chars()
+        .find(|c| !c.is_alphanumeric() && !matches!(c, '\'' | '\\'))
+        .map_or("/".into(), String::from)
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -272,16 +325,22 @@ fn os_locale() -> Locale {
     Locale::en_us()
 }
 
-/// A strftime pattern (glibc's D_FMT/T_FMT) as a .NET one.
+/// A strftime pattern (glibc's D_FMT/T_FMT) as a .NET one. Its other letters are quoted, as .NET
+/// would read them as fields ("%Hh%M" is "HH'h'mm").
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn strftime_to_net(f: &str) -> String {
     let mut out = String::new();
-    let mut it = f.chars();
+    let mut it = f.chars().peekable();
     while let Some(c) = it.next() {
         if c != '%' {
+            if c.is_ascii_alphabetic() || matches!(c, '\'' | '"' | '\\' | '%') {
+                out.push('\\');
+            }
             out.push(c);
             continue;
         }
+        // The E and O modifiers (other eras and digits) change nothing here.
+        while it.next_if(|&m| m == 'E' || m == 'O').is_some() {}
         out += match it.next() {
             Some('d') => "dd",
             Some('e') => "d",
@@ -289,18 +348,23 @@ fn strftime_to_net(f: &str) -> String {
             Some('Y') => "yyyy",
             Some('y') => "yy",
             Some('H') => "HH",
+            Some('k') => "H",
             Some('I') => "hh",
+            Some('l') => "h",
             Some('M') => "mm",
             Some('S') => "ss",
-            Some('p') => "tt",
+            Some('p') | Some('P') => "tt",
             Some('r') => "hh:mm:ss tt",
             Some('T') => "HH:mm:ss",
             Some('R') => "HH:mm",
             Some('D') => "MM/dd/yy",
+            Some('F') => "yyyy-MM-dd",
             Some('b') | Some('h') => "MMM",
             Some('B') => "MMMM",
             Some('a') => "ddd",
             Some('A') => "dddd",
+            Some('%') => "\\%",
+            Some('n') | Some('t') => " ",
             _ => "",
         };
     }
@@ -323,37 +387,75 @@ pub struct Time {
     pub offset: i32,
 }
 
+/// `bytes` as lowercase hex, two digits each (a digest's usual text).
+pub fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX_LOWER[usize::from(b >> 4)] as char);
+        out.push(HEX_LOWER[usize::from(b & 15)] as char);
+    }
+    out
+}
+
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+
 pub fn unix_now() -> std::time::Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
 }
 
-/// Now, in the local time zone.
+/// Unix time now, in whole seconds.
+pub fn now_secs() -> u64 {
+    unix_now().as_secs()
+}
+
+/// Unix time now, in milliseconds.
+pub fn now_ms() -> u64 {
+    u64::try_from(unix_now().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The C library's `struct tm` (64-bit glibc and macOS).
 #[cfg(unix)]
-pub fn now() -> Time {
-    #[repr(C)]
-    struct Tm {
-        sec: i32,
-        min: i32,
-        hour: i32,
-        mday: i32,
-        mon: i32,
-        year: i32,
-        wday: i32,
-        yday: i32,
-        isdst: i32,
-        gmtoff: i64,
-        zone: *const u8,
-    }
+#[repr(C)]
+struct Tm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    mon: i32,
+    year: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+    gmtoff: i64,
+    zone: *const u8,
+}
+
+/// `secs` in the local time zone, by the C library.
+#[cfg(unix)]
+fn local_tm(secs: i64) -> Tm {
     extern "C" {
         fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
     }
-    let d = unix_now();
-    let secs = d.as_secs() as i64;
-    // SAFETY: Tm matches glibc's struct tm on 64-bit; zeroed is a valid value for it.
+    // SAFETY: Tm matches glibc's struct tm on 64-bit; zeroed is a valid value for it, and stays
+    // zeroed (UTC) when localtime_r fails.
     let mut tm: Tm = unsafe { std::mem::zeroed() };
     unsafe { localtime_r(&secs, &mut tm) };
+    tm
+}
+
+/// The local offset from UTC at Unix time `secs`, in seconds (daylight saving time included).
+#[cfg(unix)]
+pub fn offset_at(secs: i64) -> i32 {
+    local_tm(secs).gmtoff as i32
+}
+
+/// Now, in the local time zone.
+#[cfg(unix)]
+pub fn now() -> Time {
+    let d = unix_now();
+    let tm = local_tm(d.as_secs() as i64);
     Time {
         year: tm.year + 1900,
         month: tm.mon as u32 + 1,
@@ -365,6 +467,100 @@ pub fn now() -> Time {
         weekday: tm.wday as u32,
         offset: tm.gmtoff as i32,
     }
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// A UTC civil date and time from Unix seconds.
+pub fn civil(secs: i64) -> Time {
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    Time {
+        year,
+        month,
+        day,
+        hour: (rem / 3600) as u32,
+        min: (rem % 3600 / 60) as u32,
+        sec: (rem % 60) as u32,
+        nanos: 0,
+        weekday: (days + 4).rem_euclid(7) as u32,
+        offset: 0,
+    }
+}
+
+/// Unix seconds from an ISO 8601 time as the platforms send it ("2024-08-17T12:34:56Z", or with an
+/// offset such as "+02:00"; fractions ignored).
+pub fn parse_iso(t: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
+    // An offset after the seconds (and any fraction): "+02:00" is two hours ahead of UTC.
+    let tail = t
+        .get(19..)
+        .unwrap_or("")
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match (tail.get(..1), tail.get(1..3).and_then(|h| h.parse::<i64>().ok())) {
+        (Some(sign @ ("+" | "-")), Some(h)) => {
+            let m = tail.get(4..6).and_then(|m| m.parse::<i64>().ok()).unwrap_or(0);
+            (h * 3600 + m * 60) * if sign == "+" { 1 } else { -1 }
+        }
+        _ => 0,
+    };
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? - offset)
+}
+
+/// Unix seconds as an ISO 8601 UTC time (`2026-11-15T20:00:00Z`).
+pub fn iso_utc(secs: i64) -> String {
+    let t = civil(secs);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        t.year, t.month, t.day, t.hour, t.min, t.sec
+    )
+}
+
+/// The local offset from UTC at Unix time `secs`, in seconds (daylight saving time included).
+#[cfg(windows)]
+pub fn offset_at(secs: i64) -> i32 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+    let u = civil(secs);
+    if !(1601..=30827).contains(&u.year) {
+        return now().offset;
+    }
+    let utc = SYSTEMTIME {
+        wYear: u.year as u16,
+        wMonth: u.month as u16,
+        wDayOfWeek: u.weekday as u16,
+        wDay: u.day as u16,
+        wHour: u.hour as u16,
+        wMinute: u.min as u16,
+        wSecond: u.sec as u16,
+        wMilliseconds: 0,
+    };
+    // SAFETY: plain in and out structs; null is the time zone in use.
+    let mut l: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut l) } == 0 {
+        return now().offset;
+    }
+    let local = days_from_civil(i64::from(l.wYear), i64::from(l.wMonth), i64::from(l.wDay)) * 86_400
+        + i64::from(l.wHour) * 3600
+        + i64::from(l.wMinute) * 60
+        + i64::from(l.wSecond);
+    (local - secs) as i32
 }
 
 #[cfg(windows)]
@@ -468,7 +664,8 @@ impl Digits {
 
     /// The integer part's digits ("0" for none).
     fn int_part(&self) -> String {
-        if self.exp <= 0 {
+        // Zero scaled up (0 as a percent) is still "0", not "00".
+        if self.exp <= 0 || self.digits.is_empty() {
             return "0".into();
         }
         (0..self.exp as usize)
@@ -558,6 +755,13 @@ pub fn number(n: Num, fmt: &str) -> Option<String> {
     let l = locale();
     let b = fmt.as_bytes();
     let standard = !b.is_empty() && b[0].is_ascii_alphabetic() && b.len() <= 3 && b[1..].iter().all(u8::is_ascii_digit);
+    if let Num::Float(f) = n {
+        if !f.is_finite() {
+            // .NET Framework writes these the same in every format (D and X take no fraction).
+            let integral = standard && matches!(b[0], b'D' | b'd' | b'X' | b'x');
+            return (!integral).then(|| general(f));
+        }
+    }
     if !standard {
         return Some(custom_number(n, fmt, l));
     }
@@ -751,33 +955,35 @@ fn custom_number(n: Num, fmt: &str, l: &Locale) -> String {
     if int.len() < need {
         int = format!("{int:0>need$}");
     }
-    if grouping {
-        int = group(&int, &l.group);
-    }
-    // Lay it out: the whole integer at the first integer placeholder, other integer placeholders
-    // print nothing; fraction digits one per placeholder.
+    // Lay it out: integer digits right to left into the integer placeholders (the first one takes
+    // all that are left, as "(###) ###-####" does), fraction digits one per placeholder.
+    let places = int_ph.len();
+    let digits: Vec<char> = int.chars().collect();
+    let lead = (digits.len() + 1).saturating_sub(places);
     let mut out = String::new();
-    let (mut int_done, mut fi) = (false, 0);
-    let mut fchars = frac.chars();
+    let push_digit = |out: &mut String, i: usize| {
+        out.push(digits[i]);
+        let right = digits.len() - 1 - i;
+        if grouping && right > 0 && right.is_multiple_of(3) {
+            *out += &l.group;
+        }
+    };
+    let (mut slot, mut fchars) = (0, frac.chars());
     for (k, t) in toks.iter().enumerate() {
         match t {
             T::Lit(s) => out += s,
             T::Digit(_) if k < dot => {
-                if !int_done {
-                    out += &int;
-                    int_done = true;
+                if slot == 0 {
+                    (0..lead).for_each(|i| push_digit(&mut out, i));
+                } else if let Some(i) = (slot + digits.len()).checked_sub(places) {
+                    push_digit(&mut out, i);
                 }
+                slot += 1;
             }
-            T::Digit(_) => {
-                if let Some(c) = fchars.next() {
-                    out.push(c);
-                }
-                fi += 1;
-            }
+            T::Digit(_) => out.extend(fchars.next()),
             T::Dot => {
-                if !int_done {
-                    out += &int;
-                    int_done = true;
+                if places == 0 {
+                    (0..digits.len()).for_each(|i| push_digit(&mut out, i));
                 }
                 if !frac.is_empty() {
                     out += &l.dec;
@@ -785,7 +991,6 @@ fn custom_number(n: Num, fmt: &str, l: &Locale) -> String {
             }
         }
     }
-    let _ = fi;
     let all_zero = int.chars().all(|c| !c.is_ascii_digit() || c == '0') && frac.chars().all(|c| c == '0');
     if neg_sign && !all_zero {
         format!("-{out}")
@@ -856,20 +1061,22 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let chars: Vec<char> = f.chars().collect();
-    // A lone "%x" is the custom specifier x.
-    let chars = if chars.len() == 2 && chars[0] == '%' {
-        chars[1..].to_vec()
-    } else {
-        chars
-    };
     let mut out = String::new();
     let mut i = 0;
+    // After a "%", the next letter is a field on its own ("%d", or "%h" in "%hmm").
+    let mut single = false;
     while i < chars.len() {
         let c = chars[i];
+        if c == '%' && chars.get(i + 1).is_some_and(|&x| x != '%') {
+            single = true;
+            i += 1;
+            continue;
+        }
         let mut n = 1;
-        while i + n < chars.len() && chars[i + n] == c {
+        while !single && i + n < chars.len() && chars[i + n] == c {
             n += 1;
         }
+        single = false;
         let h12 = if t.hour.is_multiple_of(12) { 12 } else { t.hour % 12 };
         match c {
             'd' => {
@@ -924,11 +1131,16 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
                 let n = n.min(7);
                 let s = format!("{:09}", t.nanos);
                 let s = &s[..n];
-                out += &if c == 'F' {
-                    s.trim_end_matches('0').to_string()
+                if c == 'F' {
+                    let s = s.trim_end_matches('0');
+                    // No fraction: no point before it either, as .NET writes it.
+                    if s.is_empty() && out.ends_with('.') {
+                        out.pop();
+                    }
+                    out += s;
                 } else {
-                    s.to_string()
-                };
+                    out += s;
+                }
             }
             't' => {
                 let s = if t.hour < 12 { &l.am } else { &l.pm };
@@ -961,18 +1173,23 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
             ':' => out += &":".repeat(n),
             '/' => out += &l.date_sep.repeat(n),
             '\'' | '"' => {
-                let end = chars[i + 1..]
-                    .iter()
-                    .position(|&x| x == c)
-                    .map_or(chars.len(), |p| i + 1 + p);
-                out.extend(&chars[i + 1..end]);
-                i = end + 1;
+                // Up to the closing quote; a backslash in it escapes the next character.
+                i += 1;
+                while let Some(&x) = chars.get(i) {
+                    i += 1;
+                    match x {
+                        _ if x == c => break,
+                        '\\' => {
+                            out.extend(chars.get(i));
+                            i += 1;
+                        }
+                        _ => out.push(x),
+                    }
+                }
                 continue;
             }
             '\\' => {
-                if let Some(&x) = chars.get(i + 1) {
-                    out.push(x);
-                }
+                out.extend(chars.get(i + 1));
                 i += 2;
                 continue;
             }
@@ -985,6 +1202,21 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn now_in_seconds_and_milliseconds_agree() {
+        let (secs, ms) = (super::now_secs(), super::now_ms());
+        assert!(secs > 1_700_000_000 && ms / 1000 >= secs && ms / 1000 - secs <= 1);
+    }
+
+    #[test]
+    fn hex_writes_two_lowercase_digits_a_byte() {
+        let all: Vec<u8> = (0..=255).collect();
+        let old: String = all.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(super::hex(&all), old);
+        assert_eq!(super::hex(&[]), "");
+        assert_eq!(super::hex(&[0, 0xab, 0xff]), "00abff");
+    }
+
     #[test]
     fn parses_locale_decimal_numbers() {
         assert_eq!(super::parse_number_with_decimal("2,5", ","), Some(2.5));
@@ -1058,6 +1290,259 @@ mod tests {
         assert_eq!(custom_date(&t, "ddd, dd MMM", en(), true), "Sun, 11 Oct");
         assert_eq!(strftime_to_net("%m/%d/%Y"), "MM/dd/yyyy");
         assert_eq!(strftime_to_net("%r"), "hh:mm:ss tt");
+    }
+
+    fn at(year: i32, month: u32, day: u32, hour: u32, min: u32) -> Time {
+        let days = days_from_civil(i64::from(year), i64::from(month), i64::from(day));
+        Time {
+            hour,
+            min,
+            ..civil(days * 86_400)
+        }
+    }
+
+    #[test]
+    fn zero_as_a_percent_is_one_zero() {
+        assert_eq!(number(Num::Int(0), "P").unwrap(), "0.00%");
+        assert_eq!(number(Num::Float(0.0), "P0").unwrap(), "0%");
+        assert_eq!(custom_number(Num::Int(0), "0.0%", en()), "0.0%");
+        assert_eq!(custom_number(Num::Float(0.0), "0‰", en()), "0‰");
+        assert_eq!(number(Num::Float(0.5), "P1").unwrap(), "50.0%");
+    }
+
+    #[test]
+    fn infinity_and_nan_are_written_not_zero() {
+        let f = |v: f64, s: &str| number(Num::Float(v), s);
+        assert_eq!(f(f64::NAN, "N2").as_deref(), Some("NaN"));
+        assert_eq!(f(f64::INFINITY, "C").as_deref(), Some("Infinity"));
+        assert_eq!(f(f64::NEG_INFINITY, "0.00").as_deref(), Some("-Infinity"));
+        assert_eq!(f(f64::NAN, "R").as_deref(), Some("NaN"));
+        assert_eq!(f(f64::NAN, "D"), None);
+        assert_eq!(f(f64::INFINITY, "X2"), None);
+    }
+
+    #[test]
+    fn integer_placeholders_take_one_digit_each() {
+        let c = |v: i64, s: &str| custom_number(Num::Int(v), s, en());
+        assert_eq!(c(5_551_234_567, "(###) ###-####"), "(555) 123-4567");
+        assert_eq!(c(12, "##-##"), "-12");
+        assert_eq!(c(12, "00-00"), "00-12");
+        assert_eq!(c(123_456, "##-##"), "1234-56");
+        assert_eq!(c(1_234_567, "#,##0"), "1,234,567");
+        assert_eq!(c(-1_234_567, "#,##0"), "-1,234,567");
+        assert_eq!(c(0, "#,##0"), "0");
+        assert_eq!(c(0, "#.##"), "");
+        assert_eq!(c(7, "abc"), "abc");
+        assert_eq!(custom_number(Num::Float(1234.5), "0,0.00", en()), "1,234.50");
+        assert_eq!(custom_number(Num::Float(12.5), ".00", en()), "12.50");
+        assert_eq!(custom_number(Num::Float(1234.5), "#,#.00", en()), "1,234.50");
+    }
+
+    #[test]
+    fn integers_round_trip_through_every_integer_format() {
+        let mut samples: Vec<i64> = (-1200..1200).collect();
+        samples.extend([i64::MIN, i64::MAX, 999_999, 1_000_000, -1_000_000, 123_456_789_012]);
+        for v in samples {
+            let n = Num::Int(v);
+            assert_eq!(number(n, "D").unwrap(), v.to_string(), "D {v}");
+            assert_eq!(number(n, "N0").unwrap().replace(',', ""), v.to_string(), "N0 {v}");
+            assert_eq!(number(n, "R").unwrap(), v.to_string(), "R {v}");
+            let grouped = custom_number(n, "#,##0", en());
+            assert_eq!(grouped.replace(',', ""), v.to_string(), "#,##0 {v}");
+            // Groups of three, the first of one to three digits.
+            let digits = grouped.trim_start_matches('-');
+            let parts: Vec<&str> = digits.split(',').collect();
+            assert!((1..=3).contains(&parts[0].len()), "{grouped}");
+            assert!(parts[1..].iter().all(|p| p.len() == 3), "{grouped}");
+        }
+    }
+
+    #[test]
+    fn exact_fractions_match_rusts_formatting() {
+        // Quarters are exact in binary, so no rounding question: the two must agree.
+        for i in -2000..2000 {
+            let v = f64::from(i) / 4.0;
+            assert_eq!(custom_number(Num::Float(v), "0.00", en()), format!("{v:.2}"), "{v}");
+            let fixed = number(Num::Float(v), "F2").unwrap();
+            assert_eq!(fixed, format!("{v:.2}"), "{v}");
+        }
+    }
+
+    #[test]
+    fn halves_round_away_from_zero() {
+        for (v, want) in [
+            (0.5, "1"),
+            (1.5, "2"),
+            (2.5, "3"),
+            (-0.5, "-1"),
+            (-2.5, "-3"),
+            (0.49, "0"),
+        ] {
+            assert_eq!(number(Num::Float(v), "F0").unwrap(), want, "{v}");
+        }
+        assert_eq!(number(Num::Float(9.995), "N2").unwrap(), "10.00");
+        assert_eq!(number(Num::Float(999_999.5), "N0").unwrap(), "1,000,000");
+    }
+
+    #[test]
+    fn a_percent_sign_makes_the_next_letter_a_field_alone() {
+        let t = at(2026, 3, 9, 16, 5);
+        let d = |f: &str| custom_date(&t, f, en(), false);
+        assert_eq!(d("%h"), "4");
+        assert_eq!(d("%Hmm"), "1605");
+        assert_eq!(d("%d/%M"), "9/3");
+        assert_eq!(d("%%"), "%%");
+        assert_eq!(d("50%"), "50%");
+    }
+
+    #[test]
+    fn an_empty_big_f_fraction_takes_its_point_away() {
+        let mut t = at(2026, 3, 9, 16, 5);
+        let d = |t: &Time, f: &str| custom_date(t, f, en(), false);
+        assert_eq!(d(&t, "HH:mm:ss.FFF"), "16:05:00");
+        t.nanos = 750_000_000;
+        assert_eq!(d(&t, "HH:mm:ss.FFF"), "16:05:00.75");
+        assert_eq!(d(&t, "ss.fff"), "00.750");
+    }
+
+    #[test]
+    fn quotes_and_escapes_are_literal() {
+        let t = at(2026, 3, 9, 16, 5);
+        let d = |f: &str| custom_date(&t, f, en(), false);
+        assert_eq!(d(r"'It\'s' h"), "It's 4");
+        assert_eq!(d(r"\h h"), "h 4");
+        assert_eq!(d("\"dd\" dd"), "dd 09");
+        assert_eq!(d("'unclosed"), "unclosed");
+        assert_eq!(d("dd\\"), "09");
+    }
+
+    #[test]
+    fn a_picked_slash_is_a_slash_and_quotes_are_kept() {
+        assert_eq!(literal_slashes("dd/MM/yyyy"), r"dd\/MM\/yyyy");
+        assert_eq!(literal_slashes("'a/b' d/M"), r"'a/b' d\/M");
+        assert_eq!(literal_slashes(r"d\/M"), r"d\/M");
+        let dotted = Locale {
+            date_sep: ".".into(),
+            ..Locale::en_us()
+        };
+        let t = at(2026, 3, 9, 16, 5);
+        assert_eq!(
+            custom_date(&t, &literal_slashes("dd/MM 'x/y'"), &dotted, false),
+            "09/03 x/y"
+        );
+        assert_eq!(custom_date(&t, "dd/MM", &dotted, false), "09.03");
+    }
+
+    #[test]
+    fn glibc_patterns_become_dotnet_ones() {
+        assert_eq!(strftime_to_net("%Hh%M"), r"HH\hmm");
+        assert_eq!(strftime_to_net("%l:%M %P"), "h:mm tt");
+        assert_eq!(strftime_to_net("%OH:%OM"), "HH:mm");
+        assert_eq!(strftime_to_net("%Ey"), "yy");
+        assert_eq!(strftime_to_net("%F %%"), r"yyyy-MM-dd \%");
+        assert_eq!(strftime_to_net("%d.%m.%Y"), "dd.MM.yyyy");
+        assert_eq!(strftime_to_net("%Y年%m月%d日"), "yyyy年MM月dd日");
+        assert_eq!(strftime_to_net("%k:%M"), "H:mm");
+        let t = at(2026, 3, 9, 16, 5);
+        assert_eq!(custom_date(&t, &strftime_to_net("%Hh%M"), en(), false), "16h05");
+        assert_eq!(custom_date(&t, &strftime_to_net("%F %%"), en(), false), "2026-03-09 %");
+        assert_eq!(date_separator("dd.MM.yyyy"), ".");
+        assert_eq!(date_separator(r"yyyy\-MM"), "-");
+        assert_eq!(date_separator("yyyy年MM月dd日"), "/");
+    }
+
+    #[test]
+    fn os_values_left_empty_keep_the_default() {
+        let mut f = "x".to_string();
+        keep(&mut f, String::new());
+        assert_eq!(f, "x");
+        keep(&mut f, ",".into());
+        assert_eq!(f, ",");
+    }
+
+    #[test]
+    fn twelve_hour_clock_and_offsets() {
+        let d = |t: &Time, f: &str| custom_date(t, f, en(), false);
+        let mut t = at(2024, 2, 29, 0, 7);
+        assert_eq!(d(&t, "h:mm tt dddd"), "12:07 AM Thursday");
+        t.hour = 12;
+        assert_eq!(d(&t, "hh t"), "12 P");
+        t.hour = 23;
+        assert_eq!(d(&t, "h tt"), "11 PM");
+        t.offset = -(3 * 3600 + 1800);
+        assert_eq!(
+            (d(&t, "z"), d(&t, "zz"), d(&t, "zzz"), d(&t, "K")),
+            ("-3".into(), "-03".into(), "-03:30".into(), "-03:30".into())
+        );
+        t.offset = 5 * 3600;
+        assert_eq!(d(&t, "zz zzz"), "+05 +05:00");
+        assert_eq!(d(&at(2000, 1, 1, 0, 0), "yy y yyy yyyyy"), "00 0 2000 02000");
+    }
+
+    #[test]
+    fn iso_times_with_offsets() {
+        assert_eq!(
+            parse_iso("2024-08-17T14:34:56+02:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
+        assert_eq!(
+            parse_iso("2024-08-17T09:34:56.5-03:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
+        let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
+        assert_eq!(t, 1_723_898_096);
+        let c = civil(t);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour), (2024, 8, 17, 6, 12));
+        assert_eq!(iso_utc(t), "2024-08-17T12:34:56Z");
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(parse_iso("2024-08-17"), None);
+    }
+
+    #[test]
+    fn dates_before_1970_and_leap_days() {
+        let t = civil(-1);
+        assert_eq!(
+            custom_date(&t, "yyyy-MM-dd HH:mm:ss dddd", en(), false),
+            "1969-12-31 23:59:59 Wednesday"
+        );
+        assert_eq!(custom_date(&at(1900, 3, 1, 0, 0), "dddd", en(), false), "Thursday");
+        assert_eq!(custom_date(&at(2100, 2, 28, 0, 0), "ddd", en(), false), "Sun");
+        // Every day, from 1600 to 2400, comes back to its day number.
+        for days in (-135_000..160_000).step_by(37) {
+            let t = civil(days * 86_400);
+            assert_eq!(
+                days_from_civil(i64::from(t.year), i64::from(t.month), i64::from(t.day)),
+                days,
+                "{t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_time_turns_to_utc_with_the_offset_of_its_day() {
+        // UTC+0 until `jump`, UTC+1 after (a daylight saving start).
+        let jump = 1_000_000_000;
+        let dst = |s: i64| if s >= jump { 3600 } else { 0 };
+        assert_eq!(from_local_with(jump - 36_000, dst), jump - 36_000);
+        assert_eq!(from_local_with(jump + 36_000, dst), jump + 32_400);
+        for secs in [0, 1_700_000_000, 1_750_000_000] {
+            let t = local_time(secs);
+            let naive = secs + i64::from(t.offset);
+            assert_eq!(from_local(naive), secs);
+        }
+    }
+
+    #[test]
+    fn a_local_time_carries_its_own_offset() {
+        for secs in [-86_400 * 400, 0, 1_700_000_000, 1_720_000_000, 1_735_000_000] {
+            let t = local_time(secs);
+            assert_eq!(t.offset, offset_at(secs));
+            let back = days_from_civil(i64::from(t.year), i64::from(t.month), i64::from(t.day)) * 86_400
+                + i64::from(t.hour * 3600 + t.min * 60 + t.sec)
+                - i64::from(t.offset);
+            assert_eq!(back, secs);
+        }
+        assert_eq!(offset_at(unix_now().as_secs() as i64), now().offset);
     }
 }
 

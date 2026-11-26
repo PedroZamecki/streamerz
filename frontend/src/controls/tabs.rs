@@ -8,17 +8,18 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::Value;
 
-/// The kinds of the tabs, in order, and the one selected.
+/// The kinds of the tabs, in order (one for each option, empty for an option without an id, so the
+/// n-th kind is the n-th tab's), and the one selected.
 pub fn kinds(tabs: &Value) -> (Vec<String>, usize) {
     let kinds: Vec<String> = tabs["options"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|option| option["id"].as_str().map(str::to_owned))
+        .map(|option| option["id"].as_str().unwrap_or_default().to_owned())
         .collect();
     let selected = kinds
         .iter()
-        .position(|kind| tabs["selected"] == kind.as_str())
+        .position(|kind| !kind.is_empty() && tabs["selected"] == kind.as_str())
         .unwrap_or(0);
     (kinds, selected)
 }
@@ -26,9 +27,13 @@ pub fn kinds(tabs: &Value) -> (Vec<String>, usize) {
 /// About how wide the label and the segmented bar are on one line: a page puts the bar in its toolbar
 /// when this and the rest of the toolbar fit.
 pub fn inline_width(tabs: &Value) -> f32 {
-    let label = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4;
     let bar: f32 = tabs["options"].as_array().into_iter().flatten().map(option_width).sum();
-    label + theme::SPACE_SM + bar
+    label_width(tabs) + bar
+}
+
+/// The "Show:" label and the gap after it.
+fn label_width(tabs: &Value) -> f32 {
+    tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4 + theme::SPACE_SM
 }
 
 fn option_width(option: &Value) -> f32 {
@@ -47,7 +52,7 @@ pub fn bar(
     let select = std::rc::Rc::new(select);
     // Reserve the sidebar, page insets and the inline "Show:" label beside the segmented bar.
     let viewport = f32::from(window.viewport_size().width);
-    let label_w = tabs["label"].as_str().unwrap_or_default().chars().count() as f32 * 7.4 + theme::SPACE_SM;
+    let label_w = label_width(tabs);
     let room = (viewport - if viewport < 700. { 96. } else { 230. } - label_w).max(150.);
     let widths: Vec<_> = options.iter().map(option_width).collect();
     let ranges = wrap_ranges(&widths, room);
@@ -69,7 +74,7 @@ pub fn bar(
                         Tab::new().aria_label(label.clone()).label(label)
                     }))
                     .on_click(move |index, window, cx| {
-                        if let Some(kind) = kinds.get(*index) {
+                        if let Some(kind) = kinds.get(*index).filter(|kind| !kind.is_empty()) {
                             callback(kind.clone(), window, cx);
                         }
                     }),
@@ -186,6 +191,24 @@ mod tests {
         assert_eq!(super::wrap_ranges(&[95., 160., 120.], 280.), vec![0..2, 2..3]);
         assert_eq!(super::wrap_ranges(&[500., 100.], 200.), vec![0..1, 1..2]);
         assert!(super::wrap_ranges(&[], 200.).is_empty());
+    }
+
+    #[test]
+    fn each_tab_keeps_its_own_kind_when_one_has_no_id() {
+        let tabs = serde_json::json!({"selected": "b", "options": [
+            {"id": "a", "label": "A"}, {"label": "Broken"}, {"id": "b", "label": "B"}
+        ]});
+        assert_eq!(super::kinds(&tabs), (vec!["a".into(), String::new(), "b".into()], 2));
+        let none = serde_json::json!({"selected": "", "options": [{"label": "Broken"}, {"id": "a"}]});
+        assert_eq!(super::kinds(&none).1, 0);
+        assert_eq!(super::kinds(&serde_json::json!({})), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn the_inline_width_counts_the_label_and_every_option() {
+        let tabs = serde_json::json!({"label": "Show:", "options": [{"label": "Playing"}, {"label": "Board"}]});
+        let expected = 5. * 7.4 + crate::theme::SPACE_SM + (28. + 7. * 7.4) + (28. + 5. * 7.4);
+        assert!((super::inline_width(&tabs) - expected).abs() < 0.01);
     }
 
     #[test]

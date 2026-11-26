@@ -150,9 +150,11 @@ const TWITCH_CHAT_TRIGGERS: &[u32] = &[120, 124, 133, 135, 157, 472];
 /// Twitch triggers only an Affiliate or Partner channel has.
 fn twitch_trigger_feature(code: u32) -> Option<Feature> {
     Some(match code {
-        102 | 143 | 480 => Feature::Bits,
+        // Power-ups are bought with Bits.
+        102 | 143 | 480 | 196 | 496 => Feature::Bits,
         103..=106 | 477..=479 => Feature::Subscriptions,
-        112..=115 | 171 => Feature::Rewards,
+        // Automatic rewards are paid in channel points.
+        112..=115 | 171 | 194 => Feature::Rewards,
         128..=132 => Feature::Predictions,
         139 | 186 => Feature::Ads,
         141 | 142 | 146 | 147 => Feature::Charity,
@@ -201,7 +203,7 @@ pub fn sub_action(code: u32) -> Vec<Need> {
     let top = category.split('/').next().unwrap_or_default();
     if let Some(service) = platform_service(top) {
         // Groups of users and the sub counter are kept here, not asked of the platform.
-        let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || matches!(code, 22 | 550);
+        let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || code == 550;
         if local {
             return Vec::new();
         }
@@ -335,6 +337,7 @@ mod tests {
         let needs = sub_action(15);
         assert_eq!(service(&needs, Service::Twitch), Some(Level::Login));
         assert!(!needs.iter().any(|need| matches!(need, Need::TwitchPlan(_))));
+        assert_eq!(service(&sub_action(22), Service::Twitch), Some(Level::Login));
     }
 
     #[test]
@@ -355,6 +358,9 @@ mod tests {
             (102, Feature::Bits),
             (103, Feature::Subscriptions),
             (112, Feature::Rewards),
+            (194, Feature::Rewards),
+            (196, Feature::Bits),
+            (496, Feature::Bits),
             (128, Feature::Predictions),
             (139, Feature::Ads),
             (141, Feature::Charity),
@@ -407,7 +413,7 @@ mod tests {
     #[test]
     fn nothing_that_runs_here_alone_needs_a_service() {
         // Logic, files, globals, groups of users and the sub counter are local.
-        for code in [10001, 120, 121, 1001, 1009, 99901, 553, 551, 22, 550] {
+        for code in [10001, 120, 121, 1001, 1009, 99901, 553, 551, 550] {
             assert!(sub_action(code).is_empty(), "sub-action {code}");
         }
         for code in [401, 701, 709] {
@@ -431,8 +437,7 @@ mod tests {
                 continue;
             }
             let top = category.split('/').next().unwrap_or_default();
-            let local =
-                category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || matches!(code, 22 | 550);
+            let local = category.ends_with("/User Groups") || category == "Twitch/Sub Counter" || code == 550;
             let wanted = matches!(
                 top,
                 "Twitch" | "Kick" | "YouTube" | "TikTok" | "OBS Studio" | "Streamlabs Desktop"

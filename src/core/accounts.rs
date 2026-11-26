@@ -16,6 +16,12 @@ use std::sync::Mutex;
 
 pub const DOMAINS: &[&str] = &["accounts", "tiktok_sending"];
 
+/// Whether two account names are the same person: case, spaces and a leading @ aside (empty is no one).
+pub fn same_account(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim().trim_start_matches('@').replace(' ', "").to_lowercase();
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
 pub fn supports(domain: &str) -> bool {
     DOMAINS.contains(&domain)
 }
@@ -127,12 +133,14 @@ impl P {
         self.account_note(c, bot) == Some(tr("accounts.note.login_expired"))
     }
 
-    /// Forget an account; its revoke URL (Kick and Google need the token in the URL).
+    /// Forget an account; its revoke URL (Kick and Google need the token in the URL). No token left (a
+    /// locked keyring, a login that ran out): nothing to revoke, so no request is made.
     fn logout(self, c: &mut crate::Config, bot: bool) -> Option<String> {
         let e = crate::commands::url_encode;
         let revoke = match self {
             P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
                 .as_ref()
+                .filter(|a| !a.token.access_token.is_empty())
                 .map(|a| {
                     format!(
                         "https://id.twitch.tv/oauth2/revoke?client_id={}&token={}",
@@ -142,21 +150,26 @@ impl P {
                 }),
             P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
                 .as_ref()
-                .map(|a| {
+                .and_then(|a| {
                     // Revoking the refresh token ends the whole grant.
                     let t = if a.token.refresh_token.is_empty() {
                         &a.token.access_token
                     } else {
                         &a.token.refresh_token
                     };
-                    format!("https://oauth2.googleapis.com/revoke?token={}", e(t))
+                    (!t.is_empty()).then(|| format!("https://oauth2.googleapis.com/revoke?token={}", e(t)))
                 }),
-            P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref().map(|a| {
-                format!(
-                    "https://id.kick.com/oauth/revoke?token={}&token_hint_type=access_token",
-                    e(&a.token.access_token)
-                )
-            }),
+            P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }
+                .as_ref()
+                .and_then(|a| {
+                    let (t, hint) = if a.token.access_token.is_empty() {
+                        (&a.token.refresh_token, "refresh_token")
+                    } else {
+                        (&a.token.access_token, "access_token")
+                    };
+                    (!t.is_empty())
+                        .then(|| format!("https://id.kick.com/oauth/revoke?token={}&token_hint_type={hint}", e(t)))
+                }),
             P::TikTok => None,
         };
         match (self, bot) {
@@ -389,13 +402,13 @@ async fn avatar(engine: &Rc<Engine>, p: P, bot: bool) -> Option<String> {
 /// and the page is told when either arrives.
 fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
     let key = format!("{}:{bot}:{name}", p.name());
-    let now = crate::fmt::unix_now().as_secs();
-    let saved = avatars();
-    let url = saved[&key][0].as_str().unwrap_or_default().to_owned();
+    let now = crate::fmt::now_secs();
+    let saved = kept(&key);
+    let url = saved[0].as_str().unwrap_or_default().to_owned();
     // A new login looks again at once: the wait after a failed lookup was for the old one.
     let (login, token) = login_of(&engine.config(), p, bot);
     let tail: String = token.chars().rev().take(8).collect();
-    if stale(&url, saved[&key][1].as_u64().unwrap_or(0), now) && may_look(&format!("{key}:{tail}"), now) {
+    if stale(&url, saved[1].as_u64().unwrap_or(0), now) && may_look(&format!("{key}:{tail}"), now) {
         let engine = engine.clone();
         tokio::task::spawn_local(async move {
             // The account's own lookup, else its public profile (no login needed).
@@ -410,7 +423,7 @@ fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
             if !all.is_object() {
                 all = json!({});
             }
-            all[&key] = json!([url, crate::fmt::unix_now().as_secs()]);
+            all[&key] = json!([url, crate::fmt::now_secs()]);
             save_avatars(&all);
             crate::host::images_changed();
         });
@@ -436,7 +449,8 @@ fn login_of(c: &crate::Config, p: P, bot: bool) -> (String, String) {
 }
 
 thread_local! {
-    /// The kept picture addresses, read from the cache folder once (the chat asks for them on every line).
+    /// The kept picture addresses, read from the cache folder once (the chat asks for one on every line,
+    /// read with `kept`, which copies only that entry).
     static AVATARS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -445,6 +459,16 @@ fn avatars() -> Value {
     AVATARS.with_borrow_mut(|kept| {
         kept.get_or_insert_with(|| crate::cache::saved("avatars").map(|saved| saved.1).unwrap_or_default())
             .clone()
+    })
+}
+
+/// One kept picture's entry (`Null` when there is none), without copying the others.
+fn kept(key: &str) -> Value {
+    AVATARS.with_borrow_mut(|kept| {
+        kept.get_or_insert_with(|| crate::cache::saved("avatars").map(|saved| saved.1).unwrap_or_default())
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     })
 }
 
@@ -506,12 +530,11 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
                 ("Client-Id".to_owned(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_owned()),
                 ("Content-Type".to_owned(), "application/json".to_owned()),
             ];
-            let query = json!({"query": format!("{{ user(login: \"{clean}\") {{ displayName profileImageURL(width: 150) }} }}")});
             if let Ok(reply) = crate::http::request(
                 "POST",
                 "https://gql.twitch.tv/gql",
                 &headers,
-                query.to_string().as_bytes(),
+                twitch_public_query(clean).as_bytes(),
             )
             .await
             {
@@ -530,7 +553,7 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
         }
         P::Kick => {
             let headers = [("Accept".to_owned(), "application/json".to_owned())];
-            let url = format!("https://kick.com/api/v2/channels/{clean}");
+            let url = kick_channel_url(clean);
             let Ok(reply) = crate::http::request("GET", &url, &headers, b"").await else {
                 return (None, None);
             };
@@ -544,6 +567,23 @@ async fn channel_profile(engine: &Rc<Engine>, p: P, channel: &str) -> (Option<St
         }
         P::TikTok => (None, None),
     }
+}
+
+/// twitch.tv's public query for a channel's display name and picture. The name goes in as a quoted
+/// string, so a quote or brace typed in the channel box can't change the query.
+fn twitch_public_query(login: &str) -> String {
+    let name = serde_json::to_string(login).unwrap_or_else(|_| "\"\"".into());
+    json!({"query": format!("{{ user(login: {name}) {{ displayName profileImageURL(width: 150) }} }}")}).to_string()
+}
+
+/// Kick's public channel page for `channel`, the name encoded so it stays one path segment (a slug is
+/// letters, digits, - and _; anything else, a dot or a slash, is escaped).
+fn kick_channel_url(channel: &str) -> String {
+    let mut url = String::from("https://kick.com/api/v2/channels/");
+    crate::commands::percent_into(&mut url, channel, |b| {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+    });
+    url
 }
 
 /// What a channel's picture and name are kept by, however it was looked up.
@@ -563,9 +603,8 @@ fn channel_card(engine: &Rc<Engine>, p: P, name: &str) -> (Option<String>, Optio
         return (None, None);
     }
     let key = channel_key(p, &norm);
-    let now = crate::fmt::unix_now().as_secs();
-    let saved = avatars();
-    let entry = &saved[&key];
+    let now = crate::fmt::now_secs();
+    let entry = kept(&key);
     let (url, at, known) = (
         entry[0].as_str().unwrap_or_default().to_owned(),
         entry[1].as_u64().unwrap_or(0),
@@ -592,7 +631,7 @@ fn channel_card(engine: &Rc<Engine>, p: P, name: &str) -> (Option<String>, Optio
                     new.to_owned()
                 }
             };
-            all[&key] = json!([keep(&url, 0), crate::fmt::unix_now().as_secs(), keep(&shown, 2)]);
+            all[&key] = json!([keep(&url, 0), crate::fmt::now_secs(), keep(&shown, 2)]);
             save_avatars(&all);
             crate::host::images_changed();
         });
@@ -652,16 +691,19 @@ pub fn room(engine: &Rc<Engine>, platform: &str) -> Value {
 fn browser_avatar(bridge: &crate::tiktok_bridge::Bridge) -> String {
     const KEY: &str = "tiktok:browser";
     let (user, live) = (bridge.user(), bridge.avatar());
-    let saved = avatars();
+    let saved = kept(KEY);
     if !user.is_empty() && !live.is_empty() {
-        if saved[KEY][0].as_str() != Some(live.as_str()) {
-            let mut all = if saved.is_object() { saved } else { json!({}) };
-            all[KEY] = json!([live, crate::fmt::unix_now().as_secs(), user]);
+        if saved[0].as_str() != Some(live.as_str()) {
+            let mut all = avatars();
+            if !all.is_object() {
+                all = json!({});
+            }
+            all[KEY] = json!([live, crate::fmt::now_secs(), user]);
             save_avatars(&all);
         }
         return live;
     }
-    saved[KEY][0].as_str().unwrap_or_default().to_owned()
+    saved[0].as_str().unwrap_or_default().to_owned()
 }
 
 /// An account's picture file for the chat's send box (`bot` picks the slot; TikTok has the browser account).
@@ -1611,7 +1653,7 @@ pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
     tokio::task::spawn_local(async move {
         let cfg = engine.config_sender();
         // Each renewal says so itself when the platform refuses it.
-        for (p, bot) in present {
+        for (p, bot) in renewals(present) {
             match p {
                 P::Twitch => crate::twitch::renew_logins(&engine, &cfg).await,
                 P::YouTube => drop(crate::youtube::token(&engine, &cfg, bot, false).await),
@@ -1620,6 +1662,13 @@ pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
             }
         }
     });
+}
+
+/// The renewals for the logins found: Twitch renews its broadcaster and bot together, so once.
+fn renewals(mut present: Vec<(P, bool)>) -> Vec<(P, bool)> {
+    let mut twitch = false;
+    present.retain(|(p, _)| *p != P::Twitch || !std::mem::replace(&mut twitch, true));
+    present
 }
 
 /// A login ran out: ask, in a dialog, whether to log in again now. "Log in" runs the same
@@ -1646,7 +1695,11 @@ pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
             login(&engine, p, bot);
         }
     });
-    ASKS.with_borrow_mut(|asks| asks.push((p, bot, task.abort_handle())));
+    // The questions already answered go: only the open ones are kept.
+    ASKS.with_borrow_mut(|asks| {
+        asks.retain(|(_, _, handle)| !handle.is_finished());
+        asks.push((p, bot, task.abort_handle()))
+    });
 }
 
 thread_local! {
@@ -1783,10 +1836,7 @@ fn twitch_login(engine: &Rc<Engine>, bot: bool) {
                 {
                     let mut account =
                         crate::twitch::fetch_user(crate::twitch::CLIENT_ID, &token.access_token, None).await?;
-                    let expires_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs())
-                        + token.expires_in;
+                    let expires_at = crate::fmt::now_secs() + token.expires_in;
                     account.token = crate::twitch::TwitchToken {
                         access_token: token.access_token,
                         refresh_token: token.refresh_token,
@@ -2110,6 +2160,12 @@ fn tiktok_login(engine: &Rc<Engine>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_names_match_without_case_spaces_or_at() {
+        assert!(same_account("@Ana Bia", "anabia") && same_account(" Ana ", "@ana"));
+        assert!(!same_account("", "") && !same_account("ana", "bia"));
+    }
 
     fn engine() -> Rc<Engine> {
         crate::engine::tests::engine(json!({"actions": []}))
@@ -2651,6 +2707,146 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|c| c["key"].is_string()));
+        });
+    }
+
+    #[test]
+    fn a_typed_channel_cannot_change_the_public_profile_lookups() {
+        let query: Value = serde_json::from_str(&twitch_public_query("ana")).unwrap();
+        assert_eq!(
+            query["query"],
+            "{ user(login: \"ana\") { displayName profileImageURL(width: 150) } }"
+        );
+        // A quote typed in the box stays inside the string the query asks for.
+        let query: Value = serde_json::from_str(&twitch_public_query("a\") { id } x(login: \"b")).unwrap();
+        let text = query["query"].as_str().unwrap();
+        assert!(
+            text.starts_with("{ user(login: \"a\\\") { id } x(login: \\\"b\") {"),
+            "{text}"
+        );
+        assert_eq!(kick_channel_url("ana_1-x"), "https://kick.com/api/v2/channels/ana_1-x");
+        assert_eq!(
+            kick_channel_url("../users/me?x=1"),
+            "https://kick.com/api/v2/channels/%2E%2E%2Fusers%2Fme%3Fx%3D1"
+        );
+        assert_eq!(kick_channel_url("é"), "https://kick.com/api/v2/channels/%C3%A9");
+    }
+
+    #[test]
+    fn logging_out_revokes_only_a_token_that_is_there() {
+        let mut c = crate::Config::default();
+        // A login that ran out (or a locked keyring): forgotten, with no revoke request.
+        c.twitch.broadcaster = Some(crate::twitch::TwitchAccount::default());
+        c.youtube.bot = Some(crate::youtube::YouTubeAccount::default());
+        c.kick.broadcaster = Some(crate::kick::KickAccount::default());
+        assert_eq!(P::Twitch.logout(&mut c, false), None);
+        assert_eq!(P::YouTube.logout(&mut c, true), None);
+        assert_eq!(P::Kick.logout(&mut c, false), None);
+        assert!(c.twitch.broadcaster.is_none() && c.youtube.bot.is_none() && c.kick.broadcaster.is_none());
+        // Twitch revokes the access token, Google the refresh token (the whole grant).
+        let mut twitch = crate::twitch::TwitchAccount::default();
+        twitch.token.access_token = "a b".into();
+        c.twitch.bot = Some(twitch);
+        let url = P::Twitch.logout(&mut c, true).unwrap();
+        assert!(
+            url.starts_with("https://id.twitch.tv/oauth2/revoke?client_id="),
+            "{url}"
+        );
+        assert!(url.ends_with("&token=a+b"), "{url}");
+        assert!(c.twitch.bot.is_none());
+        let mut youtube = crate::youtube::YouTubeAccount::default();
+        youtube.token.access_token = "access".into();
+        youtube.token.refresh_token = "refresh".into();
+        c.youtube.broadcaster = Some(youtube);
+        assert_eq!(
+            P::YouTube.logout(&mut c, false).as_deref(),
+            Some("https://oauth2.googleapis.com/revoke?token=refresh")
+        );
+        // Kick: the refresh token, said so, when the access token is gone.
+        let mut kick = crate::kick::KickAccount::default();
+        kick.token.refresh_token = "r".into();
+        c.kick.bot = Some(kick);
+        assert_eq!(
+            P::Kick.logout(&mut c, true).as_deref(),
+            Some("https://id.kick.com/oauth/revoke?token=r&token_hint_type=refresh_token")
+        );
+        assert_eq!(P::TikTok.logout(&mut c, false), None);
+    }
+
+    #[test]
+    fn twitch_renews_its_two_logins_once() {
+        let found = vec![(P::Twitch, false), (P::Kick, false), (P::Twitch, true), (P::Kick, true)];
+        assert_eq!(renewals(found), [(P::Twitch, false), (P::Kick, false), (P::Kick, true)]);
+        assert_eq!(renewals(vec![(P::Twitch, true)]), [(P::Twitch, true)]);
+        assert!(renewals(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn answered_relogin_questions_are_not_kept() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            let open = || ASKS.with_borrow(|asks| asks.len());
+            let start = open();
+            for _ in 0..3 {
+                ask_relogin(&engine, "YouTube", false);
+                let id = super::super::prompts::list().last().unwrap().id;
+                super::super::prompts::answer(id, json!(false)).unwrap();
+                tokio::task::yield_now().await;
+            }
+            // Each new question drops the ones already answered: one left, the last.
+            assert!(open() <= start + 1, "{} kept", open());
+            ask_relogin(&engine, "YouTube", false);
+            login_saved(P::YouTube, false);
+            assert!(ASKS.with_borrow(|asks| asks.iter().all(|(p, bot, _)| *p != P::YouTube || *bot)));
+            tokio::task::yield_now().await;
+        });
+    }
+
+    #[test]
+    fn one_kept_picture_is_read_without_the_others() {
+        let before = AVATARS.with_borrow(|kept| kept.clone());
+        AVATARS.with_borrow_mut(|kept| *kept = Some(json!({"twitch:chan:ana": ["https://x/a.png", 5, "Ana"]})));
+        assert_eq!(kept("twitch:chan:ana")[2], "Ana");
+        assert!(kept("twitch:chan:bia").is_null());
+        // A cache that isn't an object holds nothing.
+        AVATARS.with_borrow_mut(|kept| *kept = Some(json!([1, 2])));
+        assert!(kept("twitch:chan:ana").is_null());
+        AVATARS.with_borrow_mut(|kept| *kept = before);
+    }
+
+    #[test]
+    fn every_advanced_field_is_shown_and_saved_under_the_same_key() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            for p in [P::Twitch, P::YouTube, P::Kick] {
+                let kind = format!("account_{}", p.slug());
+                let fields = external_fields(&kind).unwrap();
+                let mut item = advanced_item(&engine.config(), p);
+                for (key, _, _) in fields {
+                    assert!(item.get(*key).is_some(), "{kind} shows no {key}");
+                    item[*key] = match *key {
+                        "subCounterRollover" => json!(12),
+                        "videoId" => json!("abcdefghijk"),
+                        other => json!(format!("{other}-value")),
+                    };
+                }
+                save_external(&engine, &kind, item.as_object().unwrap().clone())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(advanced_item(&engine.config(), p), item, "{kind}");
+                // And the form shows what was saved.
+                let form = external_form(&engine, &kind).unwrap().unwrap();
+                let shown: Vec<&str> = form["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|field| field["key"].as_str().unwrap())
+                    .collect();
+                let keys: Vec<&str> = fields.iter().map(|(key, _, _)| *key).collect();
+                assert_eq!(shown, keys);
+            }
         });
     }
 }

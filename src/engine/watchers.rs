@@ -137,30 +137,10 @@ impl Engine {
         if kind == T_CHANGED {
             let (json, lines) = (on(w, "asJson"), on(w, "addChangedData"));
             let p = path.to_path_buf();
-            let read = tokio::task::spawn_blocking(move || std::fs::read(&p))
+            let data = tokio::task::spawn_blocking(move || changed_data(&p, json, lines))
                 .await
-                .ok()
-                .and_then(Result::ok);
-            args.insert("fileWasDeleted".into(), read.is_none().into());
-            let bytes = read.unwrap_or_default();
-            args.insert("fileSize".into(), bytes.len().into());
-            args.insert("empty".into(), bytes.is_empty().into());
-            let text = String::from_utf8_lossy(&bytes);
-            if json {
-                if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    match &v {
-                        Value::Object(o) => o.iter().for_each(|(k, x)| super::rest::flatten(k, x, &mut args)),
-                        other => super::rest::flatten("json", other, &mut args),
-                    }
-                }
-            } else if lines {
-                let all: Vec<&str> = text.lines().collect();
-                args.insert("lineCount".into(), all.len().into());
-                for (i, l) in all.iter().enumerate() {
-                    args.insert(format!("line{i}"), (*l).into());
-                    args.insert(format!("lineEscaped{i}"), crate::commands::url_encode(l).into());
-                }
-            }
+                .unwrap_or_default();
+            args.extend(data);
         }
         let id = s(w, "id").to_string();
         self.fire(kind, change, "Core/File/Folder Watcher", "filewatcher", &args, |t| {
@@ -230,12 +210,7 @@ impl Engine {
                         continue;
                     }
                     at = len;
-                    partial.extend_from_slice(&new);
-                    while let Some(i) = partial.iter().position(|b| *b == b'\n') {
-                        let line: Vec<u8> = partial.drain(..=i).collect();
-                        let line = String::from_utf8_lossy(&line)
-                            .trim_end_matches(['\n', '\r'])
-                            .to_string();
+                    for line in take_lines(&mut partial, &new) {
                         self.tail_fire(&t, &path, &line);
                     }
                 }
@@ -257,6 +232,66 @@ impl Engine {
     }
 }
 
+/// What Changed says of a file: whether it's gone, its size and, when the watcher adds it, what it
+/// holds (as JSON or as lines). Only then is the file read: a big file that keeps changing isn't.
+fn changed_data(path: &Path, json: bool, lines: bool) -> Obj {
+    let mut args = Obj::new();
+    let (size, bytes) = if json || lines {
+        match std::fs::read(path) {
+            Ok(bytes) => (Some(bytes.len() as u64), bytes),
+            Err(_) => (None, Vec::new()),
+        }
+    } else {
+        (std::fs::metadata(path).ok().map(|m| m.len()), Vec::new())
+    };
+    args.insert("fileWasDeleted".into(), size.is_none().into());
+    let size = size.unwrap_or(0);
+    args.insert("fileSize".into(), size.into());
+    args.insert("empty".into(), (size == 0).into());
+    let text = String::from_utf8_lossy(&bytes);
+    if json {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            match &v {
+                Value::Object(o) => o.iter().for_each(|(k, x)| super::rest::flatten(k, x, &mut args)),
+                other => super::rest::flatten("json", other, &mut args),
+            }
+        }
+    } else if lines {
+        let all: Vec<&str> = text.lines().collect();
+        args.insert("lineCount".into(), all.len().into());
+        for (i, l) in all.iter().enumerate() {
+            args.insert(format!("line{i}"), (*l).into());
+            args.insert(format!("lineEscaped{i}"), crate::commands::url_encode(l).into());
+        }
+    }
+    args
+}
+
+/// The longest line a tail keeps waiting for its end: a file that never writes a newline would
+/// otherwise grow the memory for ever. Past it, what came is a line of its own.
+const MAX_LINE: usize = 64 * 1024;
+
+/// Adds what came to the line not ended yet; the lines now whole (no line end), oldest first.
+fn take_lines(partial: &mut Vec<u8>, new: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut emit = |bytes: &[u8]| {
+        let line = String::from_utf8_lossy(bytes);
+        lines.push(line.trim_end_matches(['\n', '\r']).to_string());
+    };
+    partial.extend_from_slice(new);
+    let mut start = 0;
+    while let Some(i) = partial[start..].iter().position(|b| *b == b'\n') {
+        emit(&partial[start..=start + i]);
+        start += i + 1;
+    }
+    while partial.len() - start > MAX_LINE {
+        emit(&partial[start..start + MAX_LINE]);
+        start += MAX_LINE;
+    }
+    partial.drain(..start);
+    lines
+}
+
 /// The file's length, and what is past `from` (nothing when it got shorter).
 fn read_from(path: &Path, from: u64) -> Option<(u64, Vec<u8>)> {
     use std::io::{Read, Seek, SeekFrom};
@@ -269,4 +304,91 @@ fn read_from(path: &Path, from: u64) -> Option<(u64, Vec<u8>)> {
     let mut out = Vec::new();
     f.take(len - from).read_to_end(&mut out).ok()?;
     Some((len, out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("streamerz-watchers-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_change_gives_the_size_and_reads_the_file_only_when_asked() {
+        let dir = scratch("changed");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let plain = changed_data(&file, false, false);
+        assert_eq!(plain["fileSize"], 8);
+        assert_eq!(plain["empty"], false);
+        assert_eq!(plain["fileWasDeleted"], false);
+        assert!(!plain.contains_key("lineCount"));
+        let lines = changed_data(&file, false, true);
+        assert_eq!(lines["lineCount"], 2);
+        assert_eq!(lines["line1"], "two");
+        std::fs::write(&file, r#"{"score": 3}"#).unwrap();
+        let json = changed_data(&file, true, false);
+        assert_eq!(json["score"], 3);
+        std::fs::remove_file(&file).unwrap();
+        let gone = changed_data(&file, false, false);
+        assert_eq!(gone["fileWasDeleted"], true);
+        assert_eq!(gone["fileSize"], 0);
+        assert_eq!(gone["empty"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tail_reads_only_what_came_after() {
+        let dir = scratch("tail");
+        let file = dir.join("log.txt");
+        std::fs::write(&file, "old\nnew\n").unwrap();
+        assert_eq!(read_from(&file, 4), Some((8, b"new\n".to_vec())));
+        assert_eq!(read_from(&file, 8), Some((8, Vec::new())));
+        // It got shorter: nothing new, and the new length says so.
+        assert_eq!(read_from(&file, 20), Some((8, Vec::new())));
+        assert_eq!(read_from(&dir.join("none"), 0), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tail_gives_whole_lines_and_keeps_the_rest_for_later() {
+        let mut partial = Vec::new();
+        assert_eq!(take_lines(&mut partial, b"one\r\ntw"), ["one"]);
+        assert_eq!(partial, b"tw");
+        assert_eq!(take_lines(&mut partial, b"o\n\nthree"), ["two", ""]);
+        assert_eq!(take_lines(&mut partial, b"\n"), ["three"]);
+        assert!(partial.is_empty());
+    }
+
+    /// A file that never writes a newline doesn't grow the memory: past 64 KB, what came is a line.
+    #[test]
+    fn a_line_with_no_end_is_given_once_it_is_too_long() {
+        let mut partial = Vec::new();
+        assert!(take_lines(&mut partial, &vec![b'a'; MAX_LINE]).is_empty());
+        assert_eq!(partial.len(), MAX_LINE);
+        let lines = take_lines(&mut partial, &vec![b'b'; MAX_LINE + 10]);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "a".repeat(MAX_LINE));
+        assert_eq!(lines[1], "b".repeat(MAX_LINE));
+        assert_eq!(partial, vec![b'b'; 10]);
+        assert_eq!(take_lines(&mut partial, b"c\n"), ["bbbbbbbbbbc"]);
+        assert!(partial.is_empty());
+    }
+
+    #[test]
+    fn a_trigger_picks_any_watcher_or_its_own() {
+        let t = |v: Value| v.as_object().unwrap().clone();
+        assert!(picked(&t(json!({})), "watcherId", "w1"));
+        assert!(picked(
+            &t(json!({"watcherId": super::super::DEFAULT_QUEUE})),
+            "watcherId",
+            "w1"
+        ));
+        assert!(picked(&t(json!({"watcherId": "w1"})), "watcherId", "w1"));
+        assert!(!picked(&t(json!({"watcherId": "w2"})), "watcherId", "w1"));
+    }
 }

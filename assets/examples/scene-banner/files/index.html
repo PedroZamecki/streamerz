@@ -14,17 +14,19 @@
 <script>
 // When OBS changes scene (ObsStudio.SceneChanged), the banner says what its row says for that scene.
 // The look comes from the newer kinds of setting: streamerz.css, streamerz.place, streamerz.animate.
-let s = {}, timer;
+let s = {}, timer, seq = 0;
 
 function says(scene) {
-  const row = (s.banners || []).find(b => b.scene.trim().toLowerCase() === String(scene || "").trim().toLowerCase());
+  const row = (s.banners || []).find(b => String(b?.scene || "").trim().toLowerCase() === String(scene || "").trim().toLowerCase());
   return row ? row.text : "";
 }
 
 async function show(scene) {
+  const run = ++seq;
   const text = says(scene);
   clearTimeout(timer);
   if (!banner.hidden) await streamerz.animate(banner, s.leave, { out: true });
+  if (run !== seq) return;
   if (!text) return (banner.hidden = true);
   banner.textContent = text;
   banner.hidden = false;
@@ -33,7 +35,7 @@ async function show(scene) {
   if (seconds > 0)
     timer = setTimeout(async () => {
       await streamerz.animate(banner, s.leave, { out: true });
-      banner.hidden = true;
+      if (run === seq) banner.hidden = true;
     }, seconds * 1000);
 }
 

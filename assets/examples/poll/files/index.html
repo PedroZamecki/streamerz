@@ -55,8 +55,9 @@
 // It reads the chat for the votes and writes the result in it, so its group has the permissions
 // "Read the chat" and "Send chat messages as you".
 let settings = streamerz.settings;
-let poll = null; // {question, options: [text], votes: Map(voter -> [choice, platform]), endsAt, over}
+let poll = null; // {question, options: [text], votes: Map(voter -> [choice, platform]), endsAt, over, testing}
 let hide = 0;
+let ticker = 0;
 
 streamerz.onSettings(s => {
   settings = s;
@@ -84,11 +85,11 @@ streamerz.on("poll.start", (value, old) => {
   if (!question || options.length < 2) return streamerz.log("A poll needs a question and two choices: !poll Question | One | Two");
   clearTimeout(hide);
   poll = {
-    question, options, votes: new Map(), over: false,
+    question, options, votes: new Map(), over: false, testing: streamerz.testing,
     endsAt: Date.now() + (Number(seconds) || Number(settings.seconds) || 60) * 1000,
   };
   build();
-  if (settings.announce !== false)
+  if (!poll.testing && settings.announce !== false)
     say(question + " " + options.map((o, i) => i + 1 + ": " + o).join(", ") + ". " + (settings.howTo || "Type the number to vote"));
 });
 streamerz.on("poll.end", (_, old) => {
@@ -102,7 +103,7 @@ streamerz.chat(line => {
   if (!/^\d$/.test(text)) return;
   const choice = Number(text) - 1;
   if (choice < 0 || choice >= poll.options.length) return;
-  const voter = line.platform + ":" + line.userId;
+  const voter = line.platform + ":" + (line.userId || line.user || "");
   if (poll.votes.has(voter) && settings.changeVote === false) return;
   poll.votes.set(voter, [choice, line.platform]);
   draw();
@@ -145,6 +146,20 @@ function build() {
   document.getElementById("poll").classList.remove("away", "over");
   draw();
   tell();
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(ticker);
+  ticker = 0;
+  if (!poll || poll.over) return;
+  const left = poll.endsAt - Date.now();
+  if (left <= 0) return end();
+  ticker = setTimeout(() => {
+    if (!poll || poll.over) return;
+    if (Date.now() >= poll.endsAt) end();
+    else { draw(); schedule(); }
+  }, left % 1000 || 1000);
 }
 
 // How many votes each choice has, in all and from each platform.
@@ -185,6 +200,8 @@ function tell() {
 
 function end() {
   if (!poll || poll.over) return;
+  clearTimeout(ticker);
+  ticker = 0;
   poll.over = true;
   poll.endsAt = Date.now();
   document.getElementById("poll").classList.add("over");
@@ -192,24 +209,17 @@ function end() {
   draw();
   tell();
   const rows = count();
-  const best = Math.max(...rows.map(r => r.total));
-  if (settings.announce !== false) {
+  const best = Math.max(0, ...rows.map(r => r.total));
+  if (!poll.testing && settings.announce !== false) {
     const winners = rows.filter(r => r.total === best && best > 0).map(r => r.text);
     say(winners.length
       ? (settings.resultText || "The poll is over: {winner} won with {votes} of {all} votes")
-          .replace("{winner}", winners.join(" and ")).replace("{votes}", best).replace("{all}", poll.votes.size)
+          .replace("{winner}", () => winners.join(" and ")).replace("{votes}", best).replace("{all}", poll.votes.size)
       : "The poll is over: nobody voted");
   }
   // It stays for a while with the result, then leaves.
   hide = setTimeout(() => document.getElementById("poll").classList.add("away"), (Number(settings.stayFor) || 12) * 1000);
 }
-
-// The clock, and the end when its time is up.
-setInterval(() => {
-  if (!poll || poll.over) return;
-  if (Date.now() >= poll.endsAt) end();
-  else draw();
-}, 1000);
 </script>
 </body>
 </html>

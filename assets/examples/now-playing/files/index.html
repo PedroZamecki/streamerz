@@ -85,9 +85,11 @@ const root = document.documentElement;
 let settings = streamerz.settings;
 let song = null;
 let shownFor = 0;    // The timer of "Show for".
+let ticker = 0;      // Progress timer, running only while the song plays.
 let layers = 0;      // Which of the two background layers shows (they cross-fade).
 let coverColor = ""; // The liveliest colour of the cover, once it is read.
 let lastCover = null;
+const cssUrl = u => 'url("' + String(u).replace(/["\\]/g, "\\$&") + '")';
 
 const clock = ms => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -121,7 +123,7 @@ streamerz.onSettings(s => {
 });
 
 streamerz.song(s => {
-  const changed = !song || s.title !== song.title || s.artist !== song.artist;
+  const changed = !song || !s || s.title !== song.title || s.artist !== song.artist;
   song = s;
   if (changed) {
     clearTimeout(shownFor);
@@ -141,6 +143,7 @@ function readCover(url) {
   const img = new Image();
   img.crossOrigin = "anonymous"; // Without it a canvas may not read a picture from another site.
   img.onload = () => {
+    if (!song || song.cover !== url) return;
     try {
       const c = document.createElement("canvas");
       c.width = c.height = 24;
@@ -165,10 +168,17 @@ function readCover(url) {
   img.src = url;
 }
 
+function syncTicker() {
+  const running = !!(song && song.title && song.playing);
+  if (running && !ticker) ticker = setInterval(tick, 500);
+  else if (!running && ticker) { clearInterval(ticker); ticker = 0; }
+}
+
 function show() {
   const card = $("card");
   const on = !!(song && song.title) && (song.playing || settings.hideWhenPaused === false);
   card.classList.toggle("playing", !!(song && song.playing));
+  syncTicker();
   if (!on) return card.classList.add("away");
 
   set("title", song.title);
@@ -176,11 +186,11 @@ function show() {
   set("album", song.album || "");
   if (song.cover !== lastCover) {
     lastCover = song.cover;
-    $("cover").style.backgroundImage = song.cover ? 'url("' + song.cover + '")' : "";
+    $("cover").style.backgroundImage = song.cover ? cssUrl(song.cover) : "";
     // The new cover fades in over the old one.
     const [a, b] = $("back").children;
     const next = layers++ % 2 ? a : b, old = next === a ? b : a;
-    next.style.backgroundImage = song.cover ? 'url("' + song.cover + '")' : "";
+    next.style.backgroundImage = song.cover ? cssUrl(song.cover) : "";
     next.classList.toggle("on", !!song.cover);
     old.classList.remove("on");
     readCover(song.cover);
@@ -190,7 +200,11 @@ function show() {
 
   // "Show for": it comes in when a song starts and leaves after that many seconds.
   const seconds = Number(settings.showFor) || 0;
-  if (!seconds) return card.classList.remove("away");
+  if (!seconds) {
+    clearTimeout(shownFor);
+    shownFor = 0;
+    return card.classList.remove("away");
+  }
   if (!shownFor) {
     card.classList.remove("away");
     shownFor = setTimeout(() => card.classList.add("away"), seconds * 1000);
@@ -208,14 +222,13 @@ function set(id, text) {
   line.style.setProperty("--time", Math.max(5, over / 25) + "s");
 }
 
-// The bar and the time, twice a second (the bar's own transition makes it smooth).
+// The bar and the time, twice a second while playing (the bar's own transition makes it smooth).
 function tick() {
   if (!song) return;
   const at = streamerz.position(song);
   $("now").textContent = clock(at);
   $("bar").style.width = (song.durationMs ? Math.min(100, (at / song.durationMs) * 100) : 0) + "%";
 }
-setInterval(tick, 500);
 </script>
 </body>
 </html>

@@ -30,7 +30,7 @@ pub fn record_failure(key: &str, reason: Failure) {
         if items.len() == 64 {
             items.pop_front();
         }
-        items.push_back((key.to_owned(), reason, crate::fmt::unix_now().as_secs() as i64));
+        items.push_back((key.to_owned(), reason, crate::fmt::now_secs() as i64));
     });
     crate::host::changed();
 }

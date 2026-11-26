@@ -104,9 +104,9 @@ function show(line) {
   face.textContent = String(line.user || "?").slice(0, 1).toUpperCase();
   face.hidden = settings.showAvatar === false;
   streamerz.avatar(line).then(url => {
-    if (!url) return;
+    if (!url || !card.isConnected) return;
     const img = new Image();
-    img.onload = () => face.replaceChildren(img);
+    img.onload = () => { if (card.isConnected) face.replaceChildren(img); };
     img.src = url;
   });
 
@@ -145,12 +145,13 @@ function show(line) {
   const most = Math.max(1, Number(settings.most) || 5);
   [...list.querySelectorAll(".card:not(.old)")].slice(most).forEach(leave);
   requestAnimationFrame(() => requestAnimationFrame(() => card.classList.remove("new")));
-  setTimeout(() => leave(card), (Number(settings.seconds) || 7) * 1000);
+  card._timer = setTimeout(() => leave(card), (Number(settings.seconds) || 7) * 1000);
 }
 
 // A card fades and the ones after it close the gap (its height becomes a negative margin).
 function leave(card) {
   if (card.classList.contains("old")) return;
+  clearTimeout(card._timer);
   card.style.setProperty("--tall", card.offsetHeight + "px");
   card.classList.add("old");
   setTimeout(() => card.remove(), 500);

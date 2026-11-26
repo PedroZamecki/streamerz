@@ -66,13 +66,13 @@
       {"type": 8002, "eventName": "stream_live", "args": {"value1": "%user%"}},
       {"type": 8001, "eventName": "", "text": "x"}]}],
     "steps": [{"run": "ifttt", "args": {"user": "ana"}}],
-    "expect": {"log": ["IFTTT: event 'stream_live' dispatched", "IFTTT: event 'stream_live' dispatched", "IFTTT: missing event name"]}
+    "expect": {"log": ["IFTTT: no IFTTT webhook key set", "IFTTT: no IFTTT webhook key set", "IFTTT: missing event name"]}
   },
   {
-    "name": "pronouns: no user, no pronouns (the defaults are set)",
+    "name": "pronouns: no user, no pronouns (only userFound is set)",
     "actions": [{"name": "p", "subActions": [{"type": 15001, "userLogin": "", "prefix": "p"}, {"type": 1020, "logLevel": 2, "message": "done"}]}],
     "steps": [{"run": "p"}],
-    "expect": {"log": ["done"]}
+    "expect": {"log": ["done"], "runs": [{"action": "p", "after": {"p.userFound": false}}]}
   },
   {
     "name": "remote instances: with none connected, sending says so; one's trigger and signal arrive as requests",

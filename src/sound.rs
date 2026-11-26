@@ -15,13 +15,14 @@ mod pulse;
 mod wasapi;
 
 pub use decode::{decode_mono_wav, info, sine_wav, EXTENSIONS};
+pub(crate) use decode::{pcm16, pcm_wav_header};
 pub use mixer::{End, Ended};
 
-use mixer::{Mixer, Ramp, Voice};
+use mixer::{Completion, Mixer, Ramp, Voice};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use tokio::sync::oneshot;
 
 /// The mix's rate and channels: every sound becomes this, the system turns it into the device's.
@@ -112,7 +113,7 @@ pub fn configure(s: &Settings) {
 pub trait Output {
     fn write(&mut self, frames: &[f32]) -> Result<(), String>;
     /// Wait for what was written to be heard.
-    fn drain(&mut self);
+    fn drain(&mut self) -> Result<(), String>;
 }
 
 /// Opens a device by name ("" for the system's default).
@@ -144,15 +145,22 @@ impl Output for Silent {
         std::thread::sleep(std::time::Duration::from_micros(n * 1_000_000 / RATE as u64));
         Ok(())
     }
-    fn drain(&mut self) {}
+    fn drain(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn silent(_: &str) -> Result<Box<dyn Output>, String> {
     Ok(Box::new(Silent))
 }
 
+struct Device {
+    mixer: Mutex<Mixer>,
+    ready: Condvar,
+}
+
 struct Player {
-    devices: HashMap<String, Arc<Mutex<Mixer>>>,
+    devices: HashMap<String, Arc<Device>>,
     opener: Opener,
 }
 
@@ -169,8 +177,8 @@ fn player() -> MutexGuard<'static, Player> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-fn lock(m: &Mutex<Mixer>) -> MutexGuard<'_, Mixer> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+fn lock(d: &Device) -> MutexGuard<'_, Mixer> {
+    d.mixer.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The audio process (`Streamerz --sound-output <device>`): plays what Streamerz pipes to it, so the
@@ -255,65 +263,94 @@ pub fn play(file: &Path, name: &str, device: &str, volume: f32) -> Result<Starte
         return Err(format!("{most} sounds are already playing"));
     }
     let opener = p.opener;
-    let mixer = p
-        .devices
-        .entry(key.clone())
-        .or_insert_with(|| {
-            let mixer = Arc::new(Mutex::new(Mixer::new(master())));
-            let (k, m) = (key.clone(), mixer.clone());
-            let spawned = std::thread::Builder::new()
+    let output = match p.devices.entry(key.clone()) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let output = Arc::new(Device {
+                mixer: Mutex::new(Mixer::new(master())),
+                ready: Condvar::new(),
+            });
+            let (k, device) = (key, output.clone());
+            std::thread::Builder::new()
                 .name("sound".into())
                 .stack_size(512 * 1024)
-                .spawn(move || run(k, m, opener));
-            if let Err(e) = spawned {
-                lock(&mixer).fail_all(&format!("cannot start the sound thread: {e}"));
-            }
-            mixer
-        })
-        .clone();
-    lock(&mixer).voices.push(voice);
+                .spawn(move || run(k, device, opener))
+                .map_err(|e| format!("cannot start the sound thread: {e}"))?;
+            entry.insert(output)
+        }
+    };
+    lock(output).voices.push(voice);
+    output.ready.notify_one();
     drop(p);
     changed();
     Ok(Started { id, duration_ms, ended })
 }
 
-/// One device's thread: open it, write the mix until no sound is left, drain, close. A sound that
-/// comes while it drains opens the device again.
-fn run(key: String, mixer: Arc<Mutex<Mixer>>, opener: Opener) {
+/// A device thread waits without a stream if all its sounds are paused.
+fn run(key: String, device: Arc<Device>, opener: Opener) {
     let mut buf = vec![0f32; CHUNK * CHANNELS];
+    let mut ended = Vec::<Completion>::new();
     loop {
-        let opened = opener(&key).or_else(|e| if key.is_empty() { Err(e) } else { opener("") });
-        let mut out = match opened {
-            Ok(out) => out,
-            Err(e) => return give_up(&key, &mixer, &e),
-        };
-        loop {
-            {
-                let mut m = lock(&mixer);
-                if m.is_empty() {
-                    break;
-                }
-                m.render(&mut buf);
-            }
-            if let Err(e) = out.write(&buf) {
-                return give_up(&key, &mixer, &e);
-            }
-        }
-        out.drain();
-        drop(out);
         let mut p = player();
-        if lock(&mixer).is_empty() {
-            if p.devices.get(&key).is_some_and(|m| Arc::ptr_eq(m, &mixer)) {
-                p.devices.remove(&key);
-            }
+        let mut m = lock(&device);
+        if m.is_empty() {
+            p.devices.remove(&key);
             let last = p.devices.is_empty();
             drop(p);
+            drop(m);
+            drop(device);
             drop(buf);
             if last {
                 give_back();
             }
             return;
         }
+        drop(p);
+        if !m.has_active() {
+            drop(device.ready.wait(m).unwrap_or_else(|e| e.into_inner()));
+            continue;
+        }
+        m.output_open = true;
+        drop(m);
+
+        let mut out = match opener(&key) {
+            Ok(out) => out,
+            Err(e) => return give_up(&key, &device, &e),
+        };
+        loop {
+            let (frames, active) = {
+                let mut m = lock(&device);
+                let frames = if m.has_active() {
+                    m.render(&mut buf, &mut ended)
+                } else {
+                    0
+                };
+                (frames, m.has_active())
+            };
+            let mut result = if frames == 0 {
+                Ok(())
+            } else {
+                out.write(&buf[..frames * CHANNELS])
+            };
+            if result.is_ok() && !active {
+                result = out.drain();
+            }
+            for (done, why) in ended.drain(..) {
+                let (why, error) = match &result {
+                    Ok(()) => (why, None),
+                    Err(e) => (End::Failed, Some(e.clone())),
+                };
+                let _ = done.send(Ended { why, error });
+            }
+            if let Err(e) = result {
+                return give_up(&key, &device, &e);
+            }
+            if !active {
+                break;
+            }
+        }
+        drop(out);
+        lock(&device).output_open = false;
     }
 }
 
@@ -327,7 +364,7 @@ fn give_back() {
     }
 }
 
-fn give_up(key: &str, mixer: &Arc<Mutex<Mixer>>, error: &str) {
+fn give_up(key: &str, mixer: &Arc<Device>, error: &str) {
     let mut p = player();
     if p.devices.get(key).is_some_and(|m| Arc::ptr_eq(m, mixer)) {
         p.devices.remove(key);
@@ -344,22 +381,32 @@ pub fn stop(name: Option<&str>, fade_ms: u64) -> usize {
     let p = player();
     p.devices
         .values()
-        .map(|m| lock(m).stop(|v| matches(v, name), fade_ms))
+        .map(|m| {
+            let count = lock(m).stop(|v| matches(v, name), fade_ms);
+            m.ready.notify_one();
+            count
+        })
         .sum()
 }
 
 /// Stop one sound by its id (the Sounds page), at once or over `fade_ms`.
 pub fn stop_id(id: u64, fade_ms: u64) -> usize {
     let p = player();
-    p.devices.values().map(|m| lock(m).stop(|v| v.id == id, fade_ms)).sum()
+    p.devices
+        .values()
+        .map(|m| {
+            let count = lock(m).stop(|v| v.id == id, fade_ms);
+            m.ready.notify_one();
+            count
+        })
+        .sum()
 }
 
 /// Pause or resume one sound by its id.
 pub fn pause_id(id: u64, paused: bool) {
     for m in player().devices.values() {
-        for v in lock(m).voices.iter_mut().filter(|v| v.id == id) {
-            v.paused = paused;
-        }
+        lock(m).pause(|v| v.id == id, paused);
+        m.ready.notify_one();
     }
     changed();
 }
@@ -379,11 +426,10 @@ pub fn pause(name: Option<&str>, paused: bool) -> usize {
     let p = player();
     let mut n = 0;
     for m in p.devices.values() {
-        for v in lock(m).voices.iter_mut().filter(|v| matches(v, name)) {
-            v.paused = paused;
-            n += 1;
-        }
+        n += lock(m).pause(|v| matches(v, name), paused);
+        m.ready.notify_one();
     }
+    changed();
     n
 }
 
@@ -447,9 +493,16 @@ pub fn playing() -> Vec<Playing> {
     out
 }
 
-/// Devices with a thread now (one is open while a sound plays on it).
+/// Outputs open or about to open for active sounds.
 pub fn open_devices() -> usize {
-    player().devices.len()
+    player()
+        .devices
+        .values()
+        .filter(|device| {
+            let mix = lock(device);
+            mix.output_open || mix.has_active()
+        })
+        .count()
 }
 
 /// A path as a sub-action or a request holds it: a relative one is beside `streamerz.json`.
@@ -641,14 +694,16 @@ pub fn pick_from_folder(folder: &Path, recursive: bool, avoid: Option<&str>) -> 
         let entries = std::fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if recursive && found.len() < 10_000 {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if recursive {
                     dirs.push(path);
                 }
-            } else if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+            } else if (kind.is_file() || kind.is_symlink() && path.is_file())
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
             {
                 found.push(path);
             }
@@ -764,8 +819,7 @@ mod tests {
         let mut source = decode::Source::open(&path).unwrap();
         let mut out = vec![0f32; 48_000 * 2];
         let frames = source.read(&mut out);
-        // 100 ms at 24 kHz is about 100 ms at 48 kHz (the last source frame has nothing after it).
-        assert!((4790..=4800).contains(&frames), "{frames}");
+        assert_eq!(frames, 4800);
         assert_eq!(out[200], out[201], "mono is the same on both sides");
         assert!(out[..frames * 2].iter().any(|s| s.abs() > 0.3));
         assert_eq!(source.read(&mut out), 0);
@@ -773,8 +827,6 @@ mod tests {
 
     #[test]
     fn volumes_fade_and_a_faded_stop_ends_the_sound() {
-        let mut r = Ramp::new(1.0);
-        r.to(0.0, 10);
         let mut m = Mixer::new(1.0);
         let dir = scratch("fade");
         let path = wav(&dir, "f.wav", 48_000, 2, 1000);
@@ -792,11 +844,13 @@ mod tests {
         });
         assert_eq!(m.stop(|v| v.name == "f", 10), 1);
         let mut out = vec![0f32; CHUNK * CHANNELS];
-        m.render(&mut out);
-        // 10 ms is 480 frames: faded out within the first chunk.
-        assert!(out[CHUNK * 2 - 2].abs() < 1e-6);
+        let mut pending = Vec::new();
+        assert_eq!(m.render(&mut out, &mut pending), 480);
+        assert!(out[480 * 2 - 2].abs() < 1e-6);
         assert!(m.is_empty());
-        assert_eq!(ended.try_recv().unwrap().why, End::Stopped);
+        assert!(ended.try_recv().is_err());
+        let (_, reason) = pending.pop().unwrap();
+        assert_eq!(reason, End::Stopped);
     }
 
     #[test]
@@ -838,10 +892,59 @@ mod tests {
     }
 
     #[test]
+    fn pausing_all_sounds_closes_the_output_until_resume() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = scratch("paused-output");
+        let path = wav(&dir, "a.wav", 48_000, 2, 2_000);
+        let started = play(&path, "pause-me", "", 1.0).unwrap();
+        pause_id(started.id, true);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while open_devices() != 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(open_devices(), 0);
+        assert!(playing().iter().any(|p| p.id == started.id && p.paused));
+        pause_id(started.id, false);
+        assert_eq!(open_devices(), 1);
+        assert_eq!(stop_id(started.id, 0), 1);
+        assert_eq!(wait(started).why, End::Stopped);
+    }
+
+    #[test]
+    fn finish_waits_for_the_last_write_and_drain() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        struct DrainFailure;
+        impl Output for DrainFailure {
+            fn write(&mut self, frames: &[f32]) -> Result<(), String> {
+                assert_eq!(frames.len(), 48 * CHANNELS);
+                Ok(())
+            }
+            fn drain(&mut self) -> Result<(), String> {
+                Err("failed during drain".into())
+            }
+        }
+        fn failing_drain(_: &str) -> Result<Box<dyn Output>, String> {
+            Ok(Box::new(DrainFailure))
+        }
+        let dir = scratch("drain");
+        let path = wav(&dir, "a.wav", 48_000, 2, 1);
+        player().opener = failing_drain;
+        let started = play(&path, "drain", "test-drain-device", 1.0);
+        player().opener = silent;
+        let ended = wait(started.unwrap());
+        assert_eq!(ended.why, End::Failed);
+        assert_eq!(ended.error.as_deref(), Some("failed during drain"));
+    }
+
+    #[test]
     fn a_device_that_fails_ends_its_sounds_with_the_reason() {
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-        fn broken(_: &str) -> Result<Box<dyn Output>, String> {
-            Err("no such device".into())
+        fn broken(device: &str) -> Result<Box<dyn Output>, String> {
+            if device == "Speakers" {
+                Err("no such device".into())
+            } else {
+                silent(device)
+            }
         }
         let dir = scratch("broken");
         let path = wav(&dir, "x.wav", 48_000, 2, 200);
@@ -948,7 +1051,7 @@ mod tests {
         let frames: Vec<f32> = (0..CHUNK * CHANNELS).map(|i| i as f32 / 10.0).collect();
         out.write(&frames).unwrap();
         out.write(&frames).unwrap();
-        out.drain();
+        out.drain().unwrap();
         drop(out);
         let bytes = std::fs::read(&got).unwrap();
         assert_eq!(bytes.len(), 2 * CHUNK * CHANNELS * 4);
@@ -969,6 +1072,23 @@ mod tests {
         assert_eq!(volume(f64::NAN), 1.0);
         assert_eq!(device_key(" Application Default "), "");
         assert_eq!(device_key("Speakers (Realtek)"), "Speakers (Realtek)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_folder_play_skips_directory_symlinks() {
+        let dir = scratch("symlink-folder");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let sound = wav(&nested, "a.wav", 8_000, 1, 10);
+        // An alias makes the old traversal discover the sound twice and pick itself again.
+        let alias = dir.join("alias");
+        std::os::unix::fs::symlink(&nested, alias).unwrap();
+        assert_eq!(
+            pick_from_folder(&dir, true, Some(&sound.to_string_lossy())).unwrap(),
+            sound
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

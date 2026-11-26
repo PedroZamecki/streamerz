@@ -28,6 +28,9 @@ pub fn json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
             at = at.get(open[..close].trim().parse::<usize>().ok()?)?;
             rest = &open[close + 1..];
         }
+        if !rest.is_empty() {
+            return None;
+        }
     }
     Some(at)
 }
@@ -113,7 +116,7 @@ pub fn gate(key: &str, wait: u64, now: u64) -> u64 {
             Some(until) if *until > now => *until - now,
             _ => {
                 if wait > 0 {
-                    gates.insert(key.to_string(), now + wait);
+                    gates.insert(key.to_string(), now.saturating_add(wait));
                 }
                 0
             }
@@ -127,7 +130,6 @@ const MOST_ITEMS: usize = 1000;
 /// A list operation on `items`; what it gives back, if anything. 0 add, 1 remove, 2 has, 3 item at
 /// (from 0, negative from the end), 4 random, 5 count, 6 clear, 7 take the first, 8 all joined.
 pub fn list_op(items: &mut Vec<String>, op: u64, value: &str) -> Option<String> {
-    let same = |item: &String| item.to_lowercase() == value.to_lowercase();
     match op {
         0 => {
             items.push(value.to_string());
@@ -136,13 +138,21 @@ pub fn list_op(items: &mut Vec<String>, op: u64, value: &str) -> Option<String> 
             None
         }
         1 => {
-            let at = items.iter().position(same)?;
+            let needle = value.to_lowercase();
+            let at = items.iter().position(|item| item.to_lowercase() == needle)?;
             Some(items.remove(at))
         }
-        2 => items.iter().find(|i| same(i)).cloned(),
+        2 => {
+            let needle = value.to_lowercase();
+            items.iter().find(|item| item.to_lowercase() == needle).cloned()
+        }
         3 => {
             let at = value.trim().parse::<i64>().ok()?;
-            let at = if at < 0 { items.len() as i64 + at } else { at };
+            let at = if at < 0 {
+                (items.len() as i64).checked_add(at)?
+            } else {
+                at
+            };
             items.get(usize::try_from(at).ok()?).cloned()
         }
         4 => (!items.is_empty()).then(|| items[crate::math::secure_u64() as usize % items.len()].clone()),
@@ -161,17 +171,19 @@ pub fn list_op(items: &mut Vec<String>, op: u64, value: &str) -> Option<String> 
 async fn clipboard_read() -> Result<String, String> {
     let mut last = String::new();
     for (program, args) in clipboard_programs(false) {
-        match tokio::process::Command::new(program)
+        let fut = tokio::process::Command::new(program)
             .args(args)
             .kill_on_drop(true)
-            .output()
-            .await
-        {
-            Ok(out) if out.status.success() => return Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+            .output();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), fut).await {
+            Ok(Ok(out)) if out.status.success() => return Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
             // wl-paste says so when the clipboard is empty.
-            Ok(out) if String::from_utf8_lossy(&out.stderr).contains("Nothing is copied") => return Ok(String::new()),
-            Ok(out) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            Err(_) => {}
+            Ok(Ok(out)) if String::from_utf8_lossy(&out.stderr).contains("Nothing is copied") => {
+                return Ok(String::new())
+            }
+            Ok(Ok(out)) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            Ok(Err(_)) => {}
+            Err(_) => last = format!("{program} timed out"),
         }
     }
     Err(if last.is_empty() {
@@ -186,25 +198,35 @@ async fn clipboard_read() -> Result<String, String> {
 async fn clipboard_write(text: &str) -> Result<(), String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
+    let mut last = String::new();
     for (program, args) in clipboard_programs(true) {
         let Ok(mut child) = tokio::process::Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .kill_on_drop(true)
             .spawn()
         else {
             continue;
         };
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes()).await.map_err(|e| e.to_string())?;
+            if let Err(e) = stdin.write_all(text.as_bytes()).await {
+                let _ = child.kill().await;
+                last = format!("{program}: {e}");
+                continue;
+            }
         }
-        return match child.wait().await {
-            Ok(status) if status.success() => Ok(()),
-            _ => Err(format!("{program} could not set the clipboard")),
-        };
+        match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+            Ok(Ok(status)) if status.success() => return Ok(()),
+            Ok(_) => last = format!("{program} could not set the clipboard"),
+            Err(_) => {
+                let _ = child.kill().await;
+                last = format!("{program} timed out");
+            }
+        }
     }
-    Err(NO_CLIPBOARD.into())
+    Err(if last.is_empty() { NO_CLIPBOARD.into() } else { last })
 }
 
 #[cfg(not(windows))]
@@ -249,10 +271,10 @@ fn clipboard_programs(write: bool) -> Vec<(&'static str, &'static [&'static str]
 async fn clipboard_read() -> Result<String, String> {
     use windows_sys::Win32::System::{
         DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
-        Memory::{GlobalLock, GlobalUnlock},
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
         Ole::CF_UNICODETEXT,
     };
-    // SAFETY: the clipboard is opened and closed here, and the locked memory is read up to its NUL.
+    // SAFETY: the clipboard is opened and closed here; the locked memory is bounded by GlobalSize.
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             return Err("the clipboard is in use by another program".into());
@@ -260,10 +282,11 @@ async fn clipboard_read() -> Result<String, String> {
         let handle = GetClipboardData(u32::from(CF_UNICODETEXT));
         let mut text = String::new();
         if !handle.is_null() {
+            let max_units = GlobalSize(handle) / 2;
             let wide = GlobalLock(handle) as *const u16;
             if !wide.is_null() {
                 let mut len = 0;
-                while *wide.add(len) != 0 {
+                while len < max_units && *wide.add(len) != 0 {
                     len += 1;
                 }
                 text = String::from_utf16_lossy(std::slice::from_raw_parts(wide, len));
@@ -447,7 +470,9 @@ impl Engine {
                     return true;
                 }
                 let persisted = b(o, "persisted", true);
-                let amount = crate::fmt::parse_number(&text(ctx, "amount")).unwrap_or(1.0);
+                let amount = crate::fmt::parse_number(&text(ctx, "amount"))
+                    .filter(|x| x.is_finite())
+                    .unwrap_or(1.0);
                 let now = self.global_number(&global, persisted);
                 let next = match n(o, "operation") as u64 {
                     1 => now - amount,
@@ -455,9 +480,11 @@ impl Engine {
                     3 => 0.0,
                     _ => now + amount,
                 };
-                self.put_global(&global, serde_json::json!(next), persisted);
+                let next = if next.is_finite() { next } else { now };
+                let value = crate::vars::number(next);
+                self.put_global(&global, value.clone(), persisted);
                 let var = name(ctx, "counter");
-                ctx.args.insert(var, serde_json::json!(next));
+                ctx.args.insert(var, value);
             }
             // Cooldown gate: the action goes on once in `duration`, and stops the other times.
             99786 => {
@@ -554,20 +581,27 @@ mod tests {
         assert_eq!(json_path(&v, "a.x"), None);
         assert_eq!(json_path(&v, "a.b[5]"), None);
         assert_eq!(json_path(&v, "a.b[x]"), None);
+        assert_eq!(json_path(&v, "a.b[0]junk"), None);
+        assert_eq!(json_path(&v, "a.b[0"), None);
     }
 
     #[test]
     fn texts_change_and_durations_read_as_words() {
+        assert_eq!(transform("abc", 0), "ABC");
+        assert_eq!(transform("ABC", 1), "abc");
         assert_eq!(transform("heLLo wORLD", 2), "Hello World");
+        assert_eq!(transform("  hi  ", 3), "hi");
+        assert_eq!(transform("héllo", 4), "olléh");
         assert_eq!(transform("  a   b  ", 5), "a b");
         assert_eq!(transform("one two three", 6), "one");
         assert_eq!(transform("one two three", 7), "three");
-        assert_eq!(transform("héllo", 9), "5");
         assert_eq!(transform("a b&c", 8), "a+b%26c");
+        assert_eq!(transform("héllo", 9), "5");
         assert_eq!(duration_text(3723, 0), "1:02:03");
         assert_eq!(duration_text(59, 0), "0:59");
         assert_eq!(duration_text(3723, 1), "1h 2m 3s");
         assert_eq!(duration_text(0, 1), "0s");
+        assert_eq!(duration_text(0, 2), "0 seconds");
         assert_eq!(duration_text(90_061, 2), "1 day, 1 hour, 1 minute, 1 second");
         assert_eq!(duration_text(120, 2), "2 minutes");
     }
@@ -580,5 +614,24 @@ mod tests {
         assert_eq!(gate("other", 5_000, 3_000), 0, "another key is its own");
         assert_eq!(gate("none", 0, 1_000), 0);
         assert_eq!(gate("none", 0, 1_001), 0, "no time, no gate");
+        assert_eq!(gate("huge", u64::MAX, 1_000), 0);
+        assert!(gate("huge", u64::MAX, 2_000) > 0);
+    }
+
+    #[test]
+    fn list_operations_cover_membership_pop_clear_and_join() {
+        let mut items = vec!["Alpha".into(), "Beta".into(), "Gamma".into()];
+        assert_eq!(list_op(&mut items, 2, "beta").as_deref(), Some("Beta"));
+        assert_eq!(list_op(&mut items, 2, "missing"), None);
+        assert_eq!(list_op(&mut items, 1, "BETA").as_deref(), Some("Beta"));
+        assert_eq!(list_op(&mut items, 8, "").as_deref(), Some("Alpha, Gamma"));
+        assert_eq!(list_op(&mut items, 8, " | ").as_deref(), Some("Alpha | Gamma"));
+        assert_eq!(list_op(&mut items, 7, "").as_deref(), Some("Alpha"));
+        assert_eq!(list_op(&mut items, 4, "").as_deref(), Some("Gamma"));
+        assert_eq!(list_op(&mut items, 6, ""), None);
+        assert_eq!(list_op(&mut items, 5, "").as_deref(), Some("0"));
+        assert_eq!(list_op(&mut items, 4, ""), None);
+        assert_eq!(list_op(&mut items, 7, ""), None);
+        assert_eq!(list_op(&mut items, 3, &i64::MIN.to_string()), None);
     }
 }

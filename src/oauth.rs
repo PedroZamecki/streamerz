@@ -2,9 +2,11 @@
 //! one-shot listener on loopback, and token refresh. (Twitch uses the device code flow, twitch.rs.)
 
 use crate::commands::url_encode;
+use crate::{engine::Engine, Config};
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::rc::Rc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -40,16 +42,117 @@ pub struct Token {
     pub expires_at: u64,
 }
 
+pub(crate) fn needs_refresh(expires_at: u64, refresh_token: &str) -> bool {
+    stale(expires_at) && !refresh_token.is_empty()
+}
+
+pub(crate) fn select_account<A: Clone>(
+    broadcaster: &Option<A>,
+    bot_account: &Option<A>,
+    bot: bool,
+    fallback: bool,
+    platform: &'static str,
+    access: impl Fn(&A) -> &str,
+    locked: impl Fn() -> bool,
+) -> Result<(A, bool), String> {
+    let (first, other) = if bot {
+        (bot_account, broadcaster)
+    } else {
+        (broadcaster, bot_account)
+    };
+    let pick = |account: &Option<A>| account.as_ref().filter(|a| !access(a).is_empty()).cloned();
+    if let Some(account) = pick(first) {
+        return Ok((account, bot));
+    }
+    if let Some(account) = fallback.then(|| pick(other)).flatten() {
+        return Ok((account, !bot));
+    }
+    if locked() {
+        return Err(format!(
+            "System keyring is locked; unlock it to use saved {platform} login"
+        ));
+    }
+    if fallback {
+        return Err(format!("No {platform} account logged in"));
+    }
+    // Only ask about an account that had a login.
+    if first.is_some() {
+        crate::notify::login_needed(platform, bot);
+    }
+    Err(format!(
+        "{platform} {} isn't logged in",
+        if bot { "bot" } else { "broadcaster" }
+    ))
+}
+
+type TokenFields<'a> = (&'a mut String, &'a mut String, &'a mut u64);
+
+pub(crate) struct Refresh<'a> {
+    pub platform: &'static str,
+    pub url: &'static str,
+    pub bot: bool,
+    pub credentials: (&'a str, &'a str),
+}
+
+impl Refresh<'_> {
+    pub async fn run(
+        self,
+        engine: &Rc<Engine>,
+        refresh_token: &str,
+        exchange: impl AsyncFnOnce(&str, &[(&str, &str)]) -> Result<Token, String>,
+        explain: impl FnOnce(&str) -> String,
+        target: impl FnOnce(&mut Config) -> Option<TokenFields<'_>>,
+    ) -> Result<String, String> {
+        let (id, secret) = self.credentials;
+        let t = exchange(
+            self.url,
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", id),
+                ("client_secret", secret),
+            ],
+        )
+        .await
+        .map_err(|e| {
+            // An explicit rejection needs a new login. Other failures can be retried.
+            if e.contains("HTTP 400") || e.contains("HTTP 401") {
+                crate::notify::login_needed(self.platform, self.bot);
+            }
+            explain(&e)
+        })?;
+        let mut updated = false;
+        engine.change(|c| {
+            if let Some((access, refresh, expires)) = target(c) {
+                access.clone_from(&t.access);
+                *expires = t.expires_at;
+                if !t.refresh.is_empty() {
+                    *refresh = t.refresh;
+                }
+                updated = true;
+            }
+        });
+        if !updated {
+            return Err(format!("{}: login changed during token refresh", self.platform));
+        }
+        Ok(t.access)
+    }
+}
+
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    crate::fmt::now_secs()
 }
 
 /// Whether a token expiring at `expires_at` should be refreshed before use (a minute early; 0 is
 /// unknown, used as is).
 pub fn stale(expires_at: u64) -> bool {
     stale_at(expires_at, now())
+}
+
+/// Whether a saved token can be used: it has an access token that is still good, or a refresh
+/// token to get a new one.
+pub fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
+    !access.is_empty() && (!stale(expires_at) || !refresh.is_empty())
 }
 
 fn stale_at(expires_at: u64, current: u64) -> bool {
@@ -105,7 +208,11 @@ impl Login {
             loop {
                 let (mut s, _) = self.listener.accept().await.map_err(|e| e.to_string())?;
                 let mut buf = vec![0u8; 8192];
-                let n = s.read(&mut buf).await.unwrap_or(0);
+                // A browser opens spare connections it may never send on: one of those must not keep
+                // the redirect, on the next, from being read.
+                let n = tokio::time::timeout(QUIET_CONNECTION, s.read(&mut buf))
+                    .await
+                    .map_or(0, |r| r.unwrap_or(0));
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let target = head.split_whitespace().nth(1).unwrap_or("");
                 let q = query(target);
@@ -143,34 +250,19 @@ impl Login {
     }
 }
 
+/// How long a connection to the login listener may send nothing before the next one is taken.
+#[cfg(not(test))]
+const QUIET_CONNECTION: std::time::Duration = std::time::Duration::from_secs(3);
+#[cfg(test)]
+const QUIET_CONNECTION: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The query of a request target, decoded.
 fn query(target: &str) -> Vec<(String, String)> {
     let q = target.split_once('?').map_or("", |x| x.1);
     q.split('&')
         .filter_map(|kv| kv.split_once('='))
-        .map(|(k, v)| (decode(k), decode(v)))
+        .map(|(k, v)| (crate::commands::url_decode(k), crate::commands::url_decode(v)))
         .collect()
-}
-
-pub(crate) fn decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => match s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                Some(x) => {
-                    out.push(x);
-                    i += 2;
-                }
-                None => out.push(b'%'),
-            },
-            c => out.push(c),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// POST a form to a token endpoint.
@@ -232,8 +324,25 @@ mod tests {
         let q = query("/callback?code=a%2Fb+c&state=x%");
         assert_eq!(q, [("code".into(), "a/b c".into()), ("state".into(), "x%".into())]);
         assert!(!stale(0));
+        assert!(!token_ready("", "", 0));
+        assert!(!token_ready("expired", "", 1));
+        assert!(token_ready("expired", "refresh", 1));
+        assert!(token_ready("valid", "", u64::MAX));
         assert!(stale(now() + 10));
         assert!(!stale(now() + 3600));
+    }
+
+    #[test]
+    fn a_query_without_values_or_with_errors() {
+        assert!(query("/cb").is_empty());
+        assert_eq!(query("/cb?flag&x=1"), [("x".to_string(), "1".to_string())]);
+        assert_eq!(
+            query("/cb?error=access_denied&error_description=The+user+denied"),
+            [
+                ("error".to_string(), "access_denied".to_string()),
+                ("error_description".to_string(), "The user denied".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -297,6 +406,54 @@ mod tests {
             let page = get(format!("/cb?code=abc&state={}", url_encode(&state))).await;
             assert!(page.ends_with("you can close this tab."));
             assert_eq!(wait.await.unwrap().unwrap(), "abc");
+        });
+    }
+
+    #[test]
+    fn a_spare_connection_does_not_hold_up_the_redirect() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let l = Login::bind(0, "/cb").await.unwrap();
+            let addr = l.redirect.trim_start_matches("http://").replace("/cb", "");
+            let state = url_encode(&l.state);
+            let wait = tokio::spawn(l.code());
+            // A browser's preconnect: opened first, never written to, kept open.
+            let _idle = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            s.write_all(format!("GET /cb?code=xyz&state={state} HTTP/1.1\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let code = tokio::time::timeout(std::time::Duration::from_secs(5), wait).await;
+            assert_eq!(code.expect("not held up").unwrap().unwrap(), "xyz");
+        });
+    }
+
+    #[test]
+    fn a_refused_login_or_a_wrong_state_is_an_error() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for (target, want) in [
+                ("/cb?error=access_denied", "login refused: access_denied"),
+                ("/cb?code=abc&state=forged", "state mismatch"),
+            ] {
+                let l = Login::bind(0, "/cb").await.unwrap();
+                let addr = l.redirect.trim_start_matches("http://").replace("/cb", "");
+                let wait = tokio::spawn(l.code());
+                let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+                s.write_all(format!("GET {target} HTTP/1.1\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                let mut page = String::new();
+                s.read_to_string(&mut page).await.unwrap();
+                assert!(page.contains("Login failed"), "{page}");
+                assert_eq!(wait.await.unwrap().unwrap_err(), want);
+            }
         });
     }
 }

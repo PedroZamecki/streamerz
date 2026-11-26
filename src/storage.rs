@@ -2,6 +2,56 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+fn reject_symlinks(path: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a settings path is a symbolic link",
+        ));
+    }
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with("Singleton") {
+                continue;
+            }
+            reject_symlinks(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn check_source(source: &Path) -> io::Result<bool> {
+    let meta = match std::fs::symlink_metadata(source) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a settings path is a symbolic link",
+        ));
+    }
+    if !meta.is_file() {
+        return Ok(false);
+    }
+    if let Some(from) = source.parent() {
+        for name in ["community.json", "plugins", "groups", "backups"] {
+            let path = from.join(name);
+            if path.symlink_metadata().is_ok() {
+                reject_symlinks(&path)?;
+            }
+        }
+    }
+    let backup = source.with_file_name("streamerz.json.bak");
+    if backup.symlink_metadata().is_ok() {
+        reject_symlinks(&backup)?;
+    }
+    Ok(true)
+}
+
 pub fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(source)?;
     if meta.file_type().is_symlink() {
@@ -20,7 +70,7 @@ pub fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
             }
             copy_tree(&entry.path(), &dest.join(name))?;
         }
-    } else if meta.is_file() && !dest.exists() {
+    } else if meta.is_file() && dest.symlink_metadata().is_err() {
         std::fs::copy(source, dest)?;
     }
     Ok(())
@@ -28,7 +78,10 @@ pub fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
 
 /// Preserve an older global copy before migrating the user's selected settings over it.
 pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
-    if target.exists() && source != target && key_source(target) != source {
+    if source == target || !check_source(source)? {
+        return Ok(());
+    }
+    if target.exists() && key_source(target) != source {
         let dir = target
             .parent()
             .ok_or_else(|| io::Error::other("target has no directory"))?;
@@ -37,7 +90,7 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
             .ok_or_else(|| io::Error::other("source has no directory"))?;
         let backup = (0..1000)
             .map(|n| dir.join(format!("migration-backup-{n}")))
-            .find(|p| !p.exists())
+            .find(|p| p.symlink_metadata().is_err())
             .ok_or_else(|| io::Error::other("no backup name available"))?;
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
@@ -55,7 +108,7 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
         ];
         for name in names {
             let old = dir.join(name);
-            if old.exists() {
+            if old.symlink_metadata().is_ok() {
                 copy_tree(&old, &backup.join(name))?;
             }
         }
@@ -80,7 +133,7 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
 
 /// Copy data associated with settings; settings are copied last so an interrupted migration retries.
 pub fn migrate(source: &Path, target: &Path) -> io::Result<()> {
-    if target.exists() || !source.is_file() || source == target {
+    if target.exists() || source == target || !check_source(source)? {
         return Ok(());
     }
     let from = source
@@ -92,20 +145,20 @@ pub fn migrate(source: &Path, target: &Path) -> io::Result<()> {
     std::fs::create_dir_all(to)?;
     for name in ["community.json", "plugins", "groups", "backups"] {
         let path = from.join(name);
-        if path.exists() {
+        if path.symlink_metadata().is_ok() {
             copy_tree(&path, &to.join(name))?;
         }
     }
     let backup = source.with_file_name("streamerz.json.bak");
-    if backup.exists() {
+    if backup.symlink_metadata().is_ok() {
         copy_tree(&backup, &to.join("streamerz.json.bak"))?;
     }
     // Linux keyring entries are keyed by the original path. Keep using that key for migrated data.
-    std::fs::write(to.join("key-source"), source.to_string_lossy().as_bytes())?;
-    let pending = to.join("streamerz.json.migrating");
-    std::fs::copy(source, &pending)?;
-    std::fs::rename(pending, target)?;
-    Ok(())
+    crate::fileio::write_atomic(&to.join("key-source"), source.to_string_lossy().as_bytes())?;
+    // The settings keep their permissions (only the owner can read them).
+    let perms = std::fs::metadata(source)?.permissions();
+    let mut settings = std::fs::File::open(source)?;
+    crate::fileio::replace(target, Some(perms), |f| io::copy(&mut settings, f).map(drop))
 }
 
 pub fn key_source(target: &Path) -> PathBuf {
@@ -186,6 +239,58 @@ mod tests {
         migrate(&src, &dst).unwrap();
         assert_eq!(std::fs::read(&src).unwrap(), b"original");
         assert_eq!(std::fs::read(&dst).unwrap(), b"changed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migrate_selected_keeps_target_when_source_is_missing() {
+        let root = std::env::temp_dir().join(format!("streamerz-migration-missing-{}", std::process::id()));
+        let new = root.join("global");
+        std::fs::create_dir_all(&new).unwrap();
+        let target = new.join("streamerz.json");
+        std::fs::write(&target, b"existing global").unwrap();
+        let missing = root.join("missing/streamerz.json");
+        migrate_selected(&missing, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing global");
+        assert!(!new.join("migration-backup-0").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_selected_rejects_linked_source_without_deleting_target() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("streamerz-migration-sel-link-{}", std::process::id()));
+        let old = root.join("selected");
+        let new = root.join("global");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(old.join("streamerz.json"), b"selected").unwrap();
+        symlink(root.join("outside"), old.join("plugins")).unwrap();
+        let target = new.join("streamerz.json");
+        std::fs::write(&target, b"existing global").unwrap();
+
+        assert!(migrate_selected(&old.join("streamerz.json"), &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing global");
+        assert!(!new.join("migration-backup-0").exists());
+
+        // A symlinked settings file itself is also rejected.
+        let linked = root.join("linked.json");
+        symlink(old.join("streamerz.json"), &linked).unwrap();
+        assert!(migrate(&linked, &root.join("out/streamerz.json")).is_err());
+        assert!(!root.join("out/streamerz.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn key_source_ignores_relative_paths() {
+        let root = std::env::temp_dir().join(format!("streamerz-key-source-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("streamerz.json");
+        assert_eq!(key_source(&target), target);
+        std::fs::write(root.join("key-source"), b"relative/path").unwrap();
+        assert_eq!(key_source(&target), target);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

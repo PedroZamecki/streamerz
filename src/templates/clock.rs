@@ -2,7 +2,6 @@
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY: &str = "templateCountdowns";
 
@@ -26,13 +25,7 @@ pub struct Snapshot {
     pub deadline_ms: Option<u64>,
 }
 
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
-}
+pub use crate::fmt::now_ms;
 
 fn load(config: &Config, id: &str) -> Option<Countdown> {
     serde_json::from_value(config.rest.get(KEY)?.get(id)?.clone()).ok()
@@ -160,6 +153,9 @@ pub fn set_max(config: &mut Config, id: &str, max_ms: u64, now_ms: u64) -> bool 
 
 /// Restart a countdown, making it first if it was never made.
 pub fn reset(config: &mut Config, id: &str, start_ms: u64, max_ms: u64, now_ms: u64) -> bool {
+    if id.is_empty() {
+        return false;
+    }
     store(
         config,
         id,
@@ -312,5 +308,18 @@ mod tests {
         config.rest.insert(KEY.into(), Value::Bool(true));
         assert!(!create(&mut config, "test", 1, 1, 1));
         assert_eq!(config.rest[KEY], true);
+    }
+
+    #[test]
+    fn empty_id_and_invalid_field_ms_are_rejected() {
+        let mut config = Config::default();
+        assert!(!create(&mut config, "", 1000, 2000, 0));
+        assert!(!reset(&mut config, "", 1000, 2000, 0));
+        assert!(config.rest.get(KEY).is_none());
+        assert_eq!(field_ms(Some(&serde_json::json!(1500)), |s| s.into()), Some(1500));
+        assert_eq!(field_ms(Some(&serde_json::json!(" 2500 ")), |s| s.into()), Some(2500));
+        assert_eq!(field_ms(Some(&serde_json::json!(-5)), |s| s.into()), None);
+        assert_eq!(field_ms(Some(&serde_json::json!("NaN")), |s| s.into()), None);
+        assert_eq!(field_ms(Some(&serde_json::json!("1e20")), |s| s.into()), None);
     }
 }

@@ -110,6 +110,38 @@ struct Catalog {
 }
 
 impl Catalog {
+    /// Whether any set has an emote: one the network left empty isn't worth keeping as fresh.
+    fn loaded(&self) -> bool {
+        let Catalog {
+            twitch_native,
+            twitch_7tv,
+            twitch_bttv,
+            twitch_ffz,
+            kick_native,
+            kick_tags: _,
+            kick_7tv,
+            youtube_7tv,
+            youtube_bttv,
+        } = self;
+        twitch_native
+            .iter()
+            .chain(twitch_7tv)
+            .map(Vec::as_slice)
+            .chain(
+                [
+                    twitch_bttv,
+                    twitch_ffz,
+                    kick_native,
+                    kick_7tv,
+                    youtube_7tv,
+                    youtube_bttv,
+                ]
+                .map(Vec::as_slice),
+            )
+            .flatten()
+            .any(|s| !s.emotes.is_empty())
+    }
+
     /// Twitch refused the token for the account's emotes: not worth keeping, the next login fixes it.
     fn wants_login(&self) -> bool {
         self.twitch_native
@@ -176,10 +208,21 @@ pub fn split(text: &str) -> Vec<(&str, Option<String>)> {
     let at: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
     let (mut out, mut plain, mut k) = (Vec::new(), 0, 0);
     while k + 1 < at.len() {
-        let hit = (1..=LONGEST.min(at.len() - 1 - k)).rev().find_map(|n| {
-            let key = text[at[k]..at[k + n]].replace('\u{FE0F}', "");
-            known().get(&key).map(|e| (n, *e))
-        });
+        // Emoji start past ASCII, but for the keycaps (#, * and digits): most text is skipped here.
+        let first = text.as_bytes()[at[k]];
+        let maybe = !first.is_ascii() || matches!(first, b'#' | b'*' | b'0'..=b'9');
+        let hit = (1..=LONGEST.min(at.len() - 1 - k))
+            .rev()
+            .filter(|_| maybe)
+            .find_map(|n| {
+                let piece = &text[at[k]..at[k + n]];
+                let key = if piece.contains('\u{FE0F}') {
+                    std::borrow::Cow::Owned(piece.replace('\u{FE0F}', ""))
+                } else {
+                    std::borrow::Cow::Borrowed(piece)
+                };
+                known().get(key.as_ref()).map(|e| (n, *e))
+            });
         match hit {
             Some((n, e)) => {
                 if plain < at[k] {
@@ -529,7 +572,6 @@ fn apply_catalog(cat: Catalog) {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct LoadParams {
     cache_key: String,
     file_name: String,
@@ -558,6 +600,17 @@ fn kick_slug(cfg: &Config) -> String {
 }
 
 impl LoadParams {
+    /// Whether a platform is set up (a login or a channel), so there are emotes to load.
+    fn wanted(&self) -> bool {
+        !self.tw_chan_id.is_empty()
+            || self.tw_broadcaster.is_some()
+            || self.tw_bot.is_some()
+            || !self.kick_slug.is_empty()
+            || !self.kick_uid.is_empty()
+            || self.kick_token.is_some()
+            || !self.yt_chan_id.is_empty()
+    }
+
     fn from_cfg(cfg: &Config) -> Self {
         let x = crate::host::image_scale();
         Self::with_scale(cfg, x)
@@ -646,8 +699,7 @@ pub fn load_local(config: &Config) {
 async fn fetch_and_keep(p: LoadParams) {
     let cat = fetch_all(&p).await;
     // A catalog the network left empty isn't kept as fresh.
-    let loaded = cat.twitch_7tv[0].iter().any(|s| !s.emotes.is_empty());
-    if let (true, false, Ok(val)) = (loaded, cat.wants_login(), serde_json::to_value(&cat)) {
+    if let (true, false, Ok(val)) = (cat.loaded(), cat.wants_login(), serde_json::to_value(&cat)) {
         crate::cache::save(&p.file_name, &val);
     }
     apply_catalog(cat);
@@ -660,6 +712,10 @@ fn stale_params(config: &Config) -> Option<LoadParams> {
         return None;
     }
     let p = LoadParams::from_cfg(config);
+    // No platform set up: nothing to ask anyone for.
+    if !p.wanted() {
+        return None;
+    }
     {
         let Ok(mut st) = store().lock() else { return None };
         if st.last_key == p.cache_key {
@@ -670,11 +726,7 @@ fn stale_params(config: &Config) -> Option<LoadParams> {
     let fresh = match crate::cache::saved(&p.file_name) {
         Some((age, v)) => match serde_json::from_value::<Catalog>(v) {
             Ok(cat) => {
-                let has_data = !cat.twitch_7tv[0].is_empty()
-                    || !cat.kick_7tv.is_empty()
-                    || !cat.twitch_native[0].is_empty()
-                    || !cat.kick_native.is_empty();
-                let fresh = has_data && age < FRESH && !cat.wants_login();
+                let fresh = cat.loaded() && age < FRESH && !cat.wants_login();
                 apply_catalog(cat);
                 fresh
             }
@@ -1344,7 +1396,6 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         });
     }
 
-    let _ = json!({}); // keep json import used cleanly
     Catalog {
         twitch_native: [tw_broad_native, tw_bot_native],
         twitch_7tv,
@@ -1430,6 +1481,177 @@ mod tests {
             ]
         );
         assert!(parse_7tv_personal(&json!({"data": {"users": {"userByConnection": null}}}), 1).is_empty());
+    }
+
+    #[test]
+    fn nothing_is_loaded_until_a_platform_is_set_up() {
+        assert!(!LoadParams::with_scale(&Config::default(), 1).wanted());
+        let mut cfg = Config::default();
+        cfg.youtube.channel_id = "UCabc".into();
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+        let mut cfg = Config::default();
+        cfg.kick.channel = "someone".into();
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+        let mut cfg = Config::default();
+        cfg.twitch.broadcaster = Some(Default::default());
+        assert!(LoadParams::with_scale(&cfg, 1).wanted());
+    }
+
+    #[test]
+    fn a_catalog_of_any_platform_counts_as_loaded() {
+        let set = |name: &str| {
+            vec![EmoteSection {
+                title: "x".into(),
+                note: None,
+                emotes: vec![(name.into(), "https://e/1".into())],
+            }]
+        };
+        assert!(!Catalog::default().loaded());
+        // Sections with only a note (nothing loaded yet) don't count.
+        let noted = Catalog {
+            twitch_7tv: [
+                vec![EmoteSection {
+                    title: "x".into(),
+                    note: Some("none".into()),
+                    emotes: vec![],
+                }],
+                vec![],
+            ],
+            ..Default::default()
+        };
+        assert!(!noted.loaded());
+        // A Kick or YouTube only catalog is kept too (only Twitch's 7TV set counted before).
+        let kick = Catalog {
+            kick_native: set("KEKW"),
+            ..Default::default()
+        };
+        assert!(kick.loaded());
+        let youtube = Catalog {
+            youtube_bttv: set("catJAM"),
+            ..Default::default()
+        };
+        assert!(youtube.loaded());
+    }
+
+    #[test]
+    fn the_emoji_table_fits_the_split() {
+        let mut longest = 0;
+        for (_, es) in TABLE.lines().filter_map(|l| l.split_once('\t')) {
+            for e in es.split(' ').filter(|e| !e.is_empty()) {
+                longest = longest.max(e.replace('\u{FE0F}', "").chars().count());
+                // The ASCII fast path skips everything but keycaps.
+                let first = e.as_bytes()[0];
+                assert!(!first.is_ascii() || matches!(first, b'#' | b'*' | b'0'..=b'9'), "{e:?}");
+                // Every emoji of the table is found as one, alone and between words.
+                let line = format!("a {e} b");
+                let parts = split(&line);
+                assert!(
+                    parts.iter().any(|(t, u)| *t == e && u.is_some()),
+                    "{e:?}: {:?}",
+                    parts.iter().map(|p| p.0).collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(longest <= LONGEST, "{longest}");
+    }
+
+    #[test]
+    fn split_keeps_every_byte_of_any_text() {
+        let samples = [
+            "",
+            "plain",
+            "ação ünïcödé ñ",
+            "日本語のテキスト",
+            "#1 * 2 = 3",
+            "keycap 1\u{FE0F}\u{20E3} and #\u{20E3}",
+            "❤\u{FE0F}❤😀😀👍🏽👨‍👩‍👧",
+            "\u{FE0F}\u{200D}\u{20E3}",
+            "🏳️‍🌈🏴‍☠️ flags 🇧🇷🇺🇸",
+            "a\u{0301}e\u{0301} combining",
+        ];
+        for text in samples {
+            let parts = split(text);
+            assert_eq!(parts.iter().map(|p| p.0).collect::<String>(), text, "{text:?}");
+            assert!(parts.iter().all(|p| !p.0.is_empty()), "{text:?}");
+            // Plain pieces never sit next to each other.
+            assert!(
+                parts.windows(2).all(|w| w[0].1.is_some() || w[1].1.is_some()),
+                "{text:?}"
+            );
+        }
+        let keycap = split("x 1\u{FE0F}\u{20E3}");
+        assert_eq!(keycap.last().unwrap().0, "1\u{FE0F}\u{20E3}");
+        assert!(keycap.last().unwrap().1.is_some());
+        assert!(split("123 #hash *star").iter().all(|p| p.1.is_none()));
+    }
+
+    #[test]
+    fn third_party_emote_lists_are_read() {
+        let bttv = json!([{"code": "catJAM", "id": "5f1b"}, {"code": "noId"}, {"id": "noCode"}]);
+        assert_eq!(
+            parse_bttv_vec(&bttv, 2),
+            [(
+                "catJAM".to_string(),
+                "https://cdn.betterttv.net/emote/5f1b/2x.webp".to_string()
+            )]
+        );
+        let ffz = json!({"3": {"emoticons": [
+            {"name": "LilZ", "urls": {"1": "//cdn.frankerfacez.com/1", "2": "https://cdn.frankerfacez.com/2"}},
+            {"name": "Anim", "urls": {"1": "x"}, "animated": {"1": "https://a/1"}},
+            {"name": "NoUrl", "urls": {}}
+        ]}});
+        assert_eq!(
+            parse_ffz_vec(&ffz, 1),
+            [
+                ("LilZ".to_string(), "https://cdn.frankerfacez.com/1".to_string()),
+                ("Anim".to_string(), "https://a/1".to_string())
+            ]
+        );
+        // Asked for 4x where only 1x exists: the 1x picture.
+        assert_eq!(parse_ffz_vec(&ffz, 4)[0].1, "https://cdn.frankerfacez.com/1");
+        let seven = json!({"emotes": [
+            {"name": "EZ", "data": {"host": {"url": "//cdn.7tv.app/emote/1"}}},
+            {"name": "Abs", "data": {"host": {"url": "https://cdn.7tv.app/emote/2"}}},
+            {"name": "NoHost", "data": {}}
+        ]});
+        assert_eq!(
+            parse_7tv_vec(&seven, 2),
+            [
+                ("EZ".to_string(), "https://cdn.7tv.app/emote/1/2x.webp".to_string()),
+                ("Abs".to_string(), "https://cdn.7tv.app/emote/2/2x.webp".to_string())
+            ]
+        );
+        assert!(parse_bttv_vec(&Value::Null, 1).is_empty() && parse_ffz_vec(&Value::Null, 1).is_empty());
+        assert_eq!(
+            twitch_emote_url("25", 1),
+            "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0"
+        );
+        assert!(twitch_emote_url("25", 3).ends_with("/2.0"));
+    }
+
+    #[test]
+    fn channel_sets_win_over_global_ones_in_chat() {
+        let sec = |name: &str, url: &str| {
+            vec![EmoteSection {
+                title: String::new(),
+                note: None,
+                emotes: vec![(name.into(), url.into())],
+            }]
+        };
+        let cat = Catalog {
+            twitch_7tv: [sec("EZ", "https://7tv/channel"), vec![]],
+            twitch_bttv: sec("EZ", "https://bttv/global"),
+            kick_native: sec("KEKW", "https://kick/1"),
+            youtube_bttv: sec("yt", "https://bttv/yt"),
+            ..Default::default()
+        };
+        let [tw, kick, yt] = rebuild_lookups(&cat);
+        assert_eq!(tw["EZ"], "https://7tv/channel");
+        assert_eq!(kick["KEKW"], "https://kick/1");
+        assert_eq!(yt["yt"], "https://bttv/yt");
+        assert!(!tw.contains_key("KEKW") && !kick.contains_key("EZ"));
+        assert!(youtube_image("https://yt3.ggpht.com/a") && youtube_image("https://ggpht.com/a"));
+        assert!(!youtube_image("https://evilggpht.com/a") && !youtube_image("ggpht.com"));
     }
 
     #[test]
