@@ -110,6 +110,38 @@ struct Catalog {
 }
 
 impl Catalog {
+    /// Whether any set has an emote: one the network left empty isn't worth keeping as fresh.
+    fn loaded(&self) -> bool {
+        let Catalog {
+            twitch_native,
+            twitch_7tv,
+            twitch_bttv,
+            twitch_ffz,
+            kick_native,
+            kick_tags: _,
+            kick_7tv,
+            youtube_7tv,
+            youtube_bttv,
+        } = self;
+        twitch_native
+            .iter()
+            .chain(twitch_7tv)
+            .map(Vec::as_slice)
+            .chain(
+                [
+                    twitch_bttv,
+                    twitch_ffz,
+                    kick_native,
+                    kick_7tv,
+                    youtube_7tv,
+                    youtube_bttv,
+                ]
+                .map(Vec::as_slice),
+            )
+            .flatten()
+            .any(|s| !s.emotes.is_empty())
+    }
+
     /// Twitch refused the token for the account's emotes: not worth keeping, the next login fixes it.
     fn wants_login(&self) -> bool {
         self.twitch_native
@@ -657,8 +689,7 @@ pub fn load_local(config: &Config) {
 async fn fetch_and_keep(p: LoadParams) {
     let cat = fetch_all(&p).await;
     // A catalog the network left empty isn't kept as fresh.
-    let loaded = cat.twitch_7tv[0].iter().any(|s| !s.emotes.is_empty());
-    if let (true, false, Ok(val)) = (loaded, cat.wants_login(), serde_json::to_value(&cat)) {
+    if let (true, false, Ok(val)) = (cat.loaded(), cat.wants_login(), serde_json::to_value(&cat)) {
         crate::cache::save(&p.file_name, &val);
     }
     apply_catalog(cat);
@@ -685,11 +716,7 @@ fn stale_params(config: &Config) -> Option<LoadParams> {
     let fresh = match crate::cache::saved(&p.file_name) {
         Some((age, v)) => match serde_json::from_value::<Catalog>(v) {
             Ok(cat) => {
-                let has_data = !cat.twitch_7tv[0].is_empty()
-                    || !cat.kick_7tv.is_empty()
-                    || !cat.twitch_native[0].is_empty()
-                    || !cat.kick_native.is_empty();
-                let fresh = has_data && age < FRESH && !cat.wants_login();
+                let fresh = cat.loaded() && age < FRESH && !cat.wants_login();
                 apply_catalog(cat);
                 fresh
             }
