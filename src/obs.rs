@@ -185,19 +185,21 @@ impl crate::ports::ObsPort for ObsHandle {
         request_data: Value,
     ) -> crate::ports::Fut<'a, Result<Value, String>> {
         Box::pin(async move {
-            let (resp_tx, resp_rx) = oneshot::channel();
-            self.tx
-                .send(ObsCmd::Request {
+            crate::runner::ask(
+                &self.tx,
+                crate::runner::ReplyErrors {
+                    down: "OBS runner is down",
+                    cancelled: "OBS request cancelled",
+                    timeout: Some((Duration::from_secs(30), "OBS request timed out")),
+                },
+                |resp| ObsCmd::Request {
                     connection_id: connection_id.map(String::from),
                     request_type: request_type.to_string(),
                     request_data,
-                    resp: resp_tx,
-                })
-                .map_err(|_| "OBS runner is down".to_string())?;
-            tokio::time::timeout(Duration::from_secs(30), resp_rx)
-                .await
-                .map_err(|_| "OBS request timed out".to_string())?
-                .map_err(|_| "OBS request cancelled".to_string())?
+                    resp,
+                },
+            )
+            .await
         })
     }
 
@@ -208,20 +210,22 @@ impl crate::ports::ObsPort for ObsHandle {
         requests: Vec<Value>,
     ) -> crate::ports::Fut<'a, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            let (resp_tx, resp_rx) = oneshot::channel();
-            self.tx
-                .send(ObsCmd::BatchRequest {
+            crate::runner::ask(
+                &self.tx,
+                crate::runner::ReplyErrors {
+                    down: "OBS runner is down",
+                    cancelled: "OBS batch request cancelled",
+                    timeout: Some((Duration::from_secs(30), "OBS batch request timed out")),
+                },
+                |resp| ObsCmd::BatchRequest {
                     connection_id: connection_id.map(String::from),
                     halt_on_failure,
                     execution_type: 0,
                     requests,
-                    resp: resp_tx,
-                })
-                .map_err(|_| "OBS runner is down".to_string())?;
-            tokio::time::timeout(Duration::from_secs(30), resp_rx)
-                .await
-                .map_err(|_| "OBS batch request timed out".to_string())?
-                .map_err(|_| "OBS batch request cancelled".to_string())?
+                    resp,
+                },
+            )
+            .await
         })
     }
 

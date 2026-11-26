@@ -8,6 +8,7 @@
 use crate::commands::Chat;
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::{ask, ReplyErrors};
 use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -246,6 +247,8 @@ pub struct KickHandle {
     connected: Arc<AtomicBool>,
 }
 
+const REPLY_ERRORS: ReplyErrors = ReplyErrors::new("Kick runner is down");
+
 impl KickHandle {
     /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
     pub fn detached() -> (Self, mpsc::UnboundedReceiver<KickCmd>) {
@@ -277,172 +280,124 @@ impl KickHandle {
     }
 
     pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SendMessage {
-                text: text.to_string(),
-                use_bot,
-                fallback,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SendMessage {
+            text: text.to_string(),
+            use_bot,
+            fallback,
+            resp,
+        })
+        .await
     }
 
     pub async fn reply_message(&self, text: &str, reply_id: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::ReplyToMessage {
-                text: text.to_string(),
-                reply_id: reply_id.to_string(),
-                use_bot,
-                fallback,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::ReplyToMessage {
+            text: text.to_string(),
+            reply_id: reply_id.to_string(),
+            use_bot,
+            fallback,
+            resp,
+        })
+        .await
     }
 
     pub async fn api(&self, method: &'static str, path: &str, body: Option<Value>) -> Result<Value, String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::Api {
-                method,
-                path: path.to_string(),
-                body,
-                resp,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::Api {
+            method,
+            path: path.to_string(),
+            body,
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_title(&self, title: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelTitle {
-                title: title.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelTitle {
+            title: title.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_category(&self, category_id: u64, category_name: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelCategory {
-                category_id,
-                category_name: category_name.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelCategory {
+            category_id,
+            category_name: category_name.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_channel_tags(&self, tags: Vec<String>) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::SetChannelTags { tags, resp: resp_tx })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::SetChannelTags { tags, resp }).await
     }
 
     pub async fn start_ad_break(&self, duration_seconds: u64) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::StartAdBreak {
-                duration_seconds,
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::StartAdBreak {
+            duration_seconds,
+            resp,
+        })
+        .await
     }
 
     pub async fn get_ad_status(&self) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::GetAdStatus { resp: resp_tx })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::GetAdStatus { resp }).await
     }
 
     pub async fn ban_user(&self, user_login: &str, reason: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::BanUser {
-                user_login: user_login.to_string(),
-                reason: reason.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::BanUser {
+            user_login: user_login.to_string(),
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn ban_user_id(&self, user_id: u64, duration: Option<u64>, reason: &str) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::BanUserId {
-                user_id,
-                duration,
-                reason: reason.to_string(),
-                resp,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::BanUserId {
+            user_id,
+            duration,
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn unban_user(&self, user_login: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnbanUser {
-                user_login: user_login.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnbanUser {
+            user_login: user_login.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn unban_user_id(&self, user_id: u64) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnbanUserId { user_id, resp })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnbanUserId { user_id, resp }).await
     }
 
     pub async fn timeout_user(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::TimeoutUser {
-                user_login: user_login.to_string(),
-                duration,
-                reason: reason.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::TimeoutUser {
+            user_login: user_login.to_string(),
+            duration,
+            reason: reason.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn untimeout_user(&self, user_login: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::UnTimeoutUser {
-                user_login: user_login.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::UnTimeoutUser {
+            user_login: user_login.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn delete_message(&self, message_id: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(KickCmd::DeleteMessage {
-                message_id: message_id.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "Kick runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| KickCmd::DeleteMessage {
+            message_id: message_id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn get_status(&self) -> KickStatus {

@@ -7,6 +7,7 @@
 use crate::commands::Chat;
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::{ask, ReplyErrors};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -392,6 +393,8 @@ pub struct YouTubeHandle {
     standby: Arc<AtomicBool>,
 }
 
+const REPLY_ERRORS: ReplyErrors = ReplyErrors::new("YouTube runner is down");
+
 impl YouTubeHandle {
     /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
     pub fn detached() -> (Self, mpsc::UnboundedReceiver<YouTubeCmd>) {
@@ -422,41 +425,32 @@ impl YouTubeHandle {
     }
 
     pub async fn send_message(&self, broadcast: &str, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::SendMessage {
-                broadcast: broadcast.to_string(),
-                text: text.to_string(),
-                use_bot,
-                fallback,
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::SendMessage {
+            broadcast: broadcast.to_string(),
+            text: text.to_string(),
+            use_bot,
+            fallback,
+            resp,
+        })
+        .await
     }
 
     pub async fn set_title(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::SetTitle {
-                broadcast: broadcast.to_string(),
-                title: title.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::SetTitle {
+            broadcast: broadcast.to_string(),
+            title: title.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_description(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::SetDescription {
-                broadcast: broadcast.to_string(),
-                description: description.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::SetDescription {
+            broadcast: broadcast.to_string(),
+            description: description.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_title_and_description(
@@ -465,29 +459,23 @@ impl YouTubeHandle {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::SetTitleAndDescription {
-                broadcast: broadcast.to_string(),
-                title: title.to_string(),
-                description: description.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::SetTitleAndDescription {
+            broadcast: broadcast.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            resp,
+        })
+        .await
     }
 
     /// Change the supplied video metadata in one update.
     pub async fn update_video(&self, broadcast: &str, update: VideoUpdate) -> Result<(), String> {
-        let (resp, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::UpdateVideo {
-                broadcast: broadcast.to_string(),
-                update,
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::UpdateVideo {
+            broadcast: broadcast.to_string(),
+            update,
+            resp,
+        })
+        .await
     }
 
     /// Any Data API call as the broadcaster; `{video}` and `{chat}` in the path or body are the
@@ -499,17 +487,14 @@ impl YouTubeHandle {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::Data {
-                method,
-                broadcast: broadcast.to_string(),
-                path: path.to_string(),
-                body,
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::Data {
+            method,
+            broadcast: broadcast.to_string(),
+            path: path.to_string(),
+            body,
+            resp,
+        })
+        .await
     }
 
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -523,23 +508,23 @@ impl YouTubeHandle {
         user_id: &str,
         duration: Option<u64>,
     ) -> Result<String, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        let cmd = if let Some(duration) = duration {
-            YouTubeCmd::TimeoutUser {
-                broadcast: broadcast.to_string(),
-                user_id: user_id.to_string(),
-                duration,
-                resp: resp_tx,
+        ask(&self.tx, REPLY_ERRORS, |resp| {
+            if let Some(duration) = duration {
+                YouTubeCmd::TimeoutUser {
+                    broadcast: broadcast.to_string(),
+                    user_id: user_id.to_string(),
+                    duration,
+                    resp,
+                }
+            } else {
+                YouTubeCmd::BanUser {
+                    broadcast: broadcast.to_string(),
+                    user_id: user_id.to_string(),
+                    resp,
+                }
             }
-        } else {
-            YouTubeCmd::BanUser {
-                broadcast: broadcast.to_string(),
-                user_id: user_id.to_string(),
-                resp: resp_tx,
-            }
-        };
-        self.tx.send(cmd).map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        })
+        .await
     }
 
     pub async fn timeout_user(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
@@ -549,74 +534,56 @@ impl YouTubeHandle {
     }
 
     pub async fn remove_ban(&self, id: &str) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::RemoveBan {
-                id: id.to_string(),
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::RemoveBan {
+            id: id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn delete_message(&self, message_id: &str) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::DeleteMessage {
-                message_id: message_id.to_string(),
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::DeleteMessage {
+            message_id: message_id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn add_moderator(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::AddModerator {
-                broadcast: broadcast.to_string(),
-                user_id: user_id.to_string(),
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::AddModerator {
+            broadcast: broadcast.to_string(),
+            user_id: user_id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn remove_moderator(&self, broadcast: &str, moderator_id: &str, user_id: &str) -> Result<(), String> {
-        let (resp, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::RemoveModerator {
-                broadcast: broadcast.to_string(),
-                moderator_id: moderator_id.to_string(),
-                user_id: user_id.to_string(),
-                resp,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::RemoveModerator {
+            broadcast: broadcast.to_string(),
+            moderator_id: moderator_id.to_string(),
+            user_id: user_id.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn set_thumbnail(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::SetThumbnail {
-                broadcast: broadcast.to_string(),
-                file_path: file_path.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::SetThumbnail {
+            broadcast: broadcast.to_string(),
+            file_path: file_path.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn run_commercial(&self, broadcast: &str, duration_secs: u64) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::RunCommercial {
-                broadcast: broadcast.to_string(),
-                duration_secs,
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::RunCommercial {
+            broadcast: broadcast.to_string(),
+            duration_secs,
+            resp,
+        })
+        .await
     }
 
     /// The new poll's id.
@@ -625,7 +592,7 @@ impl YouTubeHandle {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(YouTubeCmd::LiveVideo(tx))
-            .map_err(|_| "YouTube runner is down".to_string())?;
+            .map_err(|_| REPLY_ERRORS.down.to_string())?;
         let video = rx.await.unwrap_or_default();
         if video.is_empty() {
             return Ok((None, String::new()));
@@ -659,24 +626,17 @@ impl YouTubeHandle {
     /// The channel's live broadcast, else its next one (scheduled, or the ready one its next live
     /// uses), as (video id, title); None when there is neither.
     pub async fn next_broadcast(&self) -> Result<Option<(String, String)>, String> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::NextBroadcast(tx))
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, YouTubeCmd::NextBroadcast).await
     }
 
     /// One Data API read as the broadcaster: `path` is under /youtube/v3, with its query
     /// (`videos?part=snippet&id=x`). Each read costs 1 unit of quota.
     pub async fn api(&self, path: &str) -> Result<Value, String> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::Api {
-                path: path.to_string(),
-                resp: tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::Api {
+            path: path.to_string(),
+            resp,
+        })
+        .await
     }
 
     pub async fn live_title(&self) -> Result<String, String> {
@@ -684,27 +644,21 @@ impl YouTubeHandle {
     }
 
     pub async fn create_poll(&self, broadcast: &str, question: &str, options: &[String]) -> Result<String, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::CreatePoll {
-                broadcast: broadcast.to_string(),
-                question: question.to_string(),
-                options: options.to_vec(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::CreatePoll {
+            broadcast: broadcast.to_string(),
+            question: question.to_string(),
+            options: options.to_vec(),
+            resp,
+        })
+        .await
     }
 
     pub async fn end_poll(&self, broadcast: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::EndPoll {
-                broadcast: broadcast.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        ask(&self.tx, REPLY_ERRORS, |resp| YouTubeCmd::EndPoll {
+            broadcast: broadcast.to_string(),
+            resp,
+        })
+        .await
     }
 }
 

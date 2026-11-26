@@ -12,6 +12,7 @@ use crate::commands::{self, Chat};
 use crate::emote_events::Abort;
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::runner::{ask, ReplyErrors};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -416,6 +417,12 @@ pub struct TwitchHandle {
     connected: Arc<AtomicBool>,
 }
 
+const REPLY_ERRORS: ReplyErrors = ReplyErrors {
+    down: "Twitch task stopped",
+    cancelled: "Twitch task stopped",
+    timeout: None,
+};
+
 impl TwitchHandle {
     /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
     pub fn detached() -> (Self, mpsc::UnboundedReceiver<TwitchCmd>) {
@@ -447,15 +454,14 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::SendMessage {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::SendMessage {
             text,
             reply_id,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn send_announcement(
@@ -465,30 +471,26 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::SendAnnouncement {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::SendAnnouncement {
             text,
             color,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn start_raid(&self, target_login: String) -> Result<bool, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::StartRaid {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::StartRaid {
             target_login,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn cancel_raid(&self) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::CancelRaid { resp: resp_tx });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::CancelRaid { resp }).await
     }
 
     pub async fn helix(
@@ -500,26 +502,24 @@ impl TwitchHandle {
         use_bot: bool,
         fallback: bool,
     ) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::Helix {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::Helix {
             method,
             path: path.to_string(),
             query: query.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             body,
             use_bot,
             fallback,
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn resolve_user_id(&self, login: &str) -> Result<String, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TwitchCmd::ResolveUserId {
+        ask(&self.tx, REPLY_ERRORS, |resp| TwitchCmd::ResolveUserId {
             login: login.to_string(),
-            resp: resp_tx,
-        });
-        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+            resp,
+        })
+        .await
     }
 
     pub async fn status(&self) -> TwitchStatus {
