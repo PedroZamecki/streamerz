@@ -688,29 +688,47 @@ fn strip_jsonc_comments(input: &str) -> String {
     out
 }
 
-fn read_json(file: &Path) -> Result<Value, String> {
-    match std::fs::read(file) {
-        Ok(b) if b.iter().all(u8::is_ascii_whitespace) => Ok(json!({})),
-        Ok(b) => {
-            if let Ok(v) = serde_json::from_slice(&b) {
-                return Ok(v);
-            }
-            let is_jsonc = file.extension().is_some_and(|e| e == "jsonc")
-                || file.to_string_lossy().contains("opencode")
-                || file.to_string_lossy().contains("zed");
-            if is_jsonc {
-                if let Ok(s) = std::str::from_utf8(&b) {
-                    let cleaned = strip_jsonc_comments(s);
-                    if let Ok(v) = serde_json::from_str(&cleaned) {
-                        return Ok(v);
-                    }
-                }
-            }
-            serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display()))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-        Err(e) => Err(format!("{}: {e}", file.display())),
+/// Whether `file` may hold comments (JSONC): OpenCode's and Zed's settings do. Others are refused
+/// when they aren't plain JSON, as rewriting them would drop what the user wrote.
+fn jsonc(file: &Path) -> bool {
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = file
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    file.extension().is_some_and(|e| e == "jsonc") || name.starts_with("opencode") || dir.eq_ignore_ascii_case("zed")
+}
+
+/// The JSON in `file` (an empty object for none), and whether it had comments to strip.
+fn read_json_text(file: &Path) -> Result<(Value, bool), String> {
+    let b = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((json!({}), false)),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    // Windows editors may start the file with a byte order mark, which JSON parsers refuse.
+    let b = b.strip_prefix("\u{FEFF}".as_bytes()).unwrap_or(&b);
+    if b.iter().all(u8::is_ascii_whitespace) {
+        return Ok((json!({}), false));
     }
+    if let Ok(v) = serde_json::from_slice(b) {
+        return Ok((v, false));
+    }
+    if jsonc(file) {
+        if let Ok(s) = std::str::from_utf8(b) {
+            if let Ok(v) = serde_json::from_str(&strip_jsonc_comments(s)) {
+                return Ok((v, true));
+            }
+        }
+    }
+    serde_json::from_slice(b)
+        .map(|v| (v, false))
+        .map_err(|e| format!("{}: {e}", file.display()))
+}
+
+fn read_json(file: &Path) -> Result<Value, String> {
+    read_json_text(file).map(|(v, _)| v)
 }
 
 fn state(format: Format, file: &Path, server: &Server) -> State {
