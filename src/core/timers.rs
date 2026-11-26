@@ -128,7 +128,13 @@ pub fn save(engine: &Rc<Engine>, mut item: Obj) -> Result<Value, String> {
             .iter_mut()
             .find(|t| t.get("id").and_then(Value::as_str) == Some(id.as_str()))
         {
-            Some(old) => *old = item,
+            Some(old) => {
+                // The form read the counter when it opened: the timer may have fired since.
+                if let Some(counter) = old.get("counter").cloned() {
+                    item.insert("counter".into(), counter);
+                }
+                *old = item
+            }
             None => config.timers.push(item),
         }
     });
@@ -206,6 +212,22 @@ mod tests {
         assert_eq!(fields.last().unwrap()["key"], LINKS);
     }
 
+    #[test]
+    fn saving_a_timer_keeps_the_count_it_reached_while_the_form_was_open() {
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let mut timer = entities::timer_default().as_object().unwrap().clone();
+            timer.insert("id".into(), json!("timer"));
+            save(&engine, timer.clone()).unwrap();
+            engine.change(|c| {
+                c.timers[0].insert("counter".into(), json!(5));
+            });
+            timer.insert("name".into(), json!("Renamed"));
+            save(&engine, timer).unwrap();
+            assert_eq!(engine.config().timers[0]["counter"], 5);
+            assert_eq!(engine.config().timers[0]["name"], "Renamed");
+        });
+    }
     #[test]
     fn timer_links_are_atomic_and_preserve_other_triggers() {
         crate::engine::tests::run(async {
