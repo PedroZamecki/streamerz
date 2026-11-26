@@ -66,8 +66,10 @@ jobs:
         run: |
           rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
           find target -type f -name "*.d" -delete 2>/dev/null || true
-      - name: Test extension lifecycle and platform checks
-        run: node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs
+      - name: Test extension lifecycle, platform checks and overlays
+        run: >
+          node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs
+          dev/overlays-client.test.mjs dev/overlays-examples.test.mjs
       - name: Test development helpers and release scripts
         run: python3 -P -m unittest discover -s dev -p 'test_*.py'
 
