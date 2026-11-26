@@ -1150,6 +1150,137 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_order_mark_is_read_past() {
+        let d = tmp("bom");
+        let p = places(&d);
+        let f = d.join(".gemini").join("settings.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "\u{FEFF}{\"theme\": \"dark\"}").unwrap();
+        set(kind("gemini"), &p, &server(None), true).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert_eq!(v["theme"], "dark");
+        assert!(v["mcpServers"]["streamerz"].is_object());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_jsonc_files_have_their_comments_stripped() {
+        assert!(jsonc(Path::new("/h/.config/opencode/opencode.json")));
+        assert!(jsonc(Path::new("/h/x/opencode.jsonc")));
+        assert!(jsonc(Path::new("/h/.config/zed/settings.json")));
+        assert!(jsonc(Path::new("/h/AppData/Roaming/Zed/settings.json")));
+        // A home or user called "zed" or "opencode" doesn't make every file JSONC.
+        assert!(!jsonc(Path::new("/u/zed/.gemini/settings.json")));
+        assert!(!jsonc(Path::new("/u/opencode-fan/.cursor/mcp.json")));
+        let d = tmp("zedhome").join("zed");
+        let p = places(&d);
+        let f = d.join(".gemini").join("settings.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "{ // mine\n}").unwrap();
+        assert!(set(kind("gemini"), &p, &server(None), true).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{ // mine\n}");
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    #[test]
+    fn rewriting_a_commented_file_keeps_the_original_beside_it() {
+        let d = tmp("backup");
+        let p = places(&d);
+        let f = d.join(".config").join("opencode").join("opencode.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        let before = "{\n  // my note\n  \"theme\": \"x\",\n}\n";
+        std::fs::write(&f, before).unwrap();
+        set(kind("opencode"), &p, &server(None), true).unwrap();
+        let backup = f.with_file_name("opencode.json.streamerz-backup");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), before);
+        assert_eq!(read_json(&f).unwrap()["theme"], "x");
+        // Plain JSON: no backup.
+        let g = d.join(".cursor").join("mcp.json");
+        std::fs::create_dir_all(g.parent().unwrap()).unwrap();
+        std::fs::write(&g, "{}").unwrap();
+        set(kind("cursor"), &p, &server(None), true).unwrap();
+        assert!(!g.with_file_name("mcp.json.streamerz-backup").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_config_stays_private_and_a_link_stays_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("perms");
+        let p = places(&d);
+        let f = d.join(".claude.json");
+        std::fs::write(&f, "{\"oauthAccount\": {}}").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        set(kind("claude"), &p, &server(None), true).unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        // Dotfiles kept in another folder: the link is kept, its target changes.
+        let real = d.join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "model = \"x\"\n").unwrap();
+        let link = d.join(".codex").join("config.toml");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        set(kind("codex"), &p, &server(None), true).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real)
+            .unwrap()
+            .contains("[mcp_servers.streamerz]"));
+        assert!(!real.with_extension("streamerz-tmp").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn toml_headers_are_read_however_they_are_written() {
+        let h = |l: &str| toml_header(l);
+        let parts = |a: &[&str]| Some(a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(h("[mcp_servers.streamerz]"), parts(&["mcp_servers", "streamerz"]));
+        assert_eq!(
+            h(" [ mcp_servers . \"streamerz\" ] # mine"),
+            parts(&["mcp_servers", "streamerz"])
+        );
+        assert_eq!(
+            h("[mcp_servers.'streamerz'.env]"),
+            parts(&["mcp_servers", "streamerz", "env"])
+        );
+        assert_eq!(h("[\"a.b\".c]"), parts(&["a.b", "c"]));
+        assert_eq!(h("[[array.of.tables]]"), None);
+        assert_eq!(h("[unclosed"), None);
+        assert_eq!(h("[a] b = 1"), None);
+        // An entry written with quotes or a comment is replaced, never doubled.
+        let text = "[mcp_servers.\"streamerz\"] # added by hand\ncommand = \"old\"\n\n[mcp_servers.streamerz.env]\nA = \"1\"\n\n[other]\nx = 1\n";
+        let (a, b) = toml_block(text, "streamerz").unwrap();
+        assert_eq!(&text[b..], "[other]\nx = 1\n");
+        assert_eq!(a, 0);
+        assert_eq!(toml_block(text, "streamerz-dev"), None);
+        assert_eq!(toml_block("[mcp_servers.streamerzz]\n", "streamerz"), None);
+        let d = tmp("tomlquoted");
+        let p = places(&d);
+        let f = d.join(".codex").join("config.toml");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, text).unwrap();
+        set(kind("codex"), &p, &server(None), true).unwrap();
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(after.matches("streamerz").count(), 1, "{after}");
+        assert!(after.ends_with("[other]\nx = 1\n"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn comments_and_trailing_commas_come_out_strings_stay() {
+        let s = strip_jsonc_comments(
+            "{\"a\": \"// not a comment\", /* gone */ \"b\": [1, 2,], // end\n \"c\": \"\\\"/*\\\"\",}",
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["a"], "// not a comment");
+        assert_eq!(v["b"], json!([1, 2]));
+        assert_eq!(v["c"], "\"/*\"");
+        // Unclosed ones end the text, without a panic.
+        assert_eq!(strip_jsonc_comments("{} /* open"), "{} ");
+        assert_eq!(strip_jsonc_comments("ünï // ç"), "ünï ");
+    }
+
+    #[test]
     fn opencode_and_copilot_get_their_own_shapes() {
         let s = server(Some("ws://127.0.0.1:8090/"));
         let o = s.entry(Extra::Opencode);
