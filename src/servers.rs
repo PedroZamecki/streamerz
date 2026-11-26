@@ -2294,7 +2294,7 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
         // A Streamerz custom webhook (Streamer.bot's are made on its website): fires Custom Webhook.
         ("POST", path) if path.starts_with("/webhooks/") && path.len() > "/webhooks/".len() => {
             let name = path["/webhooks/".len()..].trim_end_matches('/');
-            e.custom_webhook(&crate::donations::urlencoding_decode(name), body);
+            e.custom_webhook(&crate::commands::url_decode(name), body);
             (200, Some(json!({"status": "ok"})))
         }
         ("POST", path) if path.starts_with("/api/") || path.starts_with("/") => {

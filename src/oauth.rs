@@ -164,33 +164,8 @@ fn query(target: &str) -> Vec<(String, String)> {
     let q = target.split_once('?').map_or("", |x| x.1);
     q.split('&')
         .filter_map(|kv| kv.split_once('='))
-        .map(|(k, v)| (decode(k), decode(v)))
+        .map(|(k, v)| (crate::commands::url_decode(k), crate::commands::url_decode(v)))
         .collect()
-}
-
-pub(crate) fn decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => match s
-                .get(i + 1..i + 3)
-                .filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()))
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-            {
-                Some(x) => {
-                    out.push(x);
-                    i += 2;
-                }
-                None => out.push(b'%'),
-            },
-            c => out.push(c),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// POST a form to a token endpoint.
@@ -258,18 +233,6 @@ mod tests {
         assert!(token_ready("valid", "", u64::MAX));
         assert!(stale(now() + 10));
         assert!(!stale(now() + 3600));
-    }
-
-    #[test]
-    fn percent_escapes_take_two_hex_digits_only() {
-        assert_eq!(decode("a%2Fb"), "a/b");
-        // A sign isn't a hex digit (the `+` is then a space, as always).
-        assert_eq!(decode("%+1%-1"), "% 1%-1");
-        assert_eq!(decode("%zz%4"), "%zz%4");
-        assert_eq!(decode("%C3%A9+%E2%82%AC"), "é €");
-        assert_eq!(decode("é%"), "é%");
-        // Bytes that aren't UTF-8 don't panic.
-        assert_eq!(decode("%FF"), "\u{FFFD}");
     }
 
     #[test]

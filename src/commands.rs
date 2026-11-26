@@ -130,6 +130,30 @@ pub fn url_encode(s: &str) -> String {
     out
 }
 
+/// A form or query value decoded: `+` is a space, %XX a byte (two hex digits, else kept as typed),
+/// the bytes read as UTF-8.
+pub fn url_decode(s: &str) -> String {
+    let hex = |b: u8| (b as char).to_digit(16);
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                (Some(hi), Some(lo)) => {
+                    out.push((hi * 16 + lo) as u8);
+                    i += 2;
+                }
+                _ => out.push(b'%'),
+            },
+            b'+' => out.push(b' '),
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Escaped for a JSON/C# string literal.
 pub fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -224,6 +248,23 @@ pub fn permitted(c: &Obj, chat: &Chat, in_group: &dyn Fn(&str) -> bool) -> bool 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn percent_escapes_take_two_hex_digits_only() {
+        assert_eq!(url_decode("a%2Fb"), "a/b");
+        // A sign isn't a hex digit (the `+` is then a space, as always).
+        assert_eq!(url_decode("%+1%-1"), "% 1%-1");
+        assert_eq!(url_decode("%zz%4"), "%zz%4");
+        assert_eq!(url_decode("100%"), "100%");
+        assert_eq!(url_decode("%ZZ%20ok"), "%ZZ ok");
+        // Several bytes make one character.
+        assert_eq!(url_decode("Doa%C3%A7%C3%A3o+%E2%82%AC"), "Doação €");
+        assert_eq!(url_decode("Jos%C3%A9+%E2%9D%A4%EF%B8%8F"), "José ❤️");
+        assert_eq!(url_decode("é%"), "é%");
+        // Bytes that aren't UTF-8 don't panic.
+        assert_eq!(url_decode("%FF"), "\u{FFFD}");
+        assert_eq!(url_decode(&url_encode("Doação ❤ a/b")), "Doação ❤ a/b");
+    }
 
     fn cmd(v: Value) -> Obj {
         v.as_object().unwrap().clone()

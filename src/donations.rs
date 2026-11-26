@@ -901,7 +901,7 @@ pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8], signatur
         // Try parsing as urlencoded form data (e.g. data={"amount":"10.00",...}&other=1)
         let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
         if let Some(json_str) = s.split('&').find_map(|pair| pair.strip_prefix("data=")) {
-            let decoded = urlencoding_decode(json_str);
+            let decoded = crate::commands::url_decode(json_str);
             serde_json::from_str(&decoded).map_err(|e| e.to_string())
         } else {
             Err("Unable to parse payload".into())
@@ -1376,43 +1376,6 @@ impl Engine {
     }
 }
 
-pub(crate) fn urlencoding_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn capitalize_tip_key(k: &str) -> String {
     let mut chars = k.chars();
     match chars.next() {
@@ -1840,11 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn urlencoding_decode_handles_utf8_and_kofi_form_fields() {
-        assert_eq!(urlencoding_decode("Jos%C3%A9+%E2%9D%A4%EF%B8%8F"), "José ❤️");
-        assert_eq!(urlencoding_decode("100%"), "100%");
-        assert_eq!(urlencoding_decode("%ZZ%20ok"), "%ZZ ok");
-
+    fn kofi_form_fields_are_decoded() {
         use crate::engine::tests::{action, engine, log, run};
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut a = action("k", "k", json!([log("T %fromName% %amount%")]));

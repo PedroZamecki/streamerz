@@ -650,29 +650,6 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-/// A part of an address as it was before `encode`: each `%XX` a byte of UTF-8 text (so "Doa%C3%A7%C3%A3o"
-/// is "Doação"), `+` a space as a form sends it. A `%` not followed by two hex digits stays as it is.
-fn decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes.get(i + 1..i + 3).filter(|h| h.iter().all(u8::is_ascii_hexdigit));
-        match (bytes[i], hex) {
-            (b'%', Some(h)) => {
-                let digit = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
-                out.push(digit(h[0]) << 4 | digit(h[1]));
-                i += 3;
-                continue;
-            }
-            (b'+', _) => out.push(b' '),
-            (b, _) => out.push(b),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -915,7 +892,7 @@ impl Served {
 /// The overlay a path under `/overlays/` belongs to (not the built-in pictures).
 pub fn group_of(path: &str) -> Option<String> {
     let rest = path.trim_start_matches("/overlays").trim_matches('/');
-    let group = decode(rest.split('/').next()?);
+    let group = crate::commands::url_decode(rest.split('/').next()?);
     (!group.is_empty() && group != BUILT_IN).then_some(group)
 }
 
@@ -941,8 +918,8 @@ pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>)
         return Served::Bytes(200, "text/html; charset=utf-8", index(c).into_bytes());
     }
     let mut parts = rest.splitn(2, '/');
-    let group = decode(parts.next().unwrap_or(""));
-    let name = decode(parts.next().unwrap_or(""));
+    let group = crate::commands::url_decode(parts.next().unwrap_or(""));
+    let name = crate::commands::url_decode(parts.next().unwrap_or(""));
     let missing = || Served::Bytes(404, "text/plain; charset=utf-8", b"No such overlay file".to_vec());
     if group == BUILT_IN {
         return speech(&name).or_else(|| built_in(&name)).unwrap_or_else(missing);
@@ -1265,7 +1242,7 @@ pub fn subscriptions(query: &str) -> Subs {
     let mut subs = Subs::new();
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else { continue };
-        let v = decode(v);
+        let v = crate::commands::url_decode(v);
         for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             match k {
                 "topics" => {
@@ -1297,7 +1274,7 @@ fn query_value(query: &str, key: &str) -> String {
         .split('&')
         .filter_map(|p| p.split_once('='))
         .find(|(k, _)| *k == key)
-        .map(|(_, v)| decode(v))
+        .map(|(_, v)| crate::commands::url_decode(v))
         .unwrap_or_default()
 }
 
@@ -2128,16 +2105,24 @@ mod tests {
 
     #[test]
     fn addresses_decode_as_utf8_text() {
-        assert_eq!(decode("Doa%C3%A7%C3%A3o"), "Doação");
-        assert_eq!(decode("My%20group%2F1.html"), "My group/1.html");
-        assert_eq!(decode("a+b"), "a b", "a space as a form sends it");
-        assert_eq!(decode("a%2Bb"), "a+b");
-        assert_eq!(decode("100%"), "100%", "a % with no hex after it stays");
-        assert_eq!(decode("%zz%4"), "%zz%4");
-        assert_eq!(decode("%+1"), "% 1", "a sign is not a hex digit");
-        assert_eq!(decode("%FF"), "\u{FFFD}", "bytes that aren't UTF-8 don't panic");
+        assert_eq!(crate::commands::url_decode("Doa%C3%A7%C3%A3o"), "Doação");
+        assert_eq!(crate::commands::url_decode("My%20group%2F1.html"), "My group/1.html");
+        assert_eq!(crate::commands::url_decode("a+b"), "a b", "a space as a form sends it");
+        assert_eq!(crate::commands::url_decode("a%2Bb"), "a+b");
+        assert_eq!(
+            crate::commands::url_decode("100%"),
+            "100%",
+            "a % with no hex after it stays"
+        );
+        assert_eq!(crate::commands::url_decode("%zz%4"), "%zz%4");
+        assert_eq!(crate::commands::url_decode("%+1"), "% 1", "a sign is not a hex digit");
+        assert_eq!(
+            crate::commands::url_decode("%FF"),
+            "\u{FFFD}",
+            "bytes that aren't UTF-8 don't panic"
+        );
         for name in ["Doação", "Ünïcödé 🎉", "a b/c+d.png", "100% Hype"] {
-            assert_eq!(decode(&encode(name)), name, "{name}");
+            assert_eq!(crate::commands::url_decode(&encode(name)), name, "{name}");
         }
         assert_eq!(query_value("a=1&group=Doa%C3%A7%C3%A3o&token=x", "group"), "Doação");
         assert_eq!(query_value("a=1", "group"), "");
