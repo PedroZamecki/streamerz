@@ -2482,17 +2482,14 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     (a, owner, moderator, member)
 }
 
-static POLL: std::sync::LazyLock<std::sync::Mutex<Obj>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(serde_json::Map::new()));
-
 /// Clear the active YouTube poll from memory.
 pub fn clear_poll() {
-    if let Ok(mut p) = POLL.lock() {
-        p.clear();
-    }
+    POLL.with_borrow_mut(Obj::clear);
 }
 
 thread_local! {
+    /// The active YouTube poll's `poll.*` arguments, kept on the runtime thread like `BROADCAST`.
+    static POLL: std::cell::RefCell<Obj> = Default::default();
     /// The live broadcast's variables (broadcastId, broadcast.*), set when its chat is read.
     static BROADCAST: std::cell::RefCell<Obj> = Default::default();
     /// Who chatted, and when (Present Viewers: those in the last 10 minutes).
@@ -2542,7 +2539,7 @@ fn poll_args(p: &Value) -> Obj {
 
 /// The poll on the live now (its poll.* arguments), if any.
 pub fn current_poll() -> Obj {
-    POLL.lock().map(|p| p.clone()).unwrap_or_default()
+    POLL.with_borrow(Clone::clone)
 }
 
 /// A message pinned at the top of the live chat (YouTube's banner): until it's taken down.
@@ -2772,9 +2769,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
         if let Some(p) = shown.or(updated) {
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.extend(poll_args(p));
-            if let Ok(mut lock) = POLL.lock() {
-                *lock = args.clone();
-            }
+            POLL.with_borrow_mut(|lock| *lock = args.clone());
             engine.chat_poll(crate::engine::chatlog::Poll {
                 platform: "youtube".into(),
                 id: "youtube".into(),
@@ -2804,7 +2799,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             }
         }
         if let Some(close) = act.get("closeLiveChatActionPanelAction") {
-            let mut args = POLL.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+            let mut args = POLL.with_borrow_mut(std::mem::take);
             if args.is_empty() {
                 continue;
             }
