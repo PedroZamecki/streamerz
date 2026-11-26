@@ -2,7 +2,7 @@
 //! a gift's price) and opens a searchable grid of them, with "any" first. The core sends the items
 //! (`choices` with `picture`, `detail` and `tip`) and what the field says (`gallery`); the grid is
 //! virtualised and asks the core for the pictures of the rows in view only. Ids stay out of sight.
-use super::emotes::ImageCache;
+use super::images::{Pictures, MAX_PENDING};
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, FONT_MICRO, LINE_CAPTION, LINE_MICRO, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
@@ -14,7 +14,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::ops::Range;
 
 /// Cells per row, a cell's size and its picture's.
@@ -26,8 +26,6 @@ const PICTURE: f32 = 40.;
 const BATCH: usize = 48;
 /// Pictures remembered before stale entries are evicted.
 const REMEMBERED: usize = 1000;
-/// Most pending picture URLs kept queued at once.
-const MAX_MISSING: usize = 512;
 
 struct Item {
     id: String,
@@ -63,9 +61,7 @@ pub struct Gallery {
     search: Entity<InputState>,
     /// The items the search keeps, by index.
     shown: Vec<usize>,
-    images: ImageCache,
-    /// The request id pictures come back with.
-    images_id: String,
+    images: Pictures,
     /// Reload, as the core described it (`request`, `label`), and whether it is on its way.
     refresh: Value,
     refresh_id: String,
@@ -96,8 +92,7 @@ impl Gallery {
             open: false,
             search,
             shown: Vec::new(),
-            images: ImageCache::new(BATCH, REMEMBERED, MAX_MISSING),
-            images_id: format!("{route}:images"),
+            images: Pictures::new(format!("{route}:images"), BATCH, REMEMBERED, MAX_PENDING),
             refresh: field["refresh"].clone(),
             refresh_id: format!("{route}:choices"),
             loading: false,
@@ -130,8 +125,8 @@ impl Gallery {
             .find(|item| !self.selected.is_empty() && item.id == self.selected)
             .map(|item| item.picture.clone())
         {
-            self.want(&url);
-            self.ask_images();
+            self.images.want(&url);
+            self.images.ask();
         }
     }
 
@@ -169,33 +164,19 @@ impl Gallery {
     /// Pictures the grid asked for.
     pub fn images(&mut self, reply: &Value, cx: &mut Context<Self>) {
         let items = &self.items;
-        let more = self.images.apply_reply(reply, || {
+        self.images.apply(reply, || {
             items
                 .iter()
                 .filter(|item| !item.picture.is_empty())
                 .map(|item| item.picture.clone())
                 .collect()
         });
-        if more {
-            self.ask_images();
-        }
         cx.notify();
     }
 
     /// The core downloaded pictures: ask again for the ones still missing.
     pub fn images_arrived(&mut self) {
-        self.images.mark_arrived();
-        self.ask_images();
-    }
-
-    fn ask_images(&mut self) {
-        if let Some(urls) = self.images.next_batch() {
-            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": self.images_id}));
-        }
-    }
-
-    fn want(&mut self, url: &str) {
-        self.images.want(url);
+        self.images.arrived();
     }
 
     /// The icon drawn for "any" and for a picture not here yet (`gallery.icon`, else an image).
@@ -498,10 +479,10 @@ impl Render for Gallery {
                         .and_then(|&index| gallery.items.get(index))
                     {
                         let url = item.picture.clone();
-                        gallery.want(&url);
+                        gallery.images.want(&url);
                     }
                 }
-                gallery.ask_images();
+                gallery.images.ask();
                 range
                     .map(|row| {
                         let mut line = div().h(px(CELL_H)).flex();

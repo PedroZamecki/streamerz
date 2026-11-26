@@ -9,6 +9,7 @@ pub mod find;
 pub mod form;
 pub mod gallery;
 pub mod health;
+pub mod images;
 pub mod list;
 pub mod log;
 pub mod markdown;

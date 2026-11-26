@@ -1,10 +1,10 @@
 //! A person's card in a dialog: who they are, their time here, their groups and what they said.
 //! The core supplies the whole model (`user_card`); the groups' switches are core actions.
+use super::images::{Pictures, MAX_PENDING};
 use crate::send;
 use gpui_kit::*;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::HashSet;
 
 pub struct Card {
     model: Value,
@@ -12,8 +12,7 @@ pub struct Card {
     /// What the platform says about the person (picture, banner, followers, what we may do to them):
     /// it arrives after the card opened and survives the card being drawn again.
     lookup: Value,
-    images: HashMap<String, PathBuf>,
-    asking: bool,
+    images: Pictures,
     /// The box shows what actions get for them, not what they said.
     details: bool,
     /// How many times the platform was asked again while it had not finished.
@@ -24,14 +23,16 @@ pub struct Card {
 /// (about seven seconds): a lookup that never ends must not keep the window busy.
 const RETRY_MS: u64 = 350;
 const RETRIES: u32 = 20;
+const BATCH: usize = 64;
+const REMEMBERED: usize = 256;
 impl Card {
     pub fn new(model: Value, route: String) -> Self {
+        let images = Pictures::new(format!("{route}:card-images"), BATCH, REMEMBERED, MAX_PENDING);
         let card = Self {
             model,
             route,
             lookup: Value::Null,
-            images: HashMap::new(),
-            asking: false,
+            images,
             details: false,
             retries: 0,
         };
@@ -86,26 +87,10 @@ impl Card {
     }
     fn ask_images(&mut self) {
         let wanted = super::chat::ChatView::card_urls(&self.lookup);
-        let urls: Vec<&str> = wanted
-            .iter()
-            .map(String::as_str)
-            .filter(|url| !self.images.contains_key(*url))
-            .collect();
-        if self.asking || urls.is_empty() {
-            return;
-        }
-        self.asking = true;
-        send(
-            json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": format!("{}:card-images", self.route)}),
-        );
+        self.images.ask_for(wanted.iter().map(String::as_str));
     }
     pub fn images(&mut self, value: &Value, cx: &mut Context<Self>) {
-        self.asking = false;
-        for (url, file) in value["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-            }
-        }
+        self.images.apply(value, HashSet::new);
         cx.notify();
     }
 }
@@ -134,13 +119,13 @@ impl Render for Card {
                 cx.notify();
             });
         };
-        super::chat::card_body(&self.route, &card, &self.images, self.details, toggle, None, cx)
+        super::chat::card_body(&self.route, &card, self.images.files(), self.details, toggle, None, cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Card, RETRIES};
+    use super::{Card, Pictures, BATCH, MAX_PENDING, REMEMBERED, RETRIES};
     use serde_json::{json, Value};
 
     #[test]
@@ -149,8 +134,7 @@ mod tests {
             model: json!({"id": "twitch|1"}),
             route: "chat:1".into(),
             lookup: Value::Null,
-            images: Default::default(),
-            asking: false,
+            images: Pictures::new("chat:1:card-images", BATCH, REMEMBERED, MAX_PENDING),
             details: false,
             retries: 0,
         };

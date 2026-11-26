@@ -101,8 +101,8 @@ impl Sections {
     }
     /// The core downloaded pictures: an open channel finder asks for the ones it still misses.
     pub fn images_arrived(&self, cx: &mut Context<Self>) {
-        if let Some(finder) = &self.finder {
-            finder.read(cx).images_arrived();
+        if let Some(finder) = self.finder.clone() {
+            finder.update(cx, |finder, _| finder.images_arrived());
         }
         if let Some(dialog) = self.dialog.clone() {
             dialog.update(cx, |dialog, cx| dialog.images_arrived(cx));

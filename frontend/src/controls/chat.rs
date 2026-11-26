@@ -4,7 +4,8 @@
 //! lines (the core keeps no more), follows the newest one until the reader scrolls up, and asks the
 //! core for just the lines newer than the last one it has. Pictures are files the core downloaded:
 //! the page asks for the ones it shows and draws them when they land.
-use super::emotes::{EmotePicker, ImageCache, Picked};
+use super::emotes::{EmotePicker, Picked};
+use super::images::{Pictures, MAX_PENDING};
 use super::sections::Sections;
 use crate::send;
 use crate::theme::{
@@ -110,8 +111,6 @@ const MOST: usize = 1000;
 const BATCH: usize = 64;
 /// Pictures remembered before stale entries are evicted.
 const REMEMBERED: usize = 3000;
-/// Most pending picture URLs kept queued at once.
-const MAX_MISSING: usize = 512;
 
 /// The page asks to go to another one (Accounts, when no chat is connected).
 pub struct Go(pub String);
@@ -145,7 +144,7 @@ pub struct ChatView {
     /// The box of "Message all".
     all_input: Entity<InputState>,
     reply: Option<(u64, String, String)>,
-    images: ImageCache,
+    images: Pictures,
     reading: bool,
     read_again: bool,
     error: Option<crate::error::StreamerzError>,
@@ -221,7 +220,7 @@ impl ChatView {
             model: Value::Null,
             all_input,
             reply: None,
-            images: ImageCache::new(BATCH, REMEMBERED, MAX_MISSING),
+            images: Pictures::new("chat:images", BATCH, REMEMBERED, MAX_PENDING),
             reading: false,
             read_again: false,
             error: None,
@@ -261,8 +260,7 @@ impl ChatView {
 
     /// Pictures arrived: the ones the page waits for are asked for again.
     pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
-        self.images.mark_arrived();
-        self.ask_images();
+        self.images.arrived();
         if self.wants_pictures {
             self.refresh();
         }
@@ -296,10 +294,8 @@ impl ChatView {
                     view.images.insert_file(url.clone(), file.clone());
                 }
             }
-            if !url.is_empty() && view.images.get(url).is_none() {
-                view.images.want(url);
-                view.ask_images();
-            }
+            view.images.want(url);
+            view.images.ask();
             view.ask_suggest(pane, cx);
             if !keep {
                 view.close_picker(window, cx);
@@ -316,12 +312,6 @@ impl ChatView {
         self.picker_sub = None;
         self.asking = None;
         cx.notify();
-    }
-
-    fn ask_images(&mut self) {
-        if let Some(urls) = self.images.next_batch() {
-            send(json!({"request": "StreamerzChat", "op": "images", "urls": urls, "id": "chat:images"}));
-        }
     }
 
     /// Note the pictures of a line the page has not got yet.
@@ -371,7 +361,7 @@ impl ChatView {
                 self.reply = None;
             }
         }
-        self.ask_images();
+        self.images.ask();
         self.reading = false;
         if std::mem::take(&mut self.read_again) {
             self.refresh();
@@ -817,7 +807,7 @@ impl ChatView {
             "images" => {
                 let open_card = self.card.as_ref().map(|open| open.read(cx).card.clone());
                 let lines = &self.lines;
-                let more = self.images.apply_reply(&value, || {
+                self.images.apply(&value, || {
                     let mut keep = HashSet::new();
                     for line in lines {
                         for_each_line_url(line, |url| {
@@ -829,9 +819,6 @@ impl ChatView {
                     }
                     keep
                 });
-                if more {
-                    self.ask_images();
-                }
                 // What the core is still fetching comes with the images topic.
                 if let Some(open) = self.card.clone() {
                     let images = self.card_images(&open.read(cx).card);
@@ -911,7 +898,7 @@ impl ChatView {
                         self.images.want(url);
                     }
                 }
-                self.ask_images();
+                self.images.ask();
                 if !failed && pane < self.panes.len() {
                     self.inline_emotes(pane, &parts, window, cx);
                 }
@@ -999,10 +986,9 @@ impl ChatView {
 
     /// Ask for the pictures a card needs and the page does not have.
     fn want_card(&mut self, card: &Value) {
-        for url in Self::card_urls(card) {
-            self.images.want(&url);
-        }
-        self.ask_images();
+        let urls = Self::card_urls(card);
+        self.images.want_all(urls.iter().map(String::as_str));
+        self.images.ask();
     }
 
     /// Open the card, or fill the open one with what came after. A card still waiting for the platform asks

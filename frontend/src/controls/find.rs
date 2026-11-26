@@ -2,6 +2,7 @@
 //! and whether they are live, as the platforms' own sites show them, and "Use my own channel". A link or an
 //! @name typed in the box works too (for what can't be searched). The core supplies the model (`finder`),
 //! searches (`StreamerzSearchChannels`) and reads the pick (`<platform>.set_channel`, `.own_channel`).
+use super::images::{Pictures, MAX_PENDING};
 use crate::send;
 use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
@@ -12,11 +13,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::HashSet;
 
 /// How long typing rests before the search is asked.
 const REST: std::time::Duration = std::time::Duration::from_millis(350);
+const BATCH: usize = 64;
+const REMEMBERED: usize = 512;
 
 pub struct Finder {
     model: Value,
@@ -29,7 +31,7 @@ pub struct Finder {
     status: String,
     /// The number of the latest search: an older answer is dropped.
     asked: u64,
-    images: HashMap<String, PathBuf>,
+    images: Pictures,
     confirmed: bool,
     search_task: Option<Task<()>>,
     buttons_view: Entity<FinderButtons>,
@@ -66,6 +68,7 @@ impl Finder {
                 }
             })
         };
+        let images = Pictures::new(format!("{route}:find-images"), BATCH, REMEMBERED, MAX_PENDING);
         let mut finder = Self {
             model,
             route,
@@ -74,7 +77,7 @@ impl Finder {
             selected: None,
             status,
             asked: 0,
-            images: HashMap::new(),
+            images,
             confirmed: false,
             search_task: None,
             buttons_view,
@@ -110,6 +113,7 @@ impl Finder {
         self.selected = None;
         if query.is_empty() {
             self.rows.clear();
+            self.images.clear_pending();
             self.status = self.label("empty");
             cx.notify();
             return;
@@ -138,6 +142,7 @@ impl Finder {
         }
         if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             self.rows.clear();
+            self.images.clear_pending();
             self.selected = None;
             let text = err.summary_line();
             let mut chars = text.chars();
@@ -153,48 +158,38 @@ impl Finder {
             } else {
                 String::new()
             };
-            self.ask_images();
+            self.images.clear_pending();
+            let urls: Vec<String> = self
+                .rows
+                .iter()
+                .filter_map(|row| row["picture"].as_str().map(str::to_owned))
+                .collect();
+            self.images.want_all(urls.iter().map(String::as_str));
+            self.images.ask();
         }
         cx.notify();
     }
 
     /// Pictures that are on disk now (the core says when it has downloaded the others).
     pub fn images(&mut self, value: &Value, cx: &mut Context<Self>) {
-        for (url, file) in value["files"].as_object().into_iter().flatten() {
-            if let Some(file) = file.as_str() {
-                self.images.insert(url.clone(), PathBuf::from(file));
-            }
-        }
+        let rows = &self.rows;
+        self.images.apply(value, || {
+            rows.iter()
+                .filter_map(|row| row["picture"].as_str().map(str::to_owned))
+                .collect::<HashSet<_>>()
+        });
         cx.notify();
     }
 
     /// The core downloaded pictures: ask for the ones still missing.
-    pub fn images_arrived(&self) {
-        self.ask_images();
+    pub fn images_arrived(&mut self) {
+        self.images.arrived();
     }
 
-    /// The rows' pictures not on disk yet.
-    fn missing(&self) -> Vec<String> {
-        self.rows
-            .iter()
-            .filter_map(|row| row["picture"].as_str())
-            .filter(|url| !url.is_empty() && !self.images.contains_key(*url))
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn ask_images(&self) {
-        if let Some(request) = self.images_request() {
-            send(request);
-        }
-    }
-
+    #[cfg(test)]
     fn images_request(&self) -> Option<Value> {
-        let urls = self.missing();
-        (!urls.is_empty()).then(|| {
-            json!({"request": "StreamerzChat", "op": "images", "urls": urls,
-                "id": format!("{}:find-images", self.route)})
-        })
+        self.images
+            .request_for(self.rows.iter().filter_map(|row| row["picture"].as_str()))
     }
 
     /// The handle that OK would submit right now (selected row, else typed handle/link).
